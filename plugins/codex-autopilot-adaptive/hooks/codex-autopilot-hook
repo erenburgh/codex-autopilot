@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+runtime="${CODEX_AUTOPILOT_RUNTIME:-$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot}"
+exec "$runtime" hook
+

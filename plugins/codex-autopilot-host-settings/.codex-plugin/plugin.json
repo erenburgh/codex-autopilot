@@ -1,0 +1,20 @@
+{
+  "name": "codex-autopilot-host-settings",
+  "version": "0.7.0-beta",
+  "description": "Run long Codex projects as serial visible fresh workers without overriding model or reasoning.",
+  "author": {"name": "Codex Autopilot contributors"},
+  "license": "MIT",
+  "keywords": ["codex", "automation", "orchestration"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Codex Autopilot — Host Settings",
+    "shortDescription": "Fresh workers using host defaults",
+    "longDescription": "A local non-AI dispatcher runs one visible Codex worker per milestone and omits both model and reasoning effort fields.",
+    "developerName": "Codex Autopilot contributors",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": ["Use Codex Autopilot for this project."],
+    "screenshots": []
+  }
+}

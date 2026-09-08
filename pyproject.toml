@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-autopilot"
+version = "0.7.0b0"
+description = "Serial visible Codex workers with deterministic Sol/Astra routing"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+
+[project.scripts]
+codex-autopilot = "codex_autopilot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

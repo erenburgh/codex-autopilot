@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+skill_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+runtime="${CODEX_AUTOPILOT_RUNTIME:-$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot}"
+export CODEX_AUTOPILOT_PROFILE=host-settings
+export CODEX_AUTOPILOT_SKILL_PATH="$skill_dir/SKILL.md"
+exec "$runtime" "$@"
+

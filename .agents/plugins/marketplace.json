@@ -1,0 +1,19 @@
+{
+  "name": "codex-autopilot-local",
+  "interface": {"displayName": "Codex Autopilot Local"},
+  "plugins": [
+    {
+      "name": "codex-autopilot-adaptive",
+      "source": {"source": "local", "path": "./plugins/codex-autopilot-adaptive"},
+      "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+      "category": "Developer Tools"
+    },
+    {
+      "name": "codex-autopilot-host-settings",
+      "source": {"source": "local", "path": "./plugins/codex-autopilot-host-settings"},
+      "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+      "category": "Developer Tools"
+    }
+  ]
+}
+

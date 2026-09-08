@@ -1,0 +1,20 @@
+{
+  "name": "codex-autopilot-adaptive",
+  "version": "0.7.0-beta",
+  "description": "Run long Codex projects as serial visible fresh workers with deterministic Sol/Astra routing and adaptive reasoning.",
+  "author": {"name": "Codex Autopilot contributors"},
+  "license": "MIT",
+  "keywords": ["codex", "automation", "orchestration", "reasoning"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Codex Autopilot — Adaptive",
+    "shortDescription": "Fresh workers with smart model routing",
+    "longDescription": "A local non-AI dispatcher routes code milestones to Sol, Computer Use milestones to Astra, and selects the plan's reasoning effort.",
+    "developerName": "Codex Autopilot contributors",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": ["Use Codex Autopilot for this project."],
+    "screenshots": []
+  }
+}
