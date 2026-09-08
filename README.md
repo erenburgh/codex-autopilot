@@ -17,7 +17,17 @@ The initiating planner records `execution_mode: code|computer_use` and a concret
 
 ## Install
 
-On macOS, download or clone the release and run:
+Codex Autopilot currently supports macOS.
+
+Clone the repository:
+
+```bash
+git clone https://github.com/erenburgh/codex-autopilot.git
+cd codex-autopilot
+./install.sh --profile adaptive --install-deps
+```
+
+Alternatively, download and extract the macOS release ZIP and run:
 
 ```bash
 ./install.sh --profile adaptive --install-deps
