@@ -1,49 +1,25 @@
 # Model routing
 
-## Contract
+## Adaptive
 
-Codex Autopilot v0.7 routes between exactly two models in the Adaptive profile:
+Adaptive supports three strategies:
 
-| Execution mode | AUTO model |
-| --- | --- |
-| `code` | GPT-5.6 Sol (`gpt-5.6-sol`) |
-| `computer_use` | GPT-6 Astra (`gpt-6-astra`) |
+| Strategy | Code milestone | Computer Use milestone |
+| --- | --- | --- |
+| `auto` | GPT-5.6 Sol (`gpt-5.6-sol`) | GPT-6 Astra (`gpt-6-astra`) |
+| `sol-only` | Sol | Blocks because the required capability is unavailable |
+| `astra-only` | Astra | Astra |
 
-The planner records `model_strategy`, `execution_mode`, `execution_mode_reason`, and Adaptive `reasoning` in `plan.json`. The dispatcher contains no inference: it maps these fields to a model, validates the current App Server catalog, resolves a supported effort, and calls `thread/start` and `turn/start`.
+The initiating skill classifies the Definition of Done and writes `execution_mode`, a concrete reason, and requested reasoning to `plan.json`. The deterministic dispatcher contains no classifier. Before every worker it checks `model/list`, maps the plan through the fixed registry, resolves supported effort, and records the exact selection in `run-state.json`.
 
-## Classifying milestones
+Use `computer_use` only when completion requires real browser or desktop GUI interaction that code, files, shell tools, tests, builds, or programmatic interfaces cannot replace. Difficulty does not select Astra.
 
-The deciding question is: **Does the Definition of Done require Computer Use?**
+Public reasoning values are `medium`, `high`, `xhigh`, and `max`. If the requested level is unavailable, the dispatcher chooses the nearest advertised public level, preferring lower on an equal-distance tie. `ESCALATE` retries the same incomplete milestone in a fresh worker on the same model at the next public level. At `max`, it blocks. `REQUIRE_COMPUTER_USE` is AUTO-only: a Sol worker records a concrete GUI reason and a fresh Astra worker retries the same milestone without advancing the roadmap.
 
-Use `computer_use` for required interaction with a real browser or professional desktop GUI, including Unreal Editor, Blender, cross-app workflows, and visual GUI verification that cannot be replaced reliably by code or files.
+The dispatcher never changes model to evade quota. Sol and Astra share account allowance.
 
-Use `code` for programming, architecture, debugging from code or logs, networking, refactoring, tests, HTML/CSS, documentation, Git, builds, and programmatic file or asset changes. Difficulty and duration never select Astra.
+## Host Settings
 
-`execution_mode_reason` must explain the concrete boundary. “This is hard” is invalid.
+Host Settings plans omit reasoning. The dispatcher does not call `model/list` for routing and passes neither a `model` field to `thread/start` nor an `effort` field to `turn/start`. Each durable fresh task therefore receives whatever defaults the current App Server applies.
 
-## Strategies
-
-- `auto`: code → Sol; computer_use → Astra.
-- `sol-only`: code → Sol; computer_use → `BLOCKED` with a clear capability error.
-- `astra-only`: every milestone → Astra.
-- `host-settings`: available only in the Host Settings profile; the dispatcher sends neither model nor effort.
-
-Missing or unavailable models produce `BLOCKED`. AUTO never silently replaces unavailable Sol with Astra, and it never replaces unavailable Astra with Sol.
-
-## Reasoning is independent
-
-The public plan values are `medium`, `high`, `xhigh`, and `max`. Before each worker the dispatcher reads `model/list`. If the requested effort is absent, it selects the nearest advertised public level, preferring the lower level on an equal-distance tie, logs the adjustment, and stores it in worker history. If no public level is supported, the run becomes `BLOCKED`.
-
-On Codex App Server 0.153.4, both `gpt-5.6-sol` and `gpt-6-astra` advertised `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. The Autopilot public contract deliberately uses only `medium`, `high`, `xhigh`, and `max`; user terminology `ultra` normalizes to `max`.
-
-`ESCALATE` creates a fresh worker at the next public reasoning level while preserving the model capability selected for the milestone.
-
-## Capability escalation
-
-`REQUIRE_COMPUTER_USE` is available only to a Sol code worker in AUTO. The worker must record a specific `COMPUTER_USE_REASON`. The dispatcher keeps the roadmap index unchanged and starts a fresh Astra worker for the same milestone. The reasoning layer remains independent and no Astra-to-Sol restart occurs.
-
-## Shared allowance
-
-Sol and Astra use the same account allowance. Rate limiting is account-wide. The dispatcher waits for the shared reset and retries the same route; it never changes models to work around quota.
-
-Availability is separate from quota. The required ID must appear in `model/list`, and `thread/start` must confirm the requested model. Failure becomes `BLOCKED`; there is no hidden fallback.
+This proves omission, not a universal promise that a reasoning value selected in another Desktop task will be inherited. Host-default behavior is controlled by the current Codex/App Server build and remains a live compatibility item.

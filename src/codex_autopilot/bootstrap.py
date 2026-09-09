@@ -6,8 +6,10 @@ from pathlib import Path
 import shutil
 
 from .config import STATE_DIR_NAME
+from .memory import ProjectMemory
+from .migration import detect_v07, migrate_v07
 from .plan import Plan, save_plan, validate_plan
-from .run_state import RunState, StateStore
+from .run_state import RunState, StateStore, utc_now
 
 
 def initialize_project(
@@ -28,38 +30,50 @@ def initialize_project(
     if not skill_path.is_file():
         raise ValueError(f"installed skill is missing: {skill_path}")
     state_dir = root / STATE_DIR_NAME
-    store = StateStore(state_dir)
-    existing = store.load() if store.path.exists() else None
-    if existing and existing.status == "RUNNING" and _pid_alive(existing.dispatcher_pid):
+    state_path = state_dir / "run-state.json"
+    existing_raw = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else None
+    if existing_raw and existing_raw.get("status") == "RUNNING" and _pid_alive(existing_raw.get("dispatcher_pid")):
         raise RuntimeError("Codex Autopilot is already running in this project")
-    if existing and not replace:
+    if existing_raw and not replace:
         raise RuntimeError("project is already initialized; use resume or pass --replace for a new run")
     raw = json.loads(plan_file.read_text(encoding="utf-8"))
     plan = validate_plan(raw, profile)
     state_dir.mkdir(parents=True, exist_ok=True)
+    migration = migrate_v07(root, plan) if detect_v07(state_dir) else None
+    completed = migration.preserved_completed if migration else 0
     for stale in ("BLOCKED.json", "pause-requested", "launch-request.json"):
         (state_dir / stale).unlink(missing_ok=True)
     if replace and (state_dir / "logs").exists():
         shutil.rmtree(state_dir / "logs")
     save_plan(state_dir, plan)
     _write_config(root, profile, skill_path)
-    (root / "ROADMAP.md").write_text(_roadmap(plan), encoding="utf-8")
-    _write_milestone(state_dir, plan, 0)
-    (state_dir / "PROJECT_STATE.md").write_text(
-        "# Project state\n\nNo milestone has completed yet. Inspect the repository before starting work.\n",
-        encoding="utf-8",
-    )
-    (state_dir / "DECISIONS.md").write_text(
-        "# Durable decisions\n\nRecord only decisions that constrain later milestones.\n",
-        encoding="utf-8",
-    )
+    completed = min(completed, len(plan.milestones))
+    current_index = min(completed, len(plan.milestones) - 1)
+    (root / "ROADMAP.md").write_text(_roadmap(plan, completed), encoding="utf-8")
+    _write_milestone(state_dir, plan, current_index)
     (state_dir / "HANDOFF.md").write_text(
-        "# Handoff\n\nStart with milestone M1. Verify the repository state directly.\n",
+        "# Handoff (advisory)\n\nCompleted: none in this run.\nChanged: none.\nRisks: none recorded.\nRelevant memory: query the built-in Project Memory MCP.\nNext: inspect and execute the current milestone.\n",
         encoding="utf-8",
     )
-    first = plan.milestones[0]
-    store.save(RunState(milestone_id=first.id, planned_execution_mode=first.execution_mode, execution_mode=first.execution_mode))
+    memory = ProjectMemory(root)
+    memory.initialize()
+    memory.render_views()
+    first = plan.milestones[current_index]
+    state = RunState(
+        status="DONE" if completed == len(plan.milestones) else "READY",
+        phase="DONE" if completed == len(plan.milestones) else "PREFLIGHT_PASSED",
+        milestone_index=current_index,
+        milestone_id=first.id,
+        planned_execution_mode=first.execution_mode,
+        execution_mode=first.execution_mode,
+        preflight_completed_at=utc_now(),
+        completed_at=utc_now() if completed == len(plan.milestones) else None,
+    )
+    store = StateStore(state_dir)
+    store.save(state)
     plan_file.unlink(missing_ok=True)
+    if migration and migration.report:
+        print(f"Migrated v0.7 state conservatively; report: {migration.report}")
     return plan
 
 
@@ -92,6 +106,11 @@ def _write_config(root: Path, profile: str, skill_path: Path) -> None:
     lines.extend([
         "turn_timeout_seconds = 14400",
         "reconcile_timeout_seconds = 300",
+        "",
+        "[memory]",
+        'backend = "sqlite+fts5"',
+        'database = ".codex-autopilot/memory.sqlite3"',
+        'mcp_server = "codex_autopilot_memory"',
         "",
         "[retry]",
         "initial_seconds = 30",

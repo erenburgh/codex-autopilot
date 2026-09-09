@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="0.7.0-beta"
+version="0.8.0-beta"
 profile="adaptive"
 install_deps=0
 while [ "$#" -gt 0 ]; do
@@ -13,7 +13,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$profile" in adaptive|host-settings) ;; *) echo "Profile must be adaptive or host-settings" >&2; exit 2 ;; esac
-[ "$(uname -s)" = "Darwin" ] || { echo "Codex Autopilot v0.7 public beta supports macOS only." >&2; exit 1; }
+[ "$(uname -s)" = "Darwin" ] || { echo "Codex Autopilot v0.8 public beta supports macOS only." >&2; exit 1; }
 
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 install_root=${CODEX_AUTOPILOT_INSTALL_ROOT:-"$HOME/Library/Application Support/CodexAutopilot"}
@@ -66,9 +66,25 @@ set -eu
 base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 export PYTHONPATH="$base/runtime/src"
 export CODEX_AUTOPILOT_INSTALL_ROOT=$(CDPATH= cd -- "$base/.." && pwd)
+export CODEX_AUTOPILOT_RUNTIME="$base/bin/codex-autopilot"
 exec "$base/venv/bin/python" -m codex_autopilot.cli "$@"
 EOF
 chmod 755 "$target/bin/codex-autopilot"
+"$python_bin" - "$target" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+target = Path(sys.argv[1]).resolve()
+runtime = str(target / "bin" / "codex-autopilot")
+for path in target.glob("plugins/*/.mcp.json"):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    server = payload["mcpServers"]["codex_autopilot_memory"]
+    if server.get("command") != "__CODEX_AUTOPILOT_RUNTIME__":
+        raise SystemExit(f"unexpected MCP launcher placeholder in {path}")
+    server["command"] = runtime
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
 find "$target/plugins" -type f \( -name codex-autopilot-hook -o -path '*/scripts/codex-autopilot' \) -exec chmod 755 {} \;
 rm -f "$install_root/current"
 ln -s "$target" "$install_root/current"
@@ -94,4 +110,7 @@ done
 
 echo "Codex Autopilot $version installed with the $profile profile."
 echo "Codex safety requires one trust review for the plugin hooks: open /hooks in Codex and trust Codex Autopilot."
-echo "Then open a Git project and say: Use Codex Autopilot for this project."
+echo "Start a fresh Codex task, then say: Use Codex Autopilot for this project."
+echo "On first use, Codex will ask about the single local memory tool. Choose Always only if you trust this installed plugin; Autopilot never answers for you."
+echo "The target Git project may be different from the initiating task directory."
+echo "The first run performs a deterministic preflight and names any exact permission it needs before creating run-state."

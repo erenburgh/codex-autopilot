@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import hashlib
 import json
+import os
 from pathlib import Path
 import queue
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, Callable
@@ -86,7 +89,7 @@ class AppServerClient:
                 "clientInfo": {
                     "name": "codex-autopilot",
                     "title": "Codex Autopilot Desktop Native",
-                    "version": "0.7.0-beta",
+                    "version": "0.8.0-beta",
                 },
                 "capabilities": {"experimentalApi": True},
             },
@@ -96,7 +99,7 @@ class AppServerClient:
 
     def _record(self, direction: str, payload: Any) -> None:
         if self.log:
-            self.log.write(json.dumps({"at": time.time(), "direction": direction, "payload": payload}, ensure_ascii=False) + "\n")
+            self.log.write(json.dumps({"at": time.time(), "direction": direction, "payload": _redact_log_payload(payload)}, ensure_ascii=False) + "\n")
             self.log.flush()
 
     def _read_stdout(self) -> None:
@@ -161,17 +164,28 @@ class AppServerClient:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise AppServerError("Timed out waiting for App Server")
-        if maximum_wait is not None:
-            remaining = min(remaining, maximum_wait)
-        try:
-            return self.messages.get(timeout=remaining)
-        except queue.Empty as exc:
-            if maximum_wait is not None and time.monotonic() < deadline:
-                raise TimeoutError from exc
-            details: list[str] = []
-            while not self.stderr_lines.empty():
-                details.append(self.stderr_lines.get_nowait())
-            raise AppServerError("Timed out waiting for App Server; stderr=" + " | ".join(details[-10:])) from exc
+        poll_deadline = min(deadline, time.monotonic() + maximum_wait) if maximum_wait is not None else deadline
+        last_empty: queue.Empty | None = None
+        while time.monotonic() < poll_deadline:
+            try:
+                # Short slices surface an App Server process exit quickly.
+                return self.messages.get(timeout=min(0.25, poll_deadline - time.monotonic()))
+            except queue.Empty as exc:
+                last_empty = exc
+                if self.proc is not None and self.proc.poll() is not None:
+                    details: list[str] = []
+                    while not self.stderr_lines.empty():
+                        details.append(self.stderr_lines.get_nowait())
+                    raise AppServerError(
+                        f"App Server exited with code {self.proc.returncode}; stderr="
+                        + " | ".join(details[-10:])
+                    ) from exc
+        if maximum_wait is not None and poll_deadline < deadline:
+            raise TimeoutError from last_empty
+        details: list[str] = []
+        while not self.stderr_lines.empty():
+            details.append(self.stderr_lines.get_nowait())
+        raise AppServerError("Timed out waiting for App Server; stderr=" + " | ".join(details[-10:])) from last_empty
 
     def _inspect_event(self, message: dict[str, Any]) -> None:
         method = str(message.get("method", ""))
@@ -220,13 +234,61 @@ class AppServerClient:
     def list_permission_profiles(self, cwd: Path) -> list[dict[str, Any]]:
         return self.request("permissionProfile/list", {"cwd": str(cwd)}).get("data", [])
 
-    def start_thread(self, *, cwd: Path, permission_profile: str, project_id: str | None, model: str | None) -> dict[str, Any]:
-        params: dict[str, Any] = {"cwd": str(cwd), "permissions": permission_profile, "ephemeral": False}
+    def start_thread(
+        self,
+        *,
+        cwd: Path,
+        permission_profile: str,
+        project_id: str | None,
+        model: str | None,
+        ephemeral: bool = False,
+        project_memory: bool = True,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"cwd": str(cwd), "permissions": permission_profile, "ephemeral": ephemeral}
+        if project_memory:
+            runtime = os.environ.get("CODEX_AUTOPILOT_RUNTIME")
+            if runtime:
+                command = runtime
+                arguments = ["memory-mcp"]
+            else:
+                command = sys.executable
+                arguments = ["-m", "codex_autopilot.cli", "memory-mcp"]
+            # App Server 0.153.4 replaces a named MCP entry at thread scope
+            # instead of deep-merging it. Repeat the complete local stdio
+            # transport and change cwd to bind it to this project.
+            params["config"] = {
+                "mcp_servers": {
+                    "codex_autopilot_memory": {
+                        "command": command,
+                        "args": arguments,
+                        "cwd": str(cwd),
+                        "enabled": True,
+                        "startup_timeout_sec": 10,
+                        "tool_timeout_sec": 30,
+                        # Production never grants MCP approval on the user's
+                        # behalf. Codex asks the user, who may choose its
+                        # built-in persistent "always" option per tool.
+                        "tools": {"memory": {"approval_mode": "prompt"}},
+                    }
+                }
+            }
         if project_id is not None:
             params["projectId"] = project_id
         if model is not None:
             params["model"] = model
         return self.request("thread/start", params)
+
+    def list_mcp_server_status(self, thread_id: str) -> list[dict[str, Any]]:
+        return self.request(
+            "mcpServerStatus/list",
+            {"threadId": thread_id, "detail": "full", "limit": 100},
+        ).get("data", [])
+
+    def call_mcp_tool(self, thread_id: str, server: str, tool: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.request(
+            "mcpServer/tool/call",
+            {"threadId": thread_id, "server": server, "tool": tool, "arguments": arguments or {}},
+        )
 
     def name_thread(self, thread_id: str, name: str) -> None:
         self.request("thread/name/set", {"threadId": thread_id, "name": name})
@@ -362,3 +424,26 @@ def final_agent_message(turn: dict[str, Any]) -> str:
         if item.get("type") == "agentMessage" and isinstance(item.get("text"), str) and item.get("phase") == "final_answer":
             final = item["text"]
     return final
+
+
+_SENSITIVE_LOG_KEYS = {
+    "text",
+    "content",
+    "arguments",
+    "structuredContent",
+    "user_instruction",
+    "environment_probe",
+}
+
+
+def _redact_log_payload(value: Any, key: str | None = None) -> Any:
+    """Keep protocol diagnostics without copying prompts or memory payloads to logs."""
+    if key in _SENSITIVE_LOG_KEYS:
+        if isinstance(value, str):
+            return f"<redacted chars={len(value)} sha256={hashlib.sha256(value.encode()).hexdigest()[:16]}>"
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {item_key: _redact_log_payload(item_value, item_key) for item_key, item_value in value.items()}
+    if isinstance(value, list):
+        return [_redact_log_payload(item) for item in value]
+    return value

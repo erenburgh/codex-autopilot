@@ -19,7 +19,7 @@ def utc_now() -> str:
 
 @dataclass(slots=True)
 class RunState:
-    schema_version: int = 3
+    schema_version: int = 4
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     status: str = "IDLE"
     phase: str = "IDLE"
@@ -47,6 +47,12 @@ class RunState:
     expected_thread_name: str | None = None
     creation_not_before: int | None = None
     checkpoint_before: dict[str, str] | None = None
+    memory_audit_before: int | None = None
+    prompt_chars: int | None = None
+    prompt_approx_tokens: int | None = None
+    memory_records_at_start: int | None = None
+    relevant_memory_count: int | None = None
+    preflight_completed_at: str | None = None
     retry_count: int = 0
     retry_at: int | None = None
     reset_at: int | None = None
@@ -94,8 +100,8 @@ class StateStore:
         if not self.path.exists():
             return RunState()
         data = json.loads(self.path.read_text(encoding="utf-8"))
-        if data.get("schema_version") != 3:
-            raise ValueError("Unsupported run-state schema. v0.7 does not import earlier beta state.")
+        if data.get("schema_version") != 4:
+            raise ValueError("Unsupported run-state schema. Run the v0.8 start workflow to migrate v0.7 state safely.")
         known = RunState.__dataclass_fields__
         return RunState(**{key: value for key, value in data.items() if key in known})
 

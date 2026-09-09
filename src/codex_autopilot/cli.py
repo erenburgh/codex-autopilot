@@ -16,6 +16,8 @@ from .config import STATE_DIR_NAME, load_config
 from .control import arm, find_project_root, handle_prompt_hook, handle_stop_hook, pid_alive, spawn_dispatcher, status_text, wait_for_dispatcher
 from .models import MODEL_IDS, PUBLIC_REASONING
 from .orchestrator import DesktopOrchestrator
+from .plan import validate_plan
+from .preflight import PreflightApprovalRequired, PreflightError, run_preflight
 from .run_state import StateStore
 from .smoke import run_desktop_smoke
 
@@ -34,6 +36,11 @@ def parser() -> argparse.ArgumentParser:
     start_skill.add_argument("--project", type=Path, default=Path.cwd())
     start_skill.add_argument("--plan-file", type=Path, required=True)
     start_skill.add_argument("--replace", action="store_true")
+    preflight = sub.add_parser("preflight", help="validate a target before creating Autopilot state")
+    preflight.add_argument("--project", type=Path, default=Path.cwd())
+    preflight.add_argument("--plan-file", type=Path, required=True)
+    preflight.add_argument("--profile", choices=["adaptive", "host-settings"])
+    preflight.add_argument("--skill-path", type=Path)
     armed = sub.add_parser("arm", help=argparse.SUPPRESS)
     armed.add_argument("--project", type=Path, default=Path.cwd())
     run = sub.add_parser("run", help="advanced foreground dispatcher")
@@ -59,6 +66,7 @@ def parser() -> argparse.ArgumentParser:
     desktop.add_argument("--profile", choices=["adaptive", "host-settings"], default="adaptive")
     desktop.add_argument("--skill-path", type=Path)
     desktop.add_argument("--keep", action="store_true")
+    sub.add_parser("memory-mcp", help=argparse.SUPPRESS)
     return top
 
 
@@ -77,12 +85,23 @@ def _profile_and_skill(args) -> tuple[str, Path]:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        if args.command in {"bootstrap", "start-skill"}:
+        if args.command in {"bootstrap", "start-skill", "preflight"}:
             profile, skill = _profile_and_skill(args)
+            raw = json.loads(args.plan_file.read_text(encoding="utf-8"))
+            checked_plan = validate_plan(raw, profile)
+            run_preflight(args.project, plan=checked_plan, profile=profile, skill_path=skill)
+            if args.command == "preflight":
+                return 0
+            print("Starting Autopilot..." if args.command == "start-skill" else "Initializing Autopilot project...")
             plan = initialize_project(args.project, args.plan_file, profile=profile, skill_path=skill, replace=args.replace)
             if args.command == "start-skill":
-                arm(args.project)
-            print(f"Initialized {len(plan.milestones)} milestones ({profile})." + (" Dispatcher launch armed for this turn's Stop hook." if args.command == "start-skill" else ""))
+                state = StateStore(args.project.resolve() / STATE_DIR_NAME).load()
+                if state.status != "DONE":
+                    arm(args.project)
+            state = StateStore(args.project.resolve() / STATE_DIR_NAME).load()
+            armed_text = " Dispatcher launch armed for this turn's Stop hook." if args.command == "start-skill" and state.status != "DONE" else ""
+            done_text = " Existing verified milestones already complete this plan." if state.status == "DONE" else ""
+            print(f"Initialized {len(plan.milestones)} milestones ({profile}).{armed_text}{done_text}")
             return 0
         if args.command == "arm":
             arm(args.project)
@@ -140,9 +159,15 @@ def main(argv: list[str] | None = None) -> int:
             code, directory = run_desktop_smoke(skill, profile, args.keep)
             print(f"Desktop smoke {'PASS' if code == 0 else 'FAIL'}; workspace={directory}")
             return code
+        if args.command == "memory-mcp":
+            from .memory_mcp import main as memory_mcp_main
+            return memory_mcp_main([])
         if args.command == "uninstall":
             return uninstall(args)
-    except (ValueError, RuntimeError, FileNotFoundError, json.JSONDecodeError) as exc:
+    except PreflightApprovalRequired as exc:
+        print(f"codex-autopilot: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except (PreflightError, ValueError, RuntimeError, FileNotFoundError, json.JSONDecodeError) as exc:
         print(f"codex-autopilot: {exc}", file=sys.stderr)
         return 2
     return 2
@@ -213,6 +238,11 @@ def uninstall(args) -> int:
             root.rmdir()
         except OSError:
             pass
+    try:
+        from .launch_registry import registry_directory
+        shutil.rmtree(registry_directory().parent, ignore_errors=True)
+    except Exception:
+        pass
     print("Codex Autopilot uninstalled. Project source and Git repository were preserved.")
     return 0
 

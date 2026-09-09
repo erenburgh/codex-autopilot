@@ -1,13 +1,25 @@
 # Security
 
-Workers receive the same effective tools and approvals available to ordinary Codex tasks under App Server `:workspace`. The dispatcher can start, name, read, and interrupt Codex threads; inspect App Server model metadata; read and write `.codex-autopilot/`; and optionally create a Git commit only when `git.auto_commit = true` is explicitly set.
+## Authority boundaries
 
-The dispatcher treats every App Server approval request as `BLOCKED` and never sends an approval response. The plugin has no `PermissionRequest` hook. No sandbox bypass, approval bypass, skip-safety flag, unrestricted App Server argument, Codex UI automation, automatic macOS permission grant, or headless execution path exists.
+A worker has the ordinary Codex tools available under App Server `:workspace` for the target repository. The dispatcher can create, name, read, and interrupt its Codex tasks; inspect permission/model/project/MCP metadata; read account rate-limit state; and manage files under `.codex-autopilot`. It has no model loop of its own.
 
-The source archive includes `scripts/live_acceptance.py`, a developer test harness with an explicit flag that can answer only the exact `https://example.com` browser-origin or Google Chrome app-selection request for that test session. It is excluded from the macOS user package and is never imported or called by the production runtime.
+The dispatcher treats every App Server approval request as `BLOCKED` and never sends an approval response. The plugin has no permission-request hook. It cannot grant macOS access, trust its own hooks, confirm a destructive operation, operate Codex's UI, or modify account defaults. Its one `memory` MCP tool is explicitly configured with `approval_mode=prompt`; persistent use begins only when the user chooses Codex's `Always` option in a visible initiating task.
 
-Adaptive selects only the two IDs in its local registry and sends them per fresh `thread/start`. It never changes the account or host default model. Missing models, rejected model overrides, unsupported effort metadata, and Sol-only Computer Use requirements become `BLOCKED`; there is no silent model fallback.
+Repository commits are disabled by default. The runtime can commit only when a user edits project config to set `git.auto_commit = true`; it does not change Git identity or Git configuration.
 
-Plugin hooks require the normal one-time Codex trust review. The Stop hook starts a dispatcher only after the initiating skill writes a one-time launch request in the initialized project. The prompt hook intercepts only the documented exact control phrases.
+## Project Memory boundary
 
-Uninstall preserves project state unless the explicit purge flag is supplied. It also preserves other installed Autopilot versions and legacy backups. It does not uninstall Codex, Python, Homebrew, or Git and does not alter user Git or global Codex settings.
+The memory MCP is local stdio. Its project root is the worker process cwd set by App Server. It exposes a fixed tool allowlist with strict schemas and checks all file and artifact paths after symlink resolution. The database must remain under the target repository. It offers no shell, arbitrary filesystem read, raw SQL, network, process control, approval action, or generic proxy.
+
+Truth requires linked non-migration evidence. This protects against accidental promotion, not a malicious worker that fabricates descriptive tool/test evidence. File evidence is server-hashed. All changes receive audit entries and conflicts preserve history.
+
+App Server logs redact prompt text, MCP arguments, structured content, user instructions, and environment probe bodies into hashes and lengths. Operational metadata and IDs remain for recovery and verification. Project memory and logs stay local unless the user shares the repository or files.
+
+## First-run permissions
+
+The official `codex app-server` child process may need one-time read/write access to the exact `CODEX_HOME` directory because it owns state databases, WAL/SHM files, locks, plugin cache, and temporary command wrappers there. Preflight asks only after an actual permission-shaped failure, reports the path, and exits 77. No state is created before approval.
+
+## Flag audit
+
+Production code and packages contain no safety-bypass, approval-bypass, unrestricted sandbox, or skip-safety option. The normal permission profile is fixed to `:workspace`. The source-only live acceptance harness has dedicated opt-in flags that can answer only the bundled allowlisted memory tools and its exact browser test surface for that developer session. It persists neither approval beyond the session. The harness is excluded from the macOS user ZIP and never imported by production.

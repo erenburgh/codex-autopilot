@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-autopilot"
-version = "0.7.0b0"
-description = "Serial visible Codex workers with deterministic Sol/Astra routing"
+version = "0.8.0b0"
+description = "Serial visible Codex workers with evidence-backed project memory"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 

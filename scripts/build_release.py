@@ -9,12 +9,12 @@ import stat
 import zipfile
 
 
-VERSION = "0.7.0-beta"
+VERSION = "0.8.0-beta"
 ROOT = Path(__file__).resolve().parents[1]
 USER_ITEMS = [".agents", "plugins", "src", "docs", "install.sh", "README.md", "GETTING_STARTED.md", "CHANGELOG.md", "LICENSE"]
 SOURCE_EXCLUDES = {"__pycache__", ".git", ".DS_Store", ".venv", "dist", "build"}
 BANNED_PARTS = {"__pycache__", ".git", ".venv", "venv", "logs"}
-BANNED_SUFFIXES = {".pyc", ".pyo"}
+BANNED_SUFFIXES = {".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".wal", ".shm"}
 
 
 def copy_clean(source: Path, destination: Path) -> None:

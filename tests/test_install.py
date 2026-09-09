@@ -18,6 +18,9 @@ class InstallerTests(unittest.TestCase):
         preserved_v06 = install_root / "0.6.0-beta" / "preserved-marker"
         preserved_v06.parent.mkdir(parents=True)
         preserved_v06.write_text("keep v0.6", encoding="utf-8")
+        preserved_v07 = install_root / "0.7.0-beta" / "preserved-marker"
+        preserved_v07.parent.mkdir(parents=True)
+        preserved_v07.write_text("keep v0.7", encoding="utf-8")
         legacy = home / ".codex/skills/astra-autopilot-adaptive"
         legacy.mkdir(parents=True)
         (legacy / "SKILL.md").write_text("old preview", encoding="utf-8")
@@ -31,6 +34,9 @@ class InstallerTests(unittest.TestCase):
             result = subprocess.run([str(ROOT / "install.sh"), "--profile", "adaptive"], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((install_root / "current/bin/codex-autopilot").is_file())
+        mcp = (install_root / "current/plugins/codex-autopilot-adaptive/.mcp.json").read_text(encoding="utf-8")
+        self.assertNotIn("__CODEX_AUTOPILOT_RUNTIME__", mcp)
+        self.assertIn(str((install_root / "0.8.0-beta/bin/codex-autopilot").resolve()), mcp)
         self.assertTrue((install_root / "legacy-backups/astra-autopilot-adaptive/SKILL.md").is_file())
         self.assertFalse(legacy.exists())
         command_text = calls.read_text()
@@ -41,9 +47,10 @@ class InstallerTests(unittest.TestCase):
         env["PATH"] = str(base) + os.pathsep + env.get("PATH", "")
         result = subprocess.run([str(install_root / "current/bin/codex-autopilot"), "uninstall", "--yes"], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse((install_root / "0.7.0-beta").exists())
+        self.assertFalse((install_root / "0.8.0-beta").exists())
         self.assertFalse((install_root / "current").exists())
         self.assertEqual(preserved_v06.read_text(encoding="utf-8"), "keep v0.6")
+        self.assertEqual(preserved_v07.read_text(encoding="utf-8"), "keep v0.7")
         self.assertTrue((install_root / "legacy-backups/astra-autopilot-adaptive/SKILL.md").is_file())
 
 

@@ -1,66 +1,67 @@
 # Codex Autopilot
 
-Run long Codex projects as serial fresh workers with compact handoffs and deterministic Sol/Astra model routing.
+Run long Codex projects as verified milestones in serial fresh workers, with evidence-backed local Project Memory.
 
-Codex Autopilot prevents context decay by assigning one milestone to one durable, visible Codex thread. A small non-AI dispatcher waits for `turn/completed`, validates the checkpoint, and then starts the next worker. There is no controller model and never more than one active Autopilot model turn.
+**Fresh workers prevent context decay; evidence-backed Project Memory prevents context corruption.**
 
-## Smart model routing
+Codex Autopilot is a Codex plugin plus a small non-AI dispatcher. The initiating task turns a goal into milestones. For each milestone the dispatcher creates one durable Codex task, waits for its official App Server `turn/completed` event, validates new milestone evidence, retires that worker, and creates the next fresh task. The dispatcher does not call a model while it waits, rotates workers, checks state, or handles rate-limit timers.
 
-Adaptive uses `auto` by default:
-
-- GPT-5.6 Sol handles regular coding, architecture, debugging, analysis, builds, tests, and other work that does not require Computer Use.
-- GPT-6 Astra handles only milestones whose Definition of Done requires real browser or desktop GUI interaction through Computer Use.
-
-Complexity does not select Astra. Model capability and reasoning effort are independent axes. Sol and Astra use the same account allowance; Codex Autopilot does not treat them as separate quotas and never changes model to evade a rate limit.
-
-The initiating planner records `execution_mode: code|computer_use` and a concrete reason in `.codex-autopilot/plan.json`. Before every worker the dispatcher resolves that mode through the selected strategy, validates the exact model and supported effort against App Server `model/list`, and records the result in `run-state.json`.
+Project Memory is a project-local SQLite/FTS5 database exposed to workers through a bundled stdio MCP server. Verified facts require explicit evidence; observations, decisions, constraints, questions, evidence, and conflicts remain separate record types. Each fresh worker receives a bounded set of IDs and constraints and retrieves details on demand instead of inheriting an expanding transcript.
 
 ## Install
 
-On macOS, download or clone the release and run:
+Requirements: macOS, Codex Desktop, a signed-in official Codex CLI with App Server, Python 3.11 or newer, an eligible account, and an existing Git repository for the target project.
 
 ```bash
+git clone https://github.com/erenburgh/codex-autopilot.git
+cd codex-autopilot
 ./install.sh --profile adaptive --install-deps
 ```
 
-Open `/hooks` in Codex and trust the two Codex Autopilot hook commands once. Use `--profile host-settings` when every fresh worker should receive the host defaults with no model or effort override.
+The macOS release ZIP can be extracted instead. `--install-deps` uses an existing Homebrew installation when Python is missing and npm when Codex CLI is missing. The installer never installs Homebrew itself.
+
+After installation, start a fresh Codex task so the plugin loads. First use has two explicit Codex trust steps: approve the two Autopilot hooks in `/hooks`, then let the skill call the single local `memory` tool with `operation=current` and choose `Always`. Autopilot never answers either approval itself. The first run then performs deterministic preflight. If Codex blocks the official App Server from its state directory, preflight names the exact `CODEX_HOME` path that needs one-time read/write approval, exits with code 77, and creates no project run-state.
 
 ## Use
 
-Open an existing Git repository in Codex and write:
+In Codex, ask Autopilot to work on an existing Git repository. The target can differ from the initiating task directory:
 
-> Use Codex Autopilot for this project.
->
-> Goal: Build the complete inventory system.
->
-> Break it into milestones and continue until DONE.
+```text
+Use Codex Autopilot for /absolute/path/to/my-project.
 
-This selects AUTO. The explicit alternatives are:
+Goal: Build the complete inventory system.
+Break it into independently verifiable milestones and continue until DONE.
+```
 
-- `Use Codex Autopilot with Sol only for this project.`
-- `Use Codex Autopilot with Astra only for this project.`
+The Adaptive profile uses `auto` by default:
 
-The initiating turn creates the plan and arms the trusted Stop hook. The dispatcher waits until that turn is durably `completed`, then creates Worker 1. Every later worker starts only after the previous worker's `turn/completed`.
+- GPT-5.6 Sol handles milestones verifiable with code, files, shell tools, logs, tests, and builds.
+- GPT-6 Astra handles milestones whose Definition of Done requires real browser or desktop GUI interaction through Computer Use.
+- Reasoning is independent: `medium`, `high`, `xhigh`, or `max`.
 
-Exact no-model controls:
+Explicit strategies are `Sol only` and `Astra only`. The Host Settings profile sends neither a model nor an effort field; App Server applies its current defaults to every fresh task.
+
+Exact no-model controls are:
 
 - `Pause Codex Autopilot.`
 - `Resume Codex Autopilot.`
 - `What is Codex Autopilot doing right now?`
 - `Uninstall Codex Autopilot.`
 
-## Capability escalation
+## Persistent state
 
-In AUTO, a Sol worker that proves the current Definition of Done needs real GUI interaction may return `REQUIRE_COMPUTER_USE` with a concrete reason. The roadmap does not advance. The dispatcher creates a fresh Astra worker for the same milestone and retains the independently selected reasoning effort. There is no Astra-to-Sol restart.
+- `.codex-autopilot/plan.json`: canonical execution plan.
+- `.codex-autopilot/run-state.json`: canonical orchestration journal.
+- `.codex-autopilot/memory.sqlite3`: canonical project knowledge and evidence.
+- `.codex-autopilot/memory-backups/latest.sqlite3`: last verified milestone backup.
+- `ROADMAP.md`, `PROJECT_STATE.md`, and `DECISIONS.md`: human-readable views.
+- `.codex-autopilot/MILESTONE.md`: current worker cache.
+- `.codex-autopilot/HANDOFF.md`: short advisory note; never treated as evidence.
 
-`ESCALATE` remains reasoning-only: a fresh worker uses the same model capability at the next public level, `medium → high → xhigh → max`.
+## Safety and current limits
 
-## Safety and limits
+Workers use App Server `:workspace`. The dispatcher does not answer approvals, change global Codex settings, change Git configuration, grant permissions, or auto-commit by default. The memory server exposes one tool with a strict union of 14 operations; Project Memory has no network service, shell tool, raw SQL tool, embedding service, or external database.
 
-Workers use App Server `:workspace`. The dispatcher does not answer approvals, modify global Codex settings, change Git configuration, grant macOS permissions, or auto-commit by default. Model IDs are selected per new thread; no account default is changed.
+The v0.8 beta supports macOS. It is developed against Codex CLI/App Server 0.153.4; App Server remains experimental. Saved Project placement, a real multi-hour rate-limit wake-up, Host Settings inheritance across all Desktop configurations, and an external clean-Mac v0.8 run remain beta verification items.
 
-The public beta supports macOS and is verified against Codex CLI/App Server 0.153.4. App Server is experimental. On the tested Desktop build, an App Server-created task had to be foreground before its in-app browser surface became available. The production dispatcher never answers a Computer Use or browser approval request, so a GUI milestone becomes `BLOCKED` when the required permission is not already available.
-
-Saved Project routing and continuation through a multi-hour rate reset remain beta-limited; resume after reboot is manual.
-
-See [Getting Started](GETTING_STARTED.md), [Model Routing](docs/MODEL_ROUTING.md), [Architecture](docs/ARCHITECTURE.md), [Security](docs/SECURITY.md), and [Verification](docs/VERIFICATION.md).
+Read [Getting Started](GETTING_STARTED.md), [Project Memory](docs/PROJECT_MEMORY.md), [Architecture](docs/ARCHITECTURE.md), [MCP](docs/MCP.md), [Security](docs/SECURITY.md), and [Verification](docs/VERIFICATION.md).

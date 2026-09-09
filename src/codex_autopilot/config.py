@@ -43,6 +43,10 @@ class Config:
     def adaptive(self) -> bool:
         return self.profile == "adaptive"
 
+    @property
+    def memory_database(self) -> Path:
+        return self.state_dir / "memory.sqlite3"
+
 
 def config_path(root: Path) -> Path:
     return root.resolve() / STATE_DIR_NAME / CONFIG_NAME
@@ -58,13 +62,15 @@ def load_config(root_or_path: Path) -> Config:
     desktop = data.get("desktop") or {}
     retry = data.get("retry") or {}
     root = Path(str(project.get("root", path.parent.parent))).expanduser().resolve()
+    if root != path.parent.parent.resolve():
+        raise ValueError("config project.root does not match the initialized project directory")
     state_dir = root / STATE_DIR_NAME
     profile = str(data.get("profile", "adaptive"))
     if profile not in PROFILES:
         raise ValueError(f"profile must be one of {sorted(PROFILES)}")
     permission = str(desktop.get("permission_profile", ":workspace"))
     if permission != ":workspace":
-        raise ValueError("v0.7 public beta only supports the :workspace permission profile")
+        raise ValueError("v0.8 public beta only supports the :workspace permission profile")
     skill_name = "codex-autopilot-adaptive" if profile == "adaptive" else "codex-autopilot-host-settings"
     skill_path_raw = desktop.get("skill_path")
     if not skill_path_raw:

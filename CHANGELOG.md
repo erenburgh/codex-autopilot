@@ -1,19 +1,22 @@
 # Changelog
 
+## 0.8.0-beta
+
+- Added clean-machine preflight for target root, Git, installed runtime, official App Server, `:workspace`, target cwd, built-in Project Memory MCP, SQLite FTS5, and Adaptive model metadata.
+- Added an explicit code-77 approval path for official App Server access to its exact `CODEX_HOME`, with no project run-state created on failure.
+- Added a short-lived per-user launch registry so an initiating task can safely start Autopilot for a different target repository after `turn/completed`.
+- Added project-local evidence-backed Project Memory using SQLite/FTS5 and a bundled stdio MCP server bound to each worker's target cwd. The public MCP surface is one user-approved `memory` tool with 14 strict operations.
+- Separated Truth, Decisions, Constraints, Questions, Observations, Evidence, and Conflicts. Truth requires validated non-migration evidence.
+- Added bounded retrieval, stable IDs, pagination, audit history, milestone evidence gates, integrity checks, online backups, and recovery from the latest verified milestone backup.
+- Made `PROJECT_STATE.md` and `DECISIONS.md` generated views; made `HANDOFF.md` advisory and capped at 8 KiB.
+- Added conservative v0.7 migration with a complete backup and zero automatic promotion of old agent prose to Truth.
+- Preserved serial visible worker rotation, deterministic Sol/Astra routing, Host Settings omission, rate-limit waiting, and approval fail-closed behavior.
+- Added an explicit first-use Project Memory trust probe. The user chooses persistent `Always` trust in Codex; production code never answers that approval.
+
 ## 0.7.0-beta
 
-- Added deterministic AUTO routing: code milestones use GPT-5.6 Sol and Computer Use milestones use GPT-6 Astra.
-- Added `auto`, `sol-only`, and `astra-only` strategies plus explicit execution modes in `plan.json`.
-- Added App Server model metadata validation, supported-effort resolution, worker routing history, and visible model status.
-- Added AUTO-only `REQUIRE_COMPUTER_USE` escalation from a fresh Sol worker to a fresh Astra worker on the same milestone.
-- Kept Host Settings free of model and effort overrides and kept rate limits account-wide without model fallback.
+- Added deterministic AUTO routing between GPT-5.6 Sol and GPT-6 Astra, explicit execution modes, model metadata validation, and AUTO-only capability escalation.
 
 ## 0.6.0-beta
 
-- Renamed the model-neutral App Server core to Codex Autopilot.
-- Made installed Codex skills and trusted lifecycle hooks the normal entry point.
-- Added strict initiating-turn completion gating, serial visible workers, compact state, `PAUSED` recovery, and exact no-model controls.
-- Unified Adaptive reasoning around `plan.json` and removed unsupported values and hidden overrides.
-- Added a Host Settings profile that omits `effort`.
-- Removed preview runners, compatibility schemas, headless execution, UI automation, and project-specific fixtures from production.
-- Added a one-action macOS bootstrap installer, legacy preview backup, uninstall, and clean user release package.
+- Introduced the model-neutral App Server core, trusted lifecycle hooks, serial visible workers, deterministic controls, installer, and clean release package.

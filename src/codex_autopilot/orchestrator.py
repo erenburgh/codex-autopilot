@@ -14,8 +14,10 @@ from typing import Any, Callable
 from .appserver import AppServerClient, AppServerError, AppServerRpcError, ApprovalRequired, PauseRequested, final_agent_message, is_rate_limit_error, rate_limit_reset_at
 from .bootstrap import mark_roadmap, select_milestone
 from .config import Config
+from .memory import MemoryError as ProjectMemoryError, MemoryValidationError, ProjectMemory
 from .models import ModelRoutingError, resolve_selection
 from .plan import Plan, load_plan
+from .preflight import MEMORY_SERVER_NAME, REQUIRED_MEMORY_TOOLS
 from .reasoning import next_level
 from .run_state import RunState, StateStore, TERMINAL_STATUSES, utc_now
 
@@ -52,7 +54,7 @@ def _compact(path: Path, limit: int = 128_000) -> str:
     return text
 
 
-WORKER_WRITES = ("PROJECT_STATE.md", "HANDOFF.md")
+WORKER_WRITES = ("HANDOFF.md",)
 
 
 def checkpoint_signature(cfg: Config) -> dict[str, str]:
@@ -64,25 +66,55 @@ def checkpoint_signature(cfg: Config) -> dict[str, str]:
     return result
 
 
-def validate_checkpoint(cfg: Config, before: dict[str, str]) -> None:
+def validate_checkpoint(
+    cfg: Config,
+    before: dict[str, str],
+    *,
+    memory: ProjectMemory,
+    milestone_id: str,
+    memory_audit_before: int,
+    require_completion_evidence: bool,
+) -> list[dict[str, Any]]:
     for name in WORKER_WRITES:
         path = cfg.state_dir / name
-        _compact(path)
+        _compact(path, 8_192)
         if hashlib.sha256(path.read_bytes()).hexdigest() == before.get(name):
             raise OrchestrationError(f"worker did not update required checkpoint file: {name}")
-    _compact(cfg.state_dir / "DECISIONS.md")
+    if not require_completion_evidence:
+        return []
+    evidence = memory.milestone_evidence(milestone_id, after_audit_id=memory_audit_before)
+    if not evidence:
+        raise OrchestrationError(
+            f"{milestone_id} returned completion without new Project Memory evidence; "
+            "AUTOPILOT_STATUS alone is insufficient"
+        )
+    return evidence
+
+
+def _bootstrap_memory(cfg: Config, plan: Plan, state: RunState) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    memory = ProjectMemory(cfg.root)
+    milestone = plan.milestones[state.milestone_index]
+    query = " ".join([milestone.title, milestone.objective, *milestone.definition_of_done])
+    return memory.critical_constraints(8), memory.context_ids(query, 8)
 
 
 def build_worker_prompt(cfg: Config, state: RunState, plan: Plan) -> str:
     milestone = _compact(cfg.state_dir / "MILESTONE.md")
-    handoff = _compact(cfg.state_dir / "HANDOFF.md")
-    project_state = _compact(cfg.state_dir / "PROJECT_STATE.md")
-    decisions = _compact(cfg.state_dir / "DECISIONS.md")
+    handoff = _compact(cfg.state_dir / "HANDOFF.md", 8_192)
+    constraints, relevant = _bootstrap_memory(cfg, plan, state)
+    constraint_text = "\n".join(
+        f"- {item['id']} [{item['origin']}/{item['status']}]: {str(item['statement'])[:600]}"
+        for item in constraints
+    ) or "- None recorded."
+    relevant_text = "\n".join(
+        f"- {item['id']} [{item['category']}/{item['status']}]"
+        for item in relevant
+    ) or "- None selected. Search on demand."
     allow_require = cfg.adaptive and plan.model_strategy == "auto" and state.selected_model_key == "sol" and state.execution_mode == "code"
     statuses = ["ROTATE", "DONE", "BLOCKED"] + (["ESCALATE"] if cfg.adaptive else []) + (["REQUIRE_COMPUTER_USE"] if allow_require else [])
     status_lines = "\n".join(f"AUTOPILOT_STATUS: {value}" for value in statuses)
     reasoning = state.selected_reasoning if cfg.adaptive else "host default (no effort override)"
-    return f"""Codex Autopilot v0.7 Desktop Native worker.
+    return f"""Codex Autopilot v0.8 Desktop Native worker.
 
 Run ID: {state.run_id}
 Worker sequence: {state.worker_sequence}
@@ -103,9 +135,25 @@ operate the Codex UI. Respect every normal permission request; the dispatcher
 does not approve actions.
 
 Inspect the repository before trusting prose. Verify the Definition of Done.
-Before your final response, replace PROJECT_STATE.md with concise factual current
-state and replace HANDOFF.md with only what a fresh worker needs next. Update
-DECISIONS.md only for durable decisions. Do not copy transcripts or reasoning.
+Project Memory is the canonical knowledge store. HANDOFF.md is only an adjacent
+worker note and never evidence or Truth. Before relying on an important historical
+claim, query the built-in Project Memory MCP. Never infer Observation -> Truth or
+Agent Decision -> User Constraint. NO EVIDENCE -> NO TRUTH.
+
+Use the allowlisted `memory` MCP tool. Pass `operation=search` or `operation=get`
+for retrieval. Record actual file/test/build/tool/user/environment evidence with
+`operation=record_evidence`; create Truth only with
+`operation=record_verified_fact` and existing evidence IDs; record hypotheses
+with `operation=add_observation`.
+Keep desired Decisions and actual-state Truth distinct.
+
+Before ROTATE or DONE, evaluate every DoD item, perform the required verification,
+and record at least one new evidence item linked to milestone `{state.milestone_id}`.
+The dispatcher rejects a completion marker without new milestone evidence. Update
+HANDOFF.md using only: Completed, Changed, Risks, Relevant memory IDs, and Next.
+Keep it under 8 KiB; do not copy record bodies, transcripts, or reasoning. Do not
+edit PROJECT_STATE.md or DECISIONS.md; the dispatcher renders those human views
+from canonical memory.
 
 ROTATE means this milestone is complete and another planned milestone remains.
 DONE means the entire roadmap is complete. BLOCKED means progress requires user
@@ -119,14 +167,17 @@ End with exactly one of these lines and no text after it:
 ## Current milestone
 {milestone}
 
-## Previous handoff
+## Global goal
+{plan.goal}
+
+## Critical constraints (bounded canonical records)
+{constraint_text}
+
+## Relevant memory IDs (query before relying)
+{relevant_text}
+
+## Previous adjacent handoff (advisory only)
 {handoff}
-
-## Project state
-{project_state}
-
-## Durable decisions
-{decisions}
 """
 
 
@@ -179,6 +230,7 @@ class DesktopOrchestrator:
         self.client = None
         self.project_id: str | None = cfg.desktop.project_id
         self.plan = load_plan(cfg.state_dir, cfg.profile)
+        self.memory = ProjectMemory(cfg.root)
 
     def _event(self, method: str, params: dict[str, Any]) -> None:
         if method in {"turn/started", "turn/completed"}:
@@ -188,21 +240,24 @@ class DesktopOrchestrator:
         return self.client_factory(self.cfg.desktop.binary, self.cfg.state_dir / "logs" / "app-server.jsonl", event_sink=self._event)
 
     def run(self, initiator_thread_id: str | None = None, initiator_turn_id: str | None = None) -> int:
-        self._validate_project()
         self.store.acquire()
         try:
+            self._validate_project()
             state = self.store.load()
             if state.status == "DONE":
                 self.emit("already complete")
                 return 0
             self.store.clear_pause()
-            self.client = self._new_client()
-            initialized = self.client.connect()
+            state.status = "RUNNING"
+            if state.phase in {"IDLE", "ARMED", "PREFLIGHT_PASSED", "PAUSED"}:
+                state.phase = "CONNECTING_APP_SERVER"
             state.dispatcher_pid = os.getpid()
             state.initiator_thread_id = initiator_thread_id
             state.initiator_turn_id = initiator_turn_id
+            self.store.save(state)
+            self.client = self._new_client()
+            initialized = self.client.connect()
             if initiator_thread_id and initiator_turn_id:
-                state.status = "RUNNING"
                 state.phase = "WAITING_INITIATOR"
             self.store.save(state)
             self.emit(f"App Server ready: {initialized.get('userAgent', 'unknown')}")
@@ -214,7 +269,7 @@ class DesktopOrchestrator:
             if initiator_thread_id and initiator_turn_id:
                 self._wait_for_initiator(state, initiator_thread_id, initiator_turn_id)
                 state = self.store.load()
-            if state.status in {"IDLE", "PAUSED"}:
+            if state.status in {"IDLE", "READY", "PAUSED", "RUNNING"} and state.phase in {"IDLE", "ARMED", "PREFLIGHT_PASSED", "CONNECTING_APP_SERVER", "WAITING_INITIATOR", "PAUSED"}:
                 state.status = "RUNNING"
                 state.phase = "PREPARING"
                 self.store.save(state)
@@ -246,7 +301,7 @@ class DesktopOrchestrator:
             self._update_worker_history(state, status="BLOCKED", completed_at=utc_now())
             self._retire_current_thread(state)
             return self._block(state, str(exc), approval=exc.payload)
-        except (AppServerRpcError, AppServerError, OrchestrationError, ModelRoutingError) as exc:
+        except (AppServerRpcError, AppServerError, OrchestrationError, ModelRoutingError, ProjectMemoryError, MemoryValidationError) as exc:
             state = self.store.load()
             if is_rate_limit_error(getattr(exc, "error", None)):
                 self._schedule_rate_limit(state, getattr(exc, "error", None))
@@ -269,6 +324,11 @@ class DesktopOrchestrator:
             raise OrchestrationError("project must be an existing Git repository")
         if not self.cfg.roadmap.is_file() or not self.cfg.skill_path.is_file():
             raise OrchestrationError("project roadmap or installed worker skill is missing")
+        health = self.memory.ensure_healthy(recover=True)
+        if health == "recovered":
+            self.emit("Project Memory recovered from the latest verified-milestone backup")
+        if not self.cfg.memory_database.is_file():
+            raise OrchestrationError("Project Memory database is missing")
 
     def _verify_permission_profile(self) -> None:
         profiles = self.client.list_permission_profiles(self.cfg.root)
@@ -335,6 +395,7 @@ class DesktopOrchestrator:
         state.current_turn_id = None
         state.client_user_message_id = str(uuid.uuid4())
         state.checkpoint_before = None
+        state.memory_audit_before = self.memory.audit_highwater()
         state.milestone_id = milestone.id
         state.planned_execution_mode = milestone.execution_mode
         state.execution_mode = "computer_use" if state.capability_escalated else milestone.execution_mode
@@ -373,6 +434,10 @@ class DesktopOrchestrator:
             self.emit(f"model=host default; execution_mode={state.execution_mode}; reasoning=host default; no model or effort field is sent")
         prompt = build_worker_prompt(self.cfg, state, self.plan)
         state.prompt_sha256 = hashlib.sha256(prompt.encode()).hexdigest()
+        state.prompt_chars = len(prompt)
+        state.prompt_approx_tokens = (len(prompt) + 3) // 4
+        state.memory_records_at_start = self.memory.record_count()
+        state.relevant_memory_count = len(_bootstrap_memory(self.cfg, self.plan, state)[1])
         model_title = (state.selected_model_key or "Host").title()
         state.expected_thread_name = f"{self.cfg.desktop.title_prefix} · {milestone.id} · {model_title} · worker {state.worker_sequence} · {state.run_id[:8]}"
         state.creation_not_before = int(self.now_fn())
@@ -393,6 +458,10 @@ class DesktopOrchestrator:
             "reasoning": state.selected_reasoning,
             "model_selection_reason": state.model_selection_reason,
             "reasoning_adjustment": state.reasoning_adjustment,
+            "prompt_chars": state.prompt_chars,
+            "prompt_approx_tokens": state.prompt_approx_tokens,
+            "memory_records_at_start": state.memory_records_at_start,
+            "relevant_memory_count": state.relevant_memory_count,
             "thread_id": state.current_thread_id,
             "turn_id": None,
             "status": "THREAD_CREATED",
@@ -401,6 +470,9 @@ class DesktopOrchestrator:
         })
         self.store.save(state)
         self._verify_thread_start(started, state)
+        state.phase = "VERIFYING_MEMORY_MCP"
+        self.store.save(state)
+        self._verify_memory_mcp(state.current_thread_id)
         self.client.name_thread(state.current_thread_id, state.expected_thread_name)
         self.emit(f"Worker {state.worker_sequence} thread={state.current_thread_id}")
         return self._start_existing_thread(state, prompt, checkpoint_signature(self.cfg))
@@ -438,6 +510,21 @@ class DesktopOrchestrator:
         if state.selected_model_id and response.get("model") != state.selected_model_id:
             raise OrchestrationError(f"App Server did not apply required model {state.selected_model_id}; no fallback was used")
 
+    def _verify_memory_mcp(self, thread_id: str) -> None:
+        servers = self.client.list_mcp_server_status(thread_id)
+        server = next((item for item in servers if item.get("name") == MEMORY_SERVER_NAME), None)
+        if not server:
+            raise OrchestrationError("built-in Project Memory MCP is missing from the worker thread")
+        if server.get("runtimeStatus") != "connected":
+            raise OrchestrationError(f"built-in Project Memory MCP is not connected: {server.get('runtimeStatus')}")
+        missing = REQUIRED_MEMORY_TOOLS - set((server.get("tools") or {}).keys())
+        if missing:
+            raise OrchestrationError(f"built-in Project Memory MCP is missing tools: {sorted(missing)}")
+        identity = self.client.call_mcp_tool(thread_id, MEMORY_SERVER_NAME, "memory", {"operation": "current"}).get("structuredContent") or {}
+        if Path(str(identity.get("project_root") or "")).resolve() != self.cfg.root or identity.get("initialized") is not True:
+            raise OrchestrationError("built-in Project Memory MCP is not bound to this initialized target project")
+        self.emit("Project Memory MCP connected and project-scoped")
+
     def _process_turn(self, state: RunState, turn: dict[str, Any], before: dict[str, str]) -> RunState:
         if turn.get("status") != "completed":
             error = turn.get("error") or {}
@@ -455,22 +542,41 @@ class DesktopOrchestrator:
         allow_require = self.cfg.adaptive and self.plan.model_strategy == "auto" and state.selected_model_key == "sol" and state.execution_mode == "code"
         worker_status = parse_worker_status(final, self.cfg.adaptive, allow_require)
         computer_use_reason = parse_computer_use_reason(final) if worker_status == "REQUIRE_COMPUTER_USE" else None
-        validate_checkpoint(self.cfg, before)
+        completion_evidence = validate_checkpoint(
+            self.cfg,
+            before,
+            memory=self.memory,
+            milestone_id=state.milestone_id or self.plan.milestones[state.milestone_index].id,
+            memory_audit_before=state.memory_audit_before or 0,
+            require_completion_evidence=worker_status in {"ROTATE", "DONE"},
+        )
         state.last_final_message = final
         state.last_worker_status = worker_status
-        self._update_worker_history(state, status=worker_status, completed_at=utc_now())
+        self._update_worker_history(
+            state,
+            status=worker_status,
+            completed_at=utc_now(),
+            evidence_ids=[item["id"] for item in completion_evidence],
+        )
         self.emit(f"Worker {state.worker_sequence} completed with {worker_status}")
         if self.cfg.auto_commit:
             self._git_checkpoint(state, worker_status)
         state.checkpoint_before = None
+        state.memory_audit_before = None
         self._retire_current_thread(state)
         state.retry_count = 0
         state.retry_at = None
         state.reset_at = None
         state.last_error = None
         if worker_status in {"ROTATE", "DONE"}:
+            self.memory.mark_milestone_complete(
+                milestone_id=state.milestone_id or self.plan.milestones[state.milestone_index].id,
+                run_id=state.run_id,
+                worker_sequence=state.worker_sequence,
+            )
             completed = state.milestone_index + 1
             mark_roadmap(self.cfg.root, self.plan, completed)
+        self.memory.render_views()
         if worker_status == "ROTATE":
             if state.milestone_index + 1 >= len(self.plan.milestones):
                 self._block(state, "last planned milestone returned ROTATE instead of DONE")
@@ -588,7 +694,7 @@ class DesktopOrchestrator:
                 state.phase = "PREPARING"
                 self.store.save(state)
                 return state
-        if state.phase in {"THREAD_CREATED", "STARTING_TURN", "RUNNING_TURN"}:
+        if state.phase in {"THREAD_CREATED", "VERIFYING_MEMORY_MCP", "STARTING_TURN", "RUNNING_TURN"}:
             if not state.current_thread_id:
                 self._block(state, "recovery lacks current_thread_id")
                 return state
@@ -598,8 +704,9 @@ class DesktopOrchestrator:
                 if state.phase == "RUNNING_TURN":
                     self._block(state, "recovery cannot find the persisted worker turn")
                     return state
-                state.phase = "THREAD_CREATED"
+                state.phase = "VERIFYING_MEMORY_MCP"
                 self.store.save(state)
+                self._verify_memory_mcp(state.current_thread_id)
                 return self._start_existing_thread(state)
             state.current_turn_id = turn.get("id")
             self.store.save(state)

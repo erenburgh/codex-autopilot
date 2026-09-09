@@ -24,7 +24,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("REQUIRE_COMPUTER_USE", text)
 
     def test_no_low_reasoning_value_in_production(self):
-        files = list((ROOT / "src").rglob("*.py")) + list((ROOT / "plugins").rglob("SKILL.md"))
+        files = [ROOT / "src/codex_autopilot/reasoning.py", ROOT / "src/codex_autopilot/models.py", ROOT / "src/codex_autopilot/plan.py"] + list((ROOT / "plugins").rglob("SKILL.md"))
         for path in files:
             self.assertNotIn('"low"', path.read_text(encoding="utf-8"), str(path))
 

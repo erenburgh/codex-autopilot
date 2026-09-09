@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "codex_autopilot_memory": {
+      "command": "__CODEX_AUTOPILOT_RUNTIME__",
+      "args": ["memory-mcp"],
+      "cwd": ".",
+      "enabled": true,
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 30,
+      "tools": {
+        "memory": {"approval_mode": "prompt"}
+      }
+    }
+  }
+}

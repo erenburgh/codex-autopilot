@@ -16,8 +16,10 @@ from codex_autopilot.control import arm, handle_prompt_hook, handle_stop_hook
 from codex_autopilot.control import status_text
 from codex_autopilot.cli import uninstall
 from codex_autopilot.models import MODEL_IDS, ModelRoutingError, logical_model, resolve_reasoning, resolve_selection
+from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.orchestrator import DesktopOrchestrator, OrchestrationError, build_worker_prompt, match_saved_project, parse_worker_status
 from codex_autopilot.plan import load_plan, validate_plan
+from codex_autopilot.preflight import REQUIRED_MEMORY_TOOLS
 from codex_autopilot.reasoning import next_level, normalize
 from codex_autopilot.run_state import RunState, StateStore
 
@@ -59,7 +61,6 @@ def make_project(profile: str = "adaptive", count: int = 2, *, strategy: str | N
 
 def update_handoff(root: Path, label: str) -> None:
     state_dir = root / ".codex-autopilot"
-    (state_dir / "PROJECT_STATE.md").write_text(f"# Project state\n\n{label}\n", encoding="utf-8")
     (state_dir / "HANDOFF.md").write_text(f"# Handoff\n\n{label}\n", encoding="utf-8")
 
 
@@ -95,13 +96,19 @@ class FakeClient:
         self.models_requested += 1
         return self.catalog
 
-    def start_thread(self, *, cwd, permission_profile, project_id, model):
+    def start_thread(self, *, cwd, permission_profile, project_id, model, ephemeral=False, project_memory=True):
         self.assert_no_active()
         self.thread_number += 1
         thread_id = f"thread-{self.thread_number}"
         self.models.append(model)
         self.events.append(("thread/start", thread_id, model))
         return {"thread": {"id": thread_id, "cwd": str(cwd), "projectId": project_id}, "activePermissionProfile": {"id": permission_profile}, "model": model}
+
+    def list_mcp_server_status(self, _thread_id):
+        return [{"name": "codex_autopilot_memory", "runtimeStatus": "connected", "tools": {name: {} for name in REQUIRED_MEMORY_TOOLS}}]
+
+    def call_mcp_tool(self, _thread_id, _server, _tool, _arguments):
+        return {"structuredContent": {"project_root": str(self.root), "initialized": True}}
 
     def assert_no_active(self):
         if self.active:
@@ -113,6 +120,14 @@ class FakeClient:
         self.efforts.append(effort)
         self.events.append(("turn/start", thread_id, effort, skill_name, str(skill_path)))
         update_handoff(self.root, f"worker-{len(self.efforts)}")
+        state = StateStore(self.root / ".codex-autopilot").load()
+        ProjectMemory(self.root).record_evidence(
+            kind="file",
+            summary=f"Fake worker {len(self.efforts)} inspected the roadmap.",
+            path="ROADMAP.md",
+            milestone_id=state.milestone_id,
+            created_by=f"worker-{len(self.efforts)}",
+        )
         return {"turn": {"id": f"turn-{len(self.efforts)}"}}
 
     def wait_for_turn(self, thread_id, turn_id, **_kwargs):
@@ -153,6 +168,20 @@ class ApprovalClient(FakeClient):
     def interrupt_turn(self, thread_id: str, turn_id: str) -> None:
         self.active = 0
         self.__class__.interrupted.append((thread_id, turn_id))
+
+
+class NoEvidenceClient(FakeClient):
+    def start_turn(self, *, thread_id, prompt, effort, client_user_message_id, skill_name, skill_path):
+        self.assert_no_active()
+        self.active = 1
+        self.efforts.append(effort)
+        update_handoff(self.root, "claimed complete without evidence")
+        return {"turn": {"id": "turn-no-evidence"}}
+
+
+class DisconnectedMemoryClient(FakeClient):
+    def list_mcp_server_status(self, _thread_id):
+        return [{"name": "codex_autopilot_memory", "runtimeStatus": "failed", "tools": {}}]
 
 
 class CoreTests(unittest.TestCase):
@@ -279,7 +308,9 @@ class CoreTests(unittest.TestCase):
 
     def test_bootstrap_creates_only_documented_state(self):
         root = make_project()
-        self.assertEqual({p.name for p in (root / ".codex-autopilot").iterdir()}, {"config.toml", "plan.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "run-state.json"})
+        names = {p.name for p in (root / ".codex-autopilot").iterdir()}
+        self.assertTrue({"config.toml", "plan.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "run-state.json", "memory.sqlite3"}.issubset(names))
+        self.assertTrue(names.issubset({"config.toml", "plan.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "run-state.json", "memory.sqlite3", "memory.sqlite3-wal", "memory.sqlite3-shm"}))
         self.assertTrue((root / "ROADMAP.md").is_file())
         self.assertFalse((root / ".git/refs/heads/main").exists())
 
@@ -384,6 +415,36 @@ class CoreTests(unittest.TestCase):
         spawn.assert_called_once_with(root.resolve(), initiator_thread_id="session", initiator_turn_id="turn")
         self.assertIn("dispatcher started", output["systemMessage"])
         self.assertFalse((root / ".codex-autopilot/launch-request.json").exists())
+
+    def test_stop_hook_claims_target_outside_initiating_cwd(self):
+        root = make_project()
+        outside = Path(tempfile.mkdtemp(prefix="codex-autopilot-initiator-outside-"))
+        launch_dir = Path(tempfile.mkdtemp(prefix="codex-autopilot-launch-registry-")) / "requests"
+        with mock.patch.dict(os.environ, {"CODEX_AUTOPILOT_LAUNCH_DIR": str(launch_dir)}):
+            arm(root)
+            with mock.patch("codex_autopilot.control.spawn_dispatcher", return_value=43) as spawn, mock.patch("codex_autopilot.control.wait_for_dispatcher", return_value="WAITING_INITIATOR"):
+                output = handle_stop_hook({"cwd": str(outside), "session_id": "outside-session", "turn_id": "outside-turn"})
+        spawn.assert_called_once_with(root.resolve(), initiator_thread_id="outside-session", initiator_turn_id="outside-turn")
+        self.assertIn("dispatcher started", output["systemMessage"])
+
+    def test_completion_marker_without_memory_evidence_blocks(self):
+        root = make_project("adaptive", 1)
+        NoEvidenceClient.root = root
+        NoEvidenceClient.statuses = ["DONE"]
+        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=NoEvidenceClient).run(), 78)
+        state = StateStore(root / ".codex-autopilot").load()
+        self.assertEqual(state.status, "BLOCKED")
+        self.assertIn("without new Project Memory evidence", state.last_error)
+        self.assertIn("- [ ] M1", (root / "ROADMAP.md").read_text())
+
+    def test_memory_mcp_failure_blocks_before_model_turn(self):
+        root = make_project("adaptive", 1)
+        DisconnectedMemoryClient.root = root
+        DisconnectedMemoryClient.statuses = ["DONE"]
+        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=DisconnectedMemoryClient).run(), 78)
+        client = DisconnectedMemoryClient.instances[-1]
+        self.assertEqual(client.efforts, [])
+        self.assertEqual(StateStore(root / ".codex-autopilot").load().status, "BLOCKED")
 
     def test_exact_control_prompt_does_not_use_model(self):
         root = make_project()
