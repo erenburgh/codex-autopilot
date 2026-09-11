@@ -9,7 +9,7 @@ from codex_autopilot.plan import Plan, validate_plan
 from codex_autopilot.project_association import resolve_preflight_project
 from codex_autopilot.run_state import RunState
 from codex_autopilot.scheduler import schedule
-from codex_autopilot.task_state import TaskState, initial_task_states, transition_task
+from codex_autopilot.task_state import IllegalTaskTransition, TaskState, initial_task_states, transition_task
 from codex_autopilot.thread_titles import (
     implementation_thread_title,
     planner_thread_title,
@@ -181,13 +181,21 @@ class V09ContractRegressionTests(unittest.TestCase):
         self.assertIsNone(project)
         self.assertIsNone(source)
 
-    def test_deterministically_proven_task_has_a_verified_transition(self) -> None:
+    def test_deterministic_policy_still_requires_the_verifier(self) -> None:
         plan = _plan([_task("T1", "builder", policy="deterministic")])
         states = {"T1": TaskState.IMPLEMENTED.value}
-        # The lifecycle owns the evidence gate before invoking this state edge.
-        # The state machine must not impose a second, unconditional LLM verifier.
-        updated = transition_task(plan, states, "T1", TaskState.VERIFIED)
-        self.assertEqual(updated["T1"], TaskState.VERIFIED.value)
+        # Product decision of 2026-09-12 (rule R29): the verifier is always
+        # required. Deterministic checks are admission to judgement, never a
+        # substitute for it. Green checks mean "ready to show the lead", not
+        # "done". The alternative requires somebody to decide which contracts
+        # are exhaustively machine-checkable, and that somebody would be the
+        # planner -- a model. That is self-assessment moved one level up.
+        with self.assertRaises(IllegalTaskTransition):
+            transition_task(plan, states, "T1", TaskState.VERIFIED)
+        # The lawful path stays IMPLEMENTED -> VERIFYING -> VERIFIED.
+        via_verifier = transition_task(plan, states, "T1", TaskState.VERIFYING)
+        via_verifier = transition_task(plan, via_verifier, "T1", TaskState.VERIFIED)
+        self.assertEqual(via_verifier["T1"], TaskState.VERIFIED.value)
 
 
 class AIStudioAcceptanceShapeTests(unittest.TestCase):
