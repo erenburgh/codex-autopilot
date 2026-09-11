@@ -10,13 +10,15 @@ from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
+from codex_autopilot.desktop_slots import (
+    reconcile_desktop_runtime,
+    resume_desktop_run,
+)
 from codex_autopilot.lifecycle import (
     DesktopLifecycleError,
     complete_desktop_worker,
     pause_desktop_run,
-    reconcile_desktop_runtime,
     record_desktop_failure,
-    resume_desktop_run,
 )
 from codex_autopilot.plan import (
     load_plan,

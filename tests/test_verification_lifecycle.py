@@ -12,15 +12,17 @@ from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
-from codex_autopilot.lifecycle import (
-    DESKTOP_SLOT_READY,
-    WORKSPACE_HANDOFF_OK,
+from codex_autopilot.desktop_slots import (
     acknowledge_desktop_create,
-    acknowledge_desktop_send,
-    complete_desktop_worker,
     create_descriptor_payload,
     prepare_desktop_thread,
     production_send_payload,
+)
+from codex_autopilot.lifecycle import (
+    DESKTOP_SLOT_READY,
+    WORKSPACE_HANDOFF_OK,
+    acknowledge_desktop_send,
+    complete_desktop_worker,
 )
 from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.run_state import StateStore

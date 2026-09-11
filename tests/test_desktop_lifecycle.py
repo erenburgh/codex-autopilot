@@ -33,28 +33,30 @@ from codex_autopilot.hook_trust import HookTrustApprovalRequired
 from _handoff import bump_task_checkpoint
 from codex_autopilot.lifecycle import task_checkpoint_path
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
+from codex_autopilot.desktop_slots import (
+    acknowledge_active_writer_release,
+    acknowledge_desktop_create,
+    create_descriptor_payload,
+    pending_descriptors,
+    prepare_desktop_thread,
+    production_send_payload,
+    reconcile_desktop_runtime,
+    retire_incompatible_legacy_desktop_session,
+)
 from codex_autopilot.lifecycle import (
     DESKTOP_SLOT_READY,
     WORKSPACE_HANDOFF_OK,
     DesktopLifecycleError,
-    acknowledge_active_writer_release,
-    acknowledge_desktop_create,
     acknowledge_desktop_send,
     adopt_automatic_dispatcher_successor,
     complete_desktop_worker,
     create_desktop_thread_via_app_server,
-    create_descriptor_payload,
-    pending_descriptors,
     pause_desktop_run,
-    prepare_desktop_thread,
-    production_send_payload,
     record_automatic_app_server_exit,
     record_desktop_interrupt,
     record_desktop_failure,
     reconcile_desktop_thread_identity,
-    reconcile_desktop_runtime,
     relay_session_status,
-    retire_incompatible_legacy_desktop_session,
     run_automatic_app_server_turn,
 )
 from codex_autopilot.memory import ProjectMemory
