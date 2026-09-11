@@ -41,7 +41,6 @@ from codex_autopilot.lifecycle import (
     acknowledge_desktop_create,
     acknowledge_desktop_send,
     adopt_automatic_dispatcher_successor,
-    bind_authorized_transport,
     complete_desktop_worker,
     create_desktop_thread_via_app_server,
     create_descriptor_payload,
@@ -60,8 +59,6 @@ from codex_autopilot.lifecycle import (
 )
 from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.pipeline_engineer import (
-    AuthorityKind,
-    AuthorityProof,
     PipelineIncidentStore,
 )
 from codex_autopilot.orchestrator import HeadlessAppServerOrchestrator, OrchestrationError

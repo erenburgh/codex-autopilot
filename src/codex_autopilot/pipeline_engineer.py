@@ -60,19 +60,8 @@ class SideEffectOutcome(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class AuthorityKind(str, Enum):
-    USER_AUTHORIZED_TASK = "USER_AUTHORIZED_TASK"
-    OFFICIAL_PLATFORM_CAPABILITY = "OFFICIAL_PLATFORM_CAPABILITY"
-    AUTOPILOT_RUN = "AUTOPILOT_RUN"
 
 
-class TransportStatus(str, Enum):
-    RESERVED = "RESERVED"
-    CLAIMED = "CLAIMED"
-    SIDE_EFFECT_REQUESTED = "SIDE_EFFECT_REQUESTED"
-    ACKNOWLEDGED = "ACKNOWLEDGED"
-    AMBIGUOUS = "AMBIGUOUS"
-    FAILED = "FAILED"
 
 
 class PipelineIncidentError(RuntimeError):
@@ -104,44 +93,13 @@ class HealthcheckResult:
     observed_at: str
 
 
-@dataclass(frozen=True, slots=True)
-class RecoveryRunbook:
-    id: str
-    incident_classes: frozenset[IncidentClass]
-    signal_codes: frozenset[str]
-    actions: tuple[str, ...]
-    healthcheck: str
 
 
-@dataclass(frozen=True, slots=True)
-class RecoveryClaim:
-    incident_id: str
-    token: str
-    owner_id: str
-    slot: int
-    attempt: int
-    runbook_id: str
-    allowed_actions: tuple[str, ...]
-    healthcheck: str
 
 
-@dataclass(frozen=True, slots=True)
-class AuthorityProof:
-    kind: AuthorityKind
-    evidence_id: str
-    subject_thread_id: str
 
 
-@dataclass(frozen=True, slots=True)
-class TransportClaim:
-    reservation_id: str
-    token: str
-    operation: str
-    payload_sha256: str
-    actor_thread_id: str
-    authority_kind: AuthorityKind
-    authority_evidence_id: str
-    destination_task_id: str
+
 
 
 READ_ONLY_DIAGNOSTIC_ACTIONS = (
@@ -163,36 +121,12 @@ FORBIDDEN_ACTIONS = (
 )
 
 
-RUNBOOKS = (
-    RecoveryRunbook(
-        id="restart-owned-runtime-child",
-        incident_classes=frozenset({IncidentClass.PIPELINE, IncidentClass.RUNTIME}),
-        signal_codes=frozenset({"pipeline_child_exited", "owned_runtime_process_crashed"}),
-        actions=("reconcile_durable_journal", "restart_owned_runtime_child"),
-        healthcheck="owned_runtime_child_healthy",
-    ),
-    RecoveryRunbook(
-        id="reopen-local-runtime-channel",
-        incident_classes=frozenset({IncidentClass.RUNTIME, IncidentClass.INTEGRATION}),
-        signal_codes=frozenset({"runtime_channel_closed", "transient_local_rpc_unavailable"}),
-        actions=("reconcile_durable_journal", "reopen_owned_local_channel"),
-        healthcheck="local_runtime_round_trip",
-    ),
-    RecoveryRunbook(
-        id="refresh-ephemeral-integration-metadata",
-        incident_classes=frozenset({IncidentClass.INTEGRATION}),
-        signal_codes=frozenset({"ephemeral_project_metadata_stale"}),
-        actions=("refresh_ephemeral_project_metadata",),
-        healthcheck="canonical_project_metadata_matches",
-    ),
-    RecoveryRunbook(
-        id="rebuild-owned-tool-cache",
-        incident_classes=frozenset({IncidentClass.TOOLING}),
-        signal_codes=frozenset({"owned_ephemeral_tool_cache_stale"}),
-        actions=("rebuild_owned_ephemeral_tool_cache",),
-        healthcheck="tool_inventory_matches_expected_runtime",
-    ),
-)
+
+
+
+
+
+
 
 
 def classify_incident(signal: IncidentSignal) -> IncidentClass:
@@ -207,19 +141,28 @@ def classify_incident(signal: IncidentSignal) -> IncidentClass:
     return signal.surface
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryRunbook:
+    id: str
+    incident_classes: frozenset[IncidentClass]
+    signal_codes: frozenset[str]
+    actions: tuple[str, ...]
+    healthcheck: str
+
+
+# Каталог детерминированных runbook'ов. P3 (DevOps) перестраивает
+# уровень самовосстановления заново по двухуровневой схеме, поэтому
+# здесь остаётся пустой каталог: маршрутизация работает, автоматических
+# действий пока нет, и это видно явно, а не выглядит как забытый код.
+RUNBOOKS: tuple[RecoveryRunbook, ...] = ()
+
+
 def select_runbook(signal: IncidentSignal) -> RecoveryRunbook | None:
     classification = classify_incident(signal)
     for runbook in RUNBOOKS:
         if classification in runbook.incident_classes and signal.code in runbook.signal_codes:
             return runbook
     return None
-
-
-def requires_pipeline_engineer(incident: Mapping[str, Any]) -> bool:
-    return (
-        IncidentClass(str(incident["classification"])) in INFRASTRUCTURE_INCIDENT_CLASSES
-        and IncidentPhase(str(incident["phase"])) is IncidentPhase.AUTO_RECOVERY_FAILED
-    )
 
 
 class PipelineIncidentStore:
@@ -321,205 +264,10 @@ class PipelineIncidentStore:
                 return IncidentPhase.AUTO_RECOVERY_FAILED
             return IncidentPhase.DEGRADED
 
-    def claim_auto_recovery(
-        self,
-        incident_id: str,
-        *,
-        owner_id: str,
-        now_epoch: int | None = None,
-        at: str,
-    ) -> RecoveryClaim:
-        owner = _nonempty(owner_id, "recovery owner")
-        epoch = int(time.time()) if now_epoch is None else now_epoch
-        with self._transaction() as state:
-            incident = _incident(state, incident_id)
-            if IncidentPhase(str(incident["phase"])) is not IncidentPhase.DEGRADED:
-                raise PipelineIncidentError("auto recovery requires a DEGRADED incident")
-            classification = IncidentClass(str(incident["classification"]))
-            if classification not in INFRASTRUCTURE_INCIDENT_CLASSES:
-                raise PipelineIncidentError("auto recovery is forbidden for non-infrastructure incidents")
-            runbook = _runbook(str(incident.get("runbook_id") or ""))
-            if runbook is None:
-                raise PipelineIncidentError("auto recovery requires an allowlisted runbook")
-            retry_at = incident.get("next_retry_at")
-            if isinstance(retry_at, int) and retry_at > epoch:
-                raise PipelineIncidentError(f"auto recovery backoff is active until epoch {retry_at}")
-            attempt = int(incident["recovery_attempts"]) + 1
-            if attempt > int(incident["retry_budget"]):
-                raise PipelineIncidentError("auto recovery retry budget is exhausted")
-            if state["recovery_slot"] is not None:
-                raise PipelineIncidentError("the Pipeline Engineer recovery slot is occupied")
-            token = _stable_token(incident_id, str(attempt), owner)
-            state["recovery_slot"] = {
-                "slot": 0,
-                "incident_id": incident_id,
-                "token": token,
-                "owner_id": owner,
-                "claimed_at": at,
-            }
-            incident["phase"] = IncidentPhase.AUTO_RECOVERY.value
-            incident["recovery_attempts"] = attempt
-            incident["recovery_lock_token"] = token
-            incident["recovery_owner_id"] = owner
-            incident["next_retry_at"] = None
-            incident["updated_at"] = at
-            _append_event(state, "auto_recovery_claimed", at, incident=incident, token=token)
-            return RecoveryClaim(
-                incident_id=incident_id,
-                token=token,
-                owner_id=owner,
-                slot=0,
-                attempt=attempt,
-                runbook_id=runbook.id,
-                allowed_actions=runbook.actions,
-                healthcheck=runbook.healthcheck,
-            )
 
-    def record_recovery_action(
-        self,
-        incident_id: str,
-        token: str,
-        *,
-        action: str,
-        at: str,
-        detail: str = "",
-    ) -> None:
-        with self._transaction() as state:
-            incident = _incident(state, incident_id)
-            runbook = _runbook(str(incident.get("runbook_id") or ""))
-            self._require_recovery_claim(state, incident, token)
-            if runbook is None or action not in runbook.actions:
-                raise PipelineIncidentError(f"recovery action is not allowlisted: {action}")
-            _append_event(
-                state,
-                "recovery_action_recorded",
-                at,
-                incident=incident,
-                token=token,
-                detail=json.dumps(
-                    {"action": action, "detail": _bounded(detail, MAX_EVENT_CHARS)},
-                    sort_keys=True,
-                ),
-            )
 
-    def complete_auto_recovery(
-        self,
-        incident_id: str,
-        token: str,
-        *,
-        success: bool,
-        at: str,
-        now_epoch: int | None = None,
-        healthcheck: HealthcheckResult | None = None,
-        reason: str = "",
-    ) -> IncidentPhase:
-        epoch = int(time.time()) if now_epoch is None else now_epoch
-        with self._transaction() as state:
-            incident = _incident(state, incident_id)
-            self._require_recovery_claim(state, incident, token)
-            if success:
-                runbook = _runbook(str(incident.get("runbook_id") or ""))
-                if runbook is None:
-                    raise PipelineIncidentError("auto recovery requires its declared runbook")
-                _require_passing_healthcheck(
-                    healthcheck,
-                    expected_name=runbook.healthcheck,
-                )
-                incident["healthcheck"] = _healthcheck_dict(healthcheck)
-                incident["phase"] = IncidentPhase.RECOVERED.value
-                event = "auto_recovery_healthcheck_passed"
-            else:
-                attempts = int(incident["recovery_attempts"])
-                if attempts < int(incident["retry_budget"]):
-                    delay = min(
-                        int(incident["retry_maximum_seconds"]),
-                        int(incident["retry_initial_seconds"]) * (2 ** max(0, attempts - 1)),
-                    )
-                    incident["next_retry_at"] = epoch + delay
-                    incident["phase"] = IncidentPhase.DEGRADED.value
-                    event = "auto_recovery_retry_scheduled"
-                else:
-                    incident["phase"] = IncidentPhase.AUTO_RECOVERY_FAILED.value
-                    event = "auto_recovery_failed"
-            incident["recovery_lock_token"] = None
-            incident["recovery_owner_id"] = None
-            incident["updated_at"] = at
-            state["recovery_slot"] = None
-            _append_event(
-                state,
-                event,
-                at,
-                incident=incident,
-                token=token,
-                detail=_bounded(reason, MAX_EVENT_CHARS),
-            )
-            return IncidentPhase(str(incident["phase"]))
 
-    def reconcile_recovery_after_crash(
-        self,
-        authoritative_owner_states: Mapping[str, str],
-        *,
-        now_epoch: int | None = None,
-        at: str,
-    ) -> IncidentPhase:
-        """Reconcile the recovery slot without treating silence as completion.
 
-        Missing and UNKNOWN owner state retain the lock. A terminal recovery
-        process never implies recovery success because the mandatory healthcheck
-        has not been observed.
-        """
-
-        epoch = int(time.time()) if now_epoch is None else now_epoch
-        allowed = {"ACTIVE", "UNKNOWN", "TERMINAL_SUCCEEDED", "TERMINAL_FAILED"}
-        if any(value not in allowed for value in authoritative_owner_states.values()):
-            raise ValueError("unknown authoritative recovery owner state")
-        with self._transaction() as state:
-            slot = state["recovery_slot"]
-            if slot is None:
-                return IncidentPhase.HEALTHY
-            incident = _incident(state, str(slot["incident_id"]))
-            token = str(slot["token"])
-            owner_state = authoritative_owner_states.get(token, "UNKNOWN")
-            if owner_state in {"ACTIVE", "UNKNOWN"}:
-                return IncidentPhase.AUTO_RECOVERY
-
-            attempts = int(incident["recovery_attempts"])
-            if attempts < int(incident["retry_budget"]):
-                delay = min(
-                    int(incident["retry_maximum_seconds"]),
-                    int(incident["retry_initial_seconds"]) * (2 ** max(0, attempts - 1)),
-                )
-                incident["phase"] = IncidentPhase.DEGRADED.value
-                incident["next_retry_at"] = epoch + delay
-                event = "recovery_process_ended_without_healthcheck"
-            else:
-                incident["phase"] = IncidentPhase.AUTO_RECOVERY_FAILED.value
-                event = "recovery_process_failed_after_crash"
-            incident["recovery_lock_token"] = None
-            incident["recovery_owner_id"] = None
-            incident["updated_at"] = at
-            state["recovery_slot"] = None
-            _append_event(
-                state,
-                event,
-                at,
-                incident=incident,
-                token=token,
-                detail=owner_state,
-            )
-            return IncidentPhase(str(incident["phase"]))
-
-    def activate_pipeline_engineer(self, incident_id: str, *, at: str) -> dict[str, Any]:
-        with self._transaction() as state:
-            incident = _incident(state, incident_id)
-            if not requires_pipeline_engineer(incident):
-                raise PipelineIncidentError(
-                    "a fresh Pipeline Engineer is allowed only after infrastructure auto-recovery fails"
-                )
-            incident["phase"] = IncidentPhase.PIPELINE_ENGINEER.value
-            incident["updated_at"] = at
-            _append_event(state, "pipeline_engineer_requested", at, incident=incident)
-            return self._incident_package(state, incident)
 
     def ensure_pipeline_engineer(self, incident_id: str, *, at: str) -> dict[str, Any]:
         """Idempotently route an infrastructure incident to one engineer lane.
@@ -631,17 +379,6 @@ class PipelineIncidentStore:
             )
             return self._incident_package(state, incident)
 
-    def resolve_recovered(self, incident_id: str, *, at: str) -> None:
-        with self._transaction() as state:
-            incident = _incident(state, incident_id)
-            if IncidentPhase(str(incident["phase"])) is not IncidentPhase.RECOVERED:
-                raise PipelineIncidentError("only a healthchecked RECOVERED incident can resolve")
-            if not _healthcheck_passed(incident):
-                raise PipelineIncidentError("resume is forbidden until the healthcheck passes")
-            incident["phase"] = IncidentPhase.RESOLVED.value
-            incident["resolved_at"] = at
-            incident["updated_at"] = at
-            _append_event(state, "incident_resolved", at, incident=incident)
 
     def paused_task_ids(self) -> frozenset[str]:
         paused: set[str] = set()
@@ -651,18 +388,6 @@ class PipelineIncidentStore:
                 paused.update(str(item) for item in incident["affected_task_ids"])
         return frozenset(paused)
 
-    def can_resume_task(self, task_id: str) -> bool:
-        task = _nonempty(task_id, "task id")
-        for incident in self.load()["incidents"]:
-            if task not in incident["affected_task_ids"]:
-                continue
-            phase = IncidentPhase(str(incident["phase"]))
-            if phase is IncidentPhase.RESOLVED:
-                continue
-            if phase is IncidentPhase.RECOVERED and _healthcheck_passed(incident):
-                continue
-            return False
-        return True
 
     def status_snapshot(self) -> dict[str, Any]:
         state = self.load()
@@ -706,214 +431,10 @@ class PipelineIncidentStore:
         incident = _incident(state, incident_id)
         return self._incident_package(state, incident)
 
-    def reserve_transport_from_lifecycle(
-        self,
-        run_state: Any,
-        *,
-        causal_event_sequence: int,
-        operation: str,
-        payload_sha256: str,
-        destination_task_id: str,
-        at: str,
-    ) -> dict[str, Any]:
-        """Project a verified M7 completion event into a transport reservation.
 
-        The reservation proves causality only. It intentionally carries no
-        authority. A causal task may consume it only after Pipeline Engineer
-        recovery binds a separate, exact run-scoped mandate claim.
-        """
 
-        if operation not in MUTATING_TRANSPORT_OPERATIONS:
-            raise ValueError("transport operation is not allowlisted")
-        _sha256(payload_sha256)
-        destination = _nonempty(destination_task_id, "destination task id")
-        events = [
-            item
-            for item in getattr(run_state, "lifecycle_journal", ())
-            if item.get("sequence") == causal_event_sequence
-        ]
-        if len(events) != 1:
-            raise AuthorizationTopologyError("causal lifecycle event is missing or non-unique")
-        event = events[0]
-        if event.get("event") != "turn_completed":
-            raise AuthorizationTopologyError("transport requires an authoritative turn_completed event")
-        causal_thread_id = _nonempty(str(event.get("thread_id") or ""), "causal thread id")
-        causal_turn_id = _nonempty(str(event.get("turn_id") or ""), "causal turn id")
-        causal_task_id = _nonempty(str(event.get("task_id") or ""), "causal task id")
-        run_id = _nonempty(str(getattr(run_state, "run_id", "")), "run id")
-        reservation_id = "transport-" + hashlib.sha256(
-            (
-                f"{run_id}:{causal_event_sequence}:{operation}:"
-                f"{destination}:{payload_sha256}"
-            ).encode("utf-8")
-        ).hexdigest()[:20]
-        with self._transaction() as state:
-            existing = _transport(state, reservation_id, required=False)
-            if existing is not None:
-                if existing["payload_sha256"] != payload_sha256:
-                    raise AuthorizationTopologyError("transport reservation payload changed")
-                return _copy(existing)
-            reservation = {
-                "reservation_id": reservation_id,
-                "run_id": run_id,
-                "operation": operation,
-                "payload_sha256": payload_sha256,
-                "destination_task_id": destination,
-                "causal": {
-                    "journal_sequence": causal_event_sequence,
-                    "task_id": causal_task_id,
-                    "thread_id": causal_thread_id,
-                    "turn_id": causal_turn_id,
-                },
-                "status": TransportStatus.RESERVED.value,
-                "actor_thread_id": None,
-                "authority_kind": None,
-                "authority_evidence_id": None,
-                "claim_token": None,
-                "receipt_id": None,
-                "created_at": at,
-                "updated_at": at,
-            }
-            state["transport_reservations"].append(reservation)
-            _append_event(
-                state,
-                "transport_reserved_without_authority",
-                at,
-                transport=reservation,
-            )
-            return _copy(reservation)
 
-    def claim_transport(
-        self,
-        reservation_id: str,
-        *,
-        actor_thread_id: str,
-        proof: AuthorityProof,
-        at: str,
-    ) -> TransportClaim:
-        actor = _nonempty(actor_thread_id, "transport actor thread id")
-        evidence = _nonempty(proof.evidence_id, "authority evidence id")
-        if proof.subject_thread_id != actor:
-            raise AuthorizationTopologyError("authority proof is bound to another task")
-        if not isinstance(proof.kind, AuthorityKind):
-            raise AuthorizationTopologyError("forwarded user text is not transport authority")
-        with self._transaction() as state:
-            reservation = _transport(state, reservation_id)
-            if reservation["status"] != TransportStatus.RESERVED.value:
-                raise AuthorizationTopologyError("transport reservation is not claimable")
-            causal_actor = reservation["causal"]["thread_id"] == actor
-            if causal_actor and proof.kind is not AuthorityKind.AUTOPILOT_RUN:
-                raise AuthorizationTopologyError(
-                    "the causal task requires the durable Autopilot run authorization"
-                )
-            if not causal_actor and proof.kind is AuthorityKind.AUTOPILOT_RUN:
-                raise AuthorizationTopologyError(
-                    "Autopilot run authorization is bound to the causal predecessor task"
-                )
-            token = _stable_token(reservation_id, actor, proof.kind.value, evidence)
-            reservation.update(
-                {
-                    "status": TransportStatus.CLAIMED.value,
-                    "actor_thread_id": actor,
-                    "authority_kind": proof.kind.value,
-                    "authority_evidence_id": evidence,
-                    "claim_token": token,
-                    "updated_at": at,
-                }
-            )
-            _append_event(state, "transport_claimed", at, transport=reservation, token=token)
-            return TransportClaim(
-                reservation_id=reservation_id,
-                token=token,
-                operation=str(reservation["operation"]),
-                payload_sha256=str(reservation["payload_sha256"]),
-                actor_thread_id=actor,
-                authority_kind=proof.kind,
-                authority_evidence_id=evidence,
-                destination_task_id=str(reservation["destination_task_id"]),
-            )
 
-    def verify_transport_claim(self, claim: TransportClaim) -> None:
-        """Verify that a claim was issued by this durable authority store.
-
-        Constructing a ``TransportClaim`` value is not itself authority. The
-        exact claim must already exist in the crash-safe journal and still be
-        awaiting its one transport side effect.
-        """
-
-        if not isinstance(claim, TransportClaim) or not isinstance(
-            claim.authority_kind, AuthorityKind
-        ):
-            raise AuthorizationTopologyError("transport claim type is invalid")
-        reservation = _transport(self.load(), claim.reservation_id)
-        expected = {
-            "status": TransportStatus.CLAIMED.value,
-            "claim_token": claim.token,
-            "operation": claim.operation,
-            "payload_sha256": claim.payload_sha256,
-            "actor_thread_id": claim.actor_thread_id,
-            "authority_kind": claim.authority_kind.value,
-            "authority_evidence_id": claim.authority_evidence_id,
-            "destination_task_id": claim.destination_task_id,
-        }
-        if any(reservation.get(key) != value for key, value in expected.items()):
-            raise AuthorizationTopologyError(
-                "transport claim does not match the durable authority journal"
-            )
-
-    def mark_transport_requested(
-        self,
-        reservation_id: str,
-        token: str,
-        *,
-        actor_thread_id: str,
-        at: str,
-    ) -> None:
-        with self._transaction() as state:
-            reservation = _transport(state, reservation_id)
-            _require_transport_claim(reservation, token, actor_thread_id)
-            if reservation["status"] != TransportStatus.CLAIMED.value:
-                raise AuthorizationTopologyError("transport side effect was already requested")
-            reservation["status"] = TransportStatus.SIDE_EFFECT_REQUESTED.value
-            reservation["updated_at"] = at
-            _append_event(state, "transport_side_effect_requested", at, transport=reservation, token=token)
-
-    def reconcile_transport(
-        self,
-        reservation_id: str,
-        *,
-        outcome: SideEffectOutcome,
-        at: str,
-        receipt_id: str | None = None,
-        detail: str = "",
-    ) -> TransportStatus:
-        if outcome is SideEffectOutcome.NONE:
-            raise ValueError("transport reconciliation requires an authoritative outcome")
-        with self._transaction() as state:
-            reservation = _transport(state, reservation_id)
-            current = TransportStatus(str(reservation["status"]))
-            if current not in {TransportStatus.SIDE_EFFECT_REQUESTED, TransportStatus.AMBIGUOUS}:
-                raise AuthorizationTopologyError("transport is not awaiting reconciliation")
-            if outcome is SideEffectOutcome.KNOWN_SUCCEEDED:
-                reservation["receipt_id"] = _nonempty(receipt_id or "", "transport receipt id")
-                target = TransportStatus.ACKNOWLEDGED
-                event = "transport_acknowledged"
-            elif outcome is SideEffectOutcome.KNOWN_FAILED:
-                target = TransportStatus.FAILED
-                event = "transport_definitively_failed"
-            else:
-                target = TransportStatus.AMBIGUOUS
-                event = "transport_outcome_ambiguous"
-            reservation["status"] = target.value
-            reservation["updated_at"] = at
-            _append_event(
-                state,
-                event,
-                at,
-                transport=reservation,
-                detail=_bounded(detail, MAX_EVENT_CHARS),
-            )
-            return target
 
     def _incident_package(
         self,

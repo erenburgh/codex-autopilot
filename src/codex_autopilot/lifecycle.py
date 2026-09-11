@@ -28,12 +28,10 @@ from .language import is_russian
 from .memory import ProjectMemory
 from .models import MODEL_IDS, ModelRoutingError, logical_model
 from .pipeline_engineer import (
-    AuthorityKind,
     IncidentClass,
     IncidentSignal,
     PipelineIncidentStore,
     SideEffectOutcome,
-    TransportClaim,
 )
 from .preflight import installed_plugin_root
 from .plan import Plan, Task, VerificationCheck, atomic_json, load_plan, plan_to_dict
@@ -4314,184 +4312,10 @@ def _session_by_token(state: RunState, token: str) -> dict[str, Any]:
     return matches[0]
 
 
-def reserve_authorized_transport_request(
-    cfg: Config,
-    reservation_token: str,
-    *,
-    operation: str,
-    at: str | None = None,
-) -> dict[str, Any]:
-    """Project one durable lifecycle reservation into the authority plane.
-
-    This copies the exact predecessor ``turn_completed`` provenance and payload
-    digest, but deliberately does not grant authority or perform transport.
-    """
-
-    _require_desktop_owned(cfg)
-    state = StateStore(cfg.state_dir).load()
-    session = _session_by_token(state, reservation_token)
-    descriptor = LaunchDescriptor.from_dict(dict(session["descriptor"]))
-    if operation == "create_thread":
-        if session.get("status") != "CREATE_REQUESTED":
-            raise DesktopLifecycleError(
-                "create transport requires a CREATE_REQUESTED lifecycle reservation"
-            )
-        payload = descriptor.create_thread_payload()
-    elif operation == "send_message_to_thread":
-        if session.get("status") != "PREPARED":
-            raise DesktopLifecycleError(
-                "send transport requires a PREPARED lifecycle reservation"
-            )
-        thread_id = str(session.get("thread_id") or "")
-        if not thread_id:
-            raise DesktopLifecycleError(
-                "send transport cannot be reserved before create acknowledgement"
-            )
-        payload = descriptor.send_message_payload(
-            thread_id=thread_id,
-            host_id=str(session.get("host_id") or "") or None,
-        )
-    else:
-        raise DesktopLifecycleError("transport request operation is not allowlisted")
-    owner = str(session.get("relay_owner_thread_id") or "")
-    reservation_sequences = [
-        int(event["sequence"])
-        for event in state.lifecycle_journal
-        if event.get("reservation_token") == reservation_token
-        and event.get("event") == "reservation_created"
-    ]
-    if len(reservation_sequences) != 1:
-        raise DesktopLifecycleError("lifecycle reservation provenance is missing or non-unique")
-    created_sequence = reservation_sequences[0]
-    causal_events = [
-        event
-        for event in state.lifecycle_journal
-        if event.get("event") == "turn_completed"
-        and event.get("thread_id") == owner
-        and int(event.get("sequence") or 0) < created_sequence
-    ]
-    if not causal_events:
-        raise DesktopLifecycleError(
-            "persistent transport has no authoritative predecessor completion"
-        )
-    causal_event = max(causal_events, key=lambda item: int(item["sequence"]))
-    digest = hashlib.sha256(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    return PipelineIncidentStore(cfg.state_dir).reserve_transport_from_lifecycle(
-        state,
-        causal_event_sequence=int(causal_event["sequence"]),
-        operation=operation,
-        payload_sha256=digest,
-        destination_task_id=str(session["task_id"]),
-        at=at or utc_now(),
-    )
 
 
-def require_authorized_transport(
-    cfg: Config,
-    reservation_token: str,
-    *,
-    executor_thread_id: str,
-    operation: str,
-) -> None:
-    """Compatibility gate: require the exact causal predecessor task."""
-
-    _require_desktop_owned(cfg)
-    if operation not in {"create_thread", "send_message_to_thread"}:
-        raise DesktopLifecycleError("transport request operation is not allowlisted")
-    session = _session_by_token(StateStore(cfg.state_dir).load(), reservation_token)
-    _require_relay_executor(session, executor_thread_id)
 
 
-def bind_authorized_transport(
-    cfg: Config,
-    reservation_token: str,
-    claim: TransportClaim,
-    *,
-    at: str | None = None,
-) -> None:
-    """Bind an out-of-band authority claim to one exact create/send payload.
-
-    There is intentionally no CLI wrapper. A trusted host adapter must first
-    obtain ``TransportClaim`` from a real user-authorized task or an official
-    platform capability through ``PipelineIncidentStore``.
-    """
-
-    _require_desktop_owned(cfg)
-    PipelineIncidentStore(cfg.state_dir).verify_transport_claim(claim)
-    store = StateStore(cfg.state_dir)
-    coordinator = ResourceLockCoordinator(store, cfg.root)
-    with coordinator.transaction():
-        state = store.load()
-        session = _session_by_token(state, reservation_token)
-        if claim.destination_task_id != session.get("task_id"):
-            raise DesktopLifecycleError("transport claim targets another task")
-        causal_owner = str(session.get("relay_owner_thread_id") or "")
-        if (
-            claim.actor_thread_id == causal_owner
-            and claim.authority_kind is not AuthorityKind.AUTOPILOT_RUN
-        ):
-            raise DesktopLifecycleError(
-                "causal task requires the durable Autopilot run authorization"
-            )
-        if (
-            claim.actor_thread_id != causal_owner
-            and claim.authority_kind is AuthorityKind.AUTOPILOT_RUN
-        ):
-            raise DesktopLifecycleError(
-                "Autopilot run authorization is bound to the causal predecessor task"
-            )
-        descriptor = LaunchDescriptor.from_dict(dict(session["descriptor"]))
-        if claim.operation == "create_thread":
-            payload = descriptor.create_thread_payload()
-        elif claim.operation == "send_message_to_thread":
-            thread_id = str(session.get("thread_id") or "")
-            if not thread_id:
-                raise DesktopLifecycleError(
-                    "send transport cannot bind before create acknowledgement"
-                )
-            payload = descriptor.send_message_payload(
-                thread_id=thread_id,
-                host_id=str(session.get("host_id") or "") or None,
-            )
-        else:
-            raise DesktopLifecycleError("transport claim operation is not allowlisted")
-        digest = hashlib.sha256(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        if digest != claim.payload_sha256:
-            raise DesktopLifecycleError("transport claim payload digest does not match")
-        claims = session.setdefault("authorized_transport_claims", {})
-        expected = {
-            "reservation_id": claim.reservation_id,
-            "actor_thread_id": claim.actor_thread_id,
-            "authority_kind": claim.authority_kind.value,
-            "authority_evidence_id": claim.authority_evidence_id,
-            "payload_sha256": claim.payload_sha256,
-        }
-        existing = claims.get(claim.operation)
-        if existing is not None and existing != expected:
-            raise DesktopLifecycleError("a different transport authority is already bound")
-        claims[claim.operation] = expected
-        _append_event(
-            state,
-            "transport_authority_bound",
-            session,
-            at or utc_now(),
-            detail=json.dumps(expected, sort_keys=True),
-        )
-        store.save(state)
 
 
 def _require_relay_executor(
