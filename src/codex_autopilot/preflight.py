@@ -124,7 +124,6 @@ def run_preflight(
     binary: str = "codex",
     client_factory: Callable[..., Any] = AppServerClient,
     emit: Callable[[str], None] | None = print,
-    initiating_root: Path | None = None,
     replace: bool = False,
     approve_project_memory_always: bool = False,
     app_server_project_id: str | None = None,
@@ -226,7 +225,6 @@ def run_preflight(
         try:
             saved_project, project_source = resolve_preflight_project(
                 project,
-                (initiating_root or Path.cwd()).expanduser().resolve(),
                 client.list_projects(),
                 explicit_project_id=app_server_project_id,
             )
@@ -245,7 +243,11 @@ def run_preflight(
                 f"{result.project_name} ({saved_project['id']}) via {project_source}; worker cwd remains {project}",
             )
         else:
-            report("Codex project metadata", "NONE", "no saved project matches target or initiating task")
+            report(
+                "Codex project metadata",
+                "NONE",
+                "no saved project contains the target root; task stays in Recents with canonical cwd",
+            )
 
         if desktop_project_id:
             _validate_worker_slots(client, worker_thread_ids)

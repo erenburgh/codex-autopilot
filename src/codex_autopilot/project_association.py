@@ -101,12 +101,20 @@ def match_saved_project(
 
 def resolve_preflight_project(
     target_root: Path,
-    initiating_root: Path,
     projects: list[dict[str, Any]],
     *,
     explicit_project_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Resolve Desktop placement separately from the worker filesystem cwd."""
+    """Resolve Desktop placement separately from the worker filesystem cwd.
+
+    Only a saved project that actually contains ``target_root`` is a valid
+    placement. The initiating session's own project is deliberately NOT a
+    fallback: using it moves a canonical-target task into an unrelated
+    project whose roots do not contain the work, which is invisible to the
+    user as a misplacement and was observed in production (M10-REV-003).
+    When nothing matches, the task stays unassigned in Recents with the
+    canonical cwd and the limitation is reported exactly.
+    """
     target = match_saved_project(
         target_root,
         projects,
@@ -114,9 +122,6 @@ def resolve_preflight_project(
     )
     if target:
         return target, "explicit target" if explicit_project_id else "target"
-    initiating = match_saved_project(initiating_root, projects)
-    if initiating:
-        return initiating, "initiating task"
     return None, None
 
 

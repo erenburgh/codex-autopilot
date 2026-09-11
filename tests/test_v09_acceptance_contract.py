@@ -170,7 +170,6 @@ class V09ContractRegressionTests(unittest.TestCase):
     def test_unrelated_initiating_project_is_not_a_target_fallback(self) -> None:
         project, source = resolve_preflight_project(
             Path("/target/repository"),
-            Path("/initiating/project"),
             [
                 {
                     "id": "initiating-only",

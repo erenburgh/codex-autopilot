@@ -261,7 +261,6 @@ def main(argv: list[str] | None = None) -> int:
                 plan=checked_plan,
                 profile=profile,
                 skill_path=skill,
-                initiating_root=Path.cwd(),
                 replace=getattr(args, "replace", False),
                 approve_project_memory_always=getattr(args, "approve_project_memory_always", False),
                 app_server_project_id=getattr(args, "app_server_project_id", None),

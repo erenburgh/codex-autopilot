@@ -141,7 +141,6 @@ class ProjectAssociationTests(unittest.TestCase):
         ]
         selected, source = resolve_preflight_project(
             target,
-            Path("/elsewhere"),
             projects,
             explicit_project_id="outer",
         )

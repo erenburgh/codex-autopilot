@@ -448,7 +448,10 @@ class PreflightTests(unittest.TestCase):
         self.assertTrue(client.closed)
         self.assertFalse((root / ".codex-autopilot").exists())
 
-    def test_worker_cwd_and_initiating_project_association_are_separate(self):
+    def test_initiating_project_is_never_a_placement_fallback(self):
+        """M10-REV-003: a saved project that contains only the initiating cwd
+        must not receive a canonical-target task. Placement stays empty and the
+        limitation is reported instead."""
         root = project()
         initiating = Path(tempfile.mkdtemp(prefix="codex-autopilot-initiating-"))
         ProjectPlacementClient.initiating_root = initiating
@@ -460,14 +463,13 @@ class PreflightTests(unittest.TestCase):
             binary="/bin/echo",
             client_factory=ProjectPlacementClient,
             emit=None,
-            initiating_root=initiating,
         )
         client = PreflightClient.instances[-1]
-        self.assertEqual(result.project_id, "project-1")
-        self.assertEqual(result.project_source, "initiating task")
+        self.assertIsNone(result.project_id)
+        self.assertIsNone(result.project_source)
         self.assertEqual(client.thread_args["cwd"], root.resolve())
         self.assertIsNone(client.thread_args["project_id"])
-        self.assertEqual(client.assigned, [("preflight-thread", "project-1")])
+        self.assertEqual(client.assigned, [])
 
     def test_target_longest_root_project_is_sent_and_verified_with_canonical_cwd(self):
         root = project()
@@ -481,7 +483,6 @@ class PreflightTests(unittest.TestCase):
             binary="/bin/echo",
             client_factory=TargetProjectPlacementClient,
             emit=None,
-            initiating_root=initiating,
         )
         client = PreflightClient.instances[-1]
         self.assertEqual(result.project_id, "target")
