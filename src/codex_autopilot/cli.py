@@ -52,7 +52,7 @@ def parser() -> argparse.ArgumentParser:
     bootstrap.add_argument(
         "--worker-surface",
         choices=sorted({DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE}),
-        default=HEADLESS_APP_SERVER_SURFACE,
+        default=DESKTOP_OWNED_SURFACE,
     )
     start_skill = sub.add_parser("start-skill", help=argparse.SUPPRESS)
     start_skill.add_argument("--project", type=Path, default=Path.cwd())
@@ -65,7 +65,7 @@ def parser() -> argparse.ArgumentParser:
     start_skill.add_argument(
         "--worker-surface",
         choices=sorted({DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE}),
-        default=HEADLESS_APP_SERVER_SURFACE,
+        default=DESKTOP_OWNED_SURFACE,
     )
     start_skill.add_argument("--approve-project-memory-always", action="store_true", help=argparse.SUPPRESS)
     preflight = sub.add_parser("preflight", help="validate a target before creating Autopilot state")
@@ -81,7 +81,7 @@ def parser() -> argparse.ArgumentParser:
     preflight.add_argument(
         "--worker-surface",
         choices=sorted({DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE}),
-        default=HEADLESS_APP_SERVER_SURFACE,
+        default=DESKTOP_OWNED_SURFACE,
     )
     add_slot = sub.add_parser("add-worker-slot", help="register one app-created Desktop project worker task")
     add_slot.add_argument("--project", type=Path, default=Path.cwd())

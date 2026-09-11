@@ -32,8 +32,20 @@ RESOURCE_KINDS = {
 }
 RESOURCE_ACCESS_MODES = {"read", "write", "exclusive"}
 
-DEFAULT_EXECUTION_STRATEGY = "serial"
-DEFAULT_MAX_PARALLEL_WORKERS = 1
+# M10-REV-004: новый schema-3 прогон по умолчанию входит в заявленный
+# режим v0.9. Мигрированные v0.8 планы этим не затрагиваются: они несут
+# execution_strategy="serial", max_parallel_workers=1 и legacy_serial=True
+# явно, и валидация не даёт им неявно уйти в параллельность.
+DEFAULT_EXECUTION_STRATEGY = "auto"
+
+# Значения для КОНФИГА БЕЗ секции [runtime], то есть для проекта,
+# созданного до v0.9. Такой проект остаётся serial и одномерным явно,
+# а не уезжает в параллельность из-за смены дефолта нового прогона.
+COMPAT_EXECUTION_STRATEGY = "serial"
+COMPAT_MAX_PARALLEL_WORKERS = 1
+# Консервативный, но реально параллельный предел: два воркера дают
+# настоящую параллельность при минимальном росте нагрузки и расхода.
+DEFAULT_MAX_PARALLEL_WORKERS = 2
 DEFAULT_COMPUTER_USE_SLOTS = 1
 DEFAULT_MAX_MEMORY_RECORDS = 8
 DEFAULT_MAX_DEPENDENCY_OUTPUTS = 8

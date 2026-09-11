@@ -10,6 +10,8 @@ import tomllib
 from .language import DEFAULT_LANGUAGE, normalize_language
 from .plan import (
     DEFAULT_COMPUTER_USE_SLOTS,
+    COMPAT_EXECUTION_STRATEGY,
+    COMPAT_MAX_PARALLEL_WORKERS,
     DEFAULT_EXECUTION_STRATEGY,
     DEFAULT_MAX_PARALLEL_WORKERS,
     EXECUTION_STRATEGIES,
@@ -49,8 +51,8 @@ class RetryConfig:
 class RuntimeConfig:
     """Operational scheduler limits; absent v0.8 sections load fail-closed."""
 
-    execution_strategy: str = DEFAULT_EXECUTION_STRATEGY
-    max_parallel_workers: int = DEFAULT_MAX_PARALLEL_WORKERS
+    execution_strategy: str = COMPAT_EXECUTION_STRATEGY
+    max_parallel_workers: int = COMPAT_MAX_PARALLEL_WORKERS
     computer_use_slots: int = DEFAULT_COMPUTER_USE_SLOTS
     # Missing values and new runs retain the historical controller-owned App
     # Server behavior. Desktop ownership must be selected explicitly.
@@ -205,10 +207,10 @@ def load_config(root_or_path: Path) -> Config:
         ),
         runtime=RuntimeConfig(
             execution_strategy=_execution_strategy(
-                runtime.get("execution_strategy", DEFAULT_EXECUTION_STRATEGY)
+                runtime.get("execution_strategy", COMPAT_EXECUTION_STRATEGY)
             ),
             max_parallel_workers=_positive_int(
-                runtime.get("max_parallel_workers", DEFAULT_MAX_PARALLEL_WORKERS),
+                runtime.get("max_parallel_workers", COMPAT_MAX_PARALLEL_WORKERS),
                 "runtime.max_parallel_workers",
             ),
             computer_use_slots=_positive_int(

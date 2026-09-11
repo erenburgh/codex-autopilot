@@ -225,7 +225,9 @@ class CapacityAndStrategyTests(unittest.TestCase):
             max_workers=4,
         )
         decision = schedule(plan, make_state(plan))
-        self.assertEqual(DEFAULT_MAX_PARALLEL_WORKERS, 1)
+        # Смысл теста - зажим serial до одного воркера при большем лимите.
+        # Значение самой константы дефолта здесь неуместно: M10-REV-004
+        # требует поднять её для новых прогонов.
         self.assertEqual(decision.strategy, "serial")
         self.assertEqual(decision.worker_limit, 1)
         self.assertEqual(decision.selected_task_ids, ("A",))
