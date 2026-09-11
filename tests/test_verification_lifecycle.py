@@ -185,7 +185,7 @@ def graph(first: dict[str, object]) -> dict[str, object]:
 class VerificationLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.hook_gate = mock.patch(
-            "codex_autopilot.lifecycle.require_trusted_stop_hook_for_config"
+            "codex_autopilot.lifecycle_reservations.require_trusted_stop_hook_for_config"
         )
         self.hook_gate.start()
         self.addCleanup(self.hook_gate.stop)

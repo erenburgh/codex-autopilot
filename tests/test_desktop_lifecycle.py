@@ -490,7 +490,7 @@ class WrongNamePrepClient(FakePrepClient):
 class DesktopLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.hook_gate = mock.patch(
-            "codex_autopilot.lifecycle.require_trusted_stop_hook_for_config"
+            "codex_autopilot.lifecycle_reservations.require_trusted_stop_hook_for_config"
         )
         self.hook_gate_mock = self.hook_gate.start()
         self.addCleanup(self.hook_gate.stop)
@@ -866,7 +866,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             thread_id="M9-thread",
         )
         with mock.patch(
-            "codex_autopilot.lifecycle.installed_plugin_root",
+            "codex_autopilot.lifecycle_dispatch.installed_plugin_root",
             return_value=self.root,
         ):
             created = create_desktop_thread_via_app_server(
@@ -920,7 +920,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             thread_id="M9-thread",
         )
         with mock.patch(
-            "codex_autopilot.lifecycle.installed_plugin_root",
+            "codex_autopilot.lifecycle_dispatch.installed_plugin_root",
             return_value=self.root,
         ):
             created = create_desktop_thread_via_app_server(
@@ -985,7 +985,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "codex_autopilot.lifecycle.installed_plugin_root",
+            "codex_autopilot.lifecycle_dispatch.installed_plugin_root",
             return_value=self.root,
         ):
             outcome = run_automatic_app_server_turn(
@@ -1254,7 +1254,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             fail_create=True,
         )
         with mock.patch(
-            "codex_autopilot.lifecycle.installed_plugin_root",
+            "codex_autopilot.lifecycle_dispatch.installed_plugin_root",
             return_value=root,
         ), self.assertRaisesRegex(DesktopLifecycleError, "thread/start failed"):
             create_desktop_thread_via_app_server(
@@ -2701,7 +2701,7 @@ class DesktopLifecycleTests(unittest.TestCase):
 
         self.hook_gate_mock.reset_mock()
         before = state_path.read_bytes()
-        with mock.patch("codex_autopilot.lifecycle.time.time", return_value=retry_at - 1):
+        with mock.patch("codex_autopilot.lifecycle_reservations.time.time", return_value=retry_at - 1):
             self.assertEqual(
                 handle_stop_hook(
                     {
@@ -2716,7 +2716,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             )
         self.assertEqual(state_path.read_bytes(), before)
 
-        with mock.patch("codex_autopilot.lifecycle.time.time", return_value=retry_at):
+        with mock.patch("codex_autopilot.lifecycle_reservations.time.time", return_value=retry_at):
             with self.assertRaisesRegex(
                 DesktopLifecycleError,
                 "belongs to owner thread M7-thread",
@@ -2729,7 +2729,7 @@ class DesktopLifecycleTests(unittest.TestCase):
 
         for foreign_thread in ("root-thread", "M6-thread"):
             with mock.patch(
-                "codex_autopilot.lifecycle.time.time", return_value=retry_at
+                "codex_autopilot.lifecycle_reservations.time.time", return_value=retry_at
             ):
                 self.assertEqual(
                     handle_stop_hook(
@@ -2746,7 +2746,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             self.assertEqual(state_path.read_bytes(), before)
 
         self.hook_gate_mock.reset_mock()
-        with mock.patch("codex_autopilot.lifecycle.time.time", return_value=retry_at):
+        with mock.patch("codex_autopilot.lifecycle_reservations.time.time", return_value=retry_at):
             recovered = handle_stop_hook(
                 {
                     "hook_event_name": "Stop",
@@ -2803,7 +2803,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         )
         second_retry_at = store.load().task_retry_at["M8"]
         with mock.patch(
-            "codex_autopilot.lifecycle.time.time", return_value=second_retry_at
+            "codex_autopilot.lifecycle_reservations.time.time", return_value=second_retry_at
         ):
             third = handle_stop_hook(
                 {
@@ -2833,7 +2833,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         state_path = root / ".codex-autopilot" / "run-state.json"
         before = state_path.read_bytes()
 
-        with mock.patch("codex_autopilot.lifecycle.time.time", return_value=retry_at):
+        with mock.patch("codex_autopilot.lifecycle_reservations.time.time", return_value=retry_at):
             with self.assertRaisesRegex(
                 DesktopLifecycleError,
                 "belongs to owner thread M7-thread",
@@ -2844,7 +2844,7 @@ class DesktopLifecycleTests(unittest.TestCase):
                 )
         self.assertEqual(state_path.read_bytes(), before)
 
-        with mock.patch("codex_autopilot.lifecycle.time.time", return_value=retry_at):
+        with mock.patch("codex_autopilot.lifecycle_reservations.time.time", return_value=retry_at):
             recovered = handle_stop_hook(
                 {
                     "hook_event_name": "Stop",
@@ -2885,7 +2885,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         state_path = root / ".codex-autopilot" / "run-state.json"
         before = state_path.read_bytes()
 
-        with mock.patch("codex_autopilot.lifecycle.time.time", return_value=retry_at):
+        with mock.patch("codex_autopilot.lifecycle_reservations.time.time", return_value=retry_at):
             self.assertEqual(
                 handle_stop_hook(
                     {

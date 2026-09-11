@@ -29,9 +29,12 @@ SANCTIONED_HELPERS = {"_relay.py"}
 
 # Точки, где продакшену законно читать identity из окружения.
 # Список намеренно точный: рост числа точек должен быть заметен.
+# lifecycle.py -> lifecycle_reservations.py: чтение переехало вместе
+# с reserve_ready_frontier при разрезе lifecycle на модули.
+# Число мест не изменилось, изменилось одно имя файла.
 DECLARED_PRODUCTION_READS = {
     ("cli.py", 'os.environ.get("CODEX_THREAD_ID")'),
-    ("lifecycle.py", 'os.environ.get("CODEX_THREAD_ID")'),
+    ("lifecycle_reservations.py", 'os.environ.get("CODEX_THREAD_ID")'),
 }
 
 # Только identity живой сессии. Собственные переменные продукта
