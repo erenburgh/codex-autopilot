@@ -73,7 +73,7 @@ class MigrationTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "unverified" for item in observations))
 
         state = StateStore(state_dir).load()
-        self.assertEqual(state.schema_version, 4)
+        self.assertEqual(state.schema_version, 5)
         self.assertEqual(state.milestone_index, 1)
         self.assertEqual(state.milestone_id, "M2")
         self.assertIn("- [x] M1", (root / "ROADMAP.md").read_text())

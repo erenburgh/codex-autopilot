@@ -27,6 +27,17 @@ class RecoveryClient(FakeClient):
         raise AssertionError("completed recovered milestone must not be dispatched again")
 
 
+class InterruptedRecoveryClient(FakeClient):
+    recovered_turn = None
+    recovery_reads = 0
+
+    def read_thread(self, _thread_id):
+        if self.__class__.recovery_reads == 0:
+            self.__class__.recovery_reads += 1
+            return {"turns": [self.recovered_turn]}
+        return {"turns": []}
+
+
 class InitiatorClient(FakeClient):
     reads = 0
     def read_thread(self, _thread_id):
@@ -80,6 +91,70 @@ class RecoveryTests(unittest.TestCase):
         final = store.load()
         self.assertEqual(final.status, "DONE")
         self.assertEqual(final.previous_thread_ids, ["existing-thread"])
+
+    def test_pristine_interrupted_turn_retries_same_milestone_in_fresh_worker(self):
+        root = make_project("adaptive", 1)
+        cfg = load_config(root)
+        store = StateStore(cfg.state_dir)
+        state = store.load()
+        state.status = "RUNNING"
+        state.phase = "RUNNING_TURN"
+        state.worker_sequence = 1
+        state.attempt = 1
+        state.current_thread_id = "interrupted-thread"
+        state.current_turn_id = "interrupted-turn"
+        state.client_user_message_id = "client-id"
+        state.checkpoint_before = checkpoint_signature(cfg)
+        state.memory_audit_before = ProjectMemory(root).audit_highwater()
+        state.worker_history = [{"worker_sequence": 1, "thread_id": "interrupted-thread", "status": "RUNNING"}]
+        store.save(state)
+        InterruptedRecoveryClient.recovered_turn = {
+            "id": "interrupted-turn",
+            "status": "interrupted",
+            "items": [
+                {"type": "userMessage", "clientId": "client-id"},
+                {"type": "reasoning"},
+            ],
+        }
+        InterruptedRecoveryClient.recovery_reads = 0
+        InterruptedRecoveryClient.root = root
+        InterruptedRecoveryClient.statuses = ["DONE"]
+        self.assertEqual(DesktopOrchestrator(cfg, client_factory=InterruptedRecoveryClient).run(), 0)
+        final = store.load()
+        self.assertEqual(final.status, "DONE")
+        self.assertEqual(final.previous_thread_ids, ["interrupted-thread", "thread-1"])
+        self.assertEqual(final.worker_history[0]["status"], "INTERRUPTED_NO_CHANGES")
+        self.assertEqual(final.worker_history[1]["worker_sequence"], 2)
+
+    def test_interrupted_turn_with_tool_activity_blocks_fail_closed(self):
+        root = make_project("adaptive", 1)
+        cfg = load_config(root)
+        store = StateStore(cfg.state_dir)
+        state = store.load()
+        state.status = "RUNNING"
+        state.phase = "RUNNING_TURN"
+        state.worker_sequence = 1
+        state.attempt = 1
+        state.current_thread_id = "interrupted-thread"
+        state.current_turn_id = "interrupted-turn"
+        state.client_user_message_id = "client-id"
+        state.checkpoint_before = checkpoint_signature(cfg)
+        state.memory_audit_before = ProjectMemory(root).audit_highwater()
+        state.worker_history = [{"worker_sequence": 1, "thread_id": "interrupted-thread", "status": "RUNNING"}]
+        store.save(state)
+        InterruptedRecoveryClient.recovered_turn = {
+            "id": "interrupted-turn",
+            "status": "interrupted",
+            "items": [
+                {"type": "userMessage", "clientId": "client-id"},
+                {"type": "commandExecution", "command": "true"},
+            ],
+        }
+        InterruptedRecoveryClient.recovery_reads = 0
+        InterruptedRecoveryClient.root = root
+        InterruptedRecoveryClient.statuses = []
+        self.assertEqual(DesktopOrchestrator(cfg, client_factory=InterruptedRecoveryClient).run(), 78)
+        self.assertEqual(store.load().status, "BLOCKED")
 
     def test_worker_starts_only_after_initiator_completed(self):
         root = make_project("adaptive", 1)

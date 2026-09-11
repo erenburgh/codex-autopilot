@@ -40,7 +40,7 @@ _ACTION_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "memory_get",
-        "description": "Get one record, evidence item, or conflict with its provenance trail.",
+        "description": "Get one record, evidence item, verification result, or conflict with its provenance trail.",
         "inputSchema": _schema({"id": {"type": "string", "pattern": "^[A-Z]+-[0-9]{3,}$"}}, ["id"]),
     },
     {
@@ -84,6 +84,67 @@ _ACTION_DEFINITIONS: list[dict[str, Any]] = [
                 "provider_thread_id": {"type": "string", "maxLength": 256},
             },
             ["statement", "evidence_ids", "verification_method", "created_by"],
+        ),
+    },
+    {
+        "name": "memory_record_verification_result",
+        "description": (
+            "Record an evidence-linked verification outcome with task/thread/turn "
+            "provenance. A verification result is not Truth."
+        ),
+        "inputSchema": _schema(
+            {
+                "task_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                "check_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                "policy": {
+                    "type": "string",
+                    "enum": ["self", "deterministic", "independent", "auto"],
+                },
+                "verdict": {"type": "string", "enum": ["PASS", "REVISE"]},
+                "summary": {"type": "string", "minLength": 1, "maxLength": 16000},
+                "evidence_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": "^EVID-[0-9]{3,}$"},
+                    "minItems": 1,
+                    "uniqueItems": True,
+                },
+                "created_by": {"type": "string", "minLength": 1, "maxLength": 256},
+                "provider": {"type": "string", "maxLength": 128},
+                "provider_thread_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                },
+                "provider_turn_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256,
+                },
+                "details": {"type": "object"},
+            },
+            [
+                "task_id",
+                "check_id",
+                "policy",
+                "verdict",
+                "summary",
+                "evidence_ids",
+                "created_by",
+                "provider_thread_id",
+                "provider_turn_id",
+            ],
+        ),
+    },
+    {
+        "name": "memory_list_verification_results",
+        "description": "List bounded verification outcomes for one task with cursor pagination.",
+        "inputSchema": _schema(
+            {
+                "task_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE},
+                "cursor": {"type": "string", "maxLength": 512},
+            },
+            ["task_id"],
         ),
     },
     {
@@ -241,8 +302,9 @@ def _combined_input_schema() -> dict[str, Any]:
 
 
 # A single public tool means the user can grant Codex's built-in persistent
-# trust once for this small project-memory surface. The action union remains
-# strictly allowlisted, and every branch rejects unknown arguments.
+# trust once for this small project-memory surface. Some allowlisted operations
+# write audited local records, so the conservative tool-level annotation must
+# require approval even when the preflight itself calls the read-only branch.
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "memory",
@@ -254,7 +316,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": _combined_input_schema(),
         "annotations": {
             "readOnlyHint": False,
-            "destructiveHint": False,
+            "destructiveHint": True,
             "idempotentHint": False,
             "openWorldHint": False,
         },
@@ -274,6 +336,8 @@ class MemoryMcpServer:
             "get": self._get,
             "record_evidence": self._record_evidence,
             "record_verified_fact": self._record_verified_fact,
+            "record_verification_result": self._record_verification_result,
+            "list_verification_results": self._list_verification_results,
             "add_observation": self._add_observation,
             "propose_decision": self._propose_decision,
             "set_decision_status": self._set_decision_status,
@@ -315,6 +379,7 @@ class MemoryMcpServer:
             "project_root": str(self.root),
             "initialized": True,
             "goal": plan.goal,
+            "user_request": plan.user_request,
             "milestone": {
                 "id": item.id,
                 "title": item.title,
@@ -338,6 +403,8 @@ class MemoryMcpServer:
         record_id = str(args.get("id") or "")
         if record_id.startswith("EVID-"):
             return self.memory.get_evidence(record_id)
+        if record_id.startswith("VERIFY-"):
+            return self.memory.get_verification_result(record_id)
         if record_id.startswith("CONFLICT-"):
             return self.memory.get_conflict(record_id)
         return self.memory.get_record(record_id)
@@ -349,6 +416,37 @@ class MemoryMcpServer:
     def _record_verified_fact(self, args: dict[str, Any]) -> dict[str, Any]:
         allowed = {"statement", "evidence_ids", "verification_method", "created_by", "scope", "contradicts", "provider", "provider_thread_id"}
         return self.memory.record_verified_fact(**self._validate_keys(args, allowed))
+
+    def _record_verification_result(self, args: dict[str, Any]) -> dict[str, Any]:
+        allowed = {
+            "task_id",
+            "check_id",
+            "policy",
+            "verdict",
+            "summary",
+            "evidence_ids",
+            "created_by",
+            "provider",
+            "provider_thread_id",
+            "provider_turn_id",
+            "details",
+        }
+        return self.memory.record_verification_result(
+            **self._validate_keys(args, allowed)
+        )
+
+    def _list_verification_results(self, args: dict[str, Any]) -> dict[str, Any]:
+        args = self._validate_keys(args, {"task_id", "limit", "cursor"})
+        page = self.memory.list_verification_results(
+            task_id=args.get("task_id"),
+            limit=args.get("limit", 8),
+            cursor=args.get("cursor"),
+        )
+        return {
+            "results": page.records,
+            "next_cursor": page.next_cursor,
+            "limit": args.get("limit", 8),
+        }
 
     def _add_observation(self, args: dict[str, Any]) -> dict[str, Any]:
         allowed = {"statement", "created_by", "confidence", "scope", "reason", "provider", "provider_thread_id"}

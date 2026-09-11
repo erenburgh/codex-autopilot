@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.0-beta (unreleased; independent audit blocked)
+
+- Added independent contract regressions for the required v0.9 execution
+  default, Desktop-owned start surface, exact thread-title formats, canonical
+  project association, and deterministic verification promotion.
+- Added separate deterministic AI Studio acceptance shapes for independent
+  implementation branches plus integration, a research/analysis/fact-check
+  pipeline, and mixed code/Computer Use scheduling.
+- Added the required dependency-graph, parallel-execution, roles,
+  resource-locks, thread-naming, project-association, and testing documents.
+- Recorded release-blocking candidate gaps in
+  `docs/RELEASE_VERIFICATION_0.9.0-beta.md`; no release, tag, push, or publish
+  was performed.
+
 ## 0.8.0-beta
 
 - Added clean-machine preflight for target root, Git, installed runtime, official App Server, `:workspace`, target cwd, built-in Project Memory MCP, SQLite FTS5, and Adaptive model metadata.

@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import queue
 import subprocess
-import sys
 import threading
 import time
 from typing import Any, Callable
@@ -46,7 +45,14 @@ class TurnResult:
 
 
 class AppServerClient:
-    """Small newline-delimited JSON-RPC client for Codex App Server."""
+    """Short-lived or explicitly headless JSON-RPC client for App Server.
+
+    A hook-owned dispatcher may use one client process for a bounded
+    Desktop-owned production turn. ``thread/unsubscribe`` only removes this
+    connection's subscription; the server may retain a last-subscriber thread
+    during its inactivity grace period, so process exit is the lifecycle
+    barrier and no Desktop ownership handoff is inferred from unsubscribe.
+    """
 
     def __init__(
         self,
@@ -54,11 +60,13 @@ class AppServerClient:
         log_path: Path,
         *,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+        originator: str | None = None,
         popen_factory=subprocess.Popen,
     ) -> None:
         self.binary = binary
         self.log_path = log_path
         self.event_sink = event_sink
+        self.originator = originator
         self.popen_factory = popen_factory
         self.proc = None
         self.log = None
@@ -67,10 +75,15 @@ class AppServerClient:
         self.stderr_lines: queue.Queue[str] = queue.Queue()
         self.next_id = 1
         self.errors: list[dict[str, Any]] = []
+        self.subscribed_thread_ids: set[str] = set()
 
     def connect(self) -> dict[str, Any]:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log = self.log_path.open("a", encoding="utf-8")
+        process_env = None
+        if self.originator:
+            process_env = dict(os.environ)
+            process_env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] = self.originator
         self.proc = self.popen_factory(
             [self.binary, "app-server", "--listen", "stdio://"],
             stdin=subprocess.PIPE,
@@ -78,6 +91,7 @@ class AppServerClient:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=process_env,
         )
         if not self.proc.stdin or not self.proc.stdout or not self.proc.stderr:
             raise AppServerError("App Server stdio pipes were not created")
@@ -91,7 +105,10 @@ class AppServerClient:
                     "title": "Codex Autopilot Desktop Native",
                     "version": "0.8.0-beta",
                 },
-                "capabilities": {"experimentalApi": True},
+                "capabilities": {
+                    "experimentalApi": True,
+                    "mcpServerOpenaiFormElicitation": True,
+                },
             },
         )
         self.notify("initialized")
@@ -234,6 +251,10 @@ class AppServerClient:
     def list_permission_profiles(self, cwd: Path) -> list[dict[str, Any]]:
         return self.request("permissionProfile/list", {"cwd": str(cwd)}).get("data", [])
 
+    def list_hooks(self, cwd: Path) -> list[dict[str, Any]]:
+        """Read the supported lifecycle-hook inventory for one canonical cwd."""
+        return self.request("hooks/list", {"cwds": [str(cwd)]}).get("data", [])
+
     def start_thread(
         self,
         *,
@@ -241,42 +262,52 @@ class AppServerClient:
         permission_profile: str,
         project_id: str | None,
         model: str | None,
+        plugin_root: Path | None = None,
         ephemeral: bool = False,
         project_memory: bool = True,
+        thread_source: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {"cwd": str(cwd), "permissions": permission_profile, "ephemeral": ephemeral}
         if project_memory:
-            runtime = os.environ.get("CODEX_AUTOPILOT_RUNTIME")
-            if runtime:
-                command = runtime
-                arguments = ["memory-mcp"]
-            else:
-                command = sys.executable
-                arguments = ["-m", "codex_autopilot.cli", "memory-mcp"]
-            # App Server 0.153.4 replaces a named MCP entry at thread scope
-            # instead of deep-merging it. Repeat the complete local stdio
-            # transport and change cwd to bind it to this project.
-            params["config"] = {
-                "mcp_servers": {
-                    "codex_autopilot_memory": {
-                        "command": command,
-                        "args": arguments,
-                        "cwd": str(cwd),
-                        "enabled": True,
-                        "startup_timeout_sec": 10,
-                        "tool_timeout_sec": 30,
-                        # Production never grants MCP approval on the user's
-                        # behalf. Codex asks the user, who may choose its
-                        # built-in persistent "always" option per tool.
-                        "tools": {"memory": {"approval_mode": "prompt"}},
-                    }
-                }
-            }
+            if plugin_root is None:
+                raise AppServerError("installed plugin root is required for Project Memory")
+            resolved_plugin = plugin_root.expanduser().resolve()
+            manifest = resolved_plugin / ".codex-plugin" / "plugin.json"
+            mcp_config = resolved_plugin / ".mcp.json"
+            if not manifest.is_file() or not mcp_config.is_file():
+                raise AppServerError(f"invalid installed plugin root: {resolved_plugin}")
+            plugin_name = str(json.loads(manifest.read_text(encoding="utf-8")).get("name") or "")
+            if not plugin_name:
+                raise AppServerError(f"installed plugin manifest has no name: {manifest}")
+            # Use the normally installed plugin server. A raw thread config
+            # loses plugin provenance, while a thread-selected capability is
+            # intentionally ineligible for persistent approval in Codex core.
+            # The installed .mcp.json omits cwd, so App Server binds the local
+            # stdio process to this thread's canonical workspace root.
+            params["runtimeWorkspaceRoots"] = [str(cwd)]
         if project_id is not None:
             params["projectId"] = project_id
+        if thread_source is not None:
+            params["threadSource"] = thread_source
         if model is not None:
             params["model"] = model
-        return self.request("thread/start", params)
+        result = self.request("thread/start", params)
+        thread_id = (result.get("thread") or {}).get("id")
+        if isinstance(thread_id, str):
+            self.subscribed_thread_ids.add(thread_id)
+        return result
+
+    def resume_thread(self, thread_id: str) -> dict[str, Any]:
+        """Load a Desktop-created worker slot without changing its persisted cwd."""
+        result = self.request("thread/resume", {"threadId": thread_id, "excludeTurns": True})
+        self.subscribed_thread_ids.add(thread_id)
+        return result
+
+    def unsubscribe_thread(self, thread_id: str) -> dict[str, Any]:
+        """Remove this connection's subscription, without promising an unload."""
+        result = self.request("thread/unsubscribe", {"threadId": thread_id}, timeout=15)
+        self.subscribed_thread_ids.discard(thread_id)
+        return result
 
     def list_mcp_server_status(self, thread_id: str) -> list[dict[str, Any]]:
         return self.request(
@@ -293,7 +324,66 @@ class AppServerClient:
     def name_thread(self, thread_id: str, name: str) -> None:
         self.request("thread/name/set", {"threadId": thread_id, "name": name})
 
-    def start_turn(self, *, thread_id: str, prompt: str, effort: str | None, client_user_message_id: str, skill_name: str, skill_path: Path) -> dict[str, Any]:
+    def assign_thread_to_project(
+        self,
+        thread_id: str,
+        project_id: str,
+    ) -> dict[str, Any]:
+        """Persistently assign an already-created thread to a saved project."""
+
+        if not project_id:
+            raise AppServerError("project assignment requires a non-empty project id")
+        result = self.request(
+            "thread/metadata/update",
+            {"threadId": thread_id, "projectId": project_id},
+        )
+        thread = result.get("thread")
+        if not isinstance(thread, dict):
+            raise AppServerError(
+                "thread/metadata/update returned no thread metadata"
+            )
+        return thread
+
+    def archive_thread(self, thread_id: str) -> None:
+        self.request("thread/archive", {"threadId": thread_id})
+
+    def respond_project_memory_approval(self, request: dict[str, Any], *, persist: str) -> None:
+        """Answer one already-surfaced MCP request after explicit user consent."""
+        if request.get("method") != "mcpServer/elicitation/request" or "id" not in request:
+            raise AppServerError("not an MCP elicitation request")
+        if persist not in {"session", "always"}:
+            raise AppServerError("MCP approval persistence must be session or always")
+        params = request.get("params") or {}
+        meta = params.get("_meta") or {}
+        advertised = meta.get("persist")
+        allowed = {advertised} if isinstance(advertised, str) else set(advertised or [])
+        if persist not in allowed:
+            raise AppServerError(
+                f"MCP request does not advertise {persist!r} persistence; advertised={sorted(allowed)}"
+            )
+        self.send({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {
+                "action": "accept",
+                "content": None,
+                "_meta": {"persist": persist},
+            },
+        })
+
+    def start_turn(
+        self,
+        *,
+        thread_id: str,
+        prompt: str,
+        effort: str | None,
+        client_user_message_id: str,
+        skill_name: str,
+        skill_path: Path,
+        cwd: Path,
+        permission_profile: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
         self.errors = []
         params: dict[str, Any] = {
             "threadId": thread_id,
@@ -305,6 +395,40 @@ class AppServerClient:
         }
         if effort is not None:
             params["effort"] = effort
+        params["cwd"] = str(cwd)
+        params["runtimeWorkspaceRoots"] = [str(cwd)]
+        if permission_profile is not None:
+            params["permissions"] = permission_profile
+        if model is not None:
+            params["model"] = model
+        return self.request("turn/start", params)
+
+    def start_plain_turn(
+        self,
+        *,
+        thread_id: str,
+        prompt: str,
+        effort: str | None,
+        client_user_message_id: str,
+        cwd: Path,
+        permission_profile: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Start a model turn without injecting the production worker skill."""
+        self.errors = []
+        params: dict[str, Any] = {
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": prompt}],
+            "clientUserMessageId": client_user_message_id,
+        }
+        if effort is not None:
+            params["effort"] = effort
+        params["cwd"] = str(cwd)
+        params["runtimeWorkspaceRoots"] = [str(cwd)]
+        if permission_profile is not None:
+            params["permissions"] = permission_profile
+        if model is not None:
+            params["model"] = model
         return self.request("turn/start", params)
 
     def read_thread(self, thread_id: str) -> dict[str, Any]:
@@ -332,6 +456,47 @@ class AppServerClient:
     def read_project(self, project_id: str) -> dict[str, Any]:
         return self.request("project/read", {"projectId": project_id})["project"]
 
+    def ensure_project_root(self, project_id: str, root: Path) -> dict[str, Any]:
+        """Ensure ``root`` belongs to the saved project before thread/start.
+
+        This verifies the App Server project namespace only. A successful
+        update does not prove that the Electron saved project's ``rootPaths``
+        or the Desktop sidebar assignment changed; those are checked
+        independently.
+        """
+
+        canonical_root = root.expanduser().resolve()
+        project = self.read_project(project_id)
+        if str(project.get("id") or "") != project_id:
+            raise AppServerError("project/read returned an unexpected project")
+        roots = project.get("roots")
+        if not isinstance(roots, list):
+            raise AppServerError("project/read returned invalid project roots")
+        existing_paths = [
+            Path(str(item.get("path"))).expanduser().resolve()
+            for item in roots
+            if isinstance(item, dict) and item.get("path")
+        ]
+        if canonical_root in existing_paths:
+            return project
+        updated_roots = [
+            {"path": str(path)} for path in (*existing_paths, canonical_root)
+        ]
+        updated = self.request(
+            "project/update",
+            {"projectId": project_id, "roots": updated_roots},
+        ).get("project")
+        if not isinstance(updated, dict):
+            raise AppServerError("project/update returned no project")
+        updated_paths = {
+            Path(str(item.get("path"))).expanduser().resolve()
+            for item in updated.get("roots") or []
+            if isinstance(item, dict) and item.get("path")
+        }
+        if str(updated.get("id") or "") != project_id or canonical_root not in updated_paths:
+            raise AppServerError("project/update did not preserve the canonical root")
+        return updated
+
     def rate_limits(self) -> dict[str, Any]:
         return self.request("account/rateLimits/read", {})
 
@@ -350,12 +515,19 @@ class AppServerClient:
 
     def close(self) -> None:
         if self.proc is not None and self.proc.poll() is None:
+            for thread_id in tuple(self.subscribed_thread_ids):
+                try:
+                    self.unsubscribe_thread(thread_id)
+                except AppServerError:
+                    # Process termination remains the final ownership release.
+                    pass
             self.proc.terminate()
             try:
                 self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(timeout=5)
+        self.subscribed_thread_ids.clear()
         if self.log:
             self.log.close()
             self.log = None

@@ -1,8 +1,8 @@
 {
-  "description": "Starts and controls the local non-AI Codex Autopilot dispatcher.",
+  "description": "Runs the deterministic Desktop-owned JIT relay lifecycle or explicit headless controls.",
   "hooks": {
-    "Stop": [{"hooks": [{"type": "command", "command": "\"${PLUGIN_ROOT}/hooks/codex-autopilot-hook\"", "timeout": 30, "statusMessage": "Starting Codex Autopilot dispatcher"}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "\"${PLUGIN_ROOT}/hooks/codex-autopilot-hook\"", "timeout": 30}]}]
+    "Stop": [{"hooks": [{"type": "command", "command": "\"__CODEX_AUTOPILOT_RUNTIME__\" hook", "timeout": 30, "statusMessage": "Advancing Codex Autopilot"}]}],
+    "Interrupt": [{"hooks": [{"type": "command", "command": "\"__CODEX_AUTOPILOT_RUNTIME__\" hook", "timeout": 30}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "\"__CODEX_AUTOPILOT_RUNTIME__\" hook", "timeout": 30}]}]
   }
 }
-

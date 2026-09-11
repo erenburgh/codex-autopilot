@@ -1,20 +1,41 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import os
 from pathlib import Path
 import shutil
 import tempfile
 from typing import Any, Callable
+import uuid
 
-from .appserver import AppServerClient, AppServerError
+from .appserver import AppServerClient, AppServerError, ApprovalRequired, final_agent_message
+from .hook_trust import (
+    HookPreflightError,
+    HookTrustApprovalRequired,
+    require_trusted_stop_hook,
+)
 from .memory import MemoryError, probe_sqlite_fts5
 from .models import resolve_selection
 from .plan import Plan
+from .project_association import (
+    ProjectAssociationError,
+    require_desktop_project_root,
+    resolve_preflight_project,
+)
 
 
 MEMORY_SERVER_NAME = "codex_autopilot_memory"
 REQUIRED_MEMORY_TOOLS = {"memory"}
+MEMORY_PREFLIGHT_TITLE = "Codex Autopilot Preflight · Project Memory"
+MEMORY_PREFLIGHT_OK = "MEMORY_PREFLIGHT_OK"
+MEMORY_PREFLIGHT_PROMPT = f"""Codex Autopilot Project Memory trust preflight.
+
+Perform exactly one harmless read-only call to the built-in MCP server
+`codex_autopilot_memory`, tool `memory`, with `operation=current`.
+Do not inspect or modify project files. Do not call any other tool.
+After the MCP call completes, reply exactly: {MEMORY_PREFLIGHT_OK}
+"""
 
 
 class PreflightError(RuntimeError):
@@ -36,6 +57,22 @@ class PreflightApprovalRequired(PreflightError):
         )
 
 
+class ProjectMemoryApprovalRequired(PreflightError):
+    exit_code = 77
+
+    def __init__(self, thread_id: str, title: str) -> None:
+        self.thread_id = thread_id
+        self.title = title
+        super().__init__(
+            "Project Memory MCP: APPROVAL REQUIRED\n\n"
+            f"No production worker or new run-state was created. Diagnostic preflight task: `{title}` (thread {thread_id}). "
+            "Ask the user whether to approve `codex_autopilot_memory.memory` with Always. "
+            "Only after explicit user confirmation, repeat the same command with "
+            "`--approve-project-memory-always`; it answers this one App Server request through the supported flow. "
+            "Autopilot never grants, infers, or bypasses approval on its own."
+        )
+
+
 @dataclass(slots=True)
 class PreflightResult:
     project: Path
@@ -45,6 +82,12 @@ class PreflightResult:
     next_model: str = "Host default"
     next_reasoning: str = "Host default"
     routing: str = "HOST SETTINGS"
+    project_id: str | None = None
+    desktop_project_id: str | None = None
+    worker_thread_ids: tuple[str, ...] = ()
+    project_name: str | None = None
+    project_source: str | None = None
+    memory_preflight_thread_id: str | None = None
 
     def add(self, name: str, status: str, detail: str) -> None:
         self.checks.append((name, status, detail))
@@ -81,10 +124,22 @@ def run_preflight(
     binary: str = "codex",
     client_factory: Callable[..., Any] = AppServerClient,
     emit: Callable[[str], None] | None = print,
+    initiating_root: Path | None = None,
+    replace: bool = False,
+    approve_project_memory_always: bool = False,
+    app_server_project_id: str | None = None,
+    desktop_project_id: str | None = None,
+    worker_thread_ids: tuple[str, ...] = (),
+    worker_surface: str | None = None,
 ) -> PreflightResult:
     project = root.expanduser().resolve()
     codex_binary = shutil.which(binary) if not Path(binary).is_absolute() else binary
-    result = PreflightResult(project=project, codex_binary=codex_binary or binary)
+    result = PreflightResult(
+        project=project,
+        codex_binary=codex_binary or binary,
+        desktop_project_id=desktop_project_id,
+        worker_thread_ids=worker_thread_ids,
+    )
 
     def report(name: str, status: str, detail: str = "") -> None:
         result.add(name, status, detail)
@@ -113,6 +168,8 @@ def run_preflight(
 
     log_path = Path(tempfile.gettempdir()) / f"codex-autopilot-preflight-{os.getpid()}.jsonl"
     client = client_factory(codex_binary, log_path)
+    probe_thread_id: str | None = None
+    probe_thread_ids: list[str] = []
     try:
         try:
             initialized = client.connect()
@@ -126,59 +183,89 @@ def run_preflight(
         result.codex_home = codex_home
         report("App Server", "OK", str(initialized.get("userAgent") or codex_home))
 
+        if desktop_project_id:
+            try:
+                desktop_roots = require_desktop_project_root(
+                    codex_home,
+                    desktop_project_id,
+                    project,
+                )
+            except ProjectAssociationError as exc:
+                report("Desktop project rootPaths", "FAIL", str(exc))
+                raise PreflightError(
+                    f"Desktop project root mismatch: {exc}"
+                ) from exc
+            if desktop_roots is not None:
+                report(
+                    "Desktop project rootPaths",
+                    "OK",
+                    ", ".join(str(item) for item in desktop_roots),
+                )
+
+        plugin_root = installed_plugin_root(skill_path)
+        expected_plugin_id = installed_plugin_id(plugin_root)
+        if desktop_project_id or worker_surface == "desktop_owned":
+            try:
+                stop_hook = require_trusted_stop_hook(
+                    client,
+                    project,
+                    plugin_id=expected_plugin_id,
+                )
+            except HookTrustApprovalRequired as exc:
+                report("Autopilot Stop hook", "APPROVAL REQUIRED", str(exc))
+                raise
+            except HookPreflightError as exc:
+                report("Autopilot Stop hook", "FAIL", str(exc))
+                raise PreflightError(str(exc)) from exc
+            report(
+                "Autopilot Stop hook",
+                "OK",
+                f"{stop_hook.plugin_id}; {stop_hook.trust_status}; {stop_hook.current_hash}",
+            )
+
         try:
-            profiles = client.list_permission_profiles(project)
-            allowed = {entry.get("id") for entry in profiles if entry.get("allowed") is not False}
-            if ":workspace" not in allowed:
-                raise PreflightError(f":workspace permission profile unavailable; allowed={sorted(str(item) for item in allowed)}")
-            probe_thread = client.start_thread(
-                cwd=project,
-                permission_profile=":workspace",
-                project_id=None,
-                model=None,
-                ephemeral=True,
-                project_memory=True,
+            saved_project, project_source = resolve_preflight_project(
+                project,
+                (initiating_root or Path.cwd()).expanduser().resolve(),
+                client.list_projects(),
+                explicit_project_id=app_server_project_id,
             )
-            active = probe_thread.get("activePermissionProfile") or {}
-            thread = probe_thread.get("thread") or {}
-            if active.get("id") != ":workspace":
-                raise PreflightError("App Server did not apply :workspace to the preflight thread")
-            if Path(str(thread.get("cwd") or "")).resolve() != project:
-                raise PreflightError("App Server did not preserve target project cwd")
-            report("Worker access", "OK", f":workspace at {project}")
-        except PreflightError:
-            raise
-        except Exception as exc:
-            if _looks_like_codex_home_denial(exc):
-                report("Worker access", "APPROVAL REQUIRED", str(exc))
-                raise PreflightApprovalRequired(codex_home, str(exc)) from exc
-            report("Worker access", "FAIL", str(exc))
-            raise PreflightError(f"worker access preflight failed: {exc}") from exc
-
-        memory_probe = probe_sqlite_fts5(project)
-        statuses = client.list_mcp_server_status(thread["id"])
-        memory_status = next((item for item in statuses if item.get("name") == MEMORY_SERVER_NAME), None)
-        if not memory_status:
-            raise PreflightError(
-                "built-in Project Memory MCP is not present in the active plugin. Reinstall Codex Autopilot v0.8 and start a fresh Codex task."
+        except ProjectAssociationError as exc:
+            report("Codex project metadata", "FAIL", str(exc))
+            raise PreflightError(f"Codex project association is ambiguous: {exc}") from exc
+        if saved_project:
+            # This is App Server project metadata. Desktop sidebar placement is
+            # checked independently against the local project's real rootPaths.
+            result.project_id = str(saved_project["id"])
+            result.project_name = str(saved_project.get("name") or saved_project["id"])
+            result.project_source = project_source
+            report(
+                "Codex project metadata",
+                "OK",
+                f"{result.project_name} ({saved_project['id']}) via {project_source}; worker cwd remains {project}",
             )
-        if memory_status.get("runtimeStatus") != "connected":
-            raise PreflightError(f"Project Memory MCP failed to start: {memory_status.get('runtimeStatus')}")
-        tools = set((memory_status.get("tools") or {}).keys())
-        missing_tools = sorted(REQUIRED_MEMORY_TOOLS - tools)
-        if missing_tools:
-            raise PreflightError(f"Project Memory MCP tool contract is incomplete: {missing_tools}")
-        memory_identity = client.call_mcp_tool(thread["id"], MEMORY_SERVER_NAME, "memory", {"operation": "current"})
-        identity = memory_identity.get("structuredContent") or {}
-        if Path(str(identity.get("project_root") or "")).resolve() != project:
-            raise PreflightError("Project Memory MCP did not bind to the target project root")
-        report("Project Memory", "OK", f"SQLite {memory_probe['sqlite']} + FTS5; local stdio MCP connected")
-        report(
-            "Memory tool trust",
-            "USER CONTROLLED",
-            "before starting, call memory(operation=current) in this task and choose Always only if you trust the installed local plugin",
-        )
+        else:
+            report("Codex project metadata", "NONE", "no saved project matches target or initiating task")
 
+        if desktop_project_id:
+            _validate_worker_slots(client, worker_thread_ids)
+            report(
+                "Desktop UI placement",
+                "OK",
+                f"{len(worker_thread_ids)} Desktop-created slot(s) assigned to project {desktop_project_id}",
+            )
+        elif worker_thread_ids:
+            raise PreflightError("worker slots require --desktop-project-id")
+        elif project_source in {"target", "explicit target"}:
+            report(
+                "Desktop UI placement",
+                "UNVERIFIED",
+                "App Server project metadata is not Desktop sidebar assignment; use Desktop-created worker slots for guaranteed placement",
+            )
+        else:
+            report("Desktop UI placement", "TASKS/RECENTS", "no Desktop-created project slots were supplied")
+
+        selection = None
         if profile == "adaptive":
             first = plan.milestones[0]
             selection = resolve_selection(
@@ -191,12 +278,209 @@ def run_preflight(
             result.routing = "AUTO" if plan.model_strategy == "auto" else plan.model_strategy.upper()
             result.next_model = selection.display_name
             result.next_reasoning = selection.reasoning
-            report("Model metadata", "OK", f"{selection.model_id} supports {selection.reasoning}")
         else:
             result.routing = "HOST SETTINGS"
             result.next_model = "Host default"
             result.next_reasoning = "Host default (no override)"
+
+        try:
+            profiles = client.list_permission_profiles(project)
+            allowed = {entry.get("id") for entry in profiles if entry.get("allowed") is not False}
+            if ":workspace" not in allowed:
+                raise PreflightError(f":workspace permission profile unavailable; allowed={sorted(str(item) for item in allowed)}")
+            create_project_id = (
+                result.project_id
+                if result.project_source in {"target", "explicit target"}
+                else None
+            )
+            probe_thread = client.start_thread(
+                cwd=project,
+                permission_profile=":workspace",
+                project_id=create_project_id,
+                model=selection.model_id if selection else None,
+                plugin_root=plugin_root,
+                ephemeral=False,
+                project_memory=True,
+            )
+            active = probe_thread.get("activePermissionProfile") or {}
+            thread = probe_thread.get("thread") or {}
+            if active.get("id") != ":workspace":
+                raise PreflightError("App Server did not apply :workspace to the preflight thread")
+            if Path(str(thread.get("cwd") or "")).resolve() != project:
+                raise PreflightError("App Server did not preserve target project cwd")
+            probe_thread_id = str(thread["id"])
+            probe_thread_ids.append(probe_thread_id)
+            result.memory_preflight_thread_id = probe_thread_id
+            client.name_thread(probe_thread_id, MEMORY_PREFLIGHT_TITLE)
+            if result.project_id and thread.get("projectId") != result.project_id:
+                client.assign_thread_to_project(probe_thread_id, result.project_id)
+                thread = client.read_thread(probe_thread_id)
+            if result.project_id and thread.get("projectId") != result.project_id:
+                raise PreflightError(
+                    "App Server did not preserve the intended Codex project association"
+                )
+            report("Worker access", "OK", f":workspace at {project}")
+        except PreflightError:
+            raise
+        except Exception as exc:
+            if _looks_like_codex_home_denial(exc):
+                report("Worker access", "APPROVAL REQUIRED", str(exc))
+                raise PreflightApprovalRequired(codex_home, str(exc)) from exc
+            report("Worker access", "FAIL", str(exc))
+            raise PreflightError(f"worker access preflight failed: {exc}") from exc
+
+        memory_probe = probe_sqlite_fts5(project)
+        statuses = client.list_mcp_server_status(probe_thread_id)
+        memory_status = next((item for item in statuses if item.get("name") == MEMORY_SERVER_NAME), None)
+        if not memory_status:
+            raise PreflightError(
+                "built-in Project Memory MCP is not present in the active plugin. Reinstall Codex Autopilot v0.8 and start a fresh Codex task."
+            )
+        if memory_status.get("pluginId") != expected_plugin_id:
+            raise PreflightError(
+                "Project Memory MCP lost installed-plugin provenance; refusing a raw or transient capability server"
+            )
+        if memory_status.get("runtimeStatus") != "connected":
+            failure = next(
+                (
+                    memory_status.get(key)
+                    for key in ("error", "failureReason", "startupError")
+                    if memory_status.get(key)
+                ),
+                memory_status.get("runtimeStatus"),
+            )
+            raise PreflightError(f"Project Memory MCP failed to start: {failure}")
+        tools = set((memory_status.get("tools") or {}).keys())
+        missing_tools = sorted(REQUIRED_MEMORY_TOOLS - tools)
+        if missing_tools:
+            raise PreflightError(f"Project Memory MCP tool contract is incomplete: {missing_tools}")
+        memory_identity = client.call_mcp_tool(probe_thread_id, MEMORY_SERVER_NAME, "memory", {"operation": "current"})
+        identity = memory_identity.get("structuredContent") or {}
+        if Path(str(identity.get("project_root") or "")).resolve() != project:
+            raise PreflightError("Project Memory MCP did not bind to the target project root")
+        report("Project Memory transport", "OK", f"SQLite {memory_probe['sqlite']} + FTS5; local stdio MCP connected and target-bound")
+
+        try:
+            started_turn = client.start_plain_turn(
+                thread_id=probe_thread_id,
+                prompt=MEMORY_PREFLIGHT_PROMPT,
+                effort=selection.reasoning if selection else None,
+                client_user_message_id=str(uuid.uuid4()),
+                cwd=project,
+            )
+            completed = client.wait_for_turn(probe_thread_id, started_turn["turn"]["id"], timeout=300)
+        except ApprovalRequired as exc:
+            params = exc.payload.get("params") or {}
+            meta = params.get("_meta") or {}
+            is_memory = (
+                params.get("serverName") == MEMORY_SERVER_NAME
+                and meta.get("codex_approval_kind") == "mcp_tool_call"
+            )
+            if not is_memory:
+                raise PreflightError(f"unexpected approval during Project Memory preflight: {exc}") from exc
+            advertised = _approval_persistence_options(exc.payload)
+            if "always" not in advertised:
+                report(
+                    "Project Memory MCP",
+                    "FAIL",
+                    f"Codex did not advertise persistent Always approval; advertised={sorted(advertised)}",
+                )
+                raise PreflightError(
+                    "Project Memory MCP did not offer supported persistent approval; refusing to bypass approval"
+                ) from exc
+            if approve_project_memory_always:
+                client.respond_project_memory_approval(exc.payload, persist="always")
+                report("Project Memory MCP approval", "USER AUTHORIZED", "Always response sent through the pending App Server request")
+                completed = client.wait_for_turn(probe_thread_id, started_turn["turn"]["id"], timeout=300)
+                _validate_memory_preflight_result(client, probe_thread_id, completed.turn)
+
+                verification = client.start_thread(
+                    cwd=project,
+                    permission_profile=":workspace",
+                    project_id=create_project_id,
+                    model=selection.model_id if selection else None,
+                    plugin_root=plugin_root,
+                    ephemeral=False,
+                    project_memory=True,
+                )
+                verification_active = verification.get("activePermissionProfile") or {}
+                verification_thread = verification.get("thread") or {}
+                if verification_active.get("id") != ":workspace":
+                    raise PreflightError("App Server did not apply :workspace to the fresh persistence-verification task")
+                if Path(str(verification_thread.get("cwd") or "")).resolve() != project:
+                    raise PreflightError("App Server did not preserve target project cwd for the fresh persistence-verification task")
+                verification_thread_id = str(verification_thread["id"])
+                probe_thread_ids.append(verification_thread_id)
+                client.name_thread(verification_thread_id, f"{MEMORY_PREFLIGHT_TITLE} · verification")
+                if result.project_id and verification_thread.get("projectId") != result.project_id:
+                    client.assign_thread_to_project(
+                        verification_thread_id,
+                        result.project_id,
+                    )
+                    verification_thread = client.read_thread(verification_thread_id)
+                if result.project_id and verification_thread.get("projectId") != result.project_id:
+                    raise PreflightError("App Server did not preserve project association for the fresh persistence-verification task")
+
+                verification_statuses = client.list_mcp_server_status(verification_thread_id)
+                verification_memory = next(
+                    (item for item in verification_statuses if item.get("name") == MEMORY_SERVER_NAME),
+                    None,
+                )
+                if not verification_memory or verification_memory.get("runtimeStatus") != "connected":
+                    raise PreflightError("Project Memory MCP did not reconnect in the fresh persistence-verification task")
+                if verification_memory.get("pluginId") != expected_plugin_id:
+                    raise PreflightError("Project Memory MCP lost installed-plugin provenance in the fresh persistence-verification task")
+                verification_tools = set((verification_memory.get("tools") or {}).keys())
+                if REQUIRED_MEMORY_TOOLS - verification_tools:
+                    raise PreflightError("Project Memory MCP contract changed in the fresh persistence-verification task")
+                verification_identity = client.call_mcp_tool(
+                    verification_thread_id,
+                    MEMORY_SERVER_NAME,
+                    "memory",
+                    {"operation": "current"},
+                )
+                verification_root = (verification_identity.get("structuredContent") or {}).get("project_root")
+                if Path(str(verification_root or "")).resolve() != project:
+                    raise PreflightError("Project Memory MCP lost target binding in the fresh persistence-verification task")
+                verification_turn = client.start_plain_turn(
+                    thread_id=verification_thread_id,
+                    prompt=MEMORY_PREFLIGHT_PROMPT,
+                    effort=selection.reasoning if selection else None,
+                    client_user_message_id=str(uuid.uuid4()),
+                    cwd=project,
+                )
+                try:
+                    verified = client.wait_for_turn(
+                        verification_thread_id,
+                        verification_turn["turn"]["id"],
+                        timeout=300,
+                    )
+                except ApprovalRequired as verification_exc:
+                    raise PreflightError(
+                        "Project Memory MCP Always approval did not carry to a fresh task; refusing to start M1"
+                    ) from verification_exc
+                _validate_memory_preflight_result(client, verification_thread_id, verified.turn)
+                report(
+                    "Project Memory persistence",
+                    "OK",
+                    f"fresh task {verification_thread_id} completed without another approval",
+                )
+            else:
+                report("Project Memory MCP", "APPROVAL REQUIRED", f"preflight task {probe_thread_id}; no production worker created")
+                raise ProjectMemoryApprovalRequired(probe_thread_id, MEMORY_PREFLIGHT_TITLE) from exc
+        else:
+            _validate_memory_preflight_result(client, probe_thread_id, completed.turn)
+        report("Project Memory MCP", "OK", "real model-to-MCP call completed without a trust interruption")
+
+        if selection:
+            report("Model metadata", "OK", f"{selection.model_id} supports {selection.reasoning}")
+        else:
             report("Model metadata", "OK", "dispatcher will send neither model nor effort")
+
+        if replace:
+            retired = _archive_replaced_workers(project, client, exclude=set(probe_thread_ids))
+            if retired:
+                report("Previous run", "RETIRED", f"archived {len(retired)} worker task(s): {', '.join(retired)}")
         if emit:
             emit(f"Routing: {result.routing}")
             emit(f"Next worker: {result.next_model} / {result.next_reasoning}")
@@ -207,5 +491,121 @@ def run_preflight(
         report("Project Memory", "FAIL", str(exc))
         raise PreflightError(str(exc)) from exc
     finally:
+        for thread_id in dict.fromkeys(probe_thread_ids):
+            try:
+                client.archive_thread(thread_id)
+            except Exception:
+                pass
         client.close()
         log_path.unlink(missing_ok=True)
+
+
+def _validate_memory_preflight_result(client: Any, thread_id: str, turn: dict[str, Any]) -> None:
+    # App Server 0.153.4 can emit a partial turn/completed snapshot after an
+    # elicitation response even though thread/read already contains the full
+    # authoritative item list. Fall back only after validation fails on a
+    # completed turn; never turn a failed/incomplete turn into a pass.
+    try:
+        _validate_memory_preflight_turn(turn)
+        return
+    except PreflightError:
+        if turn.get("status") != "completed":
+            raise
+    snapshot = client.read_thread(thread_id)
+    turn_id = turn.get("id")
+    full_turn = next(
+        (item for item in snapshot.get("turns") or [] if item.get("id") == turn_id),
+        None,
+    )
+    if full_turn is None:
+        raise PreflightError("Project Memory MCP completed turn was missing from thread/read")
+    _validate_memory_preflight_turn(full_turn)
+
+
+def _validate_memory_preflight_turn(turn: dict[str, Any]) -> None:
+    if turn.get("status") != "completed":
+        raise PreflightError(f"Project Memory MCP preflight turn ended with status={turn.get('status')!r}")
+    calls = [
+        item
+        for item in turn.get("items") or []
+        if item.get("type") == "mcpToolCall"
+        and item.get("server") == MEMORY_SERVER_NAME
+        and item.get("tool") == "memory"
+    ]
+    if len(calls) != 1 or calls[0].get("status") != "completed":
+        raise PreflightError("Project Memory MCP preflight did not complete exactly one memory tool call")
+    if final_agent_message(turn).strip() != MEMORY_PREFLIGHT_OK:
+        raise PreflightError("Project Memory MCP preflight returned an unexpected final response")
+
+
+def _validate_worker_slots(client: Any, thread_ids: tuple[str, ...]) -> None:
+    if not thread_ids:
+        raise PreflightError("Desktop project placement needs at least one just-in-time worker slot")
+    if len(set(thread_ids)) != len(thread_ids):
+        raise PreflightError("Desktop worker slot ids must be unique")
+    for thread_id in thread_ids:
+        thread = client.read_thread(thread_id)
+        if str(thread.get("id")) != thread_id:
+            raise PreflightError(f"Desktop worker slot {thread_id} resolved to an unexpected task")
+        status = thread.get("status") or {}
+        status_type = status.get("type") if isinstance(status, dict) else status
+        if status_type not in {"idle", "notLoaded"}:
+            raise PreflightError(f"Desktop worker slot {thread_id} is not idle: {status_type}")
+        if thread.get("canAcceptDirectInput") is False:
+            raise PreflightError(f"Desktop worker slot {thread_id} cannot accept the production turn")
+
+
+def _archive_replaced_workers(project: Path, client: Any, *, exclude: set[str]) -> list[str]:
+    state_path = project / ".codex-autopilot" / "run-state.json"
+    if not state_path.is_file():
+        return []
+    raw = json.loads(state_path.read_text(encoding="utf-8"))
+    candidates: list[str] = []
+    for value in [raw.get("current_thread_id"), *(raw.get("previous_thread_ids") or [])]:
+        if isinstance(value, str) and value not in exclude and value not in candidates:
+            candidates.append(value)
+    for item in raw.get("worker_history") or []:
+        value = item.get("thread_id") if isinstance(item, dict) else None
+        if isinstance(value, str) and value not in exclude and value not in candidates:
+            candidates.append(value)
+    retired: list[str] = []
+    for thread_id in candidates:
+        try:
+            client.archive_thread(thread_id)
+        except Exception as exc:
+            # Desktop archival can remove the rollout from App Server before
+            # the deterministic replace pass reaches it. "No rollout" means
+            # the old worker is no longer resumable/active, so it is already
+            # retired for duplicate-prevention purposes.
+            detail = str(exc).lower()
+            if "no rollout found for thread id" in detail or "thread not found" in detail:
+                retired.append(thread_id)
+                continue
+            raise PreflightError(f"could not retire previous worker {thread_id}; refusing duplicate restart: {exc}") from exc
+        retired.append(thread_id)
+    return retired
+
+
+def installed_plugin_root(skill_path: Path) -> Path:
+    resolved = skill_path.expanduser().resolve()
+    for candidate in resolved.parents:
+        if (candidate / ".codex-plugin" / "plugin.json").is_file() and (candidate / ".mcp.json").is_file():
+            return candidate
+    raise PreflightError(f"could not resolve installed plugin root from skill: {resolved}")
+
+
+def installed_plugin_id(plugin_root: Path) -> str:
+    manifest = plugin_root / ".codex-plugin" / "plugin.json"
+    name = str(json.loads(manifest.read_text(encoding="utf-8")).get("name") or "")
+    if not name:
+        raise PreflightError(f"installed plugin manifest has no name: {manifest}")
+    return f"{name}@codex-autopilot-local"
+
+
+def _approval_persistence_options(request: dict[str, Any]) -> set[str]:
+    value = (((request.get("params") or {}).get("_meta") or {}).get("persist"))
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, list):
+        return {item for item in value if isinstance(item, str)}
+    return set()

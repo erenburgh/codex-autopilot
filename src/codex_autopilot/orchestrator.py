@@ -13,17 +13,32 @@ from typing import Any, Callable
 
 from .appserver import AppServerClient, AppServerError, AppServerRpcError, ApprovalRequired, PauseRequested, final_agent_message, is_rate_limit_error, rate_limit_reset_at
 from .bootstrap import mark_roadmap, select_milestone
-from .config import Config
+from .config import Config, HEADLESS_APP_SERVER_SURFACE
+from .language import is_russian
 from .memory import MemoryError as ProjectMemoryError, MemoryValidationError, ProjectMemory
 from .models import ModelRoutingError, resolve_selection
 from .plan import Plan, load_plan
-from .preflight import MEMORY_SERVER_NAME, REQUIRED_MEMORY_TOOLS
+from .preflight import MEMORY_SERVER_NAME, REQUIRED_MEMORY_TOOLS, installed_plugin_id, installed_plugin_root
+from .project_association import ProjectAssociationError, match_saved_project as _match_saved_project
 from .reasoning import next_level
 from .run_state import RunState, StateStore, TERMINAL_STATUSES, utc_now
+from .task_state import TaskState, dependencies_eligible, transition_task
+from .thread_titles import implementation_thread_title
 
 
 class OrchestrationError(RuntimeError):
     pass
+
+
+class ProjectSlotWriterBusy(OrchestrationError):
+    pass
+
+
+WORKSPACE_HANDOFF_OK = "AUTOPILOT_WORKSPACE_READY"
+WORKSPACE_HANDOFF_PROMPT = (
+    "Codex Autopilot workspace handoff. Do not inspect or modify files and do not call tools. "
+    f"Reply exactly: {WORKSPACE_HANDOFF_OK}"
+)
 
 
 def parse_worker_status(message: str, adaptive: bool, allow_require_computer_use: bool = False) -> str:
@@ -66,6 +81,22 @@ def checkpoint_signature(cfg: Config) -> dict[str, str]:
     return result
 
 
+def interrupted_turn_is_pristine(
+    cfg: Config,
+    turn: dict[str, Any],
+    before: dict[str, str],
+    *,
+    memory: ProjectMemory,
+    memory_audit_before: int,
+) -> bool:
+    """Return true only when an interrupted worker provably performed no work."""
+    harmless_item_types = {"userMessage", "reasoning"}
+    items = turn.get("items") or []
+    if any(str(item.get("type") or "") not in harmless_item_types for item in items):
+        return False
+    return checkpoint_signature(cfg) == before and memory.audit_highwater() == memory_audit_before
+
+
 def validate_checkpoint(
     cfg: Config,
     before: dict[str, str],
@@ -102,21 +133,104 @@ def build_worker_prompt(cfg: Config, state: RunState, plan: Plan) -> str:
     milestone = _compact(cfg.state_dir / "MILESTONE.md")
     handoff = _compact(cfg.state_dir / "HANDOFF.md", 8_192)
     constraints, relevant = _bootstrap_memory(cfg, plan, state)
+    russian = is_russian(cfg.language)
     constraint_text = "\n".join(
         f"- {item['id']} [{item['origin']}/{item['status']}]: {str(item['statement'])[:600]}"
         for item in constraints
-    ) or "- None recorded."
+    ) or ("- Ничего не зафиксировано." if russian else "- None recorded.")
     relevant_text = "\n".join(
         f"- {item['id']} [{item['category']}/{item['status']}]"
         for item in relevant
-    ) or "- None selected. Search on demand."
+    ) or (
+        "- Ничего не выбрано. При необходимости выполни поиск."
+        if russian
+        else "- None selected. Search on demand."
+    )
     allow_require = cfg.adaptive and plan.model_strategy == "auto" and state.selected_model_key == "sol" and state.execution_mode == "code"
     statuses = ["ROTATE", "DONE", "BLOCKED"] + (["ESCALATE"] if cfg.adaptive else []) + (["REQUIRE_COMPUTER_USE"] if allow_require else [])
     status_lines = "\n".join(f"AUTOPILOT_STATUS: {value}" for value in statuses)
     reasoning = state.selected_reasoning if cfg.adaptive else "host default (no effort override)"
+    if russian:
+        return f"""Codex Autopilot v0.8 Desktop Native worker.
+
+Язык ответов: русский (ru). Пиши на русском все сообщения пользователю,
+промежуточные обновления, пояснения и финальный отчёт, даже если исходный текст
+задачи написан на другом языке. Не переводи имена файлов, идентификаторы, код,
+названия инструментов и машинные строки протокола `AUTOPILOT_STATUS`.
+
+ID запуска: {state.run_id}
+Номер worker: {state.worker_sequence}
+Номер задачи: {state.milestone_index + 1}/{len(plan.milestones)}
+Попытка: {state.attempt}
+Корень проекта: {cfg.root}
+Профиль: {cfg.profile}
+Стратегия модели: {plan.model_strategy}
+Плановый режим выполнения: {state.planned_execution_mode}
+Фактический режим выполнения: {state.execution_mode}
+Выбранная модель: {state.selected_model_display or 'настройка хоста по умолчанию (без переопределения модели)'}
+Причина выбора модели: {state.model_selection_reason}
+Уровень рассуждения: {reasoning}
+
+Локальный диспетчер без ИИ создал эту постоянную видимую задачу Codex. Выполни
+ровно одну текущую задачу. Не создавай, не форкай, не запускай другие задачи
+Codex и не отправляй в них сообщения. Не управляй интерфейсом Codex. Соблюдай
+все обычные запросы разрешений; диспетчер не подтверждает действия за тебя.
+
+Сначала проверь репозиторий и только затем доверяй описаниям. Проверь каждый
+критерий готовности. Project Memory — каноническое хранилище знаний. HANDOFF.md —
+лишь соседняя записка между worker'ами, а не доказательство и не Truth. Прежде
+чем опираться на важное историческое утверждение, запроси встроенный MCP Project
+Memory. Не превращай Observation в Truth или Agent Decision в User Constraint.
+NO EVIDENCE -> NO TRUTH.
+
+Используй разрешённый MCP-инструмент `memory`: `operation=search` или
+`operation=get` для чтения; `operation=record_evidence` для фактических
+доказательств из файлов, тестов, сборки, инструментов, пользователя или среды;
+`operation=record_verified_fact` только с существующими evidence ID;
+`operation=add_observation` для гипотез. Не смешивай желаемые Decisions и
+фактические Truth.
+
+Перед ROTATE или DONE проверь каждый критерий готовности, выполни необходимую
+верификацию и запиши хотя бы одно новое доказательство для задачи
+`{state.milestone_id}`. Диспетчер отклонит маркер завершения без нового evidence.
+Обнови HANDOFF.md только разделами Completed, Changed, Risks,
+Relevant memory IDs и Next. Размер — не более 8 КиБ; не копируй туда тела
+записей, транскрипты или рассуждения. Не изменяй PROJECT_STATE.md и DECISIONS.md:
+диспетчер формирует их из канонической памяти.
+
+ROTATE означает: текущая задача завершена, но в плане остались другие.
+DONE означает: завершена вся дорожная карта.
+BLOCKED означает: нужен ввод пользователя или разрешение, которое нельзя
+получить в этом ходе.{chr(10) + 'ESCALATE означает: текущая задача не завершена и должна быть повторена свежим worker на следующем уровне рассуждения.' if cfg.adaptive else ''}
+{('REQUIRE_COMPUTER_USE допустим только тогда, когда критерии готовности действительно требуют GUI. Сложность не является причиной. Непосредственно перед финальным статусом добавь одну строку COMPUTER_USE_REASON: <конкретная причина необходимости GUI>.' if allow_require else '')}
+{('Эта задача требует Computer Use. Используй его для GUI-части критериев готовности, но никогда не управляй самим интерфейсом Codex.' if state.execution_mode == 'computer_use' else 'Используй репозиторий, код, shell и инструменты без GUI. Для этой задачи не используй Computer Use.')}
+
+Заверши ровно одной из следующих строк; после неё не должно быть текста:
+{status_lines}
+
+## Текущая задача
+{milestone}
+
+## Общая цель
+{plan.goal}
+
+## Критические ограничения (ограниченная выборка канонических записей)
+{constraint_text}
+
+## Релевантные ID памяти (проверь перед использованием)
+{relevant_text}
+
+## Предыдущая передача контекста (только справочно)
+{handoff}
+"""
+    language_notice = (
+        f"Response language: {cfg.language}. Write every user-facing update, explanation, "
+        "and final report in that language even if the source task is in another language. "
+        "Keep code, identifiers, tool names, and AUTOPILOT_STATUS protocol lines exact.\n\n"
+    )
     return f"""Codex Autopilot v0.8 Desktop Native worker.
 
-Run ID: {state.run_id}
+{language_notice}Run ID: {state.run_id}
 Worker sequence: {state.worker_sequence}
 Milestone index: {state.milestone_index + 1}/{len(plan.milestones)}
 Attempt: {state.attempt}
@@ -197,29 +311,14 @@ def _created_at(thread: dict[str, Any]) -> int:
 
 
 def match_saved_project(root: Path, projects: list[dict[str, Any]]) -> dict[str, Any] | None:
-    resolved = root.resolve()
-    matches: list[tuple[int, dict[str, Any]]] = []
-    for project in projects:
-        for entry in project.get("roots") or []:
-            raw = entry.get("path")
-            if not isinstance(raw, str):
-                continue
-            project_root = Path(raw).expanduser().resolve()
-            try:
-                resolved.relative_to(project_root)
-            except ValueError:
-                continue
-            matches.append((len(project_root.parts), project))
-    if not matches:
-        return None
-    longest = max(size for size, _ in matches)
-    best = {project["id"]: project for size, project in matches if size == longest}
-    if len(best) != 1:
-        raise OrchestrationError("multiple saved Codex Projects match this path; set desktop.project_id")
-    return next(iter(best.values()))
+    try:
+        return _match_saved_project(root, projects)
+    except ProjectAssociationError as exc:
+        raise OrchestrationError(f"{exc}; set desktop.project_id") from exc
 
 
-class DesktopOrchestrator:
+class HeadlessAppServerOrchestrator:
+    """Historical v0.8 stdio runner with no Desktop interactivity promise."""
     def __init__(self, cfg: Config, *, client_factory: Callable[..., Any] = AppServerClient, sleep_fn: Callable[[float], None] = time.sleep, now_fn: Callable[[], float] = time.time, emit: Callable[[str], None] | None = None) -> None:
         self.cfg = cfg
         self.client_factory = client_factory
@@ -240,6 +339,10 @@ class DesktopOrchestrator:
         return self.client_factory(self.cfg.desktop.binary, self.cfg.state_dir / "logs" / "app-server.jsonl", event_sink=self._event)
 
     def run(self, initiator_thread_id: str | None = None, initiator_turn_id: str | None = None) -> int:
+        if self.cfg.runtime.worker_surface != HEADLESS_APP_SERVER_SURFACE:
+            raise OrchestrationError(
+                "external App Server production is forbidden for desktop_owned runs"
+            )
         self.store.acquire()
         try:
             self._validate_project()
@@ -264,6 +367,7 @@ class DesktopOrchestrator:
             self._verify_permission_profile()
             self.project_id = self._resolve_project_id(state)
             state.project_id = self.project_id
+            state.desktop_project_id = self.cfg.desktop.desktop_project_id
             state.permission_profile = self.cfg.desktop.permission_profile
             self.store.save(state)
             if initiator_thread_id and initiator_turn_id:
@@ -284,6 +388,7 @@ class DesktopOrchestrator:
             state.last_worker_status = "PAUSED"
             self._update_worker_history(state, status="PAUSED", completed_at=utc_now())
             self._retire_current_thread(state)
+            self._retry_graph_task(state)
             state.status = "PAUSED"
             state.phase = "PAUSED"
             state.dispatcher_pid = None
@@ -301,9 +406,24 @@ class DesktopOrchestrator:
             self._update_worker_history(state, status="BLOCKED", completed_at=utc_now())
             self._retire_current_thread(state)
             return self._block(state, str(exc), approval=exc.payload)
+        except ProjectSlotWriterBusy as exc:
+            state = self.store.load()
+            state.worker_slot_cursor = max(0, state.worker_slot_cursor - 1)
+            state.worker_sequence = max(0, state.worker_sequence - 1)
+            state.attempt = max(0, state.attempt - 1)
+            state.current_thread_id = None
+            state.current_turn_id = None
+            state.status = "WAITING"
+            state.phase = "WAITING_PROJECT_SLOT_RELEASE"
+            state.last_error = str(exc)
+            state.completed_at = None
+            self.store.save(state)
+            self.emit(f"waiting for Desktop to release the current project slot: {exc}")
+            return 0
         except (AppServerRpcError, AppServerError, OrchestrationError, ModelRoutingError, ProjectMemoryError, MemoryValidationError) as exc:
             state = self.store.load()
             if is_rate_limit_error(getattr(exc, "error", None)):
+                self._retry_graph_task(state)
                 self._schedule_rate_limit(state, getattr(exc, "error", None))
                 return self._loop(state)
             return self._block(state, str(exc))
@@ -329,6 +449,20 @@ class DesktopOrchestrator:
             self.emit("Project Memory recovered from the latest verified-milestone backup")
         if not self.cfg.memory_database.is_file():
             raise OrchestrationError("Project Memory database is missing")
+        if self.plan.execution_strategy != "serial" or self.plan.max_parallel_workers != 1:
+            raise OrchestrationError(
+                "controller-owned App Server restoration currently requires a serial plan"
+            )
+        unsupported = [
+            task.id
+            for task in self.plan.tasks
+            if task.verification.required and task.verification.policy != "self"
+        ]
+        if unsupported:
+            raise OrchestrationError(
+                "controller-owned App Server restoration requires self verification; "
+                f"unsupported tasks={unsupported}"
+            )
 
     def _verify_permission_profile(self) -> None:
         profiles = self.client.list_permission_profiles(self.cfg.root)
@@ -341,15 +475,15 @@ class DesktopOrchestrator:
         configured = self.cfg.desktop.project_id or state.project_id
         if configured:
             project = self.client.read_project(configured)
-            if match_saved_project(self.cfg.root, [project]) is None:
-                raise OrchestrationError("configured saved Codex Project does not contain this path")
-            self.emit(f"saved project={configured}")
+            if str(project.get("id")) != configured:
+                raise OrchestrationError("App Server returned an unexpected configured Codex Project")
+            self.emit(f"App Server project={configured}; cwd={self.cfg.root}")
             return configured
         selected = match_saved_project(self.cfg.root, self.client.list_projects())
         if selected:
             self.emit(f"saved project={selected['id']}")
             return selected["id"]
-        self.emit("saved project=none; workers appear in Recents")
+        self.emit("App Server project=none; worker task remains bound to the canonical cwd")
         return None
 
     def _wait_for_initiator(self, state: RunState, thread_id: str, turn_id: str) -> None:
@@ -376,6 +510,7 @@ class DesktopOrchestrator:
         raise OrchestrationError("timed out waiting for durable completion of the initiating Codex turn")
 
     def _loop(self, state: RunState) -> int:
+        slot_release_deadline: float | None = None
         while True:
             if state.status in TERMINAL_STATUSES:
                 return 0 if state.status == "DONE" else 78
@@ -383,12 +518,139 @@ class DesktopOrchestrator:
                 raise PauseRequested("Pause requested")
             if state.phase == "WAITING_RATE_LIMIT":
                 self._wait_for_retry(state)
-            state = self._run_worker(state)
+            try:
+                state = self._run_worker(state)
+                slot_release_deadline = None
+            except ProjectSlotWriterBusy as exc:
+                state.worker_slot_cursor = max(0, state.worker_slot_cursor - 1)
+                state.worker_sequence = max(0, state.worker_sequence - 1)
+                state.attempt = max(0, state.attempt - 1)
+                state.current_thread_id = None
+                state.current_turn_id = None
+                state.status = "RUNNING"
+                state.phase = "WAITING_PROJECT_SLOT_RELEASE"
+                state.last_error = str(exc)
+                state.completed_at = None
+                self.store.save(state)
+                if slot_release_deadline is None:
+                    slot_release_deadline = (
+                        self.now_fn() + self.cfg.desktop.reconcile_timeout_seconds
+                    )
+                    self.emit(
+                        "Desktop still owns the reserved project slot; waiting for writer "
+                        f"release without creating another task: {exc}"
+                    )
+                if self.now_fn() >= slot_release_deadline:
+                    state.status = "WAITING"
+                    self.store.save(state)
+                    self.emit(
+                        "timed out waiting for Desktop writer release; the same slot is "
+                        "preserved for a later resume"
+                    )
+                    return 0
+                self.sleep_fn(min(1.0, max(0.05, slot_release_deadline - self.now_fn())))
+                state.phase = "PREPARING"
+                self.store.save(state)
+                continue
+            if state.status == "WAITING":
+                return 0
             if state.status in {"DONE", "BLOCKED"}:
                 return 0 if state.status == "DONE" else 78
 
+    def _activate_graph_task(self, state: RunState, task_id: str) -> None:
+        if not state.task_states:
+            return
+        current = TaskState(state.task_states[task_id])
+        if current is TaskState.RETRY_WAIT:
+            state.task_states = transition_task(
+                self.plan, state.task_states, task_id, TaskState.READY
+            )
+            current = TaskState.READY
+        elif current is TaskState.WAITING:
+            if not dependencies_eligible(self.plan, task_id, state.task_states):
+                raise OrchestrationError(
+                    f"task {task_id} is not dependency-eligible for App Server dispatch"
+                )
+            state.task_states = transition_task(
+                self.plan, state.task_states, task_id, TaskState.READY
+            )
+            current = TaskState.READY
+        if current is not TaskState.READY:
+            raise OrchestrationError(
+                f"task {task_id} cannot start from durable state {current.value}"
+            )
+        if state.active_task_ids:
+            raise OrchestrationError(
+                f"serial App Server dispatch found active tasks {state.active_task_ids}"
+            )
+        state.task_states = transition_task(
+            self.plan, state.task_states, task_id, TaskState.RUNNING
+        )
+        state.active_task_ids = [task_id]
+        state.task_attempts[task_id] = int(state.task_attempts.get(task_id, 0)) + 1
+        state.task_ready_since.pop(task_id, None)
+
+    def _retry_graph_task(self, state: RunState) -> None:
+        task_id = state.milestone_id
+        if not state.task_states or not task_id:
+            return
+        current = TaskState(state.task_states[task_id])
+        if current in {TaskState.RUNNING, TaskState.VERIFYING, TaskState.REVISING}:
+            state.task_states = transition_task(
+                self.plan, state.task_states, task_id, TaskState.RETRY_WAIT
+            )
+        state.active_task_ids = [
+            value for value in state.active_task_ids if value != task_id
+        ]
+        state.task_ready_since.pop(task_id, None)
+
+    def _complete_graph_task(self, state: RunState) -> None:
+        task_id = state.milestone_id
+        if not state.task_states or not task_id:
+            return
+        if TaskState(state.task_states[task_id]) in {
+            TaskState.WAITING,
+            TaskState.READY,
+            TaskState.RETRY_WAIT,
+        }:
+            # Compatibility with a v0.8 checkpoint written before graph state
+            # was synchronized with an already-started App Server turn.
+            self._activate_graph_task(state, task_id)
+        state.task_states = transition_task(
+            self.plan, state.task_states, task_id, TaskState.IMPLEMENTED
+        )
+        task = self.plan.task_map[task_id]
+        if task.verification.required:
+            state.task_states = transition_task(
+                self.plan, state.task_states, task_id, TaskState.VERIFYING
+            )
+            state.task_states = transition_task(
+                self.plan, state.task_states, task_id, TaskState.VERIFIED
+            )
+        else:
+            state.task_states = transition_task(
+                self.plan, state.task_states, task_id, TaskState.VERIFIED
+            )
+        state.active_task_ids = [
+            value for value in state.active_task_ids if value != task_id
+        ]
+
+    def _block_graph_task(self, state: RunState) -> None:
+        task_id = state.milestone_id
+        if not state.task_states or not task_id or task_id not in state.task_states:
+            return
+        current = TaskState(state.task_states[task_id])
+        if current not in {TaskState.VERIFIED, TaskState.BLOCKED, TaskState.CANCELLED}:
+            state.task_states = transition_task(
+                self.plan, state.task_states, task_id, TaskState.BLOCKED
+            )
+        state.active_task_ids = [
+            value for value in state.active_task_ids if value != task_id
+        ]
+
     def _run_worker(self, state: RunState) -> RunState:
         milestone = self.plan.milestones[state.milestone_index]
+        self._activate_graph_task(state, milestone.id)
         state.attempt += 1
         state.worker_sequence += 1
         state.current_thread_id = None
@@ -438,13 +700,16 @@ class DesktopOrchestrator:
         state.prompt_approx_tokens = (len(prompt) + 3) // 4
         state.memory_records_at_start = self.memory.record_count()
         state.relevant_memory_count = len(_bootstrap_memory(self.cfg, self.plan, state)[1])
-        model_title = (state.selected_model_key or "Host").title()
-        state.expected_thread_name = f"{self.cfg.desktop.title_prefix} · {milestone.id} · {model_title} · worker {state.worker_sequence} · {state.run_id[:8]}"
+        state.expected_thread_name = implementation_thread_title(
+            milestone.id,
+            milestone.title,
+            role_name=self.plan.role_map[milestone.role].name,
+        )
         state.creation_not_before = int(self.now_fn())
         state.phase = "CREATING_THREAD"
         self.store.save(state)
-        started = self.client.start_thread(cwd=self.cfg.root, permission_profile=self.cfg.desktop.permission_profile, project_id=self.project_id, model=state.selected_model_id)
-        state.current_thread_id = started["thread"]["id"]
+        started = self._claim_or_create_thread(state)
+        state.current_thread_id = str(started["thread"]["id"])
         state.phase = "THREAD_CREATED"
         state.worker_history.append({
             "worker_sequence": state.worker_sequence,
@@ -477,6 +742,15 @@ class DesktopOrchestrator:
         self.emit(f"Worker {state.worker_sequence} thread={state.current_thread_id}")
         return self._start_existing_thread(state, prompt, checkpoint_signature(self.cfg))
 
+    def _claim_or_create_thread(self, state: RunState) -> dict[str, Any]:
+        return self.client.start_thread(
+            cwd=self.cfg.root,
+            permission_profile=self.cfg.desktop.permission_profile,
+            project_id=self.project_id,
+            model=state.selected_model_id,
+            plugin_root=installed_plugin_root(self.cfg.skill_path),
+        )
+
     def _start_existing_thread(self, state: RunState, prompt: str | None = None, before: dict[str, str] | None = None) -> RunState:
         if not state.current_thread_id or not state.client_user_message_id:
             raise OrchestrationError("cannot start recovered worker without durable IDs")
@@ -487,7 +761,16 @@ class DesktopOrchestrator:
         state.checkpoint_before = before
         state.phase = "STARTING_TURN"
         self.store.save(state)
-        result = self.client.start_turn(thread_id=state.current_thread_id, prompt=prompt, effort=state.selected_reasoning, client_user_message_id=state.client_user_message_id, skill_name=self.cfg.skill_name, skill_path=self.cfg.skill_path)
+        turn_args: dict[str, Any] = {
+            "thread_id": state.current_thread_id,
+            "prompt": prompt,
+            "effort": state.selected_reasoning,
+            "client_user_message_id": state.client_user_message_id,
+            "skill_name": self.cfg.skill_name,
+            "skill_path": self.cfg.skill_path,
+            "cwd": self.cfg.root,
+        }
+        result = self.client.start_turn(**turn_args)
         state.current_turn_id = result["turn"]["id"]
         state.phase = "RUNNING_TURN"
         self._update_worker_history(state, turn_id=state.current_turn_id, status="RUNNING")
@@ -517,6 +800,9 @@ class DesktopOrchestrator:
             raise OrchestrationError("built-in Project Memory MCP is missing from the worker thread")
         if server.get("runtimeStatus") != "connected":
             raise OrchestrationError(f"built-in Project Memory MCP is not connected: {server.get('runtimeStatus')}")
+        expected_plugin_id = installed_plugin_id(installed_plugin_root(self.cfg.skill_path))
+        if server.get("pluginId") != expected_plugin_id:
+            raise OrchestrationError("built-in Project Memory MCP lost installed-plugin provenance")
         missing = REQUIRED_MEMORY_TOOLS - set((server.get("tools") or {}).keys())
         if missing:
             raise OrchestrationError(f"built-in Project Memory MCP is missing tools: {sorted(missing)}")
@@ -532,7 +818,31 @@ class DesktopOrchestrator:
                 state.last_worker_status = "RATE_LIMITED"
                 self._update_worker_history(state, status="RATE_LIMITED", completed_at=utc_now())
                 self._retire_current_thread(state)
+                self._retry_graph_task(state)
                 self._schedule_rate_limit(state, error)
+                return state
+            if turn.get("status") == "interrupted" and interrupted_turn_is_pristine(
+                self.cfg,
+                turn,
+                before,
+                memory=self.memory,
+                memory_audit_before=state.memory_audit_before or 0,
+            ):
+                state.last_worker_status = "INTERRUPTED_NO_CHANGES"
+                self._update_worker_history(
+                    state,
+                    status=state.last_worker_status,
+                    completed_at=utc_now(),
+                )
+                self._retire_current_thread(state)
+                self._retry_graph_task(state)
+                state.checkpoint_before = None
+                state.memory_audit_before = None
+                state.last_error = None
+                state.status = "RUNNING"
+                state.phase = "PREPARING"
+                self.store.save(state)
+                self.emit("interrupted worker had no tool activity or durable changes; retrying the same milestone in a fresh worker")
                 return state
             state.last_worker_status = str(turn.get("status") or "FAILED").upper()
             self._update_worker_history(state, status=state.last_worker_status, completed_at=utc_now())
@@ -559,6 +869,9 @@ class DesktopOrchestrator:
             evidence_ids=[item["id"] for item in completion_evidence],
         )
         self.emit(f"Worker {state.worker_sequence} completed with {worker_status}")
+        if worker_status == "DONE" and state.milestone_index + 1 < len(self.plan.milestones):
+            self._block(state, "non-final task returned DONE instead of ROTATE")
+            return state
         if self.cfg.auto_commit:
             self._git_checkpoint(state, worker_status)
         state.checkpoint_before = None
@@ -569,13 +882,19 @@ class DesktopOrchestrator:
         state.reset_at = None
         state.last_error = None
         if worker_status in {"ROTATE", "DONE"}:
+            self._complete_graph_task(state)
             self.memory.mark_milestone_complete(
                 milestone_id=state.milestone_id or self.plan.milestones[state.milestone_index].id,
                 run_id=state.run_id,
                 worker_sequence=state.worker_sequence,
             )
             completed = state.milestone_index + 1
-            mark_roadmap(self.cfg.root, self.plan, completed)
+            mark_roadmap(
+                self.cfg.root,
+                self.plan,
+                completed,
+                language=self.cfg.language,
+            )
         self.memory.render_views()
         if worker_status == "ROTATE":
             if state.milestone_index + 1 >= len(self.plan.milestones):
@@ -591,11 +910,17 @@ class DesktopOrchestrator:
             state.capability_escalated = False
             state.capability_escalation_reason = None
             state.attempt = 0
-            select_milestone(self.cfg.state_dir, self.plan, state.milestone_index)
+            select_milestone(
+                self.cfg.state_dir,
+                self.plan,
+                state.milestone_index,
+                language=self.cfg.language,
+            )
             state.phase = "PREPARING"
             self.store.save(state)
             return state
         if worker_status == "REQUIRE_COMPUTER_USE":
+            self._retry_graph_task(state)
             state.capability_escalated = True
             state.capability_escalation_reason = computer_use_reason
             state.selected_model_key = None
@@ -610,6 +935,7 @@ class DesktopOrchestrator:
             if higher is None:
                 self._block(state, "worker requested ESCALATE at max; user input is required")
                 return state
+            self._retry_graph_task(state)
             state.selected_reasoning = higher
             state.selected_model_key = None
             state.selected_model_id = None
@@ -632,8 +958,14 @@ class DesktopOrchestrator:
         current.update(updates)
 
     def _retire_current_thread(self, state: RunState) -> None:
-        if state.current_thread_id and state.current_thread_id not in state.previous_thread_ids:
-            state.previous_thread_ids.append(state.current_thread_id)
+        thread_id = state.current_thread_id
+        if thread_id and thread_id not in state.previous_thread_ids:
+            state.previous_thread_ids.append(thread_id)
+        if thread_id and self.client and hasattr(self.client, "unsubscribe_thread"):
+            try:
+                self.client.unsubscribe_thread(thread_id)
+            except AppServerError as exc:
+                self.emit(f"could not release worker task subscription immediately: {exc}")
         state.current_thread_id = None
         state.current_turn_id = None
         self.store.save(state)
@@ -677,6 +1009,15 @@ class DesktopOrchestrator:
 
     def _reconcile(self, state: RunState) -> RunState:
         self.emit(f"recovering phase={state.phase}")
+        if state.phase in {"WAITING_PROJECT_SLOT", "WAITING_PROJECT_SLOT_RELEASE"}:
+            if state.worker_slot_cursor >= len(self.cfg.desktop.worker_thread_ids):
+                state.status = "WAITING"
+                self.store.save(state)
+                return state
+            state.status = "RUNNING"
+            state.phase = "PREPARING"
+            self.store.save(state)
+            return state
         if state.phase == "WAITING_RATE_LIMIT":
             return state
         if state.phase == "CREATING_THREAD":
@@ -694,6 +1035,39 @@ class DesktopOrchestrator:
                 state.phase = "PREPARING"
                 self.store.save(state)
                 return state
+        if state.phase in {"CLAIMING_PROJECT_SLOT", "PREPARING_PROJECT_SLOT"}:
+            if not state.current_thread_id:
+                self._block(state, "project-slot recovery lacks current_thread_id")
+                return state
+            started = self.client.resume_thread(state.current_thread_id)
+            thread = started.get("thread") or {}
+            needs_handoff = Path(str(thread.get("cwd") or "")).resolve() != self.cfg.root
+            if state.selected_model_id and thread.get("model") != state.selected_model_id:
+                needs_handoff = True
+            if needs_handoff:
+                handoff = self.client.start_plain_turn(
+                    thread_id=state.current_thread_id,
+                    prompt=WORKSPACE_HANDOFF_PROMPT,
+                    effort=state.selected_reasoning,
+                    client_user_message_id=str(uuid.uuid4()),
+                    cwd=self.cfg.root,
+                    permission_profile=self.cfg.desktop.permission_profile,
+                    model=state.selected_model_id,
+                )
+                completed = self.client.wait_for_turn(
+                    state.current_thread_id,
+                    handoff["turn"]["id"],
+                    timeout=self.cfg.desktop.reconcile_timeout_seconds,
+                    pause_requested=self.store.pause_requested,
+                )
+                if completed.turn.get("status") != "completed" or final_agent_message(completed.turn).strip() != WORKSPACE_HANDOFF_OK:
+                    self._block(state, "project-slot recovery workspace handoff failed")
+                    return state
+            state.phase = "VERIFYING_MEMORY_MCP"
+            self.store.save(state)
+            self._verify_memory_mcp(state.current_thread_id)
+            self.client.name_thread(state.current_thread_id, state.expected_thread_name)
+            return self._start_existing_thread(state)
         if state.phase in {"THREAD_CREATED", "VERIFYING_MEMORY_MCP", "STARTING_TURN", "RUNNING_TURN"}:
             if not state.current_thread_id:
                 self._block(state, "recovery lacks current_thread_id")
@@ -734,6 +1108,7 @@ class DesktopOrchestrator:
             raise OrchestrationError("auto_commit was explicitly enabled but commit failed; Git config was not changed: " + commit.stderr.strip())
 
     def _block(self, state: RunState, reason: str, *, approval: dict[str, Any] | None = None) -> int:
+        self._block_graph_task(state)
         state.status = "BLOCKED"
         state.phase = "BLOCKED"
         state.last_error = reason
@@ -748,3 +1123,8 @@ def state_summary(state: RunState) -> str:
     data = asdict(state)
     data.pop("last_final_message", None)
     return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+# Compatibility alias for v0.8 imports. New callers should name the explicit
+# headless boundary rather than implying that App Server owns a Desktop task.
+DesktopOrchestrator = HeadlessAppServerOrchestrator

@@ -50,14 +50,20 @@ class McpTests(unittest.TestCase):
         tools = {item["name"]: item for item in responses[1]["result"]["tools"]}
         self.assertFalse(tools["memory"]["annotations"]["readOnlyHint"])
         self.assertTrue(all(not item["annotations"]["openWorldHint"] for item in tools.values()))
-        self.assertTrue(all(not item["annotations"]["destructiveHint"] for item in tools.values()))
+        self.assertTrue(tools["memory"]["annotations"]["destructiveHint"])
         branches = tools["memory"]["inputSchema"]["oneOf"]
         actions = {branch["properties"]["operation"]["const"] for branch in branches}
-        self.assertEqual(len(actions), 14)
+        self.assertEqual(len(actions), 16)
         self.assertIn("record_verified_fact", actions)
         identity = responses[2]["result"]["structuredContent"]
         self.assertEqual(Path(identity["project_root"]), root.resolve())
         self.assertFalse(identity["initialized"])
+
+    def test_plugin_requests_supported_persistent_approval_mode(self):
+        for profile in ("codex-autopilot-adaptive", "codex-autopilot-host-settings"):
+            config = json.loads((ROOT / "plugins" / profile / ".mcp.json").read_text(encoding="utf-8"))
+            tool = config["mcpServers"]["codex_autopilot_memory"]["tools"]["memory"]
+            self.assertEqual(tool["approval_mode"], "auto")
 
     def test_server_restarts_cleanly_after_process_exit(self):
         root = git_project()

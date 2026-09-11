@@ -65,24 +65,57 @@ cat > "$target/bin/codex-autopilot" <<'EOF'
 set -eu
 base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 export PYTHONPATH="$base/runtime/src"
-export CODEX_AUTOPILOT_INSTALL_ROOT=$(CDPATH= cd -- "$base/.." && pwd)
-export CODEX_AUTOPILOT_RUNTIME="$base/bin/codex-autopilot"
+install_root=$(CDPATH= cd -- "$base/.." && pwd)
+export CODEX_AUTOPILOT_INSTALL_ROOT="$install_root"
+# Keep the externally visible launcher stable across version refreshes. Hook
+# trust and per-tool approval are bound to their configured command, so exposing
+# the resolved version directory would needlessly invalidate them on upgrade.
+export CODEX_AUTOPILOT_RUNTIME="$install_root/current/bin/codex-autopilot"
 exec "$base/venv/bin/python" -m codex_autopilot.cli "$@"
 EOF
 chmod 755 "$target/bin/codex-autopilot"
 "$python_bin" - "$target" <<'PY'
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
 
 target = Path(sys.argv[1]).resolve()
-runtime = str(target / "bin" / "codex-autopilot")
+# The `current` symlink is updated atomically below. Persist this stable path in
+# plugin definitions instead of the versioned target so unchanged hooks retain
+# the same command and hash after an Autopilot update.
+runtime = str(target.parent / "current" / "bin" / "codex-autopilot")
+cachebuster = datetime.now(timezone.utc).strftime("%Y%m%d.%H%M%S")
 for path in target.glob("plugins/*/.mcp.json"):
     payload = json.loads(path.read_text(encoding="utf-8"))
     server = payload["mcpServers"]["codex_autopilot_memory"]
     if server.get("command") != "__CODEX_AUTOPILOT_RUNTIME__":
         raise SystemExit(f"unexpected MCP launcher placeholder in {path}")
     server["command"] = runtime
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+for path in target.glob("plugins/*/hooks/hooks.json"):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    replacements = 0
+    for groups in (payload.get("hooks") or {}).values():
+        for group in groups:
+            for hook in group.get("hooks") or []:
+                if hook.get("type") != "command":
+                    continue
+                expected = '"__CODEX_AUTOPILOT_RUNTIME__" hook'
+                if hook.get("command") != expected:
+                    raise SystemExit(f"unexpected hook launcher placeholder in {path}")
+                hook["command"] = f'"{runtime}" hook'
+                replacements += 1
+    if replacements == 0:
+        raise SystemExit(f"no command hook launcher placeholders in {path}")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+for path in target.glob("plugins/*/.codex-plugin/plugin.json"):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    base_version = str(payload["version"]).split("+", 1)[0]
+    # Use an ordered SemVer prerelease, not build metadata. Codex compares the
+    # marketplace version before refreshing its cache; build metadata alone is
+    # intentionally ignored by SemVer precedence and left a stale .mcp.json.
+    payload["version"] = f"{base_version}.local.{cachebuster}"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
 find "$target/plugins" -type f \( -name codex-autopilot-hook -o -path '*/scripts/codex-autopilot' \) -exec chmod 755 {} \;
@@ -102,15 +135,29 @@ for legacy in astra-autopilot-adaptive astra-autopilot-inherit; do
   fi
 done
 
-"$codex_bin" plugin remove "codex-autopilot-adaptive@codex-autopilot-local" >/dev/null 2>&1 || true
-"$codex_bin" plugin remove "codex-autopilot-host-settings@codex-autopilot-local" >/dev/null 2>&1 || true
-"$codex_bin" plugin marketplace remove codex-autopilot-local >/dev/null 2>&1 || true
-"$codex_bin" plugin marketplace add "$install_root/current" >/dev/null
+if ! "$codex_bin" plugin marketplace list --json 2>/dev/null | "$python_bin" -c '
+import json, sys
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if any(item.get("name") == "codex-autopilot-local" for item in payload.get("marketplaces", [])) else 1)
+'; then
+  "$codex_bin" plugin marketplace add "$install_root/current" >/dev/null
+fi
+
+# `plugin remove` deletes Codex's supported per-tool approval override. Keep the
+# selected plugin installed and let its cachebuster version refresh the cache.
+# Removing only the inactive profile is intentional when the user switches.
+case "$profile" in
+  adaptive) "$codex_bin" plugin remove "codex-autopilot-host-settings@codex-autopilot-local" >/dev/null 2>&1 || true ;;
+  host-settings) "$codex_bin" plugin remove "codex-autopilot-adaptive@codex-autopilot-local" >/dev/null 2>&1 || true ;;
+esac
 "$codex_bin" plugin add "codex-autopilot-$profile@codex-autopilot-local" >/dev/null
 
 echo "Codex Autopilot $version installed with the $profile profile."
-echo "Codex safety requires one trust review for the plugin hooks: open /hooks in Codex and trust Codex Autopilot."
+echo "Codex safety requires one trust review after install or a real hook-definition change: open /hooks in Codex and trust the current Codex Autopilot hooks."
 echo "Start a fresh Codex task, then say: Use Codex Autopilot for this project."
-echo "On first use, Codex will ask about the single local memory tool. Choose Always only if you trust this installed plugin; Autopilot never answers for you."
+echo "On first use, a dedicated preflight task probes the single local memory tool before Worker 1. Choose Always only if you trust this installed plugin; Autopilot never answers for you."
 echo "The target Git project may be different from the initiating task directory."
 echo "The first run performs a deterministic preflight and names any exact permission it needs before creating run-state."

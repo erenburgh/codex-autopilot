@@ -12,12 +12,25 @@ import time
 from . import __version__
 from .appserver import AppServerClient
 from .bootstrap import initialize_project, purge_project_state
-from .config import STATE_DIR_NAME, load_config
-from .control import arm, find_project_root, handle_prompt_hook, handle_stop_hook, pid_alive, spawn_dispatcher, status_text, wait_for_dispatcher
+from .config import DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE, STATE_DIR_NAME, append_worker_slot, load_config
+from .control import arm, find_project_root, handle_interrupt_hook, handle_post_tool_hook, handle_prompt_hook, handle_stop_hook, pid_alive, reactivate_desktop_relay_owner, recreate_archived_desktop_retry, restore_app_server_transport, spawn_automatic_app_server_relay, spawn_dispatcher, status_text, wait_for_dispatcher
+from .hook_trust import HookPreflightError, HookTrustApprovalRequired
+from .lifecycle import (
+    adopt_automatic_dispatcher_successor,
+    complete_desktop_worker,
+    confirm_prep_app_server_exit,
+    pause_desktop_run,
+    record_automatic_app_server_exit,
+    record_desktop_failure,
+    reconcile_desktop_thread_identity,
+    relay_session_status,
+    run_automatic_app_server_turn,
+)
+from .language import DEFAULT_LANGUAGE, normalize_language
 from .models import MODEL_IDS, PUBLIC_REASONING
-from .orchestrator import DesktopOrchestrator
+from .orchestrator import HeadlessAppServerOrchestrator
 from .plan import validate_plan
-from .preflight import PreflightApprovalRequired, PreflightError, run_preflight
+from .preflight import PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, run_preflight
 from .run_state import StateStore
 from .smoke import run_desktop_smoke
 
@@ -32,24 +45,98 @@ def parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--profile", choices=["adaptive", "host-settings"])
     bootstrap.add_argument("--skill-path", type=Path)
     bootstrap.add_argument("--replace", action="store_true")
+    bootstrap.add_argument("--language", default=DEFAULT_LANGUAGE)
+    bootstrap.add_argument("--app-server-project-id")
+    bootstrap.add_argument("--desktop-project-id")
+    bootstrap.add_argument("--worker-thread-id", action="append", default=[])
+    bootstrap.add_argument(
+        "--worker-surface",
+        choices=sorted({DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE}),
+        default=HEADLESS_APP_SERVER_SURFACE,
+    )
     start_skill = sub.add_parser("start-skill", help=argparse.SUPPRESS)
     start_skill.add_argument("--project", type=Path, default=Path.cwd())
     start_skill.add_argument("--plan-file", type=Path, required=True)
     start_skill.add_argument("--replace", action="store_true")
+    start_skill.add_argument("--language", default=DEFAULT_LANGUAGE)
+    start_skill.add_argument("--app-server-project-id")
+    start_skill.add_argument("--desktop-project-id")
+    start_skill.add_argument("--worker-thread-id", action="append", default=[])
+    start_skill.add_argument(
+        "--worker-surface",
+        choices=sorted({DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE}),
+        default=HEADLESS_APP_SERVER_SURFACE,
+    )
+    start_skill.add_argument("--approve-project-memory-always", action="store_true", help=argparse.SUPPRESS)
     preflight = sub.add_parser("preflight", help="validate a target before creating Autopilot state")
     preflight.add_argument("--project", type=Path, default=Path.cwd())
     preflight.add_argument("--plan-file", type=Path, required=True)
     preflight.add_argument("--profile", choices=["adaptive", "host-settings"])
     preflight.add_argument("--skill-path", type=Path)
+    preflight.add_argument("--approve-project-memory-always", action="store_true", help=argparse.SUPPRESS)
+    preflight.add_argument("--language", default=DEFAULT_LANGUAGE)
+    preflight.add_argument("--app-server-project-id")
+    preflight.add_argument("--desktop-project-id")
+    preflight.add_argument("--worker-thread-id", action="append", default=[])
+    preflight.add_argument(
+        "--worker-surface",
+        choices=sorted({DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE}),
+        default=HEADLESS_APP_SERVER_SURFACE,
+    )
+    add_slot = sub.add_parser("add-worker-slot", help="register one app-created Desktop project worker task")
+    add_slot.add_argument("--project", type=Path, default=Path.cwd())
+    add_slot.add_argument("--desktop-project-id", required=True)
+    add_slot.add_argument("--thread-id", required=True)
     armed = sub.add_parser("arm", help=argparse.SUPPRESS)
     armed.add_argument("--project", type=Path, default=Path.cwd())
-    run = sub.add_parser("run", help="advanced foreground dispatcher")
+    run = sub.add_parser("run", help="advanced foreground headless App Server dispatcher")
     run.add_argument("--project", type=Path, default=Path.cwd())
     run.add_argument("--detach", action="store_true")
+    restore = sub.add_parser(
+        "restore-app-server",
+        help="restore an uncreated Desktop reservation to controller-owned App Server dispatch",
+    )
+    restore.add_argument("--project", type=Path, default=Path.cwd())
     dispatch = sub.add_parser("_dispatch", help=argparse.SUPPRESS)
     dispatch.add_argument("--project", type=Path, required=True)
     dispatch.add_argument("--initiator-thread")
     dispatch.add_argument("--initiator-turn")
+    automatic_relay = sub.add_parser("_relay_dispatch", help=argparse.SUPPRESS)
+    automatic_relay.add_argument("--project", type=Path, required=True)
+    automatic_relay.add_argument("--token", required=True)
+    automatic_relay.add_argument("--initiator-thread", required=True)
+    automatic_relay.add_argument("--initiator-turn", required=True)
+    recreate_archived = sub.add_parser("recreate-archived-retry", help=argparse.SUPPRESS)
+    recreate_archived.add_argument("--project", type=Path, required=True)
+    recreate_archived.add_argument("--reservation-token", required=True)
+    recreate_archived.add_argument("--archived-thread-id", required=True)
+    recreate_archived.add_argument("--predecessor-thread-id", required=True)
+    relay_status = sub.add_parser("relay-status", help=argparse.SUPPRESS)
+    relay_status.add_argument("--project", type=Path, default=Path.cwd())
+    relay_status.add_argument("--token", required=True)
+    relay_fail = sub.add_parser("relay-fail", help=argparse.SUPPRESS)
+    relay_fail.add_argument("--project", type=Path, default=Path.cwd())
+    relay_fail.add_argument("--token", required=True)
+    relay_fail.add_argument("--reason", required=True)
+    relay_fail.add_argument("--definitive", action="store_true")
+    relay_fail.add_argument("--rate-limited", action="store_true")
+    relay_fail.add_argument("--reset-at", type=int)
+    relay_complete = sub.add_parser("relay-complete", help=argparse.SUPPRESS)
+    relay_complete.add_argument("--project", type=Path, default=Path.cwd())
+    relay_complete.add_argument("--thread-id", required=True)
+    relay_complete.add_argument("--turn-id", required=True)
+    relay_complete.add_argument("--status", choices=["ROTATE", "DONE", "BLOCKED", "ESCALATE"], required=True)
+    reconcile_identity = sub.add_parser("reconcile-thread-identity", help=argparse.SUPPRESS)
+    reconcile_identity.add_argument("--project", type=Path, default=Path.cwd())
+    reconcile_identity.add_argument("--token", required=True)
+    reconcile_identity.add_argument("--task-id", required=True)
+    reconcile_identity.add_argument("--previous-thread-id", required=True)
+    reconcile_identity.add_argument("--current-thread-id", required=True)
+    relay_rearm = sub.add_parser("devops-rearm-relay-owner", help=argparse.SUPPRESS)
+    relay_rearm.add_argument("--project", type=Path, default=Path.cwd())
+    relay_rearm.add_argument("--incident-id")
+    prep_exit = sub.add_parser("confirm-prep-exit", help=argparse.SUPPRESS)
+    prep_exit.add_argument("--project", type=Path, default=Path.cwd())
     for name in ("status", "stop", "resume", "logs"):
         item = sub.add_parser(name)
         item.add_argument("--project", type=Path, default=Path.cwd())
@@ -82,42 +169,184 @@ def _profile_and_skill(args) -> tuple[str, Path]:
     return profile, skill
 
 
+def _relay_executor_thread_id() -> str:
+    thread_id = str(os.environ.get("CODEX_THREAD_ID") or "").strip()
+    if not thread_id:
+        raise RuntimeError(
+            "Desktop relay requires the current CODEX_THREAD_ID; refusing an unowned mutation"
+        )
+    return thread_id
+
+
+def _run_automatic_relay_dispatch(
+    cfg,
+    *,
+    token: str,
+    owner: str,
+    owner_turn: str,
+) -> int:
+    """Run the v0.7-style local loop with one App Server process per task."""
+
+    while True:
+        dispatcher_log = (
+            cfg.state_dir / "logs" / f"app-server-dispatcher-{token}.jsonl"
+        )
+        client = AppServerClient(
+            cfg.desktop.binary,
+            dispatcher_log,
+            originator="codex_work_desktop",
+        )
+        with client:
+            outcome = run_automatic_app_server_turn(
+                cfg,
+                token,
+                initiator_thread_id=owner,
+                initiator_turn_id=owner_turn,
+                connected_client=client,
+            )
+        proc = client.proc
+        if proc is None or proc.poll() is None:
+            raise RuntimeError("per-task App Server process did not fully exit")
+        record_automatic_app_server_exit(
+            cfg,
+            token,
+            dispatcher_pid=os.getpid(),
+        )
+        if not outcome.descriptors:
+            return 0
+        if len(outcome.descriptors) == 1:
+            successor = outcome.descriptors[0]
+            owner, owner_turn = adopt_automatic_dispatcher_successor(
+                cfg,
+                completed_reservation_token=token,
+                successor_reservation_token=successor.reservation_token,
+            )
+            token = successor.reservation_token
+            continue
+        for descriptor in outcome.descriptors:
+            state = StateStore(cfg.state_dir).load()
+            session = next(
+                item
+                for item in state.worker_sessions
+                if item.get("reservation_token") == descriptor.reservation_token
+            )
+            relay_owner = str(session.get("relay_owner_thread_id") or "")
+            predecessor = next(
+                item
+                for item in reversed(state.worker_sessions)
+                if item.get("thread_id") == relay_owner
+                and item.get("status") == "COMPLETED"
+                and item.get("turn_id")
+            )
+            spawn_automatic_app_server_relay(
+                cfg.root,
+                reservation_token=descriptor.reservation_token,
+                initiator_thread_id=relay_owner,
+                initiator_turn_id=str(predecessor["turn_id"]),
+            )
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         if args.command in {"bootstrap", "start-skill", "preflight"}:
             profile, skill = _profile_and_skill(args)
+            language = normalize_language(args.language)
             raw = json.loads(args.plan_file.read_text(encoding="utf-8"))
             checked_plan = validate_plan(raw, profile)
-            run_preflight(args.project, plan=checked_plan, profile=profile, skill_path=skill)
+            worker_surface = args.worker_surface
+            preflight_result = run_preflight(
+                args.project,
+                plan=checked_plan,
+                profile=profile,
+                skill_path=skill,
+                initiating_root=Path.cwd(),
+                replace=getattr(args, "replace", False),
+                approve_project_memory_always=getattr(args, "approve_project_memory_always", False),
+                app_server_project_id=getattr(args, "app_server_project_id", None),
+                desktop_project_id=getattr(args, "desktop_project_id", None),
+                worker_thread_ids=tuple(getattr(args, "worker_thread_id", [])),
+                worker_surface=worker_surface,
+            )
             if args.command == "preflight":
                 return 0
             print("Starting Autopilot..." if args.command == "start-skill" else "Initializing Autopilot project...")
-            plan = initialize_project(args.project, args.plan_file, profile=profile, skill_path=skill, replace=args.replace)
+            plan = initialize_project(
+                args.project,
+                args.plan_file,
+                profile=profile,
+                skill_path=skill,
+                replace=args.replace,
+                language=language,
+                project_id=preflight_result.project_id,
+                desktop_project_id=getattr(args, "desktop_project_id", None),
+                worker_thread_ids=tuple(getattr(args, "worker_thread_id", [])),
+                worker_surface=worker_surface,
+            )
             if args.command == "start-skill":
                 state = StateStore(args.project.resolve() / STATE_DIR_NAME).load()
                 if state.status != "DONE":
                     arm(args.project)
             state = StateStore(args.project.resolve() / STATE_DIR_NAME).load()
-            armed_text = " Dispatcher launch armed for this turn's Stop hook." if args.command == "start-skill" and state.status != "DONE" else ""
+            surface = load_config(args.project).runtime.worker_surface
+            launch_name = "Desktop reservation" if surface == DESKTOP_OWNED_SURFACE else "Headless dispatcher"
+            armed_text = (
+                f" {launch_name} launch armed for this turn's Stop hook; the complete "
+                "scheduler-selected task chain inherits the run authorization."
+                if args.command == "start-skill" and state.status != "DONE"
+                else ""
+            )
             done_text = " Existing verified milestones already complete this plan." if state.status == "DONE" else ""
             print(f"Initialized {len(plan.milestones)} milestones ({profile}).{armed_text}{done_text}")
             return 0
         if args.command == "arm":
             arm(args.project)
-            print("Dispatcher launch armed for this turn's Stop hook.")
+            surface = load_config(args.project).runtime.worker_surface
+            name = "Desktop reservation" if surface == DESKTOP_OWNED_SURFACE else "Headless dispatcher"
+            print(f"{name} armed for this turn's Stop hook; the causal task performs the fixed relay.")
+            return 0
+        if args.command == "restore-app-server":
+            root = args.project.resolve()
+            task_id = restore_app_server_transport(root)
+            pid = spawn_dispatcher(root)
+            phase = wait_for_dispatcher(root, pid)
+            print(
+                f"Restored {task_id} to controller-owned App Server dispatch: "
+                f"pid {pid}, phase {phase}"
+            )
             return 0
         if args.command in {"run", "resume"}:
             root = args.project.resolve()
             store = StateStore(root / STATE_DIR_NAME)
+            cfg = load_config(root)
+            if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
+                raise RuntimeError(
+                    "desktop_owned run/resume is hook-owned; use the exact Codex "
+                    "Autopilot start/resume prompt so its trusted Stop hook launches "
+                    "the automatic App Server dispatcher"
+                )
             if args.command == "resume":
                 state = store.load()
                 if state.status == "DONE":
                     print("Already DONE.")
                     return 0
                 if state.status == "BLOCKED":
-                    print(f"BLOCKED: {state.last_error}", file=sys.stderr)
-                    return 78
+                    if (
+                        state.current_turn_id is None
+                        and "already has an active writer" in str(state.last_error or "").lower()
+                    ):
+                        state.worker_slot_cursor = max(0, state.worker_slot_cursor - 1)
+                        state.worker_sequence = max(0, state.worker_sequence - 1)
+                        state.attempt = max(0, state.attempt - 1)
+                        state.current_thread_id = None
+                        state.status = "WAITING"
+                        state.phase = "WAITING_PROJECT_SLOT_RELEASE"
+                        state.completed_at = None
+                        store.save(state)
+                    else:
+                        print(f"BLOCKED: {state.last_error}", file=sys.stderr)
+                        return 78
                 if pid_alive(state.dispatcher_pid):
                     print(f"Already running: pid {state.dispatcher_pid}")
                     return 0
@@ -131,14 +360,112 @@ def main(argv: list[str] | None = None) -> int:
                 phase = wait_for_dispatcher(root, pid)
                 print(f"Started: pid {pid}, phase {phase}")
                 return 0
-            return DesktopOrchestrator(load_config(root)).run()
+            return HeadlessAppServerOrchestrator(load_config(root)).run()
+        if args.command == "add-worker-slot":
+            root = args.project.resolve()
+            cfg = load_config(root)
+            store = StateStore(cfg.state_dir)
+            state = store.load()
+            if pid_alive(state.dispatcher_pid):
+                raise RuntimeError("stop or wait for the dispatcher before adding a Desktop worker slot")
+            added = append_worker_slot(root, args.thread_id, args.desktop_project_id)
+            if state.status == "WAITING" and state.phase == "WAITING_PROJECT_SLOT":
+                state.status = "READY"
+                state.phase = "PREPARING"
+                state.last_error = None
+                store.save(state)
+            print(f"Worker slot {'added' if added else 'already registered'}: {args.thread_id}")
+            return 0
         if args.command == "_dispatch":
-            return DesktopOrchestrator(load_config(args.project)).run(args.initiator_thread, args.initiator_turn)
+            cfg = load_config(args.project)
+            if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
+                raise RuntimeError(
+                    "desktop_owned production cannot run through the App Server dispatcher"
+                )
+            return HeadlessAppServerOrchestrator(cfg).run(args.initiator_thread, args.initiator_turn)
+        if args.command == "_relay_dispatch":
+            cfg = load_config(args.project)
+            return _run_automatic_relay_dispatch(
+                cfg,
+                token=args.token,
+                owner=args.initiator_thread,
+                owner_turn=args.initiator_turn,
+            )
+        if args.command == "devops-rearm-relay-owner":
+            print(json.dumps(reactivate_desktop_relay_owner(args.project, incident_id=args.incident_id), ensure_ascii=False))
+            return 0
+        if args.command == "recreate-archived-retry":
+            print(
+                json.dumps(
+                    recreate_archived_desktop_retry(
+                        args.project,
+                        reservation_token=args.reservation_token,
+                        archived_thread_id=args.archived_thread_id,
+                        predecessor_thread_id=args.predecessor_thread_id,
+                    ),
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        if args.command == "relay-status":
+            print(json.dumps(relay_session_status(load_config(args.project), args.token), ensure_ascii=False))
+            return 0
+        if args.command == "relay-fail":
+            descriptors = record_desktop_failure(
+                load_config(args.project),
+                args.token,
+                reason=args.reason,
+                definitive=args.definitive,
+                rate_limited=args.rate_limited,
+                reset_at=args.reset_at,
+                reserve_other_ready=False,
+                relay_executor_thread_id=_relay_executor_thread_id(),
+            )
+            print(json.dumps([item.to_dict() for item in descriptors], ensure_ascii=False))
+            return 0
+        if args.command == "relay-complete":
+            outcome = complete_desktop_worker(
+                load_config(args.project),
+                thread_id=args.thread_id,
+                turn_id=args.turn_id,
+                final_message=f"AUTOPILOT_STATUS: {args.status}",
+            )
+            print(json.dumps({"matched": outcome.matched, "status": outcome.worker_status, "done": outcome.run_done, "descriptors": [item.to_dict() for item in outcome.descriptors]}, ensure_ascii=False))
+            return 0
+        if args.command == "reconcile-thread-identity":
+            descriptor = reconcile_desktop_thread_identity(
+                load_config(args.project),
+                args.token,
+                previous_thread_id=args.previous_thread_id,
+                current_thread_id=args.current_thread_id,
+                expected_task_id=args.task_id,
+            )
+            print(
+                json.dumps(
+                    {
+                        "task_id": descriptor.task_id,
+                        "reservation_token": descriptor.reservation_token,
+                        "previous_thread_id": args.previous_thread_id,
+                        "current_thread_id": args.current_thread_id,
+                        "status": "ACTIVE",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        if args.command == "confirm-prep-exit":
+            confirm_prep_app_server_exit(load_config(args.project))
+            print("Bounded App Server preparation exit recorded.")
+            return 0
         if args.command == "status":
             print(status_text(args.project))
             return 0
         if args.command == "stop":
-            StateStore(load_config(args.project).state_dir).request_pause()
+            cfg = load_config(args.project)
+            if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
+                pause_desktop_run(cfg)
+            else:
+                StateStore(cfg.state_dir).request_pause()
             print("Pause requested.")
             return 0
         if args.command == "logs":
@@ -151,7 +478,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "hook":
             payload = json.load(sys.stdin)
             event = payload.get("hook_event_name")
-            result = handle_stop_hook(payload) if event == "Stop" else handle_prompt_hook(payload) if event == "UserPromptSubmit" else {}
+            result = handle_stop_hook(payload) if event == "Stop" else handle_post_tool_hook(payload) if event == "PostToolUse" else handle_prompt_hook(payload) if event == "UserPromptSubmit" else handle_interrupt_hook(payload) if event == "Interrupt" else {}
             print(json.dumps(result, ensure_ascii=False))
             return 0
         if args.command == "test":
@@ -164,10 +491,10 @@ def main(argv: list[str] | None = None) -> int:
             return memory_mcp_main([])
         if args.command == "uninstall":
             return uninstall(args)
-    except PreflightApprovalRequired as exc:
+    except (PreflightApprovalRequired, ProjectMemoryApprovalRequired, HookTrustApprovalRequired) as exc:
         print(f"codex-autopilot: {exc}", file=sys.stderr)
         return exc.exit_code
-    except (PreflightError, ValueError, RuntimeError, FileNotFoundError, json.JSONDecodeError) as exc:
+    except (PreflightError, HookPreflightError, ValueError, RuntimeError, FileNotFoundError, json.JSONDecodeError) as exc:
         print(f"codex-autopilot: {exc}", file=sys.stderr)
         return 2
     return 2

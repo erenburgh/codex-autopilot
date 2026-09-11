@@ -94,8 +94,7 @@ class LaunchRegistry:
         if project_hint is not None:
             hint = project_hint.expanduser().resolve()
             matching = [item for item in records if Path(str(item.get("project_root") or "")).expanduser().resolve() == hint]
-            if matching:
-                records = matching
+            records = matching
         if not records:
             return None
         if len(records) != 1:

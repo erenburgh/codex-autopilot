@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import base64
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -12,10 +14,12 @@ import re
 import shutil
 import sqlite3
 import tempfile
-from typing import Any, Iterator, Sequence
+import threading
+import time
+from typing import Any, Iterator, Mapping, Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CATEGORIES = {"truth", "decision", "constraint", "question", "observation"}
 ORIGINS = {"user", "agent", "project", "environment"}
 EVIDENCE_KINDS = {
@@ -39,14 +43,57 @@ PREFIXES = {
     "observation": "OBS",
     "evidence": "EVID",
     "conflict": "CONFLICT",
+    "verification": "VERIFY",
 }
 MAX_STATEMENT_CHARS = 8_000
 MAX_FIELD_CHARS = 16_000
 MAX_PAGE_SIZE = 20
+MEMORY_BUSY_TIMEOUT_MS = 10_000
+MEMORY_LOCK_POLL_SECONDS = 0.01
+_PROCESS_LOCKS_GUARD = threading.Lock()
+_PROCESS_LOCKS: dict[str, threading.RLock] = {}
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _process_lock(path: Path) -> threading.RLock:
+    """Return one process-local guard for every canonical Project Memory lock."""
+
+    key = str(path)
+    with _PROCESS_LOCKS_GUARD:
+        return _PROCESS_LOCKS.setdefault(key, threading.RLock())
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        try:
+            os.fsync(descriptor)
+        except OSError as exc:
+            if exc.errno not in {errno.EINVAL, getattr(errno, "ENOTSUP", -1)}:
+                raise
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, raw_temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.tmp-", dir=path.parent
+    )
+    temporary = Path(raw_temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 class MemoryError(RuntimeError):
@@ -54,6 +101,12 @@ class MemoryError(RuntimeError):
 
 
 class MemoryValidationError(MemoryError):
+    pass
+
+
+class MemoryBusyError(MemoryError):
+    """The bounded Project Memory lock wait expired."""
+
     pass
 
 
@@ -98,6 +151,10 @@ class ProjectMemory:
         self.path = (database or self.state_dir / "memory.sqlite3").expanduser().resolve()
         if not self._is_within(self.path, self.root):
             raise MemoryValidationError("memory database must be inside the target project")
+        self.lock_path = self.state_dir / "memory.lock"
+        self._process_lock = _process_lock(self.lock_path)
+        self._initialize_lock = threading.Lock()
+        self._initialized = False
 
     @staticmethod
     def _is_within(path: Path, root: Path) -> bool:
@@ -108,10 +165,44 @@ class ProjectMemory:
             return False
 
     def initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as db:
-            db.executescript(
-                """
+        if self._initialized:
+            return
+        initialize_locked = self._initialize_lock.acquire(
+            timeout=MEMORY_BUSY_TIMEOUT_MS / 1_000
+        )
+        if not initialize_locked:
+            raise MemoryBusyError(
+                "Project Memory initialization remained busy for "
+                f"{MEMORY_BUSY_TIMEOUT_MS} ms"
+            )
+        try:
+            if self._initialized:
+                return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._project_lock(exclusive=True):
+                db = self._open_connection()
+                try:
+                    db.execute("PRAGMA journal_mode=WAL")
+                    db.execute(
+                        "CREATE TABLE IF NOT EXISTS schema_meta "
+                        "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                    )
+                    current = db.execute(
+                        "SELECT value FROM schema_meta WHERE key='schema_version'"
+                    ).fetchone()
+                    if current and int(current[0]) not in {1, SCHEMA_VERSION}:
+                        raise MemoryError(
+                            f"unsupported Project Memory schema: {current[0]}"
+                        )
+                    stored_root = db.execute(
+                        "SELECT value FROM schema_meta WHERE key='project_root'"
+                    ).fetchone()
+                    if stored_root and Path(stored_root[0]).resolve() != self.root:
+                        raise MemoryValidationError(
+                            "memory database belongs to a different project root"
+                        )
+                    db.executescript(
+                        """BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS schema_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -180,6 +271,29 @@ class ProjectMemory:
                     source TEXT NOT NULL,
                     completed_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS verification_results (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    check_id TEXT NOT NULL,
+                    policy TEXT NOT NULL CHECK(policy IN ('self','deterministic','independent','auto')),
+                    verdict TEXT NOT NULL CHECK(verdict IN ('PASS','REVISE')),
+                    summary TEXT NOT NULL,
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    created_by TEXT NOT NULL,
+                    provider TEXT,
+                    provider_thread_id TEXT NOT NULL,
+                    provider_turn_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(task_id, check_id, provider_thread_id, provider_turn_id)
+                );
+                CREATE TABLE IF NOT EXISTS verification_result_evidence (
+                    verification_id TEXT NOT NULL REFERENCES verification_results(id),
+                    evidence_id TEXT NOT NULL REFERENCES evidence(id),
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(verification_id, evidence_id)
+                );
+                CREATE INDEX IF NOT EXISTS verification_results_task_idx
+                    ON verification_results(task_id, created_at, id);
                 CREATE TABLE IF NOT EXISTS conflicts (
                     id TEXT PRIMARY KEY,
                     existing_record_id TEXT NOT NULL REFERENCES records(id),
@@ -228,40 +342,129 @@ class ProjectMemory:
                     DELETE FROM records_fts WHERE record_id = old.id;
                 END;
                 """
-            )
-            current = db.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
-            if current and int(current[0]) != SCHEMA_VERSION:
-                raise MemoryError(f"unsupported Project Memory schema: {current[0]}")
-            db.execute(
-                "INSERT INTO schema_meta(key,value) VALUES('schema_version',?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (str(SCHEMA_VERSION),),
-            )
-            db.execute(
-                "INSERT INTO schema_meta(key,value) VALUES('project_root',?) "
-                "ON CONFLICT(key) DO NOTHING",
-                (str(self.root),),
-            )
-            stored_root = db.execute("SELECT value FROM schema_meta WHERE key='project_root'").fetchone()[0]
-            if Path(stored_root).resolve() != self.root:
-                raise MemoryValidationError("memory database belongs to a different project root")
+                    )
+                    db.execute(
+                        "INSERT INTO schema_meta(key,value) VALUES('project_root',?) "
+                        "ON CONFLICT(key) DO NOTHING",
+                        (str(self.root),),
+                    )
+                    db.execute(
+                        "INSERT INTO schema_meta(key,value) VALUES('schema_version',?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (str(SCHEMA_VERSION),),
+                    )
+                    db.commit()
+                except Exception:
+                    if db.in_transaction:
+                        db.rollback()
+                    raise
+                finally:
+                    db.close()
+            self._initialized = True
+        finally:
+            self._initialize_lock.release()
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        db = sqlite3.connect(self.path, timeout=10)
+    def _open_connection(self) -> sqlite3.Connection:
+        db = sqlite3.connect(
+            self.path,
+            timeout=MEMORY_BUSY_TIMEOUT_MS / 1_000,
+            isolation_level=None,
+        )
         try:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA foreign_keys=ON")
-            db.execute("PRAGMA journal_mode=WAL")
+            db.execute(f"PRAGMA busy_timeout={MEMORY_BUSY_TIMEOUT_MS}")
             db.execute("PRAGMA synchronous=FULL")
-            db.execute("PRAGMA busy_timeout=10000")
-            yield db
-            db.commit()
+            return db
         except Exception:
-            db.rollback()
-            raise
-        finally:
             db.close()
+            raise
+
+    @contextmanager
+    def _project_lock(
+        self,
+        *,
+        exclusive: bool,
+        timeout_ms: int = MEMORY_BUSY_TIMEOUT_MS,
+    ) -> Iterator[None]:
+        """Bound cross-process file operations around SQLite's own transactions."""
+
+        if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms < 0:
+            raise MemoryValidationError("memory lock timeout_ms must be a non-negative integer")
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + timeout_ms / 1_000
+        process_locked = self._process_lock.acquire(timeout=timeout_ms / 1_000)
+        if not process_locked:
+            mode = "exclusive" if exclusive else "shared"
+            raise MemoryBusyError(
+                f"Project Memory {mode} lock remained busy for {timeout_ms} ms"
+            )
+        try:
+            descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            locked = False
+            try:
+                while True:
+                    try:
+                        fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+                        locked = True
+                        break
+                    except OSError as exc:
+                        if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                            raise
+                        if time.monotonic() >= deadline:
+                            mode = "exclusive" if exclusive else "shared"
+                            raise MemoryBusyError(
+                                f"Project Memory {mode} lock remained busy for "
+                                f"{timeout_ms} ms"
+                            ) from exc
+                        time.sleep(MEMORY_LOCK_POLL_SECONDS)
+                yield
+            finally:
+                try:
+                    if locked:
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                finally:
+                    os.close(descriptor)
+        finally:
+            self._process_lock.release()
+
+    @contextmanager
+    def _connect(
+        self,
+        *,
+        write: bool = False,
+        acquire_lock: bool = True,
+    ) -> Iterator[sqlite3.Connection]:
+        lock = self._project_lock(exclusive=write) if acquire_lock else nullcontext()
+        with lock:
+            db: sqlite3.Connection | None = None
+            try:
+                db = self._open_connection()
+                db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+                yield db
+                db.commit()
+            except Exception as exc:
+                if db is not None and db.in_transaction:
+                    db.rollback()
+                error_code = getattr(exc, "sqlite_errorcode", None)
+                if (
+                    isinstance(exc, sqlite3.OperationalError)
+                    and (
+                        error_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+                        or "locked" in str(exc).lower()
+                        or "busy" in str(exc).lower()
+                    )
+                ):
+                    operation = "write" if write else "read"
+                    raise MemoryBusyError(
+                        f"Project Memory {operation} remained busy for "
+                        f"{MEMORY_BUSY_TIMEOUT_MS} ms"
+                    ) from exc
+                raise
+            finally:
+                if db is not None:
+                    db.close()
 
     @staticmethod
     def _required(value: object, name: str, maximum: int = MAX_FIELD_CHARS) -> str:
@@ -371,7 +574,7 @@ class ProjectMemory:
             raise MemoryValidationError("user_instruction evidence requires the instruction text")
         if kind == "environment_probe" and not self._optional(environment_probe, "environment_probe"):
             raise MemoryValidationError("environment_probe evidence requires probe details")
-        with self._connect() as db:
+        with self._connect(write=True) as db:
             evidence_id = self._next_id(db, "evidence")
             db.execute(
                 """INSERT INTO evidence(
@@ -409,7 +612,218 @@ class ProjectMemory:
                 (evidence_id,),
             ).fetchall()
             result["records"] = [dict(item) for item in links]
+            verifications = db.execute(
+                """SELECT verification_id FROM verification_result_evidence
+                   WHERE evidence_id=? ORDER BY verification_id""",
+                (evidence_id,),
+            ).fetchall()
+            result["verification_results"] = [
+                str(item["verification_id"]) for item in verifications
+            ]
             return result
+
+    def record_verification_result(
+        self,
+        *,
+        task_id: str,
+        check_id: str,
+        policy: str,
+        verdict: str,
+        summary: str,
+        evidence_ids: Sequence[str],
+        created_by: str,
+        provider_thread_id: str,
+        provider_turn_id: str,
+        details: Mapping[str, Any] | None = None,
+        provider: str | None = None,
+    ) -> dict[str, Any]:
+        """Record an evidence-linked verification outcome with causal identity.
+
+        Verification results are an audit ledger, not Truth records.  Replaying
+        the same task/check/thread/turn is idempotent only when every payload
+        field and evidence link is identical; conflicting replays fail closed.
+        """
+
+        self.initialize()
+        task = self._required(task_id, "task_id", 128)
+        check = self._required(check_id, "check_id", 128)
+        if policy not in {"self", "deterministic", "independent", "auto"}:
+            raise MemoryValidationError("unsupported verification policy")
+        outcome = self._required(verdict, "verdict", 16).upper()
+        if outcome not in {"PASS", "REVISE"}:
+            raise MemoryValidationError("verification verdict must be PASS or REVISE")
+        result_summary = self._required(summary, "summary")
+        actor = self._required(created_by, "created_by", 256)
+        thread_id = self._required(provider_thread_id, "provider_thread_id", 256)
+        turn_id = self._required(provider_turn_id, "provider_turn_id", 256)
+        evidence = tuple(str(item).strip() for item in evidence_ids)
+        if not evidence:
+            raise MemoryValidationError(
+                "verification results require at least one existing evidence ID"
+            )
+        if any(not item for item in evidence) or len(set(evidence)) != len(evidence):
+            raise MemoryValidationError("verification evidence IDs must be unique")
+        if details is not None and not isinstance(details, Mapping):
+            raise MemoryValidationError("verification details must be an object")
+        try:
+            details_json = json.dumps(
+                dict(details or {}), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+        except (TypeError, ValueError) as exc:
+            raise MemoryValidationError("verification details must be JSON-serializable") from exc
+        if len(details_json) > MAX_FIELD_CHARS:
+            raise MemoryValidationError(
+                f"verification details exceed {MAX_FIELD_CHARS} characters"
+            )
+        normalized_provider = self._optional(provider, "provider", 128)
+        verification_id: str
+        with self._connect(write=True) as db:
+            rows = db.execute(
+                f"SELECT id,kind FROM evidence WHERE id IN ({','.join('?' for _ in evidence)})",
+                evidence,
+            ).fetchall()
+            found = {str(row["id"]): str(row["kind"]) for row in rows}
+            missing = [item for item in evidence if item not in found]
+            if missing:
+                raise MemoryValidationError(f"unknown evidence: {', '.join(missing)}")
+            weak = [item for item, kind in found.items() if kind not in TRUTH_EVIDENCE_KINDS]
+            if weak:
+                raise MemoryValidationError(
+                    "migration/advisory material cannot support verification outcomes: "
+                    + ", ".join(weak)
+                )
+            existing = db.execute(
+                """SELECT * FROM verification_results
+                   WHERE task_id=? AND check_id=?
+                     AND provider_thread_id=? AND provider_turn_id=?""",
+                (task, check, thread_id, turn_id),
+            ).fetchone()
+            if existing is not None:
+                existing_evidence = {
+                    str(row["evidence_id"])
+                    for row in db.execute(
+                        """SELECT evidence_id FROM verification_result_evidence
+                           WHERE verification_id=?""",
+                        (existing["id"],),
+                    ).fetchall()
+                }
+                expected = {
+                    "policy": policy,
+                    "verdict": outcome,
+                    "summary": result_summary,
+                    "details_json": details_json,
+                    "created_by": actor,
+                    "provider": normalized_provider,
+                }
+                if any(existing[key] != value for key, value in expected.items()) or (
+                    existing_evidence != set(evidence)
+                ):
+                    raise MemoryValidationError(
+                        "verification causal identity already has a different payload"
+                    )
+                verification_id = str(existing["id"])
+            else:
+                verification_id = self._next_id(db, "verification")
+                now = utc_now()
+                db.execute(
+                    """INSERT INTO verification_results(
+                        id,task_id,check_id,policy,verdict,summary,details_json,
+                        created_by,provider,provider_thread_id,provider_turn_id,created_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        verification_id,
+                        task,
+                        check,
+                        policy,
+                        outcome,
+                        result_summary,
+                        details_json,
+                        actor,
+                        normalized_provider,
+                        thread_id,
+                        turn_id,
+                        now,
+                    ),
+                )
+                for evidence_id in evidence:
+                    db.execute(
+                        """INSERT INTO verification_result_evidence(
+                            verification_id,evidence_id,created_at
+                        ) VALUES(?,?,?)""",
+                        (verification_id, evidence_id, now),
+                    )
+                self._audit(
+                    db,
+                    "record",
+                    "verification",
+                    verification_id,
+                    actor,
+                    {
+                        "task_id": task,
+                        "check_id": check,
+                        "policy": policy,
+                        "verdict": outcome,
+                        "evidence_ids": list(evidence),
+                        "provider_thread_id": thread_id,
+                        "provider_turn_id": turn_id,
+                    },
+                )
+        return self.get_verification_result(verification_id)
+
+    def get_verification_result(self, verification_id: str) -> dict[str, Any]:
+        self.initialize()
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM verification_results WHERE id=?", (verification_id,)
+            ).fetchone()
+            if row is None:
+                raise MemoryValidationError(
+                    f"unknown verification result: {verification_id}"
+                )
+            result = dict(row)
+            result["details"] = json.loads(str(result.pop("details_json")))
+            result["evidence"] = [
+                dict(item)
+                for item in db.execute(
+                    """SELECT e.* FROM verification_result_evidence vre
+                       JOIN evidence e ON e.id=vre.evidence_id
+                       WHERE vre.verification_id=? ORDER BY e.created_at,e.id""",
+                    (verification_id,),
+                ).fetchall()
+            ]
+            return result
+
+    def list_verification_results(
+        self,
+        *,
+        task_id: str,
+        limit: int = 8,
+        cursor: str | None = None,
+    ) -> SearchPage:
+        self.initialize()
+        task = self._required(task_id, "task_id", 128)
+        if not isinstance(limit, int) or limit < 1 or limit > MAX_PAGE_SIZE:
+            raise MemoryValidationError(f"limit must be between 1 and {MAX_PAGE_SIZE}")
+        offset = self._decode_cursor(cursor)
+        with self._connect() as db:
+            rows = [
+                dict(row)
+                for row in db.execute(
+                    """SELECT id,task_id,check_id,policy,verdict,summary,created_by,
+                              provider,provider_thread_id,provider_turn_id,created_at
+                       FROM verification_results WHERE task_id=?
+                       ORDER BY created_at,id LIMIT ? OFFSET ?""",
+                    (task, limit + 1, offset),
+                ).fetchall()
+            ]
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        for row in page:
+            row["summary"] = str(row["summary"])[:1_000]
+        return SearchPage(
+            page,
+            self._encode_cursor(offset + limit) if has_more else None,
+        )
 
     def _create_record(
         self,
@@ -436,7 +850,7 @@ class ProjectMemory:
         if origin not in ORIGINS:
             raise MemoryValidationError(f"unsupported origin: {origin}")
         actor = self._required(created_by, "created_by", 256)
-        with self._connect() as db:
+        with self._connect(write=True) as db:
             if supersedes_id and not db.execute("SELECT 1 FROM records WHERE id=?", (supersedes_id,)).fetchone():
                 raise MemoryValidationError(f"unknown superseded record: {supersedes_id}")
             for evidence_id in evidence_ids:
@@ -482,6 +896,8 @@ class ProjectMemory:
     ) -> dict[str, Any]:
         if not evidence_ids:
             raise MemoryValidationError("NO EVIDENCE -> NO TRUTH: verified facts require evidence_ids")
+        if len(set(evidence_ids)) != len(evidence_ids):
+            raise MemoryValidationError("Truth evidence IDs must be unique")
         self.initialize()
         with self._connect() as db:
             rows = db.execute(
@@ -528,13 +944,51 @@ class ProjectMemory:
         return self._create_record(category="question", statement=question, origin="agent", status="open", created_by=created_by, needed_for=needed_for, scope=scope)
 
     def resolve_question(self, question_id: str, *, actor: str, reason: str, evidence_ids: Sequence[str] = ()) -> dict[str, Any]:
-        for evidence_id in evidence_ids:
-            self.attach_evidence(question_id, evidence_id, relation="supports", actor=actor)
-        return self._set_record_status(question_id, "question", "resolved", actor, reason)
+        self.initialize()
+        normalized_actor = self._required(actor, "actor", 256)
+        normalized_reason = self._required(reason, "reason")
+        evidence = tuple(str(item).strip() for item in evidence_ids)
+        if any(not item for item in evidence) or len(set(evidence)) != len(evidence):
+            raise MemoryValidationError("question evidence IDs must be unique")
+        with self._connect(write=True) as db:
+            row = db.execute(
+                "SELECT category FROM records WHERE id=?", (question_id,)
+            ).fetchone()
+            if not row or row["category"] != "question":
+                raise MemoryValidationError(f"{question_id} is not a question")
+            now = utc_now()
+            for evidence_id in evidence:
+                if not db.execute(
+                    "SELECT 1 FROM evidence WHERE id=?", (evidence_id,)
+                ).fetchone():
+                    raise MemoryValidationError(f"unknown evidence: {evidence_id}")
+                db.execute(
+                    """INSERT OR IGNORE INTO record_evidence(
+                        record_id,evidence_id,relation,created_at
+                    ) VALUES(?,?,?,?)""",
+                    (question_id, evidence_id, "supports", now),
+                )
+            db.execute(
+                "UPDATE records SET status='resolved',reason=?,updated_at=? WHERE id=?",
+                (normalized_reason, now, question_id),
+            )
+            self._audit(
+                db,
+                "status",
+                "question",
+                question_id,
+                normalized_actor,
+                {
+                    "status": "resolved",
+                    "reason": normalized_reason,
+                    "evidence_ids": list(evidence),
+                },
+            )
+        return self.get_record(question_id)
 
     def _set_record_status(self, record_id: str, category: str, status: str, actor: str, reason: str | None) -> dict[str, Any]:
         self.initialize()
-        with self._connect() as db:
+        with self._connect(write=True) as db:
             row = db.execute("SELECT category FROM records WHERE id=?", (record_id,)).fetchone()
             if not row or row["category"] != category:
                 raise MemoryValidationError(f"{record_id} is not a {category}")
@@ -546,22 +1000,34 @@ class ProjectMemory:
         if relation not in {"supports", "contradicts"}:
             raise MemoryValidationError("relation must be supports or contradicts")
         self.initialize()
-        with self._connect() as db:
+        normalized_actor = self._required(actor, "actor", 256)
+        with self._connect(write=True) as db:
             record = db.execute("SELECT category FROM records WHERE id=?", (record_id,)).fetchone()
             evidence = db.execute("SELECT kind FROM evidence WHERE id=?", (evidence_id,)).fetchone()
             if not record:
                 raise MemoryValidationError(f"unknown record: {record_id}")
             if not evidence:
                 raise MemoryValidationError(f"unknown evidence: {evidence_id}")
-            db.execute(
+            inserted = db.execute(
                 "INSERT OR IGNORE INTO record_evidence(record_id,evidence_id,relation,created_at) VALUES(?,?,?,?)",
                 (record_id, evidence_id, relation, utc_now()),
-            )
-            self._audit(db, "attach_evidence", record["category"], record_id, actor, {"evidence_id": evidence_id, "relation": relation})
-        conflict = None
-        if relation == "contradicts" and record["category"] == "truth":
-            conflict = self.open_conflict(existing_record_id=record_id, incoming_evidence_id=evidence_id, statement=f"Evidence {evidence_id} contradicts verified fact {record_id}.", created_by=actor)
-        return {"record": self.get_record(record_id), "conflict": conflict}
+            ).rowcount
+            self._audit(db, "attach_evidence", record["category"], record_id, normalized_actor, {"evidence_id": evidence_id, "relation": relation})
+            conflict_id = None
+            if inserted and relation == "contradicts" and record["category"] == "truth":
+                conflict_id = self._open_conflict_in_transaction(
+                    db,
+                    existing_record_id=record_id,
+                    incoming_evidence_id=evidence_id,
+                    statement=(
+                        f"Evidence {evidence_id} contradicts verified fact {record_id}."
+                    ),
+                    created_by=normalized_actor,
+                )
+        return {
+            "record": self.get_record(record_id),
+            "conflict": self.get_conflict(conflict_id) if conflict_id else None,
+        }
 
     def get_record(self, record_id: str) -> dict[str, Any]:
         self.initialize()
@@ -692,41 +1158,134 @@ class ProjectMemory:
             return int(db.execute("SELECT count(*) FROM records").fetchone()[0])
 
     def mark_milestone_complete(self, *, milestone_id: str, run_id: str, worker_sequence: int, source: str = "worker") -> dict[str, Any]:
-        evidence = self.milestone_evidence(milestone_id)
-        if not evidence:
-            raise MemoryValidationError(f"milestone {milestone_id} has no recorded evidence")
-        with self._connect() as db:
-            db.execute(
-                """INSERT INTO milestone_completions(milestone_id,run_id,worker_sequence,evidence_count,source,completed_at)
-                   VALUES(?,?,?,?,?,?) ON CONFLICT(milestone_id) DO UPDATE SET
-                   run_id=excluded.run_id,worker_sequence=excluded.worker_sequence,
-                   evidence_count=excluded.evidence_count,source=excluded.source,completed_at=excluded.completed_at""",
-                (milestone_id, run_id, worker_sequence, len(evidence), source, utc_now()),
-            )
-            self._audit(db, "complete", "milestone", milestone_id, f"dispatcher:{run_id}", {"evidence_count": len(evidence), "source": source})
-        self.backup()
-        return {"milestone_id": milestone_id, "evidence_count": len(evidence), "source": source}
+        self.initialize()
+        normalized_milestone = self._required(milestone_id, "milestone_id", 128)
+        normalized_run = self._required(run_id, "run_id", 256)
+        normalized_source = self._required(source, "source", 128)
+        if isinstance(worker_sequence, bool) or not isinstance(worker_sequence, int):
+            raise MemoryValidationError("worker_sequence must be an integer")
+        target = self.state_dir / "memory-backups" / "latest.sqlite3"
+        with self._project_lock(exclusive=True):
+            with self._connect(write=True, acquire_lock=False) as db:
+                evidence_count = int(
+                    db.execute(
+                        "SELECT count(*) FROM milestone_evidence WHERE milestone_id=?",
+                        (normalized_milestone,),
+                    ).fetchone()[0]
+                )
+                if not evidence_count:
+                    raise MemoryValidationError(
+                        f"milestone {normalized_milestone} has no recorded evidence"
+                    )
+                db.execute(
+                    """INSERT INTO milestone_completions(
+                        milestone_id,run_id,worker_sequence,evidence_count,source,completed_at
+                    ) VALUES(?,?,?,?,?,?) ON CONFLICT(milestone_id) DO UPDATE SET
+                    run_id=excluded.run_id,worker_sequence=excluded.worker_sequence,
+                    evidence_count=excluded.evidence_count,source=excluded.source,
+                    completed_at=excluded.completed_at""",
+                    (
+                        normalized_milestone,
+                        normalized_run,
+                        worker_sequence,
+                        evidence_count,
+                        normalized_source,
+                        utc_now(),
+                    ),
+                )
+                self._audit(
+                    db,
+                    "complete",
+                    "milestone",
+                    normalized_milestone,
+                    f"dispatcher:{normalized_run}",
+                    {"evidence_count": evidence_count, "source": normalized_source},
+                )
+            self._backup_locked(target)
+        return {
+            "milestone_id": normalized_milestone,
+            "evidence_count": evidence_count,
+            "source": normalized_source,
+        }
 
     def open_conflict(self, *, existing_record_id: str, statement: str, created_by: str, incoming_record_id: str | None = None, incoming_evidence_id: str | None = None) -> dict[str, Any]:
         self.initialize()
-        with self._connect() as db:
-            existing = db.execute("SELECT category FROM records WHERE id=?", (existing_record_id,)).fetchone()
-            if not existing or existing["category"] != "truth":
-                raise MemoryValidationError("conflicts must reference an existing Truth record")
-            if incoming_record_id and not db.execute("SELECT 1 FROM records WHERE id=?", (incoming_record_id,)).fetchone():
-                raise MemoryValidationError(f"unknown incoming record: {incoming_record_id}")
-            if incoming_evidence_id and not db.execute("SELECT 1 FROM evidence WHERE id=?", (incoming_evidence_id,)).fetchone():
-                raise MemoryValidationError(f"unknown incoming evidence: {incoming_evidence_id}")
-            conflict_id = self._next_id(db, "conflict")
-            now = utc_now()
-            db.execute(
-                "INSERT INTO conflicts(id,existing_record_id,incoming_record_id,incoming_evidence_id,statement,status,created_by,created_at) VALUES(?,?,?,?,?,'needs_review',?,?)",
-                (conflict_id, existing_record_id, incoming_record_id, incoming_evidence_id, self._required(statement, "statement"), self._required(created_by, "created_by", 256), now),
+        with self._connect(write=True) as db:
+            conflict_id = self._open_conflict_in_transaction(
+                db,
+                existing_record_id=existing_record_id,
+                statement=statement,
+                created_by=created_by,
+                incoming_record_id=incoming_record_id,
+                incoming_evidence_id=incoming_evidence_id,
             )
-            db.execute("UPDATE records SET status='disputed',updated_at=? WHERE id=?", (now, existing_record_id))
-            db.execute("INSERT INTO conflict_history(conflict_id,action,details,actor,created_at) VALUES(?,?,?,?,?)", (conflict_id, "opened", statement, created_by, now))
-            self._audit(db, "open", "conflict", conflict_id, created_by, {"existing_record_id": existing_record_id})
         return self.get_conflict(conflict_id)
+
+    def _open_conflict_in_transaction(
+        self,
+        db: sqlite3.Connection,
+        *,
+        existing_record_id: str,
+        statement: str,
+        created_by: str,
+        incoming_record_id: str | None = None,
+        incoming_evidence_id: str | None = None,
+    ) -> str:
+        existing = db.execute(
+            "SELECT category FROM records WHERE id=?", (existing_record_id,)
+        ).fetchone()
+        if not existing or existing["category"] != "truth":
+            raise MemoryValidationError(
+                "conflicts must reference an existing Truth record"
+            )
+        if incoming_record_id and not db.execute(
+            "SELECT 1 FROM records WHERE id=?", (incoming_record_id,)
+        ).fetchone():
+            raise MemoryValidationError(f"unknown incoming record: {incoming_record_id}")
+        if incoming_evidence_id and not db.execute(
+            "SELECT 1 FROM evidence WHERE id=?", (incoming_evidence_id,)
+        ).fetchone():
+            raise MemoryValidationError(
+                f"unknown incoming evidence: {incoming_evidence_id}"
+            )
+        conflict_id = self._next_id(db, "conflict")
+        now = utc_now()
+        normalized_statement = self._required(statement, "statement")
+        actor = self._required(created_by, "created_by", 256)
+        db.execute(
+            """INSERT INTO conflicts(
+                id,existing_record_id,incoming_record_id,incoming_evidence_id,
+                statement,status,created_by,created_at
+            ) VALUES(?,?,?,?,?,'needs_review',?,?)""",
+            (
+                conflict_id,
+                existing_record_id,
+                incoming_record_id,
+                incoming_evidence_id,
+                normalized_statement,
+                actor,
+                now,
+            ),
+        )
+        db.execute(
+            "UPDATE records SET status='disputed',updated_at=? WHERE id=?",
+            (now, existing_record_id),
+        )
+        db.execute(
+            """INSERT INTO conflict_history(
+                conflict_id,action,details,actor,created_at
+            ) VALUES(?,?,?,?,?)""",
+            (conflict_id, "opened", normalized_statement, actor, now),
+        )
+        self._audit(
+            db,
+            "open",
+            "conflict",
+            conflict_id,
+            actor,
+            {"existing_record_id": existing_record_id},
+        )
+        return conflict_id
 
     def get_conflict(self, conflict_id: str) -> dict[str, Any]:
         self.initialize()
@@ -742,7 +1301,7 @@ class ProjectMemory:
         if outcome not in {"supersede_existing", "reject_incoming", "reverified_existing"}:
             raise MemoryValidationError("invalid conflict outcome")
         self.initialize()
-        with self._connect() as db:
+        with self._connect(write=True) as db:
             row = db.execute("SELECT * FROM conflicts WHERE id=?", (conflict_id,)).fetchone()
             if not row or row["status"] != "needs_review":
                 raise MemoryValidationError("conflict is missing or already resolved")
@@ -784,84 +1343,313 @@ class ProjectMemory:
     def render_views(self) -> None:
         self.initialize()
         counts: dict[str, int] = {}
-        with self._connect() as db:
-            for row in db.execute("SELECT category,count(*) AS count FROM records GROUP BY category"):
-                counts[row["category"]] = row["count"]
-            open_conflicts = int(db.execute("SELECT count(*) FROM conflicts WHERE status='needs_review'").fetchone()[0])
-            completions = [dict(row) for row in db.execute("SELECT * FROM milestone_completions ORDER BY completed_at,milestone_id").fetchall()]
-            decisions = [dict(row) for row in db.execute("SELECT id,statement,origin,status,reason FROM records WHERE category='decision' ORDER BY created_at,id").fetchall()]
-        state_lines = [
-            "# Project state (generated view)", "",
-            "Canonical project knowledge is stored in `memory.sqlite3`. This file is a cache, not evidence.", "",
-            "## Record counts",
-            *[f"- {name}: {counts.get(name, 0)}" for name in sorted(CATEGORIES)],
-            f"- open conflicts: {open_conflicts}", "", "## Verified milestone completions",
-            *([f"- {item['milestone_id']}: {item['evidence_count']} evidence record(s) ({item['source']})" for item in completions] or ["- None"]),
-        ]
-        (self.state_dir / "PROJECT_STATE.md").write_text("\n".join(state_lines) + "\n", encoding="utf-8")
-        decision_lines = [
-            "# Decisions (generated view)", "",
-            "Canonical decisions and provenance are stored in `memory.sqlite3`.", "",
-            *([f"- {item['id']} [{item['origin']}/{item['status']}]: {item['statement']}" + (f" — {item['reason']}" if item['reason'] else "") for item in decisions] or ["- None"]),
-        ]
-        (self.state_dir / "DECISIONS.md").write_text("\n".join(decision_lines) + "\n", encoding="utf-8")
+        with self._project_lock(exclusive=True):
+            with self._connect(acquire_lock=False) as db:
+                for row in db.execute(
+                    "SELECT category,count(*) AS count FROM records GROUP BY category"
+                ):
+                    counts[row["category"]] = row["count"]
+                open_conflicts = int(
+                    db.execute(
+                        "SELECT count(*) FROM conflicts WHERE status='needs_review'"
+                    ).fetchone()[0]
+                )
+                verification_count = int(
+                    db.execute("SELECT count(*) FROM verification_results").fetchone()[0]
+                )
+                completions = [
+                    dict(row)
+                    for row in db.execute(
+                        """SELECT * FROM milestone_completions
+                           ORDER BY completed_at,milestone_id"""
+                    ).fetchall()
+                ]
+                decisions = [
+                    dict(row)
+                    for row in db.execute(
+                        """SELECT id,statement,origin,status,reason FROM records
+                           WHERE category='decision' ORDER BY created_at,id"""
+                    ).fetchall()
+                ]
+            state_lines = [
+                "# Project state (generated view)",
+                "",
+                "Canonical project knowledge is stored in `memory.sqlite3`. This file is a cache, not evidence.",
+                "",
+                "## Record counts",
+                *[f"- {name}: {counts.get(name, 0)}" for name in sorted(CATEGORIES)],
+                f"- verification results: {verification_count}",
+                f"- open conflicts: {open_conflicts}",
+                "",
+                "## Verified milestone completions",
+                *(
+                    [
+                        f"- {item['milestone_id']}: {item['evidence_count']} evidence record(s) ({item['source']})"
+                        for item in completions
+                    ]
+                    or ["- None"]
+                ),
+            ]
+            decision_lines = [
+                "# Decisions (generated view)",
+                "",
+                "Canonical decisions and provenance are stored in `memory.sqlite3`.",
+                "",
+                *(
+                    [
+                        f"- {item['id']} [{item['origin']}/{item['status']}]: {item['statement']}"
+                        + (f" — {item['reason']}" if item["reason"] else "")
+                        for item in decisions
+                    ]
+                    or ["- None"]
+                ),
+            ]
+            _atomic_write_text(
+                self.state_dir / "PROJECT_STATE.md", "\n".join(state_lines) + "\n"
+            )
+            _atomic_write_text(
+                self.state_dir / "DECISIONS.md", "\n".join(decision_lines) + "\n"
+            )
 
     def integrity_check(self) -> str:
         self.initialize()
         with self._connect() as db:
-            result = db.execute("PRAGMA integrity_check").fetchone()[0]
-            truths_without_evidence = db.execute(
-                """SELECT count(*) FROM records r WHERE r.category='truth' AND NOT EXISTS(
-                    SELECT 1 FROM record_evidence re JOIN evidence e ON e.id=re.evidence_id
-                    WHERE re.record_id=r.id AND re.relation='supports' AND e.kind!='migration')"""
-            ).fetchone()[0]
-            if result != "ok" or truths_without_evidence:
-                raise MemoryError(f"memory integrity failure: sqlite={result}, truths_without_evidence={truths_without_evidence}")
+            self._assert_connection_integrity(db)
             return "ok"
+
+    def _assert_connection_integrity(self, db: sqlite3.Connection) -> None:
+        result = str(db.execute("PRAGMA integrity_check").fetchone()[0])
+        foreign_key_errors = len(db.execute("PRAGMA foreign_key_check").fetchall())
+        tables = {
+            str(row[0])
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
+            ).fetchall()
+        }
+        required_tables = {
+            "schema_meta",
+            "sequences",
+            "records",
+            "evidence",
+            "record_evidence",
+            "milestone_evidence",
+            "milestone_completions",
+            "conflicts",
+            "conflict_history",
+            "audit_log",
+        }
+        missing_tables = sorted(required_tables - tables)
+        version_row = (
+            db.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
+            if "schema_meta" in tables
+            else None
+        )
+        schema_version = int(version_row[0]) if version_row is not None else 0
+        if schema_version not in {1, SCHEMA_VERSION}:
+            raise MemoryError(
+                f"memory integrity failure: unsupported schema={schema_version}"
+            )
+        if schema_version >= 2:
+            required_tables.update(
+                {"verification_results", "verification_result_evidence"}
+            )
+            missing_tables = sorted(required_tables - tables)
+        truths_without_evidence = int(
+            db.execute(
+                """SELECT count(*) FROM records r
+                   WHERE r.category='truth' AND NOT EXISTS(
+                       SELECT 1 FROM record_evidence re
+                       JOIN evidence e ON e.id=re.evidence_id
+                       WHERE re.record_id=r.id AND re.relation='supports'
+                         AND e.kind!='migration')"""
+            ).fetchone()[0]
+        )
+        verification_tables = {
+            "verification_results",
+            "verification_result_evidence",
+        }
+        partial_verification_schema = bool(verification_tables & tables) and not (
+            verification_tables <= tables
+        )
+        verifications_without_evidence = (
+            int(
+                db.execute(
+                    """SELECT count(*) FROM verification_results vr WHERE NOT EXISTS(
+                           SELECT 1 FROM verification_result_evidence vre
+                           WHERE vre.verification_id=vr.id)"""
+                ).fetchone()[0]
+            )
+            if verification_tables <= tables
+            else 0
+        )
+        invalid_verification_evidence = (
+            int(
+                db.execute(
+                    """SELECT count(*) FROM verification_result_evidence vre
+                       JOIN evidence e ON e.id=vre.evidence_id
+                       WHERE e.kind='migration'"""
+                ).fetchone()[0]
+            )
+            if verification_tables <= tables
+            else 0
+        )
+        if (
+            result != "ok"
+            or foreign_key_errors
+            or missing_tables
+            or partial_verification_schema
+            or truths_without_evidence
+            or verifications_without_evidence
+            or invalid_verification_evidence
+        ):
+            raise MemoryError(
+                "memory integrity failure: "
+                f"sqlite={result}, foreign_keys={foreign_key_errors}, "
+                f"missing_tables={missing_tables}, "
+                f"partial_verification_schema={partial_verification_schema}, "
+                f"truths_without_evidence={truths_without_evidence}, "
+                f"verifications_without_evidence={verifications_without_evidence}, "
+                f"invalid_verification_evidence={invalid_verification_evidence}"
+            )
 
     def backup(self, destination: Path | None = None) -> Path:
         self.initialize()
         target = (destination or self.state_dir / "memory-backups" / "latest.sqlite3").expanduser().resolve()
         if not self._is_within(target, self.root):
             raise MemoryValidationError("memory backup must remain inside the target project")
+        reserved = {
+            self.path,
+            self.lock_path.resolve(),
+            self.path.with_name(self.path.name + "-wal"),
+            self.path.with_name(self.path.name + "-shm"),
+        }
+        if target in reserved:
+            raise MemoryValidationError(
+                "memory backup cannot overwrite the live database or lock files"
+            )
+        with self._project_lock(exclusive=True):
+            return self._backup_locked(target)
+
+    def _backup_locked(self, target: Path) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.tmp-{os.getpid()}")
-        temporary.unlink(missing_ok=True)
-        source_db = sqlite3.connect(self.path, timeout=10)
-        destination_db = sqlite3.connect(temporary)
+        descriptor, raw_temporary = tempfile.mkstemp(
+            prefix=f".{target.name}.tmp-", dir=target.parent
+        )
+        os.close(descriptor)
+        temporary = Path(raw_temporary)
         try:
-            source_db.backup(destination_db)
-            if destination_db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                raise MemoryError("new Project Memory backup failed integrity_check")
-            destination_db.commit()
-        finally:
-            destination_db.close()
-            source_db.close()
-        os.replace(temporary, target)
+            source_db = self._open_connection()
+            destination_db = sqlite3.connect(temporary, isolation_level=None)
+            destination_db.row_factory = sqlite3.Row
+            try:
+                source_db.backup(destination_db)
+                self._assert_connection_integrity(destination_db)
+            finally:
+                destination_db.close()
+                source_db.close()
+            with temporary.open("rb") as handle:
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+            _fsync_directory(target.parent)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
         return target
 
     def recover_latest(self) -> Path:
         backup = self.state_dir / "memory-backups" / "latest.sqlite3"
         if not backup.is_file():
             raise MemoryError("Project Memory is corrupt and no verified milestone backup exists")
-        check = sqlite3.connect(backup)
-        try:
-            if check.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                raise MemoryError("latest Project Memory backup also failed integrity_check")
-        finally:
-            check.close()
-        quarantine = self.state_dir / f"memory-corrupt-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
-        if self.path.exists():
-            shutil.move(self.path, quarantine)
-        self.path.with_name(self.path.name + "-wal").unlink(missing_ok=True)
-        self.path.with_name(self.path.name + "-shm").unlink(missing_ok=True)
-        shutil.copy2(backup, self.path)
-        self.integrity_check()
-        return quarantine
+        if backup.is_symlink() or not self._is_within(backup.resolve(), self.root):
+            raise MemoryValidationError(
+                "latest Project Memory backup must be a regular project-local file"
+            )
+        with self._project_lock(exclusive=True):
+            check = sqlite3.connect(backup, isolation_level=None)
+            check.row_factory = sqlite3.Row
+            try:
+                self._assert_connection_integrity(check)
+                stored_root = check.execute(
+                    "SELECT value FROM schema_meta WHERE key='project_root'"
+                ).fetchone()
+                if stored_root is None or Path(stored_root[0]).resolve() != self.root:
+                    raise MemoryValidationError(
+                        "latest Project Memory backup belongs to a different project"
+                    )
+            finally:
+                check.close()
+            quarantine = self.state_dir / (
+                "memory-corrupt-"
+                + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+                + f"-{time.time_ns() % 1_000_000_000:09d}.sqlite3"
+            )
+            if self.path.exists():
+                shutil.copy2(self.path, quarantine)
+                with quarantine.open("rb") as handle:
+                    os.fsync(handle.fileno())
+            descriptor, raw_temporary = tempfile.mkstemp(
+                prefix=f".{self.path.name}.restore-", dir=self.path.parent
+            )
+            os.close(descriptor)
+            temporary = Path(raw_temporary)
+            try:
+                shutil.copy2(backup, temporary)
+                with temporary.open("rb") as handle:
+                    os.fsync(handle.fileno())
+                os.replace(temporary, self.path)
+                self.path.with_name(self.path.name + "-wal").unlink(missing_ok=True)
+                self.path.with_name(self.path.name + "-shm").unlink(missing_ok=True)
+                _fsync_directory(self.path.parent)
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                raise
+            restored = self._open_connection()
+            try:
+                version = int(
+                    restored.execute(
+                        "SELECT value FROM schema_meta WHERE key='schema_version'"
+                    ).fetchone()[0]
+                )
+                if version == 1:
+                    restored.executescript(
+                        """BEGIN IMMEDIATE;
+                        CREATE TABLE IF NOT EXISTS verification_results (
+                            id TEXT PRIMARY KEY,
+                            task_id TEXT NOT NULL,
+                            check_id TEXT NOT NULL,
+                            policy TEXT NOT NULL CHECK(policy IN ('self','deterministic','independent','auto')),
+                            verdict TEXT NOT NULL CHECK(verdict IN ('PASS','REVISE')),
+                            summary TEXT NOT NULL,
+                            details_json TEXT NOT NULL DEFAULT '{}',
+                            created_by TEXT NOT NULL,
+                            provider TEXT,
+                            provider_thread_id TEXT NOT NULL,
+                            provider_turn_id TEXT NOT NULL,
+                            created_at TEXT NOT NULL,
+                            UNIQUE(task_id,check_id,provider_thread_id,provider_turn_id)
+                        );
+                        CREATE TABLE IF NOT EXISTS verification_result_evidence (
+                            verification_id TEXT NOT NULL REFERENCES verification_results(id),
+                            evidence_id TEXT NOT NULL REFERENCES evidence(id),
+                            created_at TEXT NOT NULL,
+                            PRIMARY KEY(verification_id,evidence_id)
+                        );
+                        CREATE INDEX IF NOT EXISTS verification_results_task_idx
+                            ON verification_results(task_id,created_at,id);
+                        UPDATE schema_meta SET value='2' WHERE key='schema_version';
+                        COMMIT;"""
+                    )
+                self._assert_connection_integrity(restored)
+            finally:
+                restored.close()
+            self._initialized = True
+            return quarantine
 
     def ensure_healthy(self, *, recover: bool = True) -> str:
         try:
             return self.integrity_check()
+        except MemoryBusyError:
+            raise
         except (sqlite3.DatabaseError, MemoryError, OSError):
             if not recover:
                 raise
@@ -878,6 +1666,9 @@ class ProjectMemory:
                 "project_root": str(self.root),
                 "records": counts,
                 "evidence": int(db.execute("SELECT count(*) FROM evidence").fetchone()[0]),
+                "verification_results": int(
+                    db.execute("SELECT count(*) FROM verification_results").fetchone()[0]
+                ),
                 "open_conflicts": int(db.execute("SELECT count(*) FROM conflicts WHERE status='needs_review'").fetchone()[0]),
                 "audit_highwater": int(db.execute("SELECT coalesce(max(id),0) FROM audit_log").fetchone()[0]),
             }

@@ -4,7 +4,7 @@ Development target: macOS 26.6.2 arm64, Codex CLI/App Server 0.153.4, ChatGPT De
 
 ## Deterministic suite
 
-The repository suite covers App Server request shape, serial lifecycle and completion gates, launch from outside the target cwd, clean first run, explicit permission denial with no state creation, missing MCP, Adaptive and Host Settings preflight, SQLite/FTS5 records, evidence and conflicts, no-evidence rejection, path/symlink isolation, pagination, MCP protocol and restart, backup/recovery, 20-milestone memory behavior, bounded prompt growth, v0.7 migration, installer/reinstall, contamination rules, and release invariants.
+The repository suite covers App Server request shape and serial compatibility plus the Desktop-owned JIT lifecycle: bounded parallel descriptors, atomic duplicate prevention, resource/dependency blocking, exact App Server `thread/start` and production `turn/start` in the canonical project, metadata attestation, automatic Stop-owned dispatch without chat relay, exact causal-owner enforcement, one stable known-failure incident, DevOps healthcheck plus predecessor-only re-arm, independent acceptance, one-worker retry isolation, ambiguous crash recovery, and process exit after completion. It also covers clean first run, permissions, Project Memory, migration, installation, contamination, and release invariants.
 
 Run it with:
 
@@ -14,7 +14,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 Plugin manifests and skill directories are also checked with the official bundled plugin and skill validators. Release ZIPs are rebuilt deterministically and scanned for local paths, caches, logs, databases, virtual environments, test output, `.git`, and known legacy strings.
 
-## v0.8 live acceptance results
+## Historical v0.8 headless App Server acceptance
 
 The final local acceptance runs used the installed v0.8 runtime and the unified `memory` tool contract:
 
@@ -28,11 +28,15 @@ The final local acceptance runs used the installed v0.8 runtime and the unified 
 | Host Settings omission | PASS | `thread/start` omitted `model` and `turn/start` omitted `effort`; the tested App Server applied its current `gpt-6-astra` / `medium` defaults. |
 | Real account rate limit | PARTIAL | App Server supplied an exact reset timestamp, the limited worker was retired, and the dispatcher automatically created a fresh worker for the same milestone after reset. The retry worker was manually interrupted, so end-to-end milestone completion was not part of this run. |
 
-All live workers had distinct durable thread IDs. The test harness checked the App Server event order and found no overlapping active turns. The browser scenario required the Astra task to be foreground so Codex could execute the visible Computer Use call.
+All those live workers had distinct durable thread IDs and the harness checked App Server event order. Desktop visibility/editability is a separate live acceptance observation and is never inferred from an App Server project ID.
 
 The live acceptance harness is source-only. Its explicit developer flags can answer the bundled memory-tool elicitation for one App Server session and the exact browser test surface; production cannot do either.
 
 ## Deterministic acceptance results
+
+The table below now distinguishes the original candidate's internal checks from
+the independent M10 contract audit. A green implementation-authored assertion
+does not override a contradictory source requirement.
 
 | Scenario | Result |
 | --- | --- |
@@ -42,14 +46,39 @@ The live acceptance harness is source-only. Its explicit developer flags can ans
 | Decision/Constraint/Question/Observation lifecycles and user correction | PASS |
 | Conflict history without destructive overwrite | PASS |
 | Path traversal and symlink escape rejection | PASS |
-| MCP one-tool/14-operation schema, protocol, binding, and restart | PASS |
+| MCP one-tool/16-operation schema, protocol, binding, and restart | PASS |
 | Corrupt memory quarantine and verified-backup recovery | PASS |
+| Eight simultaneous MCP writers: evidence, observations, decisions, verification results, conflicts, unique IDs, links, and integrity | PASS |
+| Concurrent rendering/backups, bounded busy waits, killed transaction rollback, and writer-behind-recovery serialization | PASS |
+| Evidence-linked task/check/thread/turn verification ledger; idempotent causal replay and no agreement-to-Truth promotion | PASS |
 | Conservative v0.7 migration | PASS |
 | 20-milestone integrity and summary-drift resistance | PASS |
 | Pause/resume, crash reconciliation, and rate-limit state machine | PASS |
 | Release contamination and installer footprint | PASS |
+| Two bounded parallel Desktop-owned Sol reservations with disjoint resources | PASS |
+| Conflicting resources and unverified dependencies remain waiting | PASS |
+| Atomic automatic-dispatch claims prevent duplicate task creation and duplicate production turns | PASS |
+| App Server `thread/start` uses the canonical cwd/App Server project namespace and verifies returned metadata | PASS |
+| Exact predecessor Stop → automatic App Server task creation → automatic production turn → process exit | PASS |
+| Known create failure → one stable incident → DevOps healthcheck → exact predecessor dispatcher re-arm; DevOps never launches the destination itself | PASS |
+| `self`, `deterministic`, `independent`, and `auto` implement their distinct acceptance/cost semantics | **FAIL — candidate forces all policies through a fresh verifier** |
+| Authoritative Desktop Stop/Interrupt journal identities | PASS |
+| One-worker rate limit preserves independent active work and deterministic retry | PASS |
+| Desktop mode rejects model/chat relay; automatic App Server production remains causal and bounded | PASS |
+| Typed prerequisite/dependency/resource/verification request parsing | PASS |
+| Fresh replanner applies a dynamic prerequisite and rejects a cyclic graph without writes | PASS |
+| Interrupted plan/run-state commit completes from its durable redo record | PASS |
+| Multi-worker drain pause and reconcile-before-resume | PASS |
+| Account rate barrier preserves independent active work and exact retry timing | PASS |
+| Crash reconciliation retains unknown locks and retries absent owners idempotently | PASS |
 
-The final repository suite contains 75 passing tests. The reproducible context benchmark is in [CONTEXT_BENCHMARK.md](CONTEXT_BENCHMARK.md).
+Before the independent contract module was added, the repository suite contained
+260 passing tests and four skipped legacy transport regressions. M10 added three
+passing AI Studio shape tests and five red contract regressions, so the complete
+suite is intentionally not green pending substantive revision. The reproducible
+context benchmark is in [CONTEXT_BENCHMARK.md](CONTEXT_BENCHMARK.md); exact M10
+results are in [TESTING.md](TESTING.md) and
+[RELEASE_VERIFICATION_0.9.0-beta.md](RELEASE_VERIFICATION_0.9.0-beta.md).
 
 ## Confirmed foundations from v0.7
 
@@ -58,7 +87,7 @@ v0.7 real App Server runs observed Sol-only three-worker rotation, mixed Sol/Ast
 ## Current limits
 
 - App Server is experimental.
-- Saved Project placement is not live-verified.
+- A complete multi-worker Desktop-owned live run remains for final acceptance; deterministic M4 tests exercise the exact Codex App launch payload and ownership boundary.
 - Host Settings proves field omission; cross-build inheritance of another task's UI choice is unverified.
 - Deterministic rate-limit recovery is tested. A v0.8 live run observed a real rate-limit error, an exact reset timestamp, automatic waiting, and a fresh retry of the same milestone. A complete multi-hour wait and weekly exhaustion remain unverified.
 - Reboot recovery requires explicit Resume.

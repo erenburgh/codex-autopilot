@@ -12,6 +12,7 @@ Project Memory is a local evidence store for facts that must survive fresh Codex
 | Question (`Q-*`) | Open or resolved uncertainty | Lifecycle status |
 | Observation (`OBS-*`) | Hypothesis or unverified note | Always unverified; never silently becomes Truth |
 | Evidence (`EVID-*`) | File, Git, test, build, tool, artifact, screenshot, user instruction, or environment result | Structured provenance fields |
+| Verification (`VERIFY-*`) | Deterministic or fresh-verifier PASS/REVISE audit outcome; never Truth | Existing non-migration Evidence plus task/check/thread/turn identity |
 | Conflict (`CONFLICT-*`) | Contradiction requiring resolution | Preserves both sides and resolution history |
 
 The core invariant is **NO EVIDENCE → NO TRUTH**. Migration evidence may preserve an old completion marker but cannot support Truth. File evidence is resolved within the project, rejects path and symlink escapes, validates optional line ranges, and stores the actual file SHA-256. Evidence and records retain the creator, provider, provider thread, and timestamps where supplied.
@@ -26,7 +27,9 @@ No embeddings, vector service, external database, background model, or network s
 
 ## Lifecycle and recovery
 
-The database uses foreign keys, WAL journaling, full synchronous commits, transactions, and an audit log. At verified milestone completion, Python's SQLite online backup API writes `.codex-autopilot/memory-backups/latest.sqlite3`. Startup checks SQLite integrity and semantic invariants, including that every Truth record has valid non-migration supporting evidence. A broken database is quarantined before restore.
+The database uses foreign keys, WAL journaling, full synchronous commits, explicit read snapshots and `BEGIN IMMEDIATE` writes, transactional sequence IDs, bounded busy handling, and an audit log. A project-local advisory lock serializes writers and file-producing operations across MCP processes; a bounded process-local guard provides the corresponding thread safety. A process crash releases the advisory lock and SQLite rolls back the incomplete transaction.
+
+Rendering, verified-milestone backup, and recovery take the same writer exclusion. Generated views and integrity-checked backup/restore files are fsynced and atomically renamed, so another worker cannot observe a partially written file or write through a restore. At verified milestone completion, Python's SQLite online backup API writes `.codex-autopilot/memory-backups/latest.sqlite3`. Startup checks SQLite integrity and semantic invariants, including that every Truth and verification result has valid non-migration supporting evidence. A broken database is quarantined before restore.
 
 ## Design reference
 
