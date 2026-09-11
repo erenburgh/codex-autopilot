@@ -392,7 +392,6 @@ def reserve_ready_frontier(
     (hook_gate or require_trusted_stop_hook_for_config)(cfg)
     store = StateStore(cfg.state_dir)
     memory_audit_before = ProjectMemory(cfg.root).audit_highwater()
-    checkpoint_before = _checkpoint(cfg.state_dir / "HANDOFF.md")
     coordinator = ResourceLockCoordinator(store, cfg.root)
     with coordinator.transaction():
         recover_plan_change_transaction(cfg.state_dir, cfg.profile)
@@ -439,7 +438,6 @@ def reserve_ready_frontier(
             plan,
             state,
             memory_audit_before=memory_audit_before,
-            checkpoint_before=checkpoint_before,
             relay_owner_thread_id=relay_owner_thread_id,
             now_epoch=now_epoch,
         )
@@ -1855,8 +1853,12 @@ def complete_desktop_worker(
         worker_status = parse_desktop_worker_status(final_message)
     task_id = str(session["task_id"])
     checkpoint_before = str(session.get("checkpoint_before") or "")
-    if not checkpoint_before or _checkpoint(cfg.state_dir / "HANDOFF.md") == checkpoint_before:
-        raise DesktopLifecycleError("worker did not update required checkpoint file: HANDOFF.md")
+    checkpoint_path = task_checkpoint_path(cfg.state_dir, task_id)
+    if task_checkpoint(cfg.state_dir, task_id) == checkpoint_before:
+        raise DesktopLifecycleError(
+            "worker did not update its own checkpoint file: "
+            f"{checkpoint_path.relative_to(cfg.state_dir.parent)}"
+        )
     memory = ProjectMemory(cfg.root)
     evidence = memory.milestone_evidence(
         task_id,
@@ -2014,7 +2016,6 @@ def complete_desktop_worker(
                 plan,
                 state,
                 memory_audit_before=memory.audit_highwater(),
-                checkpoint_before=_checkpoint(cfg.state_dir / "HANDOFF.md"),
                 relay_owner_thread_id=thread_id,
                 now_epoch=now_epoch,
             )
@@ -2159,7 +2160,6 @@ def complete_desktop_worker(
             plan,
             state,
             memory_audit_before=memory.audit_highwater(),
-            checkpoint_before=_checkpoint(cfg.state_dir / "HANDOFF.md"),
             relay_owner_thread_id=next_relay_owner,
             now_epoch=now_epoch,
         )
@@ -2368,7 +2368,6 @@ def _complete_replanner(
             candidate,
             state,
             memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
-            checkpoint_before=_checkpoint(cfg.state_dir / "HANDOFF.md"),
             relay_owner_thread_id=thread_id,
             now_epoch=now_epoch,
         )
@@ -2668,7 +2667,6 @@ def record_desktop_failure(
                 plan,
                 state,
                 memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
-                checkpoint_before=_checkpoint(cfg.state_dir / "HANDOFF.md"),
                 relay_owner_thread_id=session.get("relay_owner_thread_id"),
                 now_epoch=now_epoch,
             )
@@ -2952,7 +2950,6 @@ def _reserve_in_state(
     state: RunState,
     *,
     memory_audit_before: int,
-    checkpoint_before: str,
     relay_owner_thread_id: str | None = None,
     now_epoch: int | None = None,
 ) -> tuple[LaunchDescriptor, ...]:
@@ -2991,7 +2988,6 @@ def _reserve_in_state(
             plan,
             state,
             memory_audit_before=memory_audit_before,
-            checkpoint_before=checkpoint_before,
             relay_owner_thread_id=relay_owner_thread_id,
         )
     descriptors: list[LaunchDescriptor] = list(
@@ -3000,7 +2996,6 @@ def _reserve_in_state(
             plan,
             state,
             memory_audit_before=memory_audit_before,
-            checkpoint_before=checkpoint_before,
             relay_owner_thread_id=relay_owner_thread_id,
         )
     )
@@ -3072,7 +3067,7 @@ def _reserve_in_state(
             "relay_owner_thread_id": relay_owner_thread_id,
             "created_at": descriptor.created_at,
             "memory_audit_before": memory_audit_before,
-            "checkpoint_before": checkpoint_before,
+            "checkpoint_before": task_checkpoint(cfg.state_dir, task_id),
             "descriptor": descriptor.to_dict(),
         }
         state.worker_sessions.append(session)
@@ -3092,7 +3087,6 @@ def _reserve_replanner_in_state(
     state: RunState,
     *,
     memory_audit_before: int,
-    checkpoint_before: str,
     relay_owner_thread_id: str,
 ) -> tuple[LaunchDescriptor, ...]:
     """Reserve exactly one fresh replanner after all production workers drain."""
@@ -3194,7 +3188,7 @@ def _reserve_replanner_in_state(
         "relay_owner_thread_id": relay_owner_thread_id,
         "created_at": descriptor.created_at,
         "memory_audit_before": memory_audit_before,
-        "checkpoint_before": checkpoint_before,
+        "checkpoint_before": task_checkpoint(cfg.state_dir, task_id),
         "descriptor": descriptor.to_dict(),
     }
     state.worker_sessions.append(session)
@@ -3222,7 +3216,6 @@ def _reserve_followup_sessions_in_state(
     state: RunState,
     *,
     memory_audit_before: int,
-    checkpoint_before: str,
     relay_owner_thread_id: str | None = None,
 ) -> tuple[LaunchDescriptor, ...]:
     """Reserve verifier/revision work before admitting unrelated READY work."""
@@ -3373,7 +3366,7 @@ def _reserve_followup_sessions_in_state(
             "relay_owner_thread_id": relay_owner_thread_id,
             "created_at": descriptor.created_at,
             "memory_audit_before": memory_audit_before,
-            "checkpoint_before": checkpoint_before,
+            "checkpoint_before": task_checkpoint(cfg.state_dir, task.id),
             "descriptor": descriptor.to_dict(),
         }
         state.worker_sessions.append(session)
@@ -3929,7 +3922,7 @@ def _verifier_prompt(
 
 Acceptance gate: независимо сопоставь фактический результат с исходным пользовательским ТЗ, целью run, структурированным контрактом задачи и каждым критерием готовности. Тесты implementer являются только evidence и не определяют критерии приёмки.
 
-В prompt намеренно нет ответа implementer, его самооценки, transcript history, HANDOFF prose или параллельных разговоров. Не запрашивай их и не считай утверждения другого worker доказательством. Полностью прочитай {cfg.skill_path}, получи перечисленные evidence через Project Memory, самостоятельно проверь файлы/команды/артефакты и зафиксируй новое evidence для {task.id} с ролью independent_verification. Обнови только разрешённые разделы HANDOFF.md. Не создавай commit, tag, push, publish, reset или clean. Не запускай production через App Server. Reservation token: {token}.
+В prompt намеренно нет ответа implementer, его самооценки, transcript history, HANDOFF prose или параллельных разговоров. Не запрашивай их и не считай утверждения другого worker доказательством. Полностью прочитай {cfg.skill_path}, получи перечисленные evidence через Project Memory, самостоятельно проверь файлы/команды/артефакты и зафиксируй новое evidence для {task.id} с ролью independent_verification. Обнови свой задачный файл передачи .codex-autopilot/handoff/{task.id}.md — обязательный чекпойнт завершения, принадлежащий этой задаче. Не создавай commit, tag, push, publish, reset или clean. Не запускай production через App Server. Reservation token: {token}.
 
 Верни PASS только если каждый критерий подтверждён. Иначе верни REVISE с уникальными структурированными issues. Свободный краткий отчёт разрешён перед protocol line. Последняя непустая строка должна быть ровно одним JSON-результатом одного из форматов:
 {pass_example}
@@ -3951,7 +3944,7 @@ Deterministic check results, when supplied by policy: {checks_json}
 
 Acceptance gate: independently compare the actual result with the original user request, run goal, structured task contract, and every Definition of Done item. Implementer-authored tests are evidence only and do not define the acceptance criteria.
 
-The prompt deliberately contains no implementer response, self-assessment, transcript history, HANDOFF prose, or concurrent conversation. Do not request them or treat another worker's claims as evidence. Read {cfg.skill_path} completely, retrieve the listed evidence through Project Memory, independently inspect the files/commands/artifacts, and record new evidence for {task.id} with role independent_verification. Update only the allowed HANDOFF.md sections. Do not commit, tag, push, publish, reset, or clean. Never start production through App Server. Reservation token: {token}.
+The prompt deliberately contains no implementer response, self-assessment, transcript history, HANDOFF prose, or concurrent conversation. Do not request them or treat another worker's claims as evidence. Read {cfg.skill_path} completely, retrieve the listed evidence through Project Memory, independently inspect the files/commands/artifacts, and record new evidence for {task.id} with role independent_verification. Update your own task handoff file .codex-autopilot/handoff/{task.id}.md - the required completion checkpoint owned by this task. Do not commit, tag, push, publish, reset, or clean. Never start production through App Server. Reservation token: {token}.
 
 Return PASS only when every criterion is evidenced. Otherwise return REVISE with unique structured issues. A concise free-form report may precede the protocol line. The final non-empty line must be exactly one JSON result in one of these forms:
 {pass_example}
@@ -4003,7 +3996,7 @@ Verification policy: {verification_contract}
 Структурированные issues verifier/deterministic policy:
 {issues_json}
 
-Это свежий worker: prompt содержит только контракт задачи и issues, без verifier transcript, implementer transcript или параллельных разговоров. Полностью прочитай {cfg.skill_path}, исправь перечисленные issues, заново проверь затронутые критерии и зафиксируй новое evidence для {task.id}. Обнови только разрешённые разделы HANDOFF.md. Сохраняй чужие изменения; не создавай commit, tag, push, publish, reset или clean. Не запускай production через App Server. Reservation token: {token}.
+Это свежий worker: prompt содержит только контракт задачи и issues, без verifier transcript, implementer transcript или параллельных разговоров. Полностью прочитай {cfg.skill_path}, исправь перечисленные issues, заново проверь затронутые критерии и зафиксируй новое evidence для {task.id}. Обнови свой задачный файл передачи .codex-autopilot/handoff/{task.id}.md — обязательный чекпойнт завершения, принадлежащий этой задаче. Сохраняй чужие изменения; не создавай commit, tag, push, publish, reset или clean. Не запускай production через App Server. Reservation token: {token}.
 
 Заверши кратким проверенным итогом и ровно одной последней строкой:
 AUTOPILOT_STATUS: ROTATE
@@ -4021,7 +4014,7 @@ Verification policy: {verification_contract}
 Structured verifier/deterministic-policy issues:
 {issues_json}
 
-This is a fresh worker: the prompt contains only the task contract and issues, with no verifier transcript, implementer transcript, or concurrent conversation. Read {cfg.skill_path} completely, correct the listed issues, re-check the affected criteria, and record new evidence for {task.id}. Update only the allowed HANDOFF.md sections. Preserve unrelated changes; do not commit, tag, push, publish, reset, or clean. Never start production through App Server. Reservation token: {token}.
+This is a fresh worker: the prompt contains only the task contract and issues, with no verifier transcript, implementer transcript, or concurrent conversation. Read {cfg.skill_path} completely, correct the listed issues, re-check the affected criteria, and record new evidence for {task.id}. Update your own task handoff file .codex-autopilot/handoff/{task.id}.md - the required completion checkpoint owned by this task. Preserve unrelated changes; do not commit, tag, push, publish, reset, or clean. Never start production through App Server. Reservation token: {token}.
 
 Finish with a concise verified result and exactly one final line:
 AUTOPILOT_STATUS: ROTATE
@@ -4782,6 +4775,32 @@ def _checkpoint(path: Path) -> str:
     if not path.is_file():
         return ""
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def task_checkpoint_path(state_dir: Path, task_id: str) -> Path:
+    """Задачный файл передачи работы (M10-REV-005).
+
+    Раньше гейтом завершения был общий .codex-autopilot/HANDOFF.md:
+    все параллельно зарезервированные задачи получали ОДИН хэш этого
+    файла, и первый же воркер, который его записал, закрывал гейт всем
+    остальным. Плюс параллельная запись в один файл теряла правки,
+    хотя ресурсы задач не пересекались.
+
+    Теперь у каждой задачи свой файл, и гейт проверяет именно его.
+    HANDOFF.md остаётся общей запиской для человека и гейтом не является.
+    """
+    return state_dir / "handoff" / f"{_checkpoint_slug(task_id)}.md"
+
+
+def _checkpoint_slug(task_id: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(task_id)).strip("-")
+    if not slug:
+        raise DesktopLifecycleError(f"task id has no usable checkpoint name: {task_id!r}")
+    return slug
+
+
+def task_checkpoint(state_dir: Path, task_id: str) -> str:
+    return _checkpoint(task_checkpoint_path(state_dir, task_id))
 
 
 def _thread_cwd(thread: dict[str, Any]) -> Path | None:

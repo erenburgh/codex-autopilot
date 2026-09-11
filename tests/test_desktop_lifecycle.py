@@ -30,6 +30,8 @@ from codex_autopilot.control import (
     spawn_dispatcher,
 )
 from codex_autopilot.hook_trust import HookTrustApprovalRequired
+from _handoff import bump_task_checkpoint
+from codex_autopilot.lifecycle import task_checkpoint_path
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
 from codex_autopilot.lifecycle import (
     DESKTOP_SLOT_READY,
@@ -759,11 +761,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertIsNone(reconciled["automatic_dispatch_connection_pid"])
 
     def evidence_and_handoff(self, task_id: str) -> None:
-        handoff = self.root / ".codex-autopilot" / "HANDOFF.md"
-        handoff.write_text(
-            handoff.read_text(encoding="utf-8") + f"\nCompleted: {task_id}\n",
-            encoding="utf-8",
-        )
+        bump_task_checkpoint(self.root, task_id, f"Completed: {task_id}")
         self.memory.record_evidence(
             kind="test",
             summary=f"{task_id} lifecycle verification passed.",
@@ -1110,12 +1108,8 @@ class DesktopLifecycleTests(unittest.TestCase):
                 thread_id=thread_id,
             )
 
-        def evidence(label: str) -> None:
-            handoff = root / ".codex-autopilot" / "HANDOFF.md"
-            handoff.write_text(
-                handoff.read_text(encoding="utf-8") + f"\n{label}\n",
-                encoding="utf-8",
-            )
+        def evidence(label: str, task_id: str = "M8") -> None:
+            bump_task_checkpoint(root, task_id, label)
             memory.record_evidence(
                 kind="test",
                 summary=label,
@@ -1209,12 +1203,8 @@ class DesktopLifecycleTests(unittest.TestCase):
                 thread_id=thread_id,
             )
 
-        def record_evidence(label: str, role: str) -> None:
-            handoff = root / ".codex-autopilot" / "HANDOFF.md"
-            handoff.write_text(
-                handoff.read_text(encoding="utf-8") + f"\n{label}\n",
-                encoding="utf-8",
-            )
+        def record_evidence(label: str, role: str, task_id: str = "M8") -> None:
+            bump_task_checkpoint(root, task_id, label)
             memory.record_evidence(
                 kind="test",
                 summary=label,
@@ -1428,11 +1418,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             )
 
         def complete(descriptor, thread_id: str):
-            handoff = root / ".codex-autopilot" / "HANDOFF.md"
-            handoff.write_text(
-                handoff.read_text(encoding="utf-8") + f"\nCompleted: {descriptor.task_id}\n",
-                encoding="utf-8",
-            )
+            bump_task_checkpoint(root, descriptor.task_id, f"Completed: {descriptor.task_id}")
             memory.record_evidence(
                 kind="test",
                 summary=f"{descriptor.task_id} passed.",
@@ -1451,10 +1437,8 @@ class DesktopLifecycleTests(unittest.TestCase):
             verifier = implementation.descriptors[0]
             verifier_thread = f"verify-{thread_id}"
             activate(verifier, verifier_thread)
-            handoff.write_text(
-                handoff.read_text(encoding="utf-8")
-                + f"\nIndependently verified: {descriptor.task_id}\n",
-                encoding="utf-8",
+            bump_task_checkpoint(
+                root, descriptor.task_id, f"Independently verified: {descriptor.task_id}"
             )
             memory.record_evidence(
                 kind="test",
@@ -1522,6 +1506,81 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertEqual(state.active_task_ids, ["A", "B"])
         self.assertEqual(len(state.worker_sessions), 2)
         self.assertEqual(len({item["reservation_token"] for item in state.worker_sessions}), 2)
+
+    def test_parallel_workers_cannot_satisfy_each_others_checkpoint(self) -> None:
+        """M10-REV-005: чекпойнт задачный, не общий.
+
+        Раньше reserve_ready_frontier считал ОДИН хэш общего HANDOFF.md
+        и штамповал его всем зарезервированным задачам. Гейт завершения
+        проверял только "хэш общего файла изменился", поэтому первый
+        записавший воркер закрывал гейт всем остальным, а параллельная
+        запись в один файл теряла правки при непересекающихся ресурсах.
+        """
+        descriptors = reserve_ready_frontier(self.cfg)
+        self.assertEqual([item.task_id for item in descriptors], ["A", "B"])
+        first, second = descriptors
+
+        state = self.store.load()
+        sessions = {
+            item["task_id"]: item
+            for item in state.worker_sessions
+            if item["reservation_token"] in {first.reservation_token, second.reservation_token}
+        }
+        # Каждая задача несёт СВОЙ чекпойнт, а не общий хэш на всех.
+        self.assertEqual(sessions["A"]["checkpoint_before"], "")
+        self.assertEqual(sessions["B"]["checkpoint_before"], "")
+        self.assertNotEqual(
+            task_checkpoint_path(self.cfg.state_dir, "A"),
+            task_checkpoint_path(self.cfg.state_dir, "B"),
+        )
+
+        # Работает только A.
+        self.activate(first, "thread-a")
+        self.activate(second, "thread-b")
+        self.evidence_and_handoff("A")
+
+        # B не может завершиться за счёт записи A: своё evidence есть,
+        # своего чекпойнта нет.
+        self.memory.record_evidence(
+            kind="test",
+            summary="B lifecycle verification passed.",
+            created_by="desktop-lifecycle-test",
+            milestone_id="B",
+            command="verify B",
+            result="PASS",
+            exit_code=0,
+        )
+        with self.assertRaises(DesktopLifecycleError) as caught:
+            complete_desktop_worker(
+                self.cfg,
+                thread_id="thread-b",
+                turn_id="turn-thread-b",
+                final_message="AUTOPILOT_STATUS: ROTATE",
+            )
+        self.assertIn("its own checkpoint file", str(caught.exception))
+        self.assertIn("B.md", str(caught.exception))
+
+        # A завершается штатно: его собственный файл изменился.
+        complete_desktop_worker(
+            self.cfg,
+            thread_id="thread-a",
+            turn_id="turn-thread-a",
+            final_message="AUTOPILOT_STATUS: ROTATE",
+        )
+
+        # Запись A не попала в файл B: подмена невозможна.
+        self.assertFalse(task_checkpoint_path(self.cfg.state_dir, "B").is_file())
+
+        # B завершается только после собственной записи.
+        self.evidence_and_handoff("B")
+        complete_desktop_worker(
+            self.cfg,
+            thread_id="thread-b",
+            turn_id="turn-thread-b",
+            final_message="AUTOPILOT_STATUS: ROTATE",
+        )
+        self.assertIn("Completed: B", task_checkpoint_path(self.cfg.state_dir, "B").read_text(encoding="utf-8"))
+        self.assertNotIn("Completed: B", task_checkpoint_path(self.cfg.state_dir, "A").read_text(encoding="utf-8"))
 
     def test_create_payload_reuses_the_already_gated_reservation(self) -> None:
         descriptor = reserve_ready_frontier(self.cfg)[0]
@@ -2428,11 +2487,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             thread_id="thread-a",
             relay_executor_thread_id="initiator-thread",
         )
-        handoff = root / ".codex-autopilot" / "HANDOFF.md"
-        handoff.write_text(
-            handoff.read_text(encoding="utf-8") + "\nCompleted: A\n",
-            encoding="utf-8",
-        )
+        bump_task_checkpoint(root, "A", "Completed: A")
         memory.record_evidence(
             kind="test",
             summary="A passed.",
@@ -2484,10 +2539,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             thread_id="thread-a-verifier",
             relay_executor_thread_id="thread-a",
         )
-        handoff.write_text(
-            handoff.read_text(encoding="utf-8") + "\nIndependently verified: A\n",
-            encoding="utf-8",
-        )
+        bump_task_checkpoint(root, "A", "Independently verified: A")
         memory.record_evidence(
             kind="test",
             summary="A independently passed.",

@@ -418,8 +418,8 @@ class CoreTests(unittest.TestCase):
     def test_bootstrap_creates_only_documented_state(self):
         root = make_project()
         names = {p.name for p in (root / ".codex-autopilot").iterdir()}
-        self.assertTrue({"config.toml", "plan.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "run-state.json", "memory.sqlite3"}.issubset(names))
-        self.assertTrue(names.issubset({"config.toml", "plan.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "run-state.json", "memory.sqlite3", "memory.sqlite3-wal", "memory.sqlite3-shm", "memory.lock"}))
+        self.assertTrue({"config.toml", "plan.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "handoff", "run-state.json", "memory.sqlite3"}.issubset(names))
+        self.assertTrue(names.issubset({"config.toml", "plan.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "handoff", "run-state.json", "memory.sqlite3", "memory.sqlite3-wal", "memory.sqlite3-shm", "memory.lock"}))
         self.assertTrue((root / "ROADMAP.md").is_file())
         self.assertFalse((root / ".git/refs/heads/main").exists())
 

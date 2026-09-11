@@ -73,6 +73,9 @@ def initialize_project(
         _roadmap(plan, completed, language=language), encoding="utf-8"
     )
     _write_milestone(state_dir, plan, current_index, language=language)
+    # Задачные чекпойнты (M10-REV-005): у каждой задачи свой файл,
+    # чтобы параллельные воркеры не закрывали гейт друг другу.
+    (state_dir / "handoff").mkdir(exist_ok=True)
     (state_dir / "HANDOFF.md").write_text(
         _initial_handoff(language),
         encoding="utf-8",

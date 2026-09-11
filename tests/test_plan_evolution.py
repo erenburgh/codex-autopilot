@@ -8,6 +8,7 @@ from unittest import mock
 
 from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
+from _handoff import bump_task_checkpoint
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
 from codex_autopilot.lifecycle import (
     DesktopLifecycleError,
@@ -184,11 +185,7 @@ class PlanEvolutionTests(unittest.TestCase):
             hook_gate=lambda _cfg: None,
         )[0]
         self.mark_active(store, descriptor.reservation_token, "worker-A")
-        handoff = self.root / ".codex-autopilot" / "HANDOFF.md"
-        handoff.write_text(
-            handoff.read_text(encoding="utf-8") + "\nPlan change requested.\n",
-            encoding="utf-8",
-        )
+        bump_task_checkpoint(self.root, descriptor.task_id, "Plan change requested.")
         outcome = complete_desktop_worker(
             cfg,
             thread_id="worker-A",
@@ -241,8 +238,7 @@ class PlanEvolutionTests(unittest.TestCase):
             hook_gate=lambda _cfg: None,
         )[0]
         self.mark_active(store, descriptor.reservation_token, "worker-A")
-        handoff = self.root / ".codex-autopilot" / "HANDOFF.md"
-        handoff.write_text(handoff.read_text() + "\nNeed cycle-safe replan.\n")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need cycle-safe replan.")
         replanner = complete_desktop_worker(
             cfg,
             thread_id="worker-A",

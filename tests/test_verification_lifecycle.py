@@ -10,6 +10,7 @@ from unittest import mock
 from codex_autopilot.appserver import TurnResult
 from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
+from _handoff import bump_task_checkpoint
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
 from codex_autopilot.lifecycle import (
     DESKTOP_SLOT_READY,
@@ -246,11 +247,7 @@ class VerificationLifecycleTests(unittest.TestCase):
         )
 
     def evidence(self, task_id: str, label: str, *, role: str = "verification") -> str:
-        handoff = self.root / ".codex-autopilot" / "HANDOFF.md"
-        handoff.write_text(
-            handoff.read_text(encoding="utf-8") + f"\nCompleted: {label}\n",
-            encoding="utf-8",
-        )
+        bump_task_checkpoint(self.root, task_id, f"Completed: {label}")
         item = self.memory.record_evidence(
             kind="test",
             summary=f"Evidence for {label}.",
