@@ -8,13 +8,13 @@ from unittest import mock
 
 from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
+from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
 from codex_autopilot.lifecycle import (
     DesktopLifecycleError,
     complete_desktop_worker,
     pause_desktop_run,
     reconcile_desktop_runtime,
     record_desktop_failure,
-    reserve_ready_frontier,
     resume_desktop_run,
 )
 from codex_autopilot.plan import (

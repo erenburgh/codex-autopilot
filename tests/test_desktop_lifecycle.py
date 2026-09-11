@@ -30,6 +30,7 @@ from codex_autopilot.control import (
     spawn_dispatcher,
 )
 from codex_autopilot.hook_trust import HookTrustApprovalRequired
+from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
 from codex_autopilot.lifecycle import (
     DESKTOP_SLOT_READY,
     WORKSPACE_HANDOFF_OK,
@@ -52,7 +53,6 @@ from codex_autopilot.lifecycle import (
     reconcile_desktop_thread_identity,
     reconcile_desktop_runtime,
     relay_session_status,
-    reserve_ready_frontier,
     retire_incompatible_legacy_desktop_session,
     run_automatic_app_server_turn,
 )
