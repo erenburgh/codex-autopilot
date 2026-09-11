@@ -1514,7 +1514,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertTrue(all(item.surface == DESKTOP_OWNED_SURFACE for item in descriptors))
         self.assertEqual(
             [item.title for item in descriptors],
-            ["Builder · Implement A · Task A", "Builder · Implement B · Task B"],
+            ["Builder | A | Task A", "Builder | B | Task B"],
         )
         self.assertTrue(all(item.run_id not in item.title for item in descriptors))
         self.assertEqual(reserve_ready_frontier(self.cfg), ())
@@ -1991,7 +1991,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             descriptor.reservation_token,
         )["visible_report"]
         self.assertIn("Next task: A", report)
-        self.assertIn("Title: Builder · Implement A · Task A", report)
+        self.assertIn("Title: Builder | A | Task A", report)
         self.assertIn("Thread ID: thread-a", report)
         self.assertIn("Launch status: ACTIVE", report)
         self.assertEqual(session["visible_launch_report"], report)
@@ -2570,7 +2570,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             "send_message_to_thread_payload",
             rearmed,
         )
-        self.assertEqual(rearmed["destination_title"], "Builder · Implement B · Task B")
+        self.assertEqual(rearmed["destination_title"], "Builder | B | Task B")
         second_sessions = [
             item for item in store.load().worker_sessions if item["task_id"] == second.task_id
         ]

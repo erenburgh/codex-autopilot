@@ -36,6 +36,7 @@ from .pipeline_engineer import HealthcheckResult, IncidentPhase, PipelineInciden
 from .plan import load_plan
 from .resources import ResourceLockCoordinator, release_resources_in_state
 from .run_state import StateStore, utc_now
+from .thread_titles import SEPARATOR as TITLE_SEPARATOR
 from .task_state import TaskState, transition_task
 
 
@@ -630,7 +631,7 @@ def reactivate_desktop_relay_owner(root: Path, *, incident_id: str | None = None
                 reason=f"relay re-arm precondition failed: {exc}",
             )
         raise
-    if not descriptor.title.startswith(f"{role.name} · "):
+    if not descriptor.title.startswith(f"{role.name}{TITLE_SEPARATOR}"):
         raise RuntimeError("repaired relay descriptor is not role-based")
     predecessor_turn_id = str(predecessor.get("turn_id") or "")
     if not predecessor_turn_id:

@@ -84,23 +84,23 @@ class ThreadTitleTests(unittest.TestCase):
         title = "Normalize workspace metadata"
         self.assertEqual(
             implementation_thread_title("T44", title, role_name="Resilience Engineer"),
-            "Resilience Engineer · Implement T44 · Normalize workspace metadata",
+            "Resilience Engineer | T44 | Normalize workspace metadata",
         )
         self.assertEqual(
             verifier_thread_title("T44", title, role_name="Independent Reviewer"),
-            "Independent Reviewer · Verify T44 · Normalize workspace metadata",
+            "Independent Reviewer Verifier | T44 | Verify workspace metadata",
         )
         self.assertEqual(
             revision_thread_title("T44", 1, title, role_name="Resilience Engineer"),
-            "Resilience Engineer · Revise T44-R1 · Normalize workspace metadata",
+            "Resilience Engineer | T44-R1 | Revise workspace metadata",
         )
         self.assertEqual(
             planner_thread_title("Build dependency-aware runtime"),
-            "Plan · Build dependency-aware runtime",
+            "Planner | PLAN | Build dependency-aware runtime",
         )
         self.assertEqual(
             replanner_thread_title("PC7", "Add a prerequisite audit"),
-            "Replan PC7 · Add a prerequisite audit",
+            "Planner | PC-7 | Add a prerequisite audit",
         )
 
     def test_title_normalization_is_bounded_without_uuid_or_project_prefix(self) -> None:
@@ -111,7 +111,7 @@ class ThreadTitleTests(unittest.TestCase):
         )
         self.assertLessEqual(len(result), MAX_THREAD_TITLE_CHARS)
         self.assertTrue(
-            result.startswith("Resilience Engineer · Implement T44 · A very long task")
+            result.startswith("Resilience Engineer | T44 | A very long task")
         )
         self.assertTrue(result.endswith("…"))
         self.assertNotIn("Codex Autopilot", result)

@@ -310,7 +310,7 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertEqual(verifier_one.kind, "verifier")
         self.assertEqual(
             verifier_one.title,
-            "Independent Reviewer · Verify A · Task A",
+            "Independent Reviewer Verifier | A | Verify Task A",
         )
         self.assertIn(implementation_evidence, verifier_one.prompt)
         self.assertNotIn("FALSE-SUCCESS-SELF-ASSESSMENT", verifier_one.prompt)
@@ -360,7 +360,7 @@ class VerificationLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(recorded_rejection[0]["provider_turn_id"], "verifier-turn-1")
         self.assertEqual(revision.kind, "revision")
-        self.assertEqual(revision.title, "Builder · Revise A-R1 · Task A")
+        self.assertEqual(revision.title, "Builder | A-R1 | Revise Task A")
         self.assertIn("ISSUE-OUTPUT", revision.prompt)
         self.assertNotIn("PRIVATE VERIFIER TRANSCRIPT", revision.prompt)
         state = self.store.load()
@@ -380,7 +380,7 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertEqual(verifier_two.kind, "verifier")
         self.assertEqual(
             verifier_two.title,
-            "Independent Reviewer · Verify A · Task A",
+            "Independent Reviewer Verifier | A | Verify Task A",
         )
         self.assertIn(revision_evidence, verifier_two.prompt)
         self.assertNotEqual(verifier_one.reservation_token, verifier_two.reservation_token)

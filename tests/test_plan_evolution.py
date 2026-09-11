@@ -200,7 +200,7 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertEqual(len(outcome.descriptors), 1)
         replanner = outcome.descriptors[0]
         self.assertEqual(replanner.kind, "replanner")
-        self.assertEqual(replanner.title, "Replan PC1 · Change prerequisite contract")
+        self.assertEqual(replanner.title, "Planner | PC-1 | Change prerequisite contract")
         self.assertIn('"request_id":"PC1"', replanner.prompt)
         self.assertIn('"verified_state":[]', replanner.prompt)
 

@@ -442,7 +442,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(DesktopOrchestrator(cfg, client_factory=FakeClient).run(), 0)
         names = [event[2] for event in FakeClient.instances[-1].events if event[0] == "name"]
         self.assertEqual(len(names), 1)
-        self.assertEqual(names[0], "Implement M1 · Step 1")
+        self.assertEqual(names[0], "Legacy serial worker | M1 | Step 1")
 
     def test_invalid_run_language_is_rejected_before_state_creation(self):
         root = Path(tempfile.mkdtemp(prefix="codex-autopilot-language-"))
