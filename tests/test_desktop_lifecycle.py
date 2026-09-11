@@ -1582,6 +1582,67 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertIn("Completed: B", task_checkpoint_path(self.cfg.state_dir, "B").read_text(encoding="utf-8"))
         self.assertNotIn("Completed: B", task_checkpoint_path(self.cfg.state_dir, "A").read_text(encoding="utf-8"))
 
+    def test_superseded_desktop_task_fails_closed_beside_its_replacement(self) -> None:
+        """M10-REV-006: детерминированный повтор наблюдённой последовательности.
+
+        На самом аудите M10 исходная резервация оставалась в RETRY_WAIT,
+        новая становилась ACTIVE, а прерванная Desktop-задача оставалась
+        адресуемой и продолжала менять то же рабочее дерево: у исходников
+        и тестов менялись mtime во время аудита.
+        """
+        first = reserve_ready_frontier(self.cfg)[0]
+        self.assertEqual(first.task_id, "A")
+        self.activate(first, "thread-a-attempt-1")
+
+        state = self.store.load()
+        original = next(
+            item
+            for item in state.worker_sessions
+            if item["reservation_token"] == first.reservation_token
+        )
+        self.assertEqual(original["status"], "ACTIVE")
+        self.assertEqual(original["thread_id"], "thread-a-attempt-1")
+
+        # Прерывание: задача уходит в RETRY_WAIT, тред остаётся живым.
+        record_desktop_interrupt(
+            self.cfg,
+            thread_id="thread-a-attempt-1",
+            turn_id="turn-a-attempt-1",
+        )
+
+        # Замена берёт ту же задачу.
+        replacement = next(
+            item
+            for item in reserve_ready_frontier(self.cfg, now_epoch=2_000_000_000)
+            if item.task_id == "A"
+        )
+        self.assertNotEqual(replacement.reservation_token, first.reservation_token)
+
+        state = self.store.load()
+        original = next(
+            item
+            for item in state.worker_sessions
+            if item["reservation_token"] == first.reservation_token
+        )
+        self.assertEqual(original["status"], "RETIRED_SUPERSEDED")
+        self.assertIn("replacement reservation", original["retired_reason"])
+        self.assertIn(
+            "session_retired_superseded",
+            [event["event"] for event in state.lifecycle_journal],
+        )
+
+        # Прерванная Desktop-задача получает ввод и обязана упасть закрыто,
+        # а не продолжить производство рядом с активной попыткой.
+        with self.assertRaises(DesktopLifecycleError) as caught:
+            complete_desktop_worker(
+                self.cfg,
+                thread_id="thread-a-attempt-1",
+                turn_id="turn-a-attempt-1-late",
+                final_message="AUTOPILOT_STATUS: ROTATE",
+            )
+        self.assertIn("superseded", str(caught.exception))
+        self.assertIn("must not continue production", str(caught.exception))
+
     def test_create_payload_reuses_the_already_gated_reservation(self) -> None:
         descriptor = reserve_ready_frontier(self.cfg)[0]
         self.hook_gate_mock.assert_called_once_with(self.cfg)
@@ -2704,7 +2765,12 @@ class DesktopLifecycleTests(unittest.TestCase):
         ]
         self.assertEqual(len(m8_sessions), 2)
         self.assertEqual(m8_sessions[0]["reservation_token"], first_m8.reservation_token)
+        # M10-REV-006 сюда не применяется: у этой сессии создание не
+        # состоялось и Desktop-треда нет, продолжать производство нечему.
+        # Ограждается только адресуемая задача - см.
+        # test_superseded_desktop_task_fails_closed_beside_its_replacement.
         self.assertEqual(m8_sessions[0]["status"], "RETRY_WAIT")
+        self.assertFalse(str(m8_sessions[0].get("thread_id") or "").strip())
         self.assertEqual(m8_sessions[0]["relay_owner_thread_id"], "M7-thread")
         self.assertEqual(m8_sessions[1]["attempt"], 2)
         self.assertEqual(m8_sessions[1]["status"], "CREATE_REQUESTED")

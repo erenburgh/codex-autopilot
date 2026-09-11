@@ -3070,6 +3070,12 @@ def _reserve_in_state(
             "checkpoint_before": task_checkpoint(cfg.state_dir, task_id),
             "descriptor": descriptor.to_dict(),
         }
+        fence_superseded_sessions(
+            state,
+            task_id,
+            at=descriptor.created_at,
+            reason=f"replacement reservation {descriptor.reservation_token} owns this task",
+        )
         state.worker_sessions.append(session)
         for event in ("reservation_created", "create_requested"):
             _append_event(state, event, session, descriptor.created_at)
@@ -3369,6 +3375,12 @@ def _reserve_followup_sessions_in_state(
             "checkpoint_before": task_checkpoint(cfg.state_dir, task.id),
             "descriptor": descriptor.to_dict(),
         }
+        fence_superseded_sessions(
+            state,
+            task.id,
+            at=descriptor.created_at,
+            reason=f"replacement reservation {descriptor.reservation_token} owns this task",
+        )
         state.worker_sessions.append(session)
         for event in (
             "reservation_created",
@@ -4511,6 +4523,57 @@ def _require_relay_executor(
         )
 
 
+# M10-REV-006: статус для сессии, вытесненной заменой той же задачи.
+# Её Desktop-тред остаётся адресуемым пользователем, поэтому любой
+# приходящий в него production-запрос обязан падать закрыто, а не
+# продолжать работу рядом с активной попыткой в том же рабочем дереве.
+RETIRED_SUPERSEDED = "RETIRED_SUPERSEDED"
+
+# Статусы, после которых сессия уже не может ничего изменить.
+_TERMINAL_SESSION_STATUSES = {"COMPLETED", "BLOCKED", RETIRED_SUPERSEDED}
+
+
+def fence_superseded_sessions(
+    state: RunState,
+    task_id: str,
+    *,
+    at: str,
+    reason: str,
+) -> list[dict[str, Any]]:
+    """Оградить прежние сессии задачи перед тем, как замена возьмёт ресурсы.
+
+    Наблюдалось на самом аудите M10: исходная резервация оставалась
+    в RETRY_WAIT, новая становилась ACTIVE, а прерванная Desktop-задача
+    продолжала менять то же рабочее дерево - у исходников и тестов
+    менялись mtime во время аудита.
+    """
+    fenced: list[dict[str, Any]] = []
+    for session in state.worker_sessions:
+        if session.get("task_id") != task_id:
+            continue
+        if session.get("status") in _TERMINAL_SESSION_STATUSES:
+            continue
+        # Ограждать нужно то, что реально может продолжить производство:
+        # адресуемую Desktop-задачу. У сессии без привязанного треда
+        # создание не состоялось, продолжать нечему, и она остаётся
+        # доступной для штатного ремонта и повторного запуска DevOps.
+        if not str(session.get("thread_id") or "").strip():
+            continue
+        session["status"] = RETIRED_SUPERSEDED
+        session["retired_at"] = at
+        session["retired_reason"] = reason
+        session["automatic_dispatch_state"] = RETIRED_SUPERSEDED
+        session["automatic_dispatch_pid"] = None
+        session["automatic_dispatch_connection_pid"] = None
+        fenced.append(session)
+        _append_event(state, "session_retired_superseded", session, at, detail=reason)
+    return fenced
+
+
+def session_is_fenced(session: dict[str, Any]) -> bool:
+    return session.get("status") == RETIRED_SUPERSEDED
+
+
 def _active_session_by_thread(state: RunState, thread_id: str) -> dict[str, Any] | None:
     matches = [
         item
@@ -4519,7 +4582,24 @@ def _active_session_by_thread(state: RunState, thread_id: str) -> dict[str, Any]
     ]
     if len(matches) > 1:
         raise DesktopLifecycleError("Desktop thread has multiple active reservations")
-    return matches[0] if matches else None
+    if matches:
+        return matches[0]
+    # M10-REV-006: вытесненная сессия не молчит, а падает закрыто.
+    # Её Desktop-задача остаётся адресуемой, и без этого она продолжала
+    # бы производство рядом с активной попыткой той же задачи.
+    superseded = [
+        item
+        for item in state.worker_sessions
+        if item.get("thread_id") == thread_id and session_is_fenced(item)
+    ]
+    if superseded:
+        retired = superseded[-1]
+        raise DesktopLifecycleError(
+            f"Desktop task {thread_id} was superseded by a replacement for "
+            f"{retired.get('task_id')} and must not continue production: "
+            f"{retired.get('retired_reason') or 'retired'}"
+        )
+    return None
 
 
 def _latest_implementation_thread_id(state: RunState, task_id: str) -> str:
