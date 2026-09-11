@@ -1013,3 +1013,78 @@ def _pid_alive(pid: int | None) -> bool:
     except (OSError, ValueError):
         return False
     return True
+
+
+def reconcile_desktop_runtime(
+    cfg: Config,
+    *,
+    authoritative_states: dict[str, str] | None = None,
+    now_epoch: int | None = None,
+    at: str | None = None,
+) -> RuntimeReconciliation:
+    """Reconcile local plan commits, worker attempts, and resource ownership.
+
+    Unknown or omitted external worker states remain locked. Only an explicit
+    terminal/absent observation retires an attempt, and it retries rather than
+    advancing the graph because no trusted completion protocol was observed.
+    """
+    # поздний импорт: развязка обратной зависимости модулей
+    from .lifecycle_reservations import _prepare_state
+
+    _require_desktop_owned(cfg)
+    store = StateStore(cfg.state_dir)
+    coordinator = ResourceLockCoordinator(store, cfg.root)
+    epoch = int(time.time()) if now_epoch is None else now_epoch
+    with coordinator.transaction():
+        recover_plan_change_transaction(cfg.state_dir, cfg.profile)
+        plan = load_plan(cfg.state_dir, cfg.profile)
+        state = store.load()
+        if state.graph_version != plan.graph_version:
+            raise DesktopLifecycleError("resume reconciliation found a graph version mismatch")
+        for session in state.worker_sessions:
+            if (
+                session.get("status") == "RETRY_WAIT"
+                and session.get("automatic_dispatch_state") == "RUNNING"
+            ):
+                dispatcher_pid = session.get("automatic_dispatch_pid")
+                if _process_id_alive(dispatcher_pid):
+                    raise DesktopLifecycleError(
+                        "retry-wait task still has a live automatic dispatcher"
+                    )
+                session["automatic_dispatch_state"] = "RETRY_WAIT"
+                session["automatic_dispatch_pid"] = None
+                session["automatic_dispatch_connection_pid"] = None
+                _append_event(
+                    state,
+                    "stale_automatic_dispatcher_reconciled",
+                    session,
+                    at or utc_now(),
+                    detail="dead dispatcher identity cleared during resume",
+                )
+        result = reconcile_running_work(
+            plan,
+            state,
+            authoritative_states or {},
+            now_epoch=epoch,
+            retry_delay_seconds=cfg.retry.initial_seconds,
+            at=at,
+        )
+        _prepare_state(plan, state, now_epoch=epoch)
+        _finish_global_state(
+            plan,
+            state,
+            (),
+            paused=store.pause_requested(),
+        )
+        store.save(state)
+    return result
+
+
+def pending_descriptors(cfg: Config) -> tuple[LaunchDescriptor, ...]:
+    state = StateStore(cfg.state_dir).load()
+    return tuple(
+        LaunchDescriptor.from_dict(dict(item["descriptor"]))
+        for item in state.worker_sessions
+        if item.get("status") in PENDING_SESSION_STATUSES
+        and isinstance(item.get("descriptor"), dict)
+    )

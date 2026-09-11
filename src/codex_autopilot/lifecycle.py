@@ -22,6 +22,8 @@ codex_autopilot.lifecycle.
 from __future__ import annotations
 
 from .lifecycle_base import (  # noqa: F401
+    pending_descriptors,
+    reconcile_desktop_runtime,
     ALLOWED_STATUSES,
     CompletionOutcome,
     DESCRIPTOR_SCHEMA_VERSION,

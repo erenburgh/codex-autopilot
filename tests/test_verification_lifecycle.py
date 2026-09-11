@@ -11,13 +11,8 @@ from codex_autopilot.appserver import TurnResult
 from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
+from _appserver_fakes import activate_via_app_server
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
-from codex_autopilot.desktop_slots import (
-    acknowledge_desktop_create,
-    create_descriptor_payload,
-    prepare_desktop_thread,
-    production_send_payload,
-)
 from codex_autopilot.lifecycle import (
     DESKTOP_SLOT_READY,
     WORKSPACE_HANDOFF_OK,
@@ -183,6 +178,11 @@ def graph(first: dict[str, object]) -> dict[str, object]:
 
 
 class VerificationLifecycleTests(unittest.TestCase):
+
+    def activate(self, descriptor, thread_id: str):
+        """Живой путь: так задачу поднимает продакшен-диспетчер."""
+        return activate_via_app_server(self.cfg, self.root, descriptor, thread_id)
+
     def setUp(self) -> None:
         self.hook_gate = mock.patch(
             "codex_autopilot.lifecycle_reservations.require_trusted_stop_hook_for_config"
@@ -220,33 +220,6 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.store = StateStore(self.root / ".codex-autopilot")
         self.memory = ProjectMemory(self.root)
 
-    def activate(self, descriptor, thread_id: str) -> None:
-        create_descriptor_payload(self.cfg, descriptor.reservation_token)
-        acknowledge_desktop_create(
-            self.cfg,
-            descriptor.reservation_token,
-            thread_id=thread_id,
-            host_id="local",
-            slot_turn_id=f"slot-{thread_id}",
-            slot_final_message=DESKTOP_SLOT_READY,
-        )
-        client = FakePrepClient(
-            self.root,
-            slot_turn_id=f"slot-{thread_id}",
-            slot_prompt=descriptor.slot_prompt(),
-        )
-        prepare_desktop_thread(
-            self.cfg,
-            descriptor.reservation_token,
-            client_factory=lambda *_args: client,
-        )
-        self.assertTrue(client.process_exited)
-        production_send_payload(self.cfg, descriptor.reservation_token)
-        acknowledge_desktop_send(
-            self.cfg,
-            descriptor.reservation_token,
-            thread_id=thread_id,
-        )
 
     def evidence(self, task_id: str, label: str, *, role: str = "verification") -> str:
         bump_task_checkpoint(self.root, task_id, f"Completed: {label}")

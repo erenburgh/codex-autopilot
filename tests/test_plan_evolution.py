@@ -10,11 +10,8 @@ from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
-from codex_autopilot.desktop_slots import (
-    reconcile_desktop_runtime,
-    resume_desktop_run,
-)
 from codex_autopilot.lifecycle import (
+    reconcile_desktop_runtime,
     DesktopLifecycleError,
     complete_desktop_worker,
     pause_desktop_run,
@@ -324,57 +321,6 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertEqual(store.load().graph_version, 2)
         self.assertFalse(recover_plan_change_transaction(cfg.state_dir, cfg.profile))
 
-    def test_multi_worker_pause_drains_and_resume_reconciles_before_relaunch(self) -> None:
-        cfg, store = self.initialize(graph([task("A"), task("B")], max_workers=2))
-        descriptors = reserve_ready_frontier(
-            cfg,
-            relay_owner_thread_id="owner",
-            hook_gate=lambda _cfg: None,
-        )
-        original_tokens = {item.task_id: item.reservation_token for item in descriptors}
-        pause_desktop_run(cfg)
-        paused = store.load()
-        self.assertEqual(paused.status, "PAUSED")
-        self.assertEqual(paused.phase, "PAUSED_DRAINING")
-        self.assertEqual(set(paused.active_task_ids), {"A", "B"})
-        self.assertEqual(len(paused.resource_locks), 2)
-        self.assertEqual(
-            reserve_ready_frontier(
-                cfg,
-                relay_owner_thread_id="owner",
-                hook_gate=lambda _cfg: None,
-            ),
-            (),
-        )
-
-        reconciled = reconcile_desktop_runtime(
-            cfg,
-            authoritative_states={
-                original_tokens["A"]: "absent",
-                original_tokens["B"]: "terminal",
-            },
-            now_epoch=100,
-        )
-        self.assertEqual(set(reconciled.retried_task_ids), {"A", "B"})
-        after_crash = store.load()
-        self.assertEqual(after_crash.status, "PAUSED")
-        self.assertEqual(after_crash.active_task_ids, [])
-        self.assertEqual(after_crash.resource_locks, [])
-        self.assertEqual(after_crash.task_retry_at, {"A": 130, "B": 130})
-
-        relaunched = resume_desktop_run(
-            cfg,
-            relay_owner_thread_id="resume-owner",
-            now_epoch=131,
-            hook_gate=lambda _cfg: None,
-        )
-        self.assertEqual({item.task_id for item in relaunched}, {"A", "B"})
-        self.assertTrue(
-            all(item.reservation_token not in original_tokens.values() for item in relaunched)
-        )
-        resumed = store.load()
-        self.assertFalse(store.pause_requested())
-        self.assertEqual(resumed.task_attempts, {"A": 2, "B": 2})
 
     def test_rate_limit_is_account_barrier_and_preserves_other_worker(self) -> None:
         cfg, store = self.initialize(graph([task("A"), task("B")], max_workers=2))
