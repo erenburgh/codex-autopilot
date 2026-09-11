@@ -1340,335 +1340,35 @@ class ProjectMemory:
             return []
         return [{"id": item["id"], "category": item["category"], "status": item["status"]} for item in page.records]
 
+    # --- делегаты в вынесенные модули ---------------------------------
     def render_views(self) -> None:
-        self.initialize()
-        counts: dict[str, int] = {}
-        with self._project_lock(exclusive=True):
-            with self._connect(acquire_lock=False) as db:
-                for row in db.execute(
-                    "SELECT category,count(*) AS count FROM records GROUP BY category"
-                ):
-                    counts[row["category"]] = row["count"]
-                open_conflicts = int(
-                    db.execute(
-                        "SELECT count(*) FROM conflicts WHERE status='needs_review'"
-                    ).fetchone()[0]
-                )
-                verification_count = int(
-                    db.execute("SELECT count(*) FROM verification_results").fetchone()[0]
-                )
-                completions = [
-                    dict(row)
-                    for row in db.execute(
-                        """SELECT * FROM milestone_completions
-                           ORDER BY completed_at,milestone_id"""
-                    ).fetchall()
-                ]
-                decisions = [
-                    dict(row)
-                    for row in db.execute(
-                        """SELECT id,statement,origin,status,reason FROM records
-                           WHERE category='decision' ORDER BY created_at,id"""
-                    ).fetchall()
-                ]
-            state_lines = [
-                "# Project state (generated view)",
-                "",
-                "Canonical project knowledge is stored in `memory.sqlite3`. This file is a cache, not evidence.",
-                "",
-                "## Record counts",
-                *[f"- {name}: {counts.get(name, 0)}" for name in sorted(CATEGORIES)],
-                f"- verification results: {verification_count}",
-                f"- open conflicts: {open_conflicts}",
-                "",
-                "## Verified milestone completions",
-                *(
-                    [
-                        f"- {item['milestone_id']}: {item['evidence_count']} evidence record(s) ({item['source']})"
-                        for item in completions
-                    ]
-                    or ["- None"]
-                ),
-            ]
-            decision_lines = [
-                "# Decisions (generated view)",
-                "",
-                "Canonical decisions and provenance are stored in `memory.sqlite3`.",
-                "",
-                *(
-                    [
-                        f"- {item['id']} [{item['origin']}/{item['status']}]: {item['statement']}"
-                        + (f" — {item['reason']}" if item["reason"] else "")
-                        for item in decisions
-                    ]
-                    or ["- None"]
-                ),
-            ]
-            _atomic_write_text(
-                self.state_dir / "PROJECT_STATE.md", "\n".join(state_lines) + "\n"
-            )
-            _atomic_write_text(
-                self.state_dir / "DECISIONS.md", "\n".join(decision_lines) + "\n"
-            )
+        from .memory_views import render_views
+        return render_views(self)
 
-    def integrity_check(self) -> str:
-        self.initialize()
-        with self._connect() as db:
-            self._assert_connection_integrity(db)
-            return "ok"
+    def export_summary(self, *args, **kwargs):
+        from .memory_views import export_summary
+        return export_summary(self, *args, **kwargs)
 
-    def _assert_connection_integrity(self, db: sqlite3.Connection) -> None:
-        result = str(db.execute("PRAGMA integrity_check").fetchone()[0])
-        foreign_key_errors = len(db.execute("PRAGMA foreign_key_check").fetchall())
-        tables = {
-            str(row[0])
-            for row in db.execute(
-                "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
-            ).fetchall()
-        }
-        required_tables = {
-            "schema_meta",
-            "sequences",
-            "records",
-            "evidence",
-            "record_evidence",
-            "milestone_evidence",
-            "milestone_completions",
-            "conflicts",
-            "conflict_history",
-            "audit_log",
-        }
-        missing_tables = sorted(required_tables - tables)
-        version_row = (
-            db.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
-            if "schema_meta" in tables
-            else None
-        )
-        schema_version = int(version_row[0]) if version_row is not None else 0
-        if schema_version not in {1, SCHEMA_VERSION}:
-            raise MemoryError(
-                f"memory integrity failure: unsupported schema={schema_version}"
-            )
-        if schema_version >= 2:
-            required_tables.update(
-                {"verification_results", "verification_result_evidence"}
-            )
-            missing_tables = sorted(required_tables - tables)
-        truths_without_evidence = int(
-            db.execute(
-                """SELECT count(*) FROM records r
-                   WHERE r.category='truth' AND NOT EXISTS(
-                       SELECT 1 FROM record_evidence re
-                       JOIN evidence e ON e.id=re.evidence_id
-                       WHERE re.record_id=r.id AND re.relation='supports'
-                         AND e.kind!='migration')"""
-            ).fetchone()[0]
-        )
-        verification_tables = {
-            "verification_results",
-            "verification_result_evidence",
-        }
-        partial_verification_schema = bool(verification_tables & tables) and not (
-            verification_tables <= tables
-        )
-        verifications_without_evidence = (
-            int(
-                db.execute(
-                    """SELECT count(*) FROM verification_results vr WHERE NOT EXISTS(
-                           SELECT 1 FROM verification_result_evidence vre
-                           WHERE vre.verification_id=vr.id)"""
-                ).fetchone()[0]
-            )
-            if verification_tables <= tables
-            else 0
-        )
-        invalid_verification_evidence = (
-            int(
-                db.execute(
-                    """SELECT count(*) FROM verification_result_evidence vre
-                       JOIN evidence e ON e.id=vre.evidence_id
-                       WHERE e.kind='migration'"""
-                ).fetchone()[0]
-            )
-            if verification_tables <= tables
-            else 0
-        )
-        if (
-            result != "ok"
-            or foreign_key_errors
-            or missing_tables
-            or partial_verification_schema
-            or truths_without_evidence
-            or verifications_without_evidence
-            or invalid_verification_evidence
-        ):
-            raise MemoryError(
-                "memory integrity failure: "
-                f"sqlite={result}, foreign_keys={foreign_key_errors}, "
-                f"missing_tables={missing_tables}, "
-                f"partial_verification_schema={partial_verification_schema}, "
-                f"truths_without_evidence={truths_without_evidence}, "
-                f"verifications_without_evidence={verifications_without_evidence}, "
-                f"invalid_verification_evidence={invalid_verification_evidence}"
-            )
+    def backup(self, *args, **kwargs):
+        from .memory_durability import backup
+        return backup(self, *args, **kwargs)
 
-    def backup(self, destination: Path | None = None) -> Path:
-        self.initialize()
-        target = (destination or self.state_dir / "memory-backups" / "latest.sqlite3").expanduser().resolve()
-        if not self._is_within(target, self.root):
-            raise MemoryValidationError("memory backup must remain inside the target project")
-        reserved = {
-            self.path,
-            self.lock_path.resolve(),
-            self.path.with_name(self.path.name + "-wal"),
-            self.path.with_name(self.path.name + "-shm"),
-        }
-        if target in reserved:
-            raise MemoryValidationError(
-                "memory backup cannot overwrite the live database or lock files"
-            )
-        with self._project_lock(exclusive=True):
-            return self._backup_locked(target)
+    def _backup_locked(self, *args, **kwargs):
+        from .memory_durability import _backup_locked
+        return _backup_locked(self, *args, **kwargs)
 
-    def _backup_locked(self, target: Path) -> Path:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, raw_temporary = tempfile.mkstemp(
-            prefix=f".{target.name}.tmp-", dir=target.parent
-        )
-        os.close(descriptor)
-        temporary = Path(raw_temporary)
-        try:
-            source_db = self._open_connection()
-            destination_db = sqlite3.connect(temporary, isolation_level=None)
-            destination_db.row_factory = sqlite3.Row
-            try:
-                source_db.backup(destination_db)
-                self._assert_connection_integrity(destination_db)
-            finally:
-                destination_db.close()
-                source_db.close()
-            with temporary.open("rb") as handle:
-                os.fsync(handle.fileno())
-            os.replace(temporary, target)
-            _fsync_directory(target.parent)
-        except Exception:
-            temporary.unlink(missing_ok=True)
-            raise
-        return target
+    def recover_latest(self, *args, **kwargs):
+        from .memory_durability import recover_latest
+        return recover_latest(self, *args, **kwargs)
 
-    def recover_latest(self) -> Path:
-        backup = self.state_dir / "memory-backups" / "latest.sqlite3"
-        if not backup.is_file():
-            raise MemoryError("Project Memory is corrupt and no verified milestone backup exists")
-        if backup.is_symlink() or not self._is_within(backup.resolve(), self.root):
-            raise MemoryValidationError(
-                "latest Project Memory backup must be a regular project-local file"
-            )
-        with self._project_lock(exclusive=True):
-            check = sqlite3.connect(backup, isolation_level=None)
-            check.row_factory = sqlite3.Row
-            try:
-                self._assert_connection_integrity(check)
-                stored_root = check.execute(
-                    "SELECT value FROM schema_meta WHERE key='project_root'"
-                ).fetchone()
-                if stored_root is None or Path(stored_root[0]).resolve() != self.root:
-                    raise MemoryValidationError(
-                        "latest Project Memory backup belongs to a different project"
-                    )
-            finally:
-                check.close()
-            quarantine = self.state_dir / (
-                "memory-corrupt-"
-                + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-                + f"-{time.time_ns() % 1_000_000_000:09d}.sqlite3"
-            )
-            if self.path.exists():
-                shutil.copy2(self.path, quarantine)
-                with quarantine.open("rb") as handle:
-                    os.fsync(handle.fileno())
-            descriptor, raw_temporary = tempfile.mkstemp(
-                prefix=f".{self.path.name}.restore-", dir=self.path.parent
-            )
-            os.close(descriptor)
-            temporary = Path(raw_temporary)
-            try:
-                shutil.copy2(backup, temporary)
-                with temporary.open("rb") as handle:
-                    os.fsync(handle.fileno())
-                os.replace(temporary, self.path)
-                self.path.with_name(self.path.name + "-wal").unlink(missing_ok=True)
-                self.path.with_name(self.path.name + "-shm").unlink(missing_ok=True)
-                _fsync_directory(self.path.parent)
-            except Exception:
-                temporary.unlink(missing_ok=True)
-                raise
-            restored = self._open_connection()
-            try:
-                version = int(
-                    restored.execute(
-                        "SELECT value FROM schema_meta WHERE key='schema_version'"
-                    ).fetchone()[0]
-                )
-                if version == 1:
-                    restored.executescript(
-                        """BEGIN IMMEDIATE;
-                        CREATE TABLE IF NOT EXISTS verification_results (
-                            id TEXT PRIMARY KEY,
-                            task_id TEXT NOT NULL,
-                            check_id TEXT NOT NULL,
-                            policy TEXT NOT NULL CHECK(policy IN ('self','deterministic','independent','auto')),
-                            verdict TEXT NOT NULL CHECK(verdict IN ('PASS','REVISE')),
-                            summary TEXT NOT NULL,
-                            details_json TEXT NOT NULL DEFAULT '{}',
-                            created_by TEXT NOT NULL,
-                            provider TEXT,
-                            provider_thread_id TEXT NOT NULL,
-                            provider_turn_id TEXT NOT NULL,
-                            created_at TEXT NOT NULL,
-                            UNIQUE(task_id,check_id,provider_thread_id,provider_turn_id)
-                        );
-                        CREATE TABLE IF NOT EXISTS verification_result_evidence (
-                            verification_id TEXT NOT NULL REFERENCES verification_results(id),
-                            evidence_id TEXT NOT NULL REFERENCES evidence(id),
-                            created_at TEXT NOT NULL,
-                            PRIMARY KEY(verification_id,evidence_id)
-                        );
-                        CREATE INDEX IF NOT EXISTS verification_results_task_idx
-                            ON verification_results(task_id,created_at,id);
-                        UPDATE schema_meta SET value='2' WHERE key='schema_version';
-                        COMMIT;"""
-                    )
-                self._assert_connection_integrity(restored)
-            finally:
-                restored.close()
-            self._initialized = True
-            return quarantine
+    def _assert_connection_integrity(self, *args, **kwargs):
+        from .memory_durability import _assert_connection_integrity
+        return _assert_connection_integrity(self, *args, **kwargs)
 
-    def ensure_healthy(self, *, recover: bool = True) -> str:
-        try:
-            return self.integrity_check()
-        except MemoryBusyError:
-            raise
-        except (sqlite3.DatabaseError, MemoryError, OSError):
-            if not recover:
-                raise
-            self.recover_latest()
-            return "recovered"
+    def integrity_check(self, *args, **kwargs):
+        from .memory_durability import integrity_check
+        return integrity_check(self, *args, **kwargs)
 
-    def export_summary(self) -> dict[str, Any]:
-        self.initialize()
-        with self._connect() as db:
-            counts = {row["category"]: row["count"] for row in db.execute("SELECT category,count(*) count FROM records GROUP BY category")}
-            return {
-                "schema_version": SCHEMA_VERSION,
-                "database": str(self.path),
-                "project_root": str(self.root),
-                "records": counts,
-                "evidence": int(db.execute("SELECT count(*) FROM evidence").fetchone()[0]),
-                "verification_results": int(
-                    db.execute("SELECT count(*) FROM verification_results").fetchone()[0]
-                ),
-                "open_conflicts": int(db.execute("SELECT count(*) FROM conflicts WHERE status='needs_review'").fetchone()[0]),
-                "audit_highwater": int(db.execute("SELECT coalesce(max(id),0) FROM audit_log").fetchone()[0]),
-            }
+    def ensure_healthy(self, *args, **kwargs):
+        from .memory_durability import ensure_healthy
+        return ensure_healthy(self, *args, **kwargs)
