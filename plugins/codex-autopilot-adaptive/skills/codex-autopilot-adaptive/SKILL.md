@@ -136,7 +136,12 @@ If the target is not Git, state that this beta requires a Git repository and sug
 
 ## Controls
 
-Exact pause, resume, status, and uninstall prompts are handled by the plugin hook without a model request. If control reaches this skill, run the bundled helper with `stop`, `resume`, `status`, or `uninstall --yes`. Project state is removed only with explicit `--purge-project-state --project <root>`.
+Exact pause, resume, status, and uninstall prompts are handled by the plugin hook without a model request. If control reaches this skill, run the bundled helper with `stop`, `status`, or `uninstall --yes`. Project state is removed only with explicit `--purge-project-state --project <root>`.
+
+Never run the helper with `resume` on a `desktop_owned` run. Only the trusted
+Stop hook may resume it, on the user's own command; the helper refuses a model
+caller by design. Attempting it wastes the turn and reports a failure that is
+not one. On a resume prompt your whole job is the reporting protocol below.
 
 ## Reporting a launch while it happens
 
@@ -149,6 +154,11 @@ instead, one line at a time, so the user watches progress rather than silence:
 3. Wait a few seconds and repeat, until the ladder shows the task started, or a
    line marked `[✗]` appears, or about two minutes pass.
 4. Finish with one short line: started, or stopped at which step.
+
+The final visible line carries the verdict. If the ladder stopped, say so there,
+naming the step — never end on progress counts while the stall sits in collapsed
+reasoning. "10 of 11 verified, M11 active" is not a verdict when the launch did
+not start; "остановилось на проверке видимости" is.
 
 Rules for this reporting:
 

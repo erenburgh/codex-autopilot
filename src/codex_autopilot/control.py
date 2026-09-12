@@ -1128,12 +1128,34 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     state = store.load()
     if request.get("run_id") != state.run_id:
         raise RuntimeError("armed launch request belongs to an older Autopilot run")
+    cfg = load_config(root)
     if state.status != "READY" or state.phase != "ARMED":
         # A supported manual resume may consume this initialized run before
         # the initiating turn ends. Never turn its stale Stop hook into a
         # second dispatcher.
-        return {}
-    cfg = load_config(root)
+        #
+        # Но молча выбрасывать уже изъятый запрос нельзя: состояние могло
+        # уйти вперёд в этом же ходе - например, в PLAN_CHANGE_DRAINING, -
+        # и тогда возобновление исчезало без следа. Если при этом есть
+        # резервация без живого диспетчера, поднимаем именно её.
+        stalled = _orphaned_pending_descriptors(cfg)
+        if not stalled:
+            return {}
+        pids = _spawn_automatic_descriptors(
+            cfg,
+            stalled,
+            triggering_thread_id=str(payload.get("session_id") or ""),
+            triggering_turn_id=str(payload.get("turn_id") or ""),
+        )
+        return _launch_report(
+            cfg,
+            [item.task_id for item in stalled],
+            started=(
+                "Codex Autopilot поднял зависшую резервацию: "
+                + ", ".join(str(pid) for pid in pids)
+            ),
+            timeout=15.0,
+        )
     if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
         try:
             descriptors = reserve_ready_frontier(
