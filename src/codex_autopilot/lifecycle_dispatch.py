@@ -155,7 +155,6 @@ def app_server_creation_contract(
         "permissions": cfg.desktop.permission_profile,
         "ephemeral": False,
         "runtimeWorkspaceRoots": [str(cfg.root)],
-        "threadSource": "agent_created_thread",
     }
     if cfg.desktop.project_id:
         params["projectId"] = cfg.desktop.project_id
@@ -265,7 +264,12 @@ def create_desktop_thread_via_app_server(
                 model=descriptor.model,
                 plugin_root=installed_plugin_root(cfg.skill_path),
                 ephemeral=False,
-                thread_source="agent_created_thread",
+                # v0.7 не передавала threadSource вовсе, и её задачи
+                # появлялись в сайдбаре проекта обычными ветками.
+                # "agent_created_thread" помечает ветку как созданную
+                # агентом: приложение показывает её как созданную в другом
+                # приложении и требует ручного перехвата. Именно этот
+                # параметр и отличал 0.8 от работавшей 0.7.
             )
             thread = started.get("thread") or {}
             thread_id = str(thread.get("id") or "")
