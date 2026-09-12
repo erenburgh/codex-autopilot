@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -51,6 +52,16 @@ class ResumeChainTests(unittest.TestCase):
             worker_surface=DESKTOP_OWNED_SURFACE,
         )
         self.cfg = load_config(self.root)
+        # Реестр взведённых стартов один на пользователя и живёт в TMPDIR.
+        # Без изоляции этот набор оставлял в нём запись про свой временный
+        # каталог, и живой Stop-хук потом отказывался запускать что-либо:
+        # "multiple Autopilot starts are armed".
+        registry = Path(tempfile.mkdtemp(prefix="codex-autopilot-launch-registry-")) / "requests"
+        launch_dir = mock.patch.dict(
+            os.environ, {"CODEX_AUTOPILOT_LAUNCH_DIR": str(registry)}
+        )
+        launch_dir.start()
+        self.addCleanup(launch_dir.stop)
         self.store = StateStore(self.cfg.state_dir)
 
         self.spawned: list[str] = []

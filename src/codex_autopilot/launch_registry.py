@@ -70,7 +70,19 @@ class LaunchRegistry:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 armed = _parse_time(data.get("armed_at"))
-                if data.get("schema_version") != REGISTRY_SCHEMA or armed < cutoff:
+                root = str(data.get("project_root") or "")
+                # Запрос на запуск проекта, которого больше нет, исполнить
+                # нельзя, а лежит он до истечения возраста и всё это время
+                # делает старт неоднозначным: Stop-хук отказывается
+                # запускать что-либо со словами "multiple Autopilot starts
+                # are armed". Ровно так прогон вставал из-за каталогов,
+                # оставшихся от чужих временных проектов.
+                stale_root = bool(root) and not Path(root).is_dir()
+                if (
+                    data.get("schema_version") != REGISTRY_SCHEMA
+                    or armed < cutoff
+                    or stale_root
+                ):
                     path.unlink(missing_ok=True)
             except (OSError, json.JSONDecodeError):
                 path.unlink(missing_ok=True)

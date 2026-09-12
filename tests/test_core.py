@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -82,6 +83,22 @@ def update_handoff(root: Path, label: str) -> None:
 def completed_turn(status: str, turn_id: str = "turn") -> dict:
     reason = "\nCOMPUTER_USE_REASON: The Definition of Done requires interaction with a real browser GUI." if status == "REQUIRE_COMPUTER_USE" else ""
     return {"id": turn_id, "status": "completed", "items": [{"type": "agentMessage", "phase": "final_answer", "text": f"finished{reason}\nAUTOPILOT_STATUS: {status}"}]}
+
+
+
+@contextlib.contextmanager
+def isolated_launch_registry():
+    """Держать реестр взведённых стартов в стороне от общего.
+
+    Реестр живёт по фиксированному пути в TMPDIR, один на пользователя.
+    Тест, взводивший старт мимо этой изоляции, оставлял в нём запись про
+    свой временный каталог, и живой Stop-хук потом отказывался запускать
+    что-либо: "multiple Autopilot starts are armed".
+    """
+
+    directory = Path(tempfile.mkdtemp(prefix="codex-autopilot-launch-registry-")) / "requests"
+    with mock.patch.dict(os.environ, {"CODEX_AUTOPILOT_LAUNCH_DIR": str(directory)}):
+        yield directory
 
 
 class FakeClient:
@@ -828,24 +845,26 @@ class CoreTests(unittest.TestCase):
 
     def test_arm_and_stop_hook_pass_initiator_ids(self):
         root = make_project()
-        arm(root)
-        with mock.patch("codex_autopilot.control.spawn_dispatcher", return_value=42) as spawn, mock.patch("codex_autopilot.control.wait_for_dispatcher", return_value="WAITING_INITIATOR"):
-            output = handle_stop_hook({"cwd": str(root), "session_id": "session", "turn_id": "turn"})
+        with isolated_launch_registry():
+            arm(root)
+            with mock.patch("codex_autopilot.control.spawn_dispatcher", return_value=42) as spawn, mock.patch("codex_autopilot.control.wait_for_dispatcher", return_value="WAITING_INITIATOR"):
+                output = handle_stop_hook({"cwd": str(root), "session_id": "session", "turn_id": "turn"})
         spawn.assert_called_once_with(root.resolve(), initiator_thread_id="session", initiator_turn_id="turn")
         self.assertIn("dispatcher started", output["systemMessage"])
         self.assertFalse((root / ".codex-autopilot/launch-request.json").exists())
 
     def test_stale_stop_hook_arm_does_not_start_duplicate_dispatcher(self):
         root = make_project()
-        arm(root)
-        store = StateStore(root / ".codex-autopilot")
-        state = store.load()
-        state.status = "RUNNING"
-        state.phase = "RUNNING_TURN"
-        state.dispatcher_pid = 123
-        store.save(state)
-        with mock.patch("codex_autopilot.control.spawn_dispatcher") as spawn:
-            output = handle_stop_hook({"cwd": str(root), "session_id": "session", "turn_id": "turn"})
+        with isolated_launch_registry():
+            arm(root)
+            store = StateStore(root / ".codex-autopilot")
+            state = store.load()
+            state.status = "RUNNING"
+            state.phase = "RUNNING_TURN"
+            state.dispatcher_pid = 123
+            store.save(state)
+            with mock.patch("codex_autopilot.control.spawn_dispatcher") as spawn:
+                output = handle_stop_hook({"cwd": str(root), "session_id": "session", "turn_id": "turn"})
         self.assertEqual(output, {})
         spawn.assert_not_called()
         self.assertFalse((root / ".codex-autopilot/launch-request.json").exists())
