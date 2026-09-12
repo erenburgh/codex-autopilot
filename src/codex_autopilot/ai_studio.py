@@ -15,6 +15,7 @@ from .pipeline_engineer import (
     IncidentClass,
     IncidentPhase,
 )
+from .rules import rules_for_prompt
 from .plan import Plan, RoleProfile, Task
 from .task_state import dependency_state_satisfies
 from .verification import VerificationIssue, verifier_route
@@ -81,7 +82,7 @@ class AIStudioRuntime:
     snapshot, Project Memory selectors, and phase-specific structured inputs.
     """
 
-    __slots__ = ("plan", "project_root", "language", "skill_path", "memory")
+    __slots__ = ("plan", "project_root", "language", "skill_path", "memory", "state_dir")
 
     def __init__(
         self,
@@ -97,6 +98,9 @@ class AIStudioRuntime:
         self.language = language
         self.skill_path = skill_path.expanduser().resolve()
         self.memory = memory or ProjectMemory(self.project_root)
+        # Каталог состояния нужен только для истории нарушений правил:
+        # чаще нарушавшиеся идут в контексте выше (R17).
+        self.state_dir = self.project_root / ".codex-autopilot"
 
     def route(self, task_id: str, *, phase: str = "implementation") -> RuntimeRoute:
         """Route solely from capability/model strategy, never from role identity."""
@@ -229,6 +233,12 @@ Finish with exactly one line: PIPELINE_ENGINEER_STATUS: RESOLVED or PIPELINE_ENG
         role = self.plan.role_map[route.role_id]
         context = self.select_context(task_id, task_states=task_states)
         envelope = {
+            # Правило R17: блок правил идёт ПЕРЕД спецификациями задачи
+            # и не подлежит усечению. Если бюджет контекста не вмещает
+            # правила плюс минимальную спецификацию, задача не
+            # запускается - это дефект планирования контекста, а не
+            # повод выбросить правила.
+            "rules": rules_for_prompt(self.state_dir),
             "phase": phase,
             "task": self._task_contract(task),
             "role": self._role_contract(role),
@@ -282,7 +292,9 @@ Finish with exactly one line: PIPELINE_ENGINEER_STATUS: RESOLVED or PIPELINE_ENG
         )
         if len(prompt) > MAX_PROMPT_CHARS:
             raise ContextBoundaryError(
-                f"{phase} prompt for {task_id} exceeds {MAX_PROMPT_CHARS} characters"
+                f"{phase} prompt for {task_id} exceeds {MAX_PROMPT_CHARS} characters; "
+                "the rules block is not truncatable, so this is a context-planning "
+                "defect: narrow the task context instead"
             )
         return prompt
 

@@ -53,6 +53,49 @@ class IncidentPhase(str, Enum):
     ESCALATE_TO_USER = "ESCALATE_TO_USER"
 
 
+class EscalationReason(str, Enum):
+    """Правило R13: закрытый список причин обращения к пользователю.
+
+    Пользователь не участвует в выборе способа фикса инфраструктурных
+    багов - это работа DevOps от его имени. Эскалация допустима только
+    по одной из этих причин, и код причины обязателен.
+    """
+
+    DANGEROUS_PERMISSION = "DANGEROUS_PERMISSION"
+    GLOBAL_CONFIG_CHANGE = "GLOBAL_CONFIG_CHANGE"
+    PROJECT_DAMAGE_RISK = "PROJECT_DAMAGE_RISK"
+    RECOVERY_EXHAUSTED = "RECOVERY_EXHAUSTED"
+    PRODUCT_DECISION = "PRODUCT_DECISION"
+    ARCHITECTURE_DECISION = "ARCHITECTURE_DECISION"
+
+
+ESCALATION_REASONS = frozenset(item.value for item in EscalationReason)
+
+
+def escalate_to_user(
+    incident: dict[str, Any],
+    reason: "EscalationReason | str",
+    *,
+    at: str,
+    detail: str = "",
+) -> None:
+    """Перевести инцидент в ESCALATE_TO_USER с обязательным кодом причины.
+
+    Эскалация без кода или с кодом вне списка отклоняется: именно так
+    пользователь переставал быть тем, кто чинит пайплайн.
+    """
+    value = reason.value if isinstance(reason, EscalationReason) else str(reason)
+    if value not in ESCALATION_REASONS:
+        raise AuthorizationTopologyError(
+            f"R13: эскалация требует код причины из закрытого списка "
+            f"{sorted(ESCALATION_REASONS)}; получено {value!r}"
+        )
+    incident["phase"] = IncidentPhase.ESCALATE_TO_USER.value
+    incident["escalation_reason"] = value
+    incident["escalation_detail"] = detail
+    incident["escalated_at"] = at
+
+
 class SideEffectOutcome(str, Enum):
     NONE = "NONE"
     KNOWN_SUCCEEDED = "KNOWN_SUCCEEDED"
@@ -241,7 +284,14 @@ class PipelineIncidentStore:
                 return phase
             classification = IncidentClass(str(incident["classification"]))
             if classification not in INFRASTRUCTURE_INCIDENT_CLASSES:
-                incident["phase"] = IncidentPhase.ESCALATE_TO_USER.value
+                escalate_to_user(
+                    incident,
+                    EscalationReason.PRODUCT_DECISION
+                    if classification is IncidentClass.PRODUCTION
+                    else EscalationReason.ARCHITECTURE_DECISION,
+                    at=at,
+                    detail="outside Pipeline Engineer authority",
+                )
                 incident["updated_at"] = at
                 _append_event(
                     state,
@@ -332,7 +382,15 @@ class PipelineIncidentStore:
                 incident["resolved_at"] = at
                 event = "pipeline_engineer_resolved"
             else:
-                incident["phase"] = IncidentPhase.ESCALATE_TO_USER.value
+                # Pipeline Engineer исчерпал свои возможности - это
+                # единственная причина, по которой он вправе обратиться
+                # к пользователю (R13).
+                escalate_to_user(
+                    incident,
+                    EscalationReason.RECOVERY_EXHAUSTED,
+                    at=at,
+                    detail="Pipeline Engineer could not resolve the incident",
+                )
                 event = "pipeline_engineer_escalated_to_user"
             incident["updated_at"] = at
             _append_event(

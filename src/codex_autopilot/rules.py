@@ -431,3 +431,70 @@ def rules_by_mode(mode: str) -> tuple[Rule, ...]:
         raise ValueError(f"mode must be one of {sorted(MODES)}")
     return tuple(item for item in RULES if item.mode == mode)
 
+
+# --- история нарушений и порядок загрузки ---------------------------------
+
+VIOLATIONS_FILE = "rule-violations.json"
+
+
+def violation_counts(state_dir) -> dict[str, int]:
+    """Сколько раз каждое правило нарушалось в этом проекте.
+
+    Правило R17: чаще нарушавшиеся идут в контексте выше. История
+    хранится рядом с состоянием прогона и переживает перезапуск.
+    """
+    from pathlib import Path
+    import json
+
+    path = Path(state_dir) / VIOLATIONS_FILE
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): int(value)
+        for key, value in raw.items()
+        if str(key) in _BY_ID and isinstance(value, int)
+    }
+
+
+def record_violation(state_dir, rule_id: str, *, detail: str = "") -> None:
+    """Зафиксировать нарушение: оно поднимает правило в приоритете."""
+    from pathlib import Path
+    import json
+
+    rule(rule_id)
+    path = Path(state_dir) / VIOLATIONS_FILE
+    counts = violation_counts(state_dir)
+    counts[rule_id] = counts.get(rule_id, 0) + 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(counts, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def rules_for_prompt(state_dir=None) -> list[dict[str, str]]:
+    """Блок правил для промпта воркера.
+
+    Порядок фиксирован правилом R17: сначала ENFORCED, внутри режима -
+    чаще нарушавшиеся выше, затем по id. Блок не подлежит усечению:
+    если бюджет контекста его не вмещает, задача не запускается.
+    """
+    counts = violation_counts(state_dir) if state_dir is not None else {}
+
+    def key(item: Rule) -> tuple[int, int, int]:
+        return (
+            0 if item.mode == ENFORCED else 1,
+            -counts.get(item.id, 0),
+            int(item.id[1:]),
+        )
+
+    return [
+        {"id": item.id, "mode": item.mode, "rule": item.statement}
+        for item in sorted(RULES, key=key)
+    ]
