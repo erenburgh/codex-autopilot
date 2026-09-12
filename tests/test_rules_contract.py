@@ -40,13 +40,15 @@ IMPLEMENTED = {
     "R1": "test_r1_owner_that_never_completed_is_reported",
     "R5": "test_r5_project_id_is_never_reported_as_sidebar_placement",
     "R7": "test_declared_scope.py::test_change_outside_the_declared_area_is_recorded_on_completion",
+    "R16": "test_declared_scope.py::test_r16_report_without_applied_rules_is_recorded",
+    "R18": "test_rule_contract_and_external_input.py::ExternalInputTests",
 }
 
 # Правила, проверка которых ещё не написана. Список намеренно явный:
 # пустая строка здесь означала бы, что всё покрыто, а это неправда.
 PENDING = {
     "R3", "R4", "R10", "R11", "R12",
-    "R14", "R15", "R16", "R18", "R19", "R20", "R22", "R23",
+    "R14", "R15", "R19", "R20", "R22", "R23",
     "R24", "R25", "R26", "R27", "R28", "R29", "R30",
 }
 

@@ -180,7 +180,7 @@ class ScopeIsCheckedOnCompletionTests(unittest.TestCase):
         self.cfg = load_config(self.root)
         self.memory = ProjectMemory(self.root)
 
-    def run_task_a(self, write: Path) -> None:
+    def run_task_a(self, write: Path, *, rules_line: str | None = None) -> None:
         from _appserver_fakes import activate_via_app_server
         from _handoff import bump_task_checkpoint
         from _relay import reserve_ready_frontier
@@ -205,7 +205,11 @@ class ScopeIsCheckedOnCompletionTests(unittest.TestCase):
             self.cfg,
             thread_id="thread-a",
             turn_id="turn-a",
-            final_message="AUTOPILOT_STATUS: ROTATE",
+            final_message=(
+                f"{rules_line}\nAUTOPILOT_STATUS: ROTATE"
+                if rules_line
+                else "AUTOPILOT_STATUS: ROTATE"
+            ),
         )
 
     def journal_events(self, name: str) -> list[dict]:
@@ -230,6 +234,34 @@ class ScopeIsCheckedOnCompletionTests(unittest.TestCase):
         self.run_task_a(self.root / "src" / "a" / "impl.py")
         self.assertEqual(self.journal_events("scope_violation_recorded"), [])
         self.assertEqual(violation_counts(self.cfg.state_dir).get("R7"), None)
+
+    def test_r16_report_without_applied_rules_is_recorded(self) -> None:
+        from codex_autopilot.rules import violation_counts
+
+        self.run_task_a(self.root / "src" / "a" / "impl.py")
+        recorded = self.journal_events("rule_declaration_missing")
+        self.assertEqual(len(recorded), 1)
+        self.assertIn("AUTOPILOT_RULES", recorded[0]["detail"])
+        self.assertEqual(violation_counts(self.cfg.state_dir).get("R16"), 1)
+
+    def test_r16_report_listing_applied_rules_is_clean(self) -> None:
+        from codex_autopilot.rules import violation_counts
+
+        self.run_task_a(
+            self.root / "src" / "a" / "impl.py", rules_line="AUTOPILOT_RULES: R7, R16"
+        )
+        self.assertEqual(self.journal_events("rule_declaration_missing"), [])
+        self.assertEqual(violation_counts(self.cfg.state_dir).get("R16"), None)
+
+    def test_r16_report_citing_a_rule_that_does_not_exist_is_recorded(self) -> None:
+        """Иначе правило "соблюдается" ссылкой на то, чего нет."""
+
+        self.run_task_a(
+            self.root / "src" / "a" / "impl.py", rules_line="AUTOPILOT_RULES: R999"
+        )
+        recorded = self.journal_events("rule_declaration_missing")
+        self.assertEqual(len(recorded), 1)
+        self.assertIn("R999", recorded[0]["detail"])
 
 
 if __name__ == "__main__":

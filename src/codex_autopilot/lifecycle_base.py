@@ -220,6 +220,28 @@ def parse_desktop_worker_status(message: str) -> str:
         )
     return matches[0]
 
+APPLIED_RULES_PATTERN = re.compile(r"(?mi)^AUTOPILOT_RULES:\s*(.+?)\s*$")
+
+
+def parse_applied_rules(message: str) -> tuple[str, ...]:
+    """Правило R16: отчёт перечисляет id правил, применённых к задаче.
+
+    Правила подаются воркеру структурой со стабильными id (R17), и отчёт
+    обязан сослаться на них теми же id. Отчёт без перечня - дефект: без
+    него нельзя отличить "правило учтено" от "правило не прочитано".
+
+    Возвращает найденные id в порядке появления, без повторов. Пустой
+    кортеж означает, что перечня нет.
+    """
+
+    found: list[str] = []
+    for line in APPLIED_RULES_PATTERN.findall(message):
+        for token in re.findall(r"\bR\d+\b", line.upper()):
+            if token not in found:
+                found.append(token)
+    return tuple(found)
+
+
 def confirm_prep_app_server_exit(cfg: Config, *, at: str | None = None) -> None:
     """Persist the one-way boundary after a bounded preflight client exits."""
 

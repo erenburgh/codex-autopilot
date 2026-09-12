@@ -25,6 +25,7 @@ from .bootstrap import mark_roadmap, select_milestone
 from .config import Config, DESKTOP_OWNED_SURFACE
 from .hook_trust import require_trusted_stop_hook_for_config
 from .language import is_russian
+from .lifecycle_base import parse_applied_rules
 from .lifecycle_prompts import (
     _evidence_selectors,
     _replanner_prompt,
@@ -153,6 +154,42 @@ from .lifecycle_failures import (
 from .lifecycle_reservations import (
     _reserve_in_state,
 )
+
+
+def _audit_rule_declaration(
+    cfg: Config,
+    state: RunState,
+    session: dict[str, Any],
+    final_message: str,
+    at: str,
+) -> None:
+    """Правило R16: отчёт обязан перечислить применённые id правил.
+
+    Правило в режиме CHECKED: отсутствие перечня записывается как дефект
+    и поднимает R16 в приоритете правил следующего воркера, но завершение
+    не рушит. Ссылка на несуществующий id - тоже дефект: так правило
+    "соблюдается" цитированием того, чего нет.
+    """
+
+    from .rules import RULES
+
+    declared = parse_applied_rules(final_message)
+    known = {item.id for item in RULES}
+    if not declared:
+        detail = (
+            f"R16: отчёт задачи {session.get('task_id')} не перечислил применённые "
+            "правила; ожидается строка AUTOPILOT_RULES перед AUTOPILOT_STATUS"
+        )
+    else:
+        unknown = [item for item in declared if item not in known]
+        if not unknown:
+            return
+        detail = (
+            f"R16: отчёт задачи {session.get('task_id')} ссылается на несуществующие "
+            f"правила: {', '.join(unknown)}"
+        )
+    record_violation(cfg.state_dir, "R16", detail=detail)
+    _append_event(state, "rule_declaration_missing", session, at, detail=detail)
 
 
 def _audit_task_scope(
@@ -388,6 +425,7 @@ def complete_desktop_worker(
         _append_event(state, "turn_identity_bound", current, timestamp)
         _append_event(state, "turn_completed", current, timestamp, detail=worker_status)
         _audit_task_scope(cfg, plan, state, current, timestamp)
+        _audit_rule_declaration(cfg, state, current, final_message, timestamp)
 
         release_resources_in_state(
             state,

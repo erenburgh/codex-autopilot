@@ -33,8 +33,11 @@ EVIDENCE_KINDS = {
     "artifact",
     "environment_probe",
     "migration",
+    "external",
 }
-TRUTH_EVIDENCE_KINDS = EVIDENCE_KINDS - {"migration"}
+# R18: внешний текст не подпирает истину. Он может быть записан как
+# наблюдение и породить Conflict, но промоушен в Truth отклоняется.
+TRUTH_EVIDENCE_KINDS = EVIDENCE_KINDS - {"migration", "external"}
 PREFIXES = {
     "truth": "FACT",
     "decision": "DEC",
@@ -910,7 +913,10 @@ class ProjectMemory:
                 raise MemoryValidationError(f"unknown evidence: {', '.join(missing)}")
             weak = [item for item, kind in found.items() if kind not in TRUTH_EVIDENCE_KINDS]
             if weak:
-                raise MemoryValidationError(f"migration/advisory material cannot support Truth: {', '.join(weak)}")
+                raise MemoryValidationError(
+                "R18: migration/advisory/external material cannot support Truth: "
+                f"{', '.join(weak)}"
+            )
         fact = self._create_record(
             category="truth", statement=statement, origin="project", status="verified",
             created_by=created_by, scope=scope, verification_method=verification_method,
@@ -930,7 +936,37 @@ class ProjectMemory:
             raise MemoryValidationError("invalid decision status")
         if origin == "agent" and status == "accepted":
             raise MemoryValidationError("agent-origin decisions must begin as proposed")
+        if (
+            status == "accepted"
+            and origin != "user"
+            and self._has_external_evidence(evidence_ids)
+        ):
+            # Пользователь вправе принять решение, сославшись на внешний
+            # текст: решает он. Запрет закрывает другой путь - когда агент
+            # проводит найденную снаружи инструкцию как принятое решение.
+            raise MemoryValidationError(
+                "R18: a non-user decision resting on external content must "
+                "begin as proposed; external content does not decide"
+            )
         return self._create_record(category="decision", statement=statement, origin=origin, status=status, created_by=created_by, reason=reason, scope=scope, evidence_ids=evidence_ids, provider=provider, provider_thread_id=provider_thread_id)
+
+    def _has_external_evidence(self, evidence_ids: Sequence[str]) -> bool:
+        """R18: опирается ли решение на недоверенный внешний ввод.
+
+        Признак берётся из вида доказательства, а не из свободного поля
+        origin: вид проставляется тем, кто вводит материал в память, и
+        его нельзя обойти выбором другого ярлыка.
+        """
+
+        if not evidence_ids:
+            return False
+        self.initialize()
+        with self._connect() as db:
+            rows = db.execute(
+                f"SELECT kind FROM evidence WHERE id IN ({','.join('?' for _ in evidence_ids)})",
+                tuple(evidence_ids),
+            ).fetchall()
+        return any(row["kind"] == "external" for row in rows)
 
     def set_decision_status(self, decision_id: str, status: str, *, actor: str, reason: str | None = None) -> dict[str, Any]:
         if status not in {"proposed", "accepted", "superseded", "rejected"}:
