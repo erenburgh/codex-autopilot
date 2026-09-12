@@ -65,7 +65,7 @@
   - Критерий готовности: Verification outcomes and task/thread provenance integrate with existing evidence rules; independent agreement alone never creates Truth and NO EVIDENCE -> NO TRUTH remains enforced.
   - Критерий готовности: Rendering/backups/recovery cannot race writers into inconsistent or partial generated state.
   - Критерий готовности: A repeatable concurrent stress suite covers evidence, observations, decisions, verification results, conflicts, integrity_check, ID uniqueness, and recovery, and it passes.
-- [ ] M10: Repair branch audit — code — рассуждение: max
+- [x] M10: Repair branch audit — code — рассуждение: max
   - Act as a fresh independent release verifier on branch repair/m10-p0. The branch carries commits that CLAIM to close items REV-002 through REV-006 of your own earlier audit in docs/RELEASE_VERIFICATION_0.9.0-beta.md, plus machine-checkable enforcement for rules R1, R5, R6, R7, R13, R16, R17, R18 and R21, plus normalized incident signatures with two-level recovery. Treat every one of those as a claim, not as a result: verify each against actual source and a named test. Commit messages, prior worker statements and report prose are not evidence. Do not re-audit closed items from zero and do not revert repaired code. Report what is genuinely closed, what is still open, and what cannot be assessed without a live App Server.
   - Причина режима: Independent repository review, tests, diffs, documentation, and security scans are sufficient for this verification milestone.
   - Критерий готовности: Every claimed closure is confirmed or refuted against actual source and a named test; commit messages and report prose are never accepted as evidence.

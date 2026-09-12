@@ -379,3 +379,73 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlacementGateTests(unittest.TestCase):
+    """Цикл v0.7: слот -> ветка -> подтверждённое размещение -> работа."""
+
+    def setUp(self) -> None:
+        from unittest import mock
+
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        patcher = mock.patch(
+            "codex_autopilot.preflight.default_codex_home", return_value=self.home
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write_state(self, **keys) -> None:
+        import json as _json
+
+        (self.home / ".codex-global-state.json").write_text(
+            _json.dumps(keys), encoding="utf-8"
+        )
+
+    def test_thread_desktop_never_heard_of_is_absent(self) -> None:
+        from codex_autopilot.launch_gate import ABSENT, desktop_placement
+
+        self.write_state()
+        self.assertEqual(desktop_placement("t1"), ABSENT)
+
+    def test_thread_known_but_projectless_is_outside(self) -> None:
+        from codex_autopilot.launch_gate import OUTSIDE, desktop_placement
+
+        self.write_state(**{"projectless-thread-ids": ["t1"]})
+        self.assertEqual(desktop_placement("t1"), OUTSIDE)
+
+    def test_thread_in_project_records_is_inside(self) -> None:
+        from codex_autopilot.launch_gate import INSIDE, desktop_placement
+
+        self.write_state(**{"thread-project-assignments": {"t1": "p1"}})
+        self.assertEqual(desktop_placement("t1"), INSIDE)
+
+    def test_promotion_is_skipped_when_already_inside(self) -> None:
+        from unittest import mock
+
+        from codex_autopilot.launch_gate import INSIDE, promote_into_project
+
+        self.write_state(**{"thread-project-assignments": {"t1": "p1"}})
+        client = mock.Mock()
+        before, after = promote_into_project(
+            "t1", "p1", client=client, sleep=lambda _s: None
+        )
+        self.assertEqual((before, after), (INSIDE, INSIDE))
+        client.assign_thread_to_project.assert_not_called()
+
+    def test_promotion_rereads_desktop_instead_of_trusting_the_call(self) -> None:
+        """Успех вызова App Server видимостью не является."""
+
+        from unittest import mock
+
+        from codex_autopilot.launch_gate import ABSENT, promote_into_project
+
+        self.write_state()
+        client = mock.Mock()
+        client.assign_thread_to_project.return_value = {"projectId": "p1"}
+        before, after = promote_into_project(
+            "t1", "p1", client=client, sleep=lambda _s: None
+        )
+        client.assign_thread_to_project.assert_called_once_with("t1", "p1")
+        self.assertEqual((before, after), (ABSENT, ABSENT))

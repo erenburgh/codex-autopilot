@@ -57,6 +57,11 @@ class RuntimeConfig:
     # Missing values and new runs retain the historical controller-owned App
     # Server behavior. Desktop ownership must be selected explicitly.
     worker_surface: str = HEADLESS_APP_SERVER_SURFACE
+    # До какого размещения ветки в Desktop задача не вправе начинать работу.
+    # "in_project" - только внутри проекта; "visible" - достаточно того, что
+    # Desktop о ней знает; "any" - не проверять. Невидимая задача обесценивает
+    # автопилот: её нельзя открыть и прочитать, поэтому по умолчанию строго.
+    required_thread_placement: str = "in_project"
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +225,9 @@ def load_config(root_or_path: Path) -> Config:
             worker_surface=_worker_surface(
                 runtime.get("worker_surface", HEADLESS_APP_SERVER_SURFACE)
             ),
+            required_thread_placement=_thread_placement(
+                runtime.get("required_thread_placement", "in_project")
+            ),
         ),
         auto_commit=auto_commit,
     )
@@ -256,6 +264,19 @@ def _execution_strategy(value: object) -> str:
             f"runtime.execution_strategy must be one of {sorted(EXECUTION_STRATEGIES)}"
         )
     return result
+
+
+THREAD_PLACEMENT_LEVELS = ("in_project", "visible", "any")
+
+
+def _thread_placement(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text not in THREAD_PLACEMENT_LEVELS:
+        raise ValueError(
+            "runtime.required_thread_placement must be one of "
+            + ", ".join(THREAD_PLACEMENT_LEVELS)
+        )
+    return text
 
 
 def _worker_surface(value: object) -> str:

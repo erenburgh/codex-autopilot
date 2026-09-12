@@ -410,6 +410,86 @@ def create_desktop_thread_via_app_server(
         "app_server_process_exited_at": timestamp if owns_client else None,
     }
 
+def _require_thread_placement(
+    cfg: Config,
+    reservation_token: str,
+    *,
+    client_factory: Callable[..., AppServerClient] = AppServerClient,
+    connected_client: AppServerClient | None = None,
+    at: str | None,
+) -> str:
+    """Довести ветку до требуемого размещения и не пустить работу без него.
+
+    Порядок повторяет рабочий цикл v0.7: слот создан, ветка создана, и
+    только после подтверждённого размещения задача начинает работу.
+    Подтверждение читается из собственных записей Desktop, а не из ответа
+    App Server: успех вызова там не означает появления в сайдбаре.
+    """
+
+    from .launch_gate import INSIDE, OUTSIDE, promote_into_project
+
+    required = cfg.runtime.required_thread_placement
+    if required == "any":
+        return "any"
+    if not cfg.desktop.project_id:
+        # Сохранённого проекта нет - размещать не во что, и требовать
+        # нечего. Проверять при этом настоящий каталог Codex было бы
+        # зависимостью от машины, а не от прогона.
+        return "unconfigured"
+    timestamp = at or utc_now()
+    state = StateStore(cfg.state_dir).load()
+    session = _session_by_token(state, reservation_token)
+    thread_id = str(session.get("thread_id") or "")
+    if not thread_id:
+        raise DesktopLifecycleError("placement gate requires a created Desktop thread")
+
+    context = (
+        client_factory(cfg.desktop.binary, cfg.state_dir / "logs" / "placement.jsonl")
+        if connected_client is None
+        else nullcontext(connected_client)
+    )
+    with context as client:
+        before, after = promote_into_project(
+            thread_id, cfg.desktop.project_id, client=client
+        )
+
+    _record_placement_outcome(
+        cfg, reservation_token, before=before, after=after, at=timestamp
+    )
+    satisfied = after == INSIDE or (required == "visible" and after in {INSIDE, OUTSIDE})
+    if not satisfied:
+        raise DesktopLifecycleError(
+            f"задача не начата: ветка {thread_id} в состоянии {after}, "
+            f"а требуется {required}. Невидимую задачу нельзя открыть; "
+            "смягчить требование можно через runtime.required_thread_placement"
+        )
+    return after
+
+
+def _record_placement_outcome(
+    cfg: Config,
+    reservation_token: str,
+    *,
+    before: str,
+    after: str,
+    at: str,
+) -> None:
+    store = StateStore(cfg.state_dir)
+    coordinator = ResourceLockCoordinator(store, cfg.root)
+    with coordinator.transaction():
+        state = store.load()
+        session = _session_by_token(state, reservation_token)
+        session["desktop_placement"] = after
+        _append_event(
+            state,
+            "desktop_placement_verified",
+            session,
+            at,
+            detail=f"{before} -> {after}",
+        )
+        store.save(state)
+
+
 def run_automatic_app_server_turn(
     cfg: Config,
     reservation_token: str,
@@ -493,6 +573,17 @@ def run_automatic_app_server_turn(
             dispatcher_pid=(os.getpid() if dispatcher_authorized else None),
             connected_client=connected_client,
         )
+
+    # Гейт размещения: задача не начинает работу, пока её ветка не доведена
+    # до требуемого состояния в Desktop. Невидимую задачу нельзя открыть и
+    # прочитать, а в этом весь смысл видимых воркеров.
+    _require_thread_placement(
+        cfg,
+        reservation_token,
+        client_factory=client_factory,
+        connected_client=connected_client,
+        at=None,
+    )
 
     descriptor = claim_automatic_app_server_turn(
         cfg,

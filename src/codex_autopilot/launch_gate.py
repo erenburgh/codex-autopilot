@@ -56,6 +56,11 @@ FAILURE_EVENTS = frozenset(
 ACTIVE_STATUS = "ACTIVE"
 
 __all__ = [
+    "ABSENT",
+    "INSIDE",
+    "OUTSIDE",
+    "desktop_placement",
+    "promote_into_project",
     "LaunchCheck",
     "LaunchVerdict",
     "launch_verdict",
@@ -392,3 +397,59 @@ def _pid_alive(pid: Any) -> bool:
     from .control import pid_alive as control_pid_alive
 
     return control_pid_alive(pid)
+
+
+# Где ветка по мнению самого Desktop. Успех вызова App Server сюда не
+# входит: project/update и thread/metadata/update проходят в пространстве
+# имён App Server, не меняя метаданных сайдбара Electron.
+ABSENT = "ABSENT"      # Desktop о ветке не знает - её не видно вообще
+OUTSIDE = "OUTSIDE"    # видна, но вне проекта (Recents)
+INSIDE = "INSIDE"      # в проекте: привязка и порядок сайдбара
+
+_PROJECT_KEYS = ("thread-project-assignments", "sidebar-project-thread-orders")
+_KNOWN_KEYS = _PROJECT_KEYS + ("projectless-thread-ids", "electron-persisted-atom-state")
+
+
+def desktop_placement(thread_id: str) -> str:
+    """Прочитать размещение ветки из собственных записей Desktop."""
+
+    from .preflight import default_codex_home
+
+    path = default_codex_home().expanduser().resolve() / ".codex-global-state.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ABSENT
+    hits = [
+        key
+        for key in _KNOWN_KEYS
+        if thread_id in json.dumps(payload.get(key), ensure_ascii=False)
+    ]
+    if any(key in _PROJECT_KEYS for key in hits):
+        return INSIDE
+    return OUTSIDE if hits else ABSENT
+
+
+def promote_into_project(
+    thread_id: str,
+    project_id: str,
+    *,
+    client: Any,
+    settle: float = 3.0,
+    sleep: Callable[[float], None] | None = None,
+) -> tuple[str, str]:
+    """Довести ветку до проекта и вернуть (состояние до, состояние после).
+
+    Ветка, созданная через App Server, Desktop о себе не сообщает. Явная
+    привязка - единственный доступный рычаг; выполняется, только если
+    ветка ещё не в проекте, и результат перечитывается из записей Desktop,
+    а не берётся из ответа вызова.
+    """
+
+    rest = sleep or time.sleep
+    before = desktop_placement(thread_id)
+    if before == INSIDE:
+        return before, before
+    client.assign_thread_to_project(thread_id, project_id)
+    rest(max(0.0, settle))
+    return before, desktop_placement(thread_id)

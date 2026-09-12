@@ -519,3 +519,160 @@ project/cwd metadata checks. This M10 pass changed only this report and its
 required task-scoped handoff; it did not alter or revert repaired code, run a
 production App Server, or create a commit, tag, push, publication, reset, or
 clean operation.
+
+## 11. Fresh independent verifier V1 — 2026-09-12
+
+### 11.1 Result and final evidence boundary
+
+**M10 audit artifact: PASS. Audited v0.9 repair branch: REVISE.**
+
+V1 treated section 10, commit messages, and earlier worker prose as
+hypotheses. Every disposition below was reproduced from production source, a
+named test, or an adversarial call to a production API. M10 passes because its
+artifact truthfully separates closed, open, and live-only work for M11; the
+underlying v0.9 implementation is not release-ready.
+
+- Final branch/HEAD: `repair/m10-p0` at
+  `67289d3b1d341a3f7d3949e3ee252efec0d65c09`.
+- A separate process advanced the branch from `42aaa80` to `67289d3` while V1
+  was running. V1 did not create that commit. Its intermediate uncommitted
+  state failed one new test; the completed `67289d3` snapshot passes both
+  suites below. Old-snapshot results are not used as final evidence.
+- Declared versions remain `0.8.0b0` in `pyproject.toml` and
+  `0.8.0-beta+codex.20260911012326` in the plugin manifest.
+- New Project Memory evidence, linked to M10 with
+  `role=independent_verification`: `EVID-066` (full suite), `EVID-067`
+  (focused suite), and `EVID-068` (adversarial probes).
+
+### 11.2 Repair-item disposition
+
+| Claim | V1 result | Independent source/test basis |
+| --- | --- | --- |
+| `M10-REV-001` | **CLOSED BY R29 CONTRACT CHANGE** | `dependency_state_satisfies()` still requires `VERIFIED`; `test_deterministic_policy_still_requires_the_verifier` confirms deterministic PASS is only admission to the fresh verifier. The former verifier-free requirement is no longer governing. |
+| `M10-REV-002` | **CLOSED deterministically; live readback NOT TESTED** | The five phase title functions produce the required pipe forms, `_build_descriptor()` invokes them, and the create path names and reads back the thread. Named tests: `test_thread_titles_match_the_required_human_readable_shapes`, `test_exact_phase_titles_are_human_readable_and_stable`, and `test_dispatcher_preserves_app_server_project_metadata_before_turn`. |
+| `M10-REV-003` | **CLOSED deterministically; live Desktop association NOT TESTED** | `resolve_preflight_project()` never falls back to the initiating project. The create path supplies canonical cwd/project, validates `thread/read`, and at `67289d3` calls `thread/metadata/update`. Named tests: `test_unrelated_initiating_project_is_not_a_target_fallback`, `test_initiating_project_is_never_a_placement_fallback`, `test_target_longest_root_project_is_sent_and_verified_with_canonical_cwd`, and `test_created_thread_is_explicitly_assigned_to_the_saved_project`. |
+| `M10-REV-004` | **PARTIAL — OPEN** | Schema-3/CLI defaults are `auto`, two workers, and `desktop_owned`; their named default tests pass. The actual adaptive skill still tells the planner to emit `execution_strategy:"serial"` and `max_parallel_workers:1`, overriding those defaults on the normal skill path. |
+| `M10-REV-005` | **CLOSED deterministically** | `task_checkpoint_path()` selects `.codex-autopilot/handoff/<task-id>.md`; reservation/completion compares that task's hash. `test_parallel_workers_cannot_satisfy_each_others_checkpoint` exercises the production completion path. |
+| `M10-REV-006` | **PARTIAL — OPEN** | Superseded completion is rejected, covered by `test_superseded_desktop_task_fails_closed_beside_its_replacement`. But `handle_prompt_hook()` returned `{}` for an ordinary prompt naming a retired thread because it exits before resolving session state. The task is fenced only after possible side effects, contrary to R24. |
+| `M10-REV-007` | **NOT TESTED** | This code-only task explicitly forbids starting production through App Server or creating other tasks. There is therefore no authorized live evidence for parallel Sol, Sol+Astra, real Computer Use serialization, verifier/revision/unlock, sidebar/editability, title readback, or project association. Fakes are not live evidence. |
+| `M10-REV-008` | **NOT TESTED** | Packaging/install depends on missing `REV-007` evidence and closing the P0 items below; source still declares v0.8. No ZIP, SHA-256, install, tag, push, publish, or release action was attempted. |
+
+### 11.3 Rule-enforcement disposition
+
+| Rule | V1 result | Reproduced reason |
+| --- | --- | --- |
+| R1 | **PARTIAL — OPEN** | Reservation/retry owner checks and named tests pass. An AST call-site audit across `src/codex_autopilot` found zero production calls to `audit_creation_causality()`; the advertised aggregate audit is test-only dead code under R19. |
+| R5 | **PARTIAL — OPEN** | `_desktop_visibility()` receives no expected project ID/editability and matches the thread ID anywhere. A `wrong-project` mapping returned visible and confirmed a green checklist; an absent thread returned false but `launch_verdict()` stayed `IN_PROGRESS`. Stable wrong placement can pass and stable invisibility never becomes the required incident. |
+| R6 | **PARTIAL — OPEN** | Cwd/project/root metadata is checked, but `ensure_project_root()` detects a missing root, calls `project/update`, and continues without a recorded user Decision. A stubbed production call reproduced that method and the added target root. The new explicit thread assignment does not remove this R22 violation. |
+| R7 | **PARTIAL — OPEN** | Completion reaches `_audit_task_scope()` and named inside/outside tests pass. Two disjoint tasks sharing the same tree observation each accused the other's path. Adding `budget` to a task produced `ValueError: task 1 has unknown fields: ['budget']`; time/attempt/token budget enforcement is absent. |
+| R13 | **PARTIAL — OPEN** | Pipeline incidents use the closed `EscalationReason` enum. The separate authoritative worker parser accepted bare `AUTOPILOT_STATUS: BLOCKED` and `AUTOPILOT_STATUS: ESCALATE`, so those user escalations need no reason code. |
+| R16 | **PARTIAL — OPEN** | Standard implementation/revision prompts carry structured rules and request `AUTOPILOT_RULES`. The verifier tail does not request it although completion audits it; replanner and Pipeline Engineer have no rules block; no machine Conflict path records disagreement with a rule formulation. |
+| R17 | **PARTIAL — OPEN** | Standard `AIStudioRuntime.build_prompt()` orders rules first and the named ordering/bound tests pass. Replanner and Pipeline Engineer bypass that envelope, so the order is not universal. |
+| R18 | **PARTIAL — OPEN** | Initial guards reject `external` evidence for Truth. V1 nevertheless promoted an external-backed proposed Decision to `accepted` and created an external-backed active Constraint. The public MCP schema cannot express kind `external`; an external-tool payload recorded as `tool` was accepted as support for a `verified` Truth. Taint/provenance is not preserved across ingestion and transitions. |
+| R21 | **CLOSED deterministically** | The complete suite passes with `CODEX_THREAD_ID`, `CODEX_TURN_ID`, and `CODEX_SESSION_ID` removed; `CleanEnvironmentTests` also checks undeclared environment reads. |
+
+R29's fresh-verifier behavior matches the supplied contract, but
+`tests/test_rules_contract.py` still labels R29 `PENDING`. R30 remains
+**OPEN**: `department` and `rubric_id` are rejected as unknown fields; there is
+no department rubric in Project Memory or department-derived lead selection.
+Current title `Engineering Lead Verifier | M10 | Verify Repair branch audit`
+also conflicts with R30's required
+`Engineering Lead | Verify M10 | Repair branch audit`. This must be resolved as
+a contract conflict, not guessed by an implementation worker.
+
+### 11.4 Incident identity and recovery
+
+**Normalized signatures: CLOSED deterministically.**
+`incident_signature()` excludes signal/task IDs and prose, and the store counts
+recurrence by normalized signature. Named tests:
+`test_the_same_failure_under_different_signal_ids_shares_a_signature`,
+`test_the_same_failure_on_another_task_shares_a_signature`,
+`test_free_text_never_changes_the_signature`, and
+`test_recurrence_is_counted_under_one_signature`.
+
+**Two-level recovery: PARTIAL — OPEN.** Persistence, one recovery slot, retry
+budget, promotion, and Pipeline Engineer routing exist. In the V1 API probe, a
+promoted runbook contained `inspect_bounded_system_state` and
+`inspect_recent_events`, but `attempt_known_recovery()` made zero shell/system
+calls, synthesized a passing healthcheck from incident metadata, and returned
+`RECOVERED`. `test_known_failure_is_recovered_without_an_engineer` asserts only
+that transition. No learned action or independent healthcheck runs; level 1 is
+simulated and violates R22.
+
+### 11.5 Final deterministic commands
+
+```text
+env -u CODEX_THREAD_ID -u CODEX_TURN_ID -u CODEX_SESSION_ID \
+  PYTHONPATH=src python3 -m unittest discover -s tests
+
+Ran 381 tests in 7.885s
+OK (skipped=4)
+```
+
+```text
+env -u CODEX_THREAD_ID -u CODEX_TURN_ID -u CODEX_SESSION_ID \
+  PYTHONPATH=src:tests python3 -m unittest \
+  tests.test_v09_acceptance_contract tests.test_workspace_ux \
+  tests.test_preflight tests.test_desktop_lifecycle \
+  tests.test_rules_contract tests.test_declared_scope \
+  tests.test_rule_contract_and_external_input tests.test_clean_environment \
+  tests.test_incident_signatures tests.test_launch_gate
+
+Ran 191 tests in 3.372s
+OK
+```
+
+The four skips are the explicitly decorated legacy App Server slot-reuse tests
+in `tests/test_core.py`; none was relabelled PASS.
+
+### 11.6 Actionable M11 issue set
+
+1. `M11-ENTRYPOINT-DEFAULTS`: make the adaptive skill emit safe schema-3
+   `auto`/two-worker defaults while retaining migrated v0.8 serial behavior.
+2. `M11-PRE-SIDE-EFFECT-FENCE`: reject or make a retired Desktop task unaddressable at
+   `UserPromptSubmit`, before any model/tool side effect, and test that replay.
+3. `M11-R1-REACHABILITY`: invoke the creation-causality aggregate audit from a
+   production gate or remove the unsupported claim.
+4. `M11-R5-DESKTOP-PLACEMENT`: validate exact target-project membership and
+   editability; turn a stable post-deadline mismatch into one normalized
+   incident instead of perpetual `IN_PROGRESS`.
+5. `M11-R6-FAIL-CLOSED`: make root drift fail closed unless a recorded user
+   Decision authorizes mutation; do not silently call `project/update`.
+6. `M11-R7-ATTRIBUTION-BUDGET`: add task-attributed shared-tree tracking and
+   structured time/attempt/token budgets with fail-closed enforcement.
+7. `M11-R13-UNIFIED-REASONS`: require a closed reason code for every user
+   escalation, including worker `BLOCKED` and `ESCALATE`.
+8. `M11-R16-R17-PHASE-CONTRACT`: apply the structured rule block/order and
+   applied-rule report to verifier, replanner, and Pipeline Engineer; record
+   rule-formulation disagreement as Conflict.
+9. `M11-R18-TAINT`: make external provenance mandatory at ingestion and
+   revalidate taint on Decision/Constraint/Truth transitions and MCP input.
+10. `M11-REAL-RECOVERY`: execute only allowlisted learned actions and require an
+    independent real healthcheck before `RECOVERED`.
+11. `M11-R30-LEAD-RUBRIC`: implement department-derived fresh leads and a
+    versioned stable rubric in Project Memory; resolve the title conflict.
+12. `M11-LIVE-AND-RELEASE`: after P0 fixes, run authorized `REV-007`, then
+    version/package/install-check `REV-008` and record ZIP paths/SHA-256 without
+    automatic publication.
+
+### 11.7 M10 DoD and security conclusion
+
+1. **SATISFIED:** each closure claim is confirmed/refuted from source and named
+   tests/probes, not earlier prose.
+2. **SATISFIED:** the complete final suite passes with all three session-scoped
+   `CODEX_*` identifiers removed (`EVID-066`).
+3. **SATISFIED:** `REV-007` and `REV-008` remain `NOT TESTED` with exact reasons.
+4. **SATISFIED:** this dated section preserves earlier findings and gives M11 a
+   stable issue set.
+5. **SATISFIED for V1:** this verifier changed only this report, its required
+   task handoff, and Project Memory evidence. It did not edit runtime/tests,
+   revert another worker, invoke production App Server, or create a commit,
+   tag, push, publish, reset, or clean operation.
+
+A static scan found no `danger-full-access`, Project Memory shell execution,
+sandbox bypass, unconditional approval, silent permission escalation, or
+automatic push/tag/release path. Existing `persist="always"` behavior remains
+behind the explicit preflight user-authorization flag. This security result
+does not waive the fail-closed/trust defects above. An unrelated untracked
+`scripts/promote_thread_visibility.py` appeared during V1 and was preserved;
+V1 inspected but did not execute or modify it.
