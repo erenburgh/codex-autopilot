@@ -449,3 +449,47 @@ class PlacementGateTests(unittest.TestCase):
         )
         client.assign_thread_to_project.assert_called_once_with("t1", "p1")
         self.assertEqual((before, after), (ABSENT, ABSENT))
+
+
+class OrphanedReservationTests(unittest.TestCase):
+    """Резервация есть, ветки нет, диспетчер умер — прогон обязан ожить."""
+
+    def test_a_reservation_without_a_live_dispatcher_is_revived(self) -> None:
+        from unittest import mock
+
+        from codex_autopilot.control import _orphaned_pending_descriptors
+
+        cfg = mock.Mock(state_dir=Path('/tmp'))
+        alive = mock.Mock(
+            reservation_token="live", task_id="A"
+        )
+        orphan = mock.Mock(reservation_token="orphan", task_id="B")
+        state = mock.Mock()
+        state.worker_sessions = [
+            {"reservation_token": "live", "automatic_dispatch_pid": 111},
+            {"reservation_token": "orphan", "automatic_dispatch_pid": None},
+        ]
+        with mock.patch("codex_autopilot.control.StateStore") as store, mock.patch(
+            "codex_autopilot.control.pending_descriptors", return_value=(alive, orphan)
+        ), mock.patch(
+            "codex_autopilot.control.pid_alive", side_effect=lambda pid: pid == 111
+        ):
+            store.return_value.load.return_value = state
+            revived = _orphaned_pending_descriptors(cfg)
+        self.assertEqual([item.reservation_token for item in revived], ["orphan"])
+
+    def test_nothing_is_revived_while_a_dispatcher_is_alive(self) -> None:
+        from unittest import mock
+
+        from codex_autopilot.control import _orphaned_pending_descriptors
+
+        alive = mock.Mock(reservation_token="live", task_id="A")
+        state = mock.Mock()
+        state.worker_sessions = [
+            {"reservation_token": "live", "automatic_dispatch_pid": 111}
+        ]
+        with mock.patch("codex_autopilot.control.StateStore") as store, mock.patch(
+            "codex_autopilot.control.pending_descriptors", return_value=(alive,)
+        ), mock.patch("codex_autopilot.control.pid_alive", return_value=True):
+            store.return_value.load.return_value = state
+            self.assertEqual(_orphaned_pending_descriptors(mock.Mock(state_dir=Path('/tmp'))), ())

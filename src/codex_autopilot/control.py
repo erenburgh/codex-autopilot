@@ -33,6 +33,7 @@ from .launch_gate import (
     render_launch_checklist,
 )
 from .lifecycle import (
+    pending_descriptors,
     LaunchDescriptor,
     DesktopLifecycleError,
     complete_desktop_worker,
@@ -961,6 +962,28 @@ def _open_launch_incident(
     )
 
 
+def _orphaned_pending_descriptors(cfg: Config) -> tuple[Any, ...]:
+    """Резервации, под которые ветку так и не создали.
+
+    Сессия остаётся в ожидании создания, а диспетчера у неё нет: процесс
+    вышел, не подхватив преемника. Планировщик новых дескрипторов при этом
+    не выдаёт - слот уже занят этой самой резервацией, - и прогон встаёт
+    молча. Такие резервации надо поднимать заново, а не ждать.
+    """
+
+    state = StateStore(cfg.state_dir).load()
+    live = {
+        str(item.get("reservation_token"))
+        for item in state.worker_sessions
+        if pid_alive(item.get("automatic_dispatch_pid"))
+    }
+    return tuple(
+        item
+        for item in pending_descriptors(cfg)
+        if item.reservation_token not in live
+    )
+
+
 def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     registry = LaunchRegistry()
     root = find_project_root(Path(str(payload.get("cwd") or ".")))
@@ -1088,7 +1111,12 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
             registry.add(request)
             raise
         if not descriptors:
-            return {}
+            # Резерв уже сделан раньше, а ветку под него никто не создал:
+            # прежний диспетчер умер, не подхватив преемника. Тихий возврат
+            # здесь и оставлял прогон стоять без единой записи в журнале.
+            descriptors = _orphaned_pending_descriptors(cfg)
+            if not descriptors:
+                return {}
         pids = _spawn_automatic_descriptors(
             cfg,
             descriptors,
