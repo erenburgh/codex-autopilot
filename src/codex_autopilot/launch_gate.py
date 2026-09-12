@@ -293,9 +293,29 @@ def render_launch_timeline(state: RunState, task_ids: Sequence[str]) -> str:
             lines.append("  [✗] слот не зарезервирован — задача не бралась в работу")
             continue
         lines.append(f"{task_id}:")
-        for event in _events_for(state, str(session.get("reservation_token") or "")):
+        for event in _current_attempt(
+            _events_for(state, str(session.get("reservation_token") or ""))
+        ):
             lines.extend(_timeline_line(event))
     return "\n".join(lines)
+
+
+def _current_attempt(
+    events: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Оставить по одной - последней - записи каждого шага.
+
+    Резервация переживает несколько попыток, и её журнал копит их все. В
+    ленте это выглядело противоречием: рядом стояли "перенос не помог" от
+    первой попытки и "размещение подтверждено" от второй, и прочесть, где
+    задача сейчас, было нельзя. Показываем текущее положение дел, а не
+    историю: у каждого шага последнее наблюдение.
+    """
+
+    latest: dict[str, Mapping[str, Any]] = {}
+    for event in events:
+        latest[str(event.get("event") or "")] = event
+    return sorted(latest.values(), key=lambda item: int(item.get("sequence") or 0))
 
 
 def _timeline_line(event: Mapping[str, Any]) -> list[str]:
