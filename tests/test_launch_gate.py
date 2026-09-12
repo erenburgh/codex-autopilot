@@ -59,6 +59,30 @@ class ChecklistTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.cfg = Cfg(Path(self.temp.name))
+        # Проверка видимости читает НАСТОЯЩИЙ каталог Codex. Тест обязан
+        # смотреть в свой, иначе результат зависит от того, что сейчас
+        # открыто у разработчика в сайдбаре.
+        self.codex_home = Path(self.temp.name) / "codex-home"
+        self.codex_home.mkdir()
+        self.desktop_knows_thread(True)
+        import unittest.mock as _mock
+
+        patcher = _mock.patch(
+            "codex_autopilot.preflight.default_codex_home", return_value=self.codex_home
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def desktop_knows_thread(self, known: bool, thread_id: str = "thread-a") -> None:
+        import json as _json
+
+        payload = {
+            "thread-project-assignments": {thread_id: "project-a"} if known else {},
+            "sidebar-project-thread-orders": {},
+        }
+        (self.codex_home / ".codex-global-state.json").write_text(
+            _json.dumps(payload), encoding="utf-8"
+        )
 
     def state(self, *, sessions, events) -> RunState:
         state = RunState(run_id="r")
@@ -161,6 +185,43 @@ class ChecklistTests(unittest.TestCase):
         rendered = render_launch_checklist(checks)
         self.assertIn("ЗАПУСК ОТКАЗАЛ", rendered)
         self.assertIn("это отказ, а не успех", rendered)
+
+
+class DesktopVisibilityTests(ChecklistTests):
+    """R5: успех App Server не означает, что ветка видна в сайдбаре."""
+
+    def visibility(self, checks) -> LaunchCheck:
+        return self.check(checks, "visible_in_desktop")
+
+    def checks_now(self):
+        return launch_checklist(
+            self.cfg,
+            self.state(sessions=[session()], events=journal(*LAUNCHED)),
+            task_ids=["A"],
+            pid_alive=lambda pid: True,
+        )
+
+    def test_a_thread_desktop_knows_is_visible(self) -> None:
+        self.assertTrue(self.visibility(self.checks_now()).passed)
+
+    def test_a_thread_missing_from_desktop_records_is_reported(self) -> None:
+        """Ровно этот случай: задача идёт, а в интерфейсе её нет."""
+
+        self.desktop_knows_thread(False)
+        check = self.visibility(self.checks_now())
+        self.assertFalse(check.passed)
+        self.assertIn("в сайдбаре", check.detail)
+
+    def test_missing_desktop_state_is_unassessable_not_invisible(self) -> None:
+        (self.codex_home / ".codex-global-state.json").unlink()
+        self.assertIsNone(self.visibility(self.checks_now()).passed)
+
+    def test_invisibility_is_reported_but_never_becomes_a_ticket(self) -> None:
+        """Desktop пишет своё состояние не мгновенно: отказ по его задержке
+        снова плодил бы ложные тикеты."""
+
+        self.desktop_knows_thread(False)
+        self.assertIs(launch_verdict(self.checks_now()), LaunchVerdict.IN_PROGRESS)
 
 
 class VerdictTests(ChecklistTests):

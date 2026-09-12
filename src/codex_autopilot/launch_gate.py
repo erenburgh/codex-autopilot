@@ -19,7 +19,9 @@ App Server: резервирование, привязанная ветка, с�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
+import json
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -35,7 +37,11 @@ CREATED_EVENTS = frozenset(
     }
 )
 ACKNOWLEDGED_EVENTS = frozenset({"start_acknowledged", "wait_registered"})
-VISIBLE_EVENTS = frozenset({"visible_launch_report_ready"})
+REPORT_EVENTS = frozenset({"visible_launch_report_ready"})
+
+# Где Desktop держит собственные записи об интерфейсе. Успех на стороне
+# App Server их не меняет, поэтому видимость проверяется только здесь.
+DESKTOP_UI_KEYS = ("thread-project-assignments", "sidebar-project-thread-orders")
 FAILURE_EVENTS = frozenset(
     {
         "create_failed",
@@ -155,11 +161,12 @@ def launch_checklist(
         )
         checks.append(
             _event_check(
-                "visible_launch", task_id, events, VISIBLE_EVENTS,
-                ok="отчёт о видимом запуске записан",
-                bad="отчёта о видимом запуске нет",
+                "launch_report_written", task_id, events, REPORT_EVENTS,
+                ok="рантайм дошёл до отчёта о запуске",
+                bad="рантайм до отчёта о запуске не дошёл",
             )
         )
+        checks.append(_desktop_visibility(task_id, thread_id, events))
 
         pid = session.get("automatic_dispatch_pid")
         if pid is None:
@@ -260,6 +267,68 @@ def await_launch(
             cfg, store.load(), task_ids=task_ids, pid_alive=pid_alive
         )
     return checks
+
+
+def _desktop_visibility(
+    task_id: str, thread_id: str, events: Sequence[Mapping[str, Any]]
+) -> LaunchCheck:
+    """Видна ли ветка в интерфейсе Desktop.
+
+    Проверяется по собственным записям Desktop, а не по успеху App Server:
+    project/update и thread/metadata/update проходят в пространстве имён
+    App Server, не меняя метаданных сайдбара, и принимать их успех за
+    размещение в интерфейсе - ложное срабатывание. Ровно так задача
+    "создавалась просто так" и оказывалась невидимой.
+
+    Пункт намеренно не решающий: Desktop пишет своё состояние не мгновенно,
+    и объявлять отказ по его задержке значило бы снова плодить ложные
+    тикеты. Расхождение видно в чек-листе, но тикета не открывает.
+    """
+
+    from .preflight import default_codex_home
+
+    if not thread_id:
+        return LaunchCheck(
+            "visible_in_desktop", task_id, None, "нечего искать: ветка не привязана"
+        )
+    path = default_codex_home().expanduser().resolve() / ".codex-global-state.json"
+    try:
+        raw = path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        return LaunchCheck(
+            "visible_in_desktop", task_id, None, f"состояние Desktop не прочитано: {error}"
+        )
+    for key in DESKTOP_UI_KEYS:
+        if thread_id in json.dumps(payload.get(key), ensure_ascii=False):
+            return LaunchCheck(
+                "visible_in_desktop", task_id, True, f"ветка есть в записи {key}"
+            )
+    created = _created_at(events)
+    written = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    if created is not None and written < created:
+        return LaunchCheck(
+            "visible_in_desktop",
+            task_id,
+            None,
+            "Desktop ещё не переписывал своё состояние после создания ветки",
+        )
+    return LaunchCheck(
+        "visible_in_desktop",
+        task_id,
+        False,
+        "ветки нет в записях интерфейса Desktop: в сайдбаре она не появится",
+    )
+
+
+def _created_at(events: Sequence[Mapping[str, Any]]):
+    for item in events:
+        if str(item.get("event") or "") in CREATED_EVENTS:
+            try:
+                return datetime.fromisoformat(str(item.get("at") or ""))
+            except ValueError:
+                return None
+    return None
 
 
 def _latest_session(state: RunState, task_id: str) -> Mapping[str, Any] | None:
