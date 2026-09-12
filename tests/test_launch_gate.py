@@ -33,6 +33,7 @@ def session(**overrides) -> dict:
         "status": "ACTIVE",
         "thread_id": "thread-a",
         "automatic_dispatch_pid": 4242,
+        "desktop_placement": "INSIDE",
     }
     base.update(overrides)
     return base
@@ -64,7 +65,6 @@ class ChecklistTests(unittest.TestCase):
         # открыто у разработчика в сайдбаре.
         self.codex_home = Path(self.temp.name) / "codex-home"
         self.codex_home.mkdir()
-        self.desktop_knows_thread(True)
         import unittest.mock as _mock
 
         patcher = _mock.patch(
@@ -72,22 +72,6 @@ class ChecklistTests(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
-
-    def desktop_knows_thread(self, known: bool, thread_id: str = "thread-a") -> None:
-        import json as _json
-
-        payload = (
-            {
-                "electron-persisted-atom-state": {"threads": [thread_id]},
-                "thread-project-assignments": {thread_id: "project-a"},
-                "sidebar-project-thread-orders": {},
-            }
-            if known
-            else {}
-        )
-        (self.codex_home / ".codex-global-state.json").write_text(
-            _json.dumps(payload), encoding="utf-8"
-        )
 
     def state(self, *, sessions, events) -> RunState:
         state = RunState(run_id="r")
@@ -198,35 +182,42 @@ class DesktopVisibilityTests(ChecklistTests):
     def visibility(self, checks) -> LaunchCheck:
         return self.check(checks, "visible_in_desktop")
 
-    def checks_now(self):
+    def checks_now(self, placement: str = "INSIDE"):
         return launch_checklist(
             self.cfg,
-            self.state(sessions=[session()], events=journal(*LAUNCHED)),
+            self.state(
+                sessions=[session(desktop_placement=placement)],
+                events=journal(*LAUNCHED),
+            ),
             task_ids=["A"],
             pid_alive=lambda pid: True,
         )
 
-    def test_a_thread_desktop_knows_is_visible(self) -> None:
+    def test_a_thread_inside_the_project_is_visible(self) -> None:
         self.assertTrue(self.visibility(self.checks_now()).passed)
 
-    def test_a_thread_missing_from_desktop_records_is_reported(self) -> None:
-        """Ровно этот случай: задача идёт, а в интерфейсе её нет."""
+    def test_a_thread_outside_the_project_is_reported(self) -> None:
+        """Ровно этот случай: задача идёт, а в проекте её нет."""
 
-        self.desktop_knows_thread(False)
-        check = self.visibility(self.checks_now())
+        check = self.visibility(self.checks_now("OUTSIDE"))
         self.assertFalse(check.passed)
-        self.assertIn("в сайдбаре", check.detail)
+        self.assertIn("вне проекта", check.detail)
 
-    def test_missing_desktop_state_is_unassessable_not_invisible(self) -> None:
-        (self.codex_home / ".codex-global-state.json").unlink()
-        self.assertIsNone(self.visibility(self.checks_now()).passed)
+    def test_a_vanished_thread_is_reported(self) -> None:
+        """Ветка без хода на сервере не сохраняется - замерено на пробах."""
+
+        check = self.visibility(self.checks_now("ABSENT"))
+        self.assertFalse(check.passed)
+        self.assertIn("не сохранилась", check.detail)
+
+    def test_an_unmeasured_placement_is_unassessable_not_invisible(self) -> None:
+        self.assertIsNone(self.visibility(self.checks_now("")).passed)
 
     def test_invisibility_is_reported_but_never_becomes_a_ticket(self) -> None:
-        """Desktop пишет своё состояние не мгновенно: отказ по его задержке
-        снова плодил бы ложные тикеты."""
+        """Между созданием ветки и записью размещения есть окно: отказ по
+        нему снова плодил бы ложные тикеты."""
 
-        self.desktop_knows_thread(False)
-        self.assertIs(launch_verdict(self.checks_now()), LaunchVerdict.IN_PROGRESS)
+        self.assertIs(launch_verdict(self.checks_now("OUTSIDE")), LaunchVerdict.IN_PROGRESS)
 
 
 class VerdictTests(ChecklistTests):
@@ -403,100 +394,72 @@ if __name__ == "__main__":
 
 
 class PlacementGateTests(unittest.TestCase):
-    """Цикл v0.7: слот -> ветка -> подтверждённое размещение -> работа."""
+    """Размещение спрашивается у сервера: из его списка рисуется сайдбар.
 
-    def setUp(self) -> None:
+    Прежняя версия читала ключи .codex-global-state.json и называла OUTSIDE
+    три ветки, которые человек видел в сайдбаре глазами. Прибор ни разу не
+    был сверен с заведомо видимой веткой, и на его показаниях был построен
+    ложный вывод, что видимую задачу через App Server завести нельзя.
+    """
+
+    def client(self, thread=None, error=None):
         from unittest import mock
 
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.home = Path(self.temp.name)
-        patcher = mock.patch(
-            "codex_autopilot.preflight.default_codex_home", return_value=self.home
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = fake
+        fake.__exit__.return_value = False
+        if error is not None:
+            fake.read_thread.side_effect = error
+        else:
+            fake.read_thread.return_value = thread
+        return fake
 
-    def write_state(self, **keys) -> None:
-        import json as _json
-
-        (self.home / ".codex-global-state.json").write_text(
-            _json.dumps(keys), encoding="utf-8"
-        )
-
-    def test_thread_desktop_never_heard_of_is_absent(self) -> None:
-        from codex_autopilot.launch_gate import ABSENT, desktop_placement
-
-        self.write_state()
-        self.assertEqual(desktop_placement("t1"), ABSENT)
-
-    def test_thread_known_but_projectless_is_outside(self) -> None:
-        from codex_autopilot.launch_gate import OUTSIDE, desktop_placement
-
-        # Решает список веток самого приложения: из него рисуется сайдбар.
-        self.write_state(**{"electron-persisted-atom-state": {"threads": ["t1"]}})
-        self.assertEqual(desktop_placement("t1"), OUTSIDE)
-
-    def test_thread_in_project_records_is_inside(self) -> None:
+    def test_a_thread_in_the_expected_project_is_inside(self) -> None:
         from codex_autopilot.launch_gate import INSIDE, desktop_placement
 
-        self.write_state(
-            **{
-                "electron-persisted-atom-state": {"threads": ["t1"]},
-                "thread-project-assignments": {"t1": "p1"},
-            }
+        placement = desktop_placement(
+            "t1", project_id="p1", client=self.client({"id": "t1", "projectId": "p1"})
         )
-        self.assertEqual(desktop_placement("t1"), INSIDE)
+        self.assertEqual(placement, INSIDE)
 
-    def test_an_assignment_for_an_unknown_thread_is_not_visibility(self) -> None:
-        """Замерено на живых данных: привязка без записи приложения висит
-        в пустоте - запись есть, ветки в интерфейсе нет."""
+    def test_a_thread_without_a_project_is_outside(self) -> None:
+        from codex_autopilot.launch_gate import OUTSIDE, desktop_placement
+
+        placement = desktop_placement(
+            "t1", project_id="p1", client=self.client({"id": "t1", "projectId": None})
+        )
+        self.assertEqual(placement, OUTSIDE)
+
+    def test_a_thread_in_another_project_is_outside(self) -> None:
+        from codex_autopilot.launch_gate import OUTSIDE, desktop_placement
+
+        placement = desktop_placement(
+            "t1", project_id="p1", client=self.client({"id": "t1", "projectId": "p2"})
+        )
+        self.assertEqual(placement, OUTSIDE)
+
+    def test_a_vanished_thread_is_absent(self) -> None:
+        """Ветка без единого хода на сервере не сохраняется."""
 
         from codex_autopilot.launch_gate import ABSENT, desktop_placement
 
-        self.write_state(
-            **{
-                "thread-project-assignments": {"t1": "p1"},
-                "sidebar-project-thread-orders": {"p1": {"threadIds": ["t1"]}},
-            }
+        placement = desktop_placement(
+            "t1", project_id="p1", client=self.client(error=RuntimeError("thread not found"))
         )
-        self.assertEqual(desktop_placement("t1"), ABSENT)
+        self.assertEqual(placement, ABSENT)
 
-    def test_promotion_is_skipped_when_already_inside(self) -> None:
-        from unittest import mock
+    def test_an_unbound_reservation_is_absent(self) -> None:
+        from codex_autopilot.launch_gate import ABSENT, desktop_placement
 
-        from codex_autopilot.launch_gate import INSIDE, promote_into_project
+        self.assertEqual(desktop_placement("", client=self.client()), ABSENT)
 
-        self.write_state(
-            **{
-                "electron-persisted-atom-state": {"threads": ["t1"]},
-                "thread-project-assignments": {"t1": "p1"},
-            }
+    def test_any_project_counts_when_none_is_required(self) -> None:
+        from codex_autopilot.launch_gate import INSIDE, desktop_placement
+
+        placement = desktop_placement(
+            "t1", client=self.client({"id": "t1", "projectId": "p2"})
         )
-        client = mock.Mock()
-        before, after = promote_into_project(
-            "t1", "p1", client=client, sleep=lambda _s: None
-        )
-        self.assertEqual((before, after), (INSIDE, INSIDE))
-        client.assign_thread_to_project.assert_not_called()
-
-    def test_promotion_rereads_desktop_instead_of_trusting_the_call(self) -> None:
-        """Успех вызова App Server видимостью не является."""
-
-        from unittest import mock
-
-        from codex_autopilot.launch_gate import ABSENT, promote_into_project
-
-        self.write_state()
-        client = mock.Mock()
-        client.assign_thread_to_project.return_value = {"projectId": "p1"}
-        before, after = promote_into_project(
-            "t1", "p1", client=client, sleep=lambda _s: None
-        )
-        client.assign_thread_to_project.assert_called_once_with("t1", "p1")
-        self.assertEqual((before, after), (ABSENT, ABSENT))
-
-
+        self.assertEqual(placement, INSIDE)
 class OrphanedReservationTests(unittest.TestCase):
     """Резервация есть, ветки нет, диспетчер умер — прогон обязан ожить."""
 

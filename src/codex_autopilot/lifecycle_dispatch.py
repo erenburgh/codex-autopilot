@@ -513,15 +513,22 @@ def _require_thread_placement(
     connected_client: AppServerClient | None = None,
     at: str | None,
 ) -> str:
-    """Довести ветку до требуемого размещения и не пустить работу без него.
+    """Измерить размещение ветки и не пустить работу без него.
 
     Порядок повторяет рабочий цикл v0.7: слот создан, ветка создана, и
     только после подтверждённого размещения задача начинает работу.
-    Подтверждение читается из собственных записей Desktop, а не из ответа
-    App Server: успех вызова там не означает появления в сайдбаре.
+    Размещение спрашивается у сервера - из его списка Desktop и рисует
+    сайдбар. Прежняя версия читала ключи .codex-global-state.json и
+    называла OUTSIDE ветки, которые человек видел глазами; на её
+    показаниях был построен ложный вывод о неустранимой невидимости.
+
+    Досылать привязку тут нечем: thread/metadata/update проходит успешно,
+    ничего не меняя, а дописывать в состояние приложения за его спиной -
+    это то, чем прежняя версия маскировала неверный диагноз. Ветка выходит
+    в нужный проект уже из thread/start.
     """
 
-    from .launch_gate import INSIDE, OUTSIDE, promote_into_project
+    from .launch_gate import INSIDE, OUTSIDE, desktop_placement
 
     required = cfg.runtime.required_thread_placement
     if required == "any":
@@ -544,9 +551,10 @@ def _require_thread_placement(
         else nullcontext(connected_client)
     )
     with context as client:
-        before, after = promote_into_project(
-            thread_id, cfg.desktop.project_id, client=client
+        after = desktop_placement(
+            thread_id, project_id=cfg.desktop.project_id, client=client
         )
+    before = str(session.get("desktop_placement") or "")
 
     _record_placement_outcome(
         cfg, reservation_token, before=before, after=after, at=timestamp

@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 import json
+from pathlib import Path
+import tempfile
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -59,10 +61,8 @@ __all__ = [
     "ABSENT",
     "INSIDE",
     "OUTSIDE",
-    "adopt_into_desktop_project",
     "desktop_placement",
     "render_launch_timeline",
-    "promote_into_project",
     "LaunchCheck",
     "LaunchVerdict",
     "launch_verdict",
@@ -173,7 +173,7 @@ def launch_checklist(
                 bad="рантайм до отчёта о запуске не дошёл",
             )
         )
-        checks.append(_desktop_visibility(task_id, thread_id, events))
+        checks.append(_desktop_visibility(task_id, thread_id, session))
 
         pid = session.get("automatic_dispatch_pid")
         if pid is None:
@@ -386,63 +386,39 @@ def await_launch(
 
 
 def _desktop_visibility(
-    task_id: str, thread_id: str, events: Sequence[Mapping[str, Any]]
+    task_id: str, thread_id: str, session: Mapping[str, Any]
 ) -> LaunchCheck:
-    """Видна ли ветка в интерфейсе Desktop.
+    """Видна ли ветка, по измерению, сделанному при размещении.
 
-    Проверяется по собственным записям Desktop, а не по успеху App Server:
-    project/update и thread/metadata/update проходят в пространстве имён
-    App Server, не меняя метаданных сайдбара, и принимать их успех за
-    размещение в интерфейсе - ложное срабатывание. Ровно так задача
-    "создавалась просто так" и оказывалась невидимой.
+    Само измерение делает путь создания: у него есть живое соединение с
+    сервером, и спрашивать размещение заново на каждый опрос ленты значило
+    бы поднимать app-server по разу в секунду. Здесь читается записанный
+    результат.
 
-    Пункт намеренно не решающий: Desktop пишет своё состояние не мгновенно,
-    и объявлять отказ по его задержке значило бы снова плодить ложные
-    тикеты. Расхождение видно в чек-листе, но тикета не открывает.
+    Пункт намеренно не решающий: между созданием ветки и записью
+    размещения есть окно, и объявлять отказ по нему значило бы снова
+    плодить ложные тикеты.
     """
-
-    from .preflight import default_codex_home
 
     if not thread_id:
         return LaunchCheck(
             "visible_in_desktop", task_id, None, "нечего искать: ветка не привязана"
         )
-    path = default_codex_home().expanduser().resolve() / ".codex-global-state.json"
-    try:
-        raw = path.read_text(encoding="utf-8")
-        payload = json.loads(raw)
-    except (OSError, json.JSONDecodeError) as error:
-        return LaunchCheck(
-            "visible_in_desktop", task_id, None, f"состояние Desktop не прочитано: {error}"
-        )
-    # Одна проверка на весь рантайм: гейт и чек-лист обязаны отвечать
-    # одинаково, иначе один из них снова начнёт врать.
-    placement = desktop_placement(thread_id)
+    placement = str(session.get("desktop_placement") or "")
     if placement == INSIDE:
         return LaunchCheck(
             "visible_in_desktop", task_id, True, "ветка в проекте и видна в сайдбаре"
         )
     if placement == OUTSIDE:
         return LaunchCheck(
-            "visible_in_desktop",
-            task_id,
-            False,
-            "Desktop знает ветку, но она вне проекта",
+            "visible_in_desktop", task_id, False, "сервер знает ветку, но она вне проекта"
         )
-    created = _created_at(events)
-    written = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
-    if created is not None and written < created:
+    if placement == ABSENT:
         return LaunchCheck(
-            "visible_in_desktop",
-            task_id,
-            None,
-            "Desktop ещё не переписывал своё состояние после создания ветки",
+            "visible_in_desktop", task_id, False, "сервер ветку не знает: она не сохранилась"
         )
     return LaunchCheck(
-        "visible_in_desktop",
-        task_id,
-        False,
-        "ветки нет в записях интерфейса Desktop: в сайдбаре она не появится",
+        "visible_in_desktop", task_id, None, "размещение ещё не измерено"
     )
 
 
@@ -519,144 +495,62 @@ def _pid_alive(pid: Any) -> bool:
     return control_pid_alive(pid)
 
 
-# Где ветка по мнению самого Desktop. Успех вызова App Server сюда не
-# входит: project/update и thread/metadata/update проходят в пространстве
-# имён App Server, не меняя метаданных сайдбара Electron.
-ABSENT = "ABSENT"      # Desktop о ветке не знает - её не видно вообще
-OUTSIDE = "OUTSIDE"    # видна, но вне проекта (Recents)
-INSIDE = "INSIDE"      # в проекте: привязка и порядок сайдбара
-
-_PROJECT_KEYS = ("thread-project-assignments", "sidebar-project-thread-orders")
-# Список веток, который ведёт само приложение: сайдбар рисуется из него.
-KNOWN_THREADS_KEY = "electron-persisted-atom-state"
+# Где ветка по мнению самого сервера. Именно из его списка Desktop рисует
+# сайдбар: замерено на ветках, которые человек видит глазами, - записи
+# приложения в .codex-global-state.json про них молчат, а сервер их знает.
+ABSENT = "ABSENT"      # сервер ветки не знает: она не сохранилась
+OUTSIDE = "OUTSIDE"    # сервер знает, но вне нужного проекта
+INSIDE = "INSIDE"      # в проекте
 
 
-def desktop_placement(thread_id: str) -> str:
-    """Прочитать размещение ветки из собственных записей Desktop.
-
-    Решающая запись - electron-persisted-atom-state: это список веток,
-    который знает само приложение, и сайдбар рисуется из него. Привязка к
-    проекту без него висит в пустоте: запись есть, ветки в интерфейсе нет.
-
-    Замерено: видимые ветки (M7, M8) лежат во всех трёх записях, невидимые
-    (M11 и её планировщик) - только в привязке и в порядке сайдбара.
-    Проверка, смотревшая лишь на эти две, отвечала "в проекте" про ветку,
-    которой в интерфейсе не существует.
-    """
-
-    from .preflight import default_codex_home
-
-    path = default_codex_home().expanduser().resolve() / ".codex-global-state.json"
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ABSENT
-    known = thread_id in json.dumps(payload.get(KNOWN_THREADS_KEY), ensure_ascii=False)
-    if not known:
-        return ABSENT
-    assigned = any(
-        thread_id in json.dumps(payload.get(key), ensure_ascii=False)
-        for key in _PROJECT_KEYS
-    )
-    return INSIDE if assigned else OUTSIDE
-
-
-def promote_into_project(
+def desktop_placement(
     thread_id: str,
-    project_id: str,
     *,
-    client: Any,
-    settle: float = 3.0,
-    sleep: Callable[[float], None] | None = None,
-) -> tuple[str, str]:
-    """Довести ветку до проекта и вернуть (состояние до, состояние после).
+    project_id: str | None = None,
+    client: Any = None,
+    binary: str = "codex",
+    log_path: Path | None = None,
+) -> str:
+    """Спросить у сервера, где ветка.
 
-    Ветка, созданная через App Server, Desktop о себе не сообщает. Явная
-    привязка - единственный доступный рычаг; выполняется, только если
-    ветка ещё не в проекте, и результат перечитывается из записей Desktop,
-    а не берётся из ответа вызова.
+    Прежняя проверка читала ключи .codex-global-state.json. Замерено: три
+    ветки, которые человек видел в сайдбаре проекта, лежат только в
+    electron-persisted-atom-state, а в thread-project-assignments их нет
+    вовсе - та проверка называла их OUTSIDE. На её показаниях был построен
+    ложный вывод, что видимую задачу через App Server завести нельзя.
+
+    Ветка без единого хода на сервере не сохраняется: четыре пробы,
+    созданные пустыми, исчезли из thread/list полностью. Поэтому ABSENT
+    означает не "невидима", а "её больше нет".
     """
 
-    rest = sleep or time.sleep
-    before = desktop_placement(thread_id)
-    if before == INSIDE:
-        return before, before
-    client.assign_thread_to_project(thread_id, project_id)
-    rest(max(0.0, settle))
-    after = desktop_placement(thread_id)
-    if after == INSIDE:
-        return before, after
-    # Привязка на стороне App Server прошла, а Desktop о ветке не узнал:
-    # замерено на живом прогоне, ABSENT -> ABSENT. Его собственная очередь
-    # переноса застревает - обход падает на первой же сбойной ветке, и флаг
-    # завершения не пишется никогда. Делаем ту же запись, что делает adopt
-    # внутри самого приложения.
-    adopt_into_desktop_project(thread_id, project_id)
-    return before, desktop_placement(thread_id)
+    if not thread_id:
+        return ABSENT
+    if client is not None:
+        return _placement_via(client, thread_id, project_id)
 
+    from .appserver import AppServerClient
 
-ASSIGNMENTS_KEY = "thread-project-assignments"
-ORDERS_KEY = "sidebar-project-thread-orders"
-PROJECTLESS_KEY = "projectless-thread-ids"
-MAPPING_KEY = "app-server-project-id-by-legacy-project-id-by-host"
-
-
-def adopt_into_desktop_project(thread_id: str, app_server_project_id: str) -> bool:
-    """Внести ветку в проект записью, которую делает сам Desktop.
-
-    Форма взята из приложения: adopt пишет в thread-project-assignments
-    пару projectKind/projectId, убирает ветку из projectless-thread-ids и
-    добавляет её в порядок сайдбара проекта.
-
-    Трогаются только эти три ключа, файл переписывается целиком и
-    атомарно: приложение не должно увидеть половину записи. Возвращает
-    True, если запись сделана.
-    """
-
-    from .preflight import default_codex_home
-
-    path = default_codex_home().expanduser().resolve() / ".codex-global-state.json"
+    destination = log_path or Path(tempfile.gettempdir()) / "codex-autopilot-placement.jsonl"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    legacy = _legacy_project_id(payload, app_server_project_id)
-    if legacy is None:
-        return False
+        with AppServerClient(binary, destination) as fresh:
+            return _placement_via(fresh, thread_id, project_id)
+    except Exception:
+        return ABSENT
 
-    assignments = dict(payload.get(ASSIGNMENTS_KEY) or {})
-    if assignments.get(thread_id, {}).get("projectId") == legacy:
-        return False
-    assignments[thread_id] = {"projectKind": "local", "projectId": legacy}
-    projectless = [
-        item for item in (payload.get(PROJECTLESS_KEY) or []) if item != thread_id
-    ]
-    orders = dict(payload.get(ORDERS_KEY) or {})
-    order = list((orders.get(legacy) or {}).get("threadIds") or [])
-    if thread_id not in order:
-        order.append(thread_id)
-    orders[legacy] = {"threadIds": order}
 
-    payload[ASSIGNMENTS_KEY] = assignments
-    payload[PROJECTLESS_KEY] = projectless
-    payload[ORDERS_KEY] = orders
-    temporary = path.with_name(path.name + ".codex-autopilot.tmp")
+def _placement_via(client: Any, thread_id: str, project_id: str | None) -> str:
     try:
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        temporary.replace(path)
-    except OSError:
-        temporary.unlink(missing_ok=True)
-        return False
-    return True
-
-
-def _legacy_project_id(
-    payload: Mapping[str, Any], app_server_project_id: str
-) -> str | None:
-    for mapping in (payload.get(MAPPING_KEY) or {}).values():
-        for legacy, server in (mapping or {}).items():
-            if server == app_server_project_id:
-                return str(legacy)
-    return None
+        thread = client.read_thread(thread_id)
+    except Exception:
+        # Исчезнувшая ветка отвечает "thread not found"; связь могла и
+        # просто оборваться, но в обоих случаях размещения у нас нет.
+        return ABSENT
+    if not thread:
+        return ABSENT
+    assigned = str(thread.get("projectId") or "")
+    if not assigned:
+        return OUTSIDE
+    if project_id and assigned != str(project_id):
+        return OUTSIDE
+    return INSIDE
