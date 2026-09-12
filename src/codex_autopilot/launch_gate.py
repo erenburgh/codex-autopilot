@@ -61,6 +61,7 @@ __all__ = [
     "OUTSIDE",
     "adopt_into_desktop_project",
     "desktop_placement",
+    "render_launch_timeline",
     "promote_into_project",
     "LaunchCheck",
     "LaunchVerdict",
@@ -243,6 +244,95 @@ def render_launch_checklist(checks: Sequence[LaunchCheck]) -> str:
         LaunchVerdict.FAILED: "ЗАПУСК ОТКАЗАЛ — это отказ, а не успех",
     }[launch_verdict(checks)]
     return verdict + "\n" + "\n".join(lines)
+
+
+# Шаги запуска человеческим языком. Порядок берётся из журнала, а не
+# отсюда: журнал и есть настоящая последовательность.
+TIMELINE_STEPS = {
+    "reservation_created": "слот зарезервирован",
+    "create_requested": "запрошено создание ветки",
+    "app_server_create_claimed": "создание начато",
+    "app_server_thread_created": "ветка создана",
+    "app_server_project_assigned": "привязана к проекту (App Server)",
+    "app_server_project_scoped_create": "создана в пространстве проекта",
+    "prep_completed": "рабочий каталог подготовлен",
+    "automatic_turn_claimed": "ход взят",
+    "start_acknowledged": "работа начата",
+    "turn_completed": "ход завершён",
+    "implementation_completed": "реализация завершена",
+    "verification_started": "проверка начата",
+    "verification_passed": "проверка пройдена",
+}
+
+TIMELINE_FAILURES = {
+    "create_failed": "создание ветки не удалось",
+    "start_failed": "старт не удался",
+    "prep_failed": "подготовка каталога не удалась",
+    "interrupt_observed": "работа прервана",
+    "retry_scheduled": "назначен повтор",
+    "scope_violation_recorded": "выход за объявленную область",
+    "rule_declaration_missing": "в отчёте нет применённых правил",
+    "scope_not_observed": "область проверить не удалось",
+}
+
+
+def render_launch_timeline(state: RunState, task_ids: Sequence[str]) -> str:
+    """Лента шагов запуска с починками, а не снимок конечного состояния.
+
+    Снимок умалчивает о самом важном: по нему нельзя понять, понадобилась
+    ли починка. Гейт размещения может увидеть ABSENT, перенести ветку в
+    проект и увидеть INSIDE - в снимке это одна галочка, и кажется, что
+    всё прошло само.
+    """
+
+    lines: list[str] = []
+    for task_id in task_ids:
+        session = _latest_session(state, task_id)
+        if session is None:
+            lines.append(f"{task_id}:")
+            lines.append("  [✗] слот не зарезервирован — задача не бралась в работу")
+            continue
+        lines.append(f"{task_id}:")
+        for event in _events_for(state, str(session.get("reservation_token") or "")):
+            lines.extend(_timeline_line(event))
+    return "\n".join(lines)
+
+
+def _timeline_line(event: Mapping[str, Any]) -> list[str]:
+    name = str(event.get("event") or "")
+    detail = str(event.get("detail") or "")
+    if name == "desktop_placement_verified":
+        return _placement_lines(detail)
+    if name in TIMELINE_FAILURES:
+        text = TIMELINE_FAILURES[name]
+        return [f"  [✗] {text}" + (f" — {detail[:90]}" if detail else "")]
+    if name in TIMELINE_STEPS:
+        suffix = ""
+        if name == "app_server_thread_created" and detail:
+            suffix = f" — {detail[:40]}"
+        return [f"  [✓] {TIMELINE_STEPS[name]}{suffix}"]
+    return []
+
+
+def _placement_lines(detail: str) -> list[str]:
+    """Размещение в Desktop: показать и проверку, и починку."""
+
+    before, _, after = detail.partition(" -> ")
+    before, after = before.strip(), after.strip()
+    names = {
+        INSIDE: "в проекте",
+        OUTSIDE: "видна, но вне проекта",
+        ABSENT: "Desktop о ней не знает",
+    }
+    if before == after == INSIDE:
+        return ["  [✓] размещение в проекте подтверждено"]
+    lines = [f"  [✗] размещение: {names.get(before, before)}"]
+    if after == INSIDE:
+        lines.append("  [→] перенесена в проект")
+        lines.append("  [✓] размещение в проекте подтверждено")
+    else:
+        lines.append(f"  [✗] перенос не помог: {names.get(after, after)}")
+    return lines
 
 
 def await_launch(

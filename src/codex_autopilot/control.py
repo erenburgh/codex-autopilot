@@ -31,6 +31,7 @@ from .launch_gate import (
     await_launch,
     launch_verdict,
     render_launch_checklist,
+    render_launch_timeline,
 )
 from .lifecycle import (
     pending_descriptors,
@@ -911,8 +912,17 @@ def _launch_report(
     """
 
     checks = await_launch(cfg, task_ids=task_ids, timeout=timeout)
-    report = started + "\n" + render_launch_checklist(checks)
     verdict = launch_verdict(checks)
+    headline = {
+        LaunchVerdict.CONFIRMED: "ЗАПУСК ПОДТВЕРЖДЁН",
+        LaunchVerdict.IN_PROGRESS: "ЗАПУСК ИДЁТ — отказов нет, часть шагов впереди",
+        LaunchVerdict.FAILED: "ЗАПУСК ОТКАЗАЛ",
+    }[verdict]
+    # Лента шагов вместо снимка: по снимку нельзя понять, понадобилась ли
+    # починка по дороге. Итог отдельной строкой сверху, чтобы вывод читался
+    # с первой секунды.
+    timeline = render_launch_timeline(StateStore(cfg.state_dir).load(), task_ids)
+    report = f"{started}\n{headline}\n{timeline}"
     if verdict is not LaunchVerdict.FAILED:
         # Идущий запуск - не отказ. Создание ветки через App Server занимает
         # десятки секунд, а хук живёт тридцать: объявлять отказ по нехватке
