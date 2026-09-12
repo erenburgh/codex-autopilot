@@ -59,6 +59,7 @@ __all__ = [
     "ABSENT",
     "INSIDE",
     "OUTSIDE",
+    "adopt_into_desktop_project",
     "desktop_placement",
     "promote_into_project",
     "LaunchCheck",
@@ -452,4 +453,80 @@ def promote_into_project(
         return before, before
     client.assign_thread_to_project(thread_id, project_id)
     rest(max(0.0, settle))
+    after = desktop_placement(thread_id)
+    if after == INSIDE:
+        return before, after
+    # Привязка на стороне App Server прошла, а Desktop о ветке не узнал:
+    # замерено на живом прогоне, ABSENT -> ABSENT. Его собственная очередь
+    # переноса застревает - обход падает на первой же сбойной ветке, и флаг
+    # завершения не пишется никогда. Делаем ту же запись, что делает adopt
+    # внутри самого приложения.
+    adopt_into_desktop_project(thread_id, project_id)
     return before, desktop_placement(thread_id)
+
+
+ASSIGNMENTS_KEY = "thread-project-assignments"
+ORDERS_KEY = "sidebar-project-thread-orders"
+PROJECTLESS_KEY = "projectless-thread-ids"
+MAPPING_KEY = "app-server-project-id-by-legacy-project-id-by-host"
+
+
+def adopt_into_desktop_project(thread_id: str, app_server_project_id: str) -> bool:
+    """Внести ветку в проект записью, которую делает сам Desktop.
+
+    Форма взята из приложения: adopt пишет в thread-project-assignments
+    пару projectKind/projectId, убирает ветку из projectless-thread-ids и
+    добавляет её в порядок сайдбара проекта.
+
+    Трогаются только эти три ключа, файл переписывается целиком и
+    атомарно: приложение не должно увидеть половину записи. Возвращает
+    True, если запись сделана.
+    """
+
+    from .preflight import default_codex_home
+
+    path = default_codex_home().expanduser().resolve() / ".codex-global-state.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    legacy = _legacy_project_id(payload, app_server_project_id)
+    if legacy is None:
+        return False
+
+    assignments = dict(payload.get(ASSIGNMENTS_KEY) or {})
+    if assignments.get(thread_id, {}).get("projectId") == legacy:
+        return False
+    assignments[thread_id] = {"projectKind": "local", "projectId": legacy}
+    projectless = [
+        item for item in (payload.get(PROJECTLESS_KEY) or []) if item != thread_id
+    ]
+    orders = dict(payload.get(ORDERS_KEY) or {})
+    order = list((orders.get(legacy) or {}).get("threadIds") or [])
+    if thread_id not in order:
+        order.append(thread_id)
+    orders[legacy] = {"threadIds": order}
+
+    payload[ASSIGNMENTS_KEY] = assignments
+    payload[PROJECTLESS_KEY] = projectless
+    payload[ORDERS_KEY] = orders
+    temporary = path.with_name(path.name + ".codex-autopilot.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        temporary.replace(path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def _legacy_project_id(
+    payload: Mapping[str, Any], app_server_project_id: str
+) -> str | None:
+    for mapping in (payload.get(MAPPING_KEY) or {}).values():
+        for legacy, server in (mapping or {}).items():
+            if server == app_server_project_id:
+                return str(legacy)
+    return None
