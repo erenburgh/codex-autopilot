@@ -178,6 +178,70 @@ def _relay_executor_thread_id() -> str:
     return thread_id
 
 
+def _record_detached_dispatch_failure(cfg, token: str, error: BaseException) -> None:
+    """Отказ отсоединённого диспетчера должен быть виден, а не лежать в файле.
+
+    Раньше падение этого процесса уходило только в
+    logs/automatic-relay-<токен>.log: ни записи в журнале прогона, ни
+    инцидента, ни сообщения пользователю. Прогон при этом выглядел
+    работающим - статус RUNNING, задача активна, - и стоял молча.
+    """
+
+    from .pipeline_engineer import (
+        IncidentClass,
+        IncidentPhase,
+        IncidentSignal,
+        PipelineIncidentError,
+        PipelineIncidentStore,
+        SideEffectOutcome,
+    )
+    from .run_state import StateStore, utc_now
+
+    now = utc_now()
+    summary = f"{type(error).__name__}: {error}"
+    try:
+        state_store = StateStore(cfg.state_dir)
+        state = state_store.load()
+        session = next(
+            (
+                item
+                for item in state.worker_sessions
+                if item.get("reservation_token") == token
+            ),
+            None,
+        )
+        task_id = str((session or {}).get("task_id") or "")
+    except Exception:  # состояние нечитаемо - отчёт всё равно должен уйти
+        task_id = ""
+
+    try:
+        store = PipelineIncidentStore(cfg.state_dir)
+        incident = store.open_incident(
+            IncidentSignal(
+                signal_id=f"detached-dispatch-failed:{token}",
+                code="detached_dispatch_failed",
+                surface=IncidentClass.PIPELINE,
+                summary=summary[:2000],
+                affected_task_ids=(task_id,) if task_id else (),
+                operation="create_thread",
+                side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+                system_state={"reservation_token": token},
+            ),
+            at=now,
+        )
+        incident_id = str(incident["incident_id"])
+        phase = store.route_incident(incident_id, at=now)
+        if phase is IncidentPhase.DEGRADED:
+            phase = store.attempt_known_recovery(
+                incident_id, at=now, owner_id="detached-dispatch"
+            )
+        if phase is IncidentPhase.AUTO_RECOVERY_FAILED:
+            store.ensure_pipeline_engineer(incident_id, at=now)
+        print(f"codex-autopilot: тикет {incident_id} открыт по отказу диспетчера")
+    except PipelineIncidentError as incident_error:
+        print(f"codex-autopilot: тикет завести не удалось: {incident_error}")
+
+
 def _run_automatic_relay_dispatch(
     cfg,
     *,
@@ -187,6 +251,20 @@ def _run_automatic_relay_dispatch(
 ) -> int:
     """Run the v0.7-style local loop with one App Server process per task."""
 
+    try:
+        return _automatic_relay_loop(cfg, token=token, owner=owner, owner_turn=owner_turn)
+    except BaseException as error:
+        _record_detached_dispatch_failure(cfg, token, error)
+        raise
+
+
+def _automatic_relay_loop(
+    cfg,
+    *,
+    token: str,
+    owner: str,
+    owner_turn: str,
+) -> int:
     while True:
         dispatcher_log = (
             cfg.state_dir / "logs" / f"app-server-dispatcher-{token}.jsonl"

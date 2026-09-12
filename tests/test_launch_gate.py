@@ -337,7 +337,23 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
             ).LaunchVerdict.IN_PROGRESS,
         ):
             result = self.report()
-        self.assertTrue(result.get("continue"))
+        # Отчёт приходит и на идущем запуске: systemMessage пользователю не
+        # виден, и успех выглядел бы такой же тишиной, как затык.
+        self.assertIn("reason", result)
+        self.assertNotIn("Тикет", result["reason"])
+        self.assertEqual(PipelineIncidentStore(self.cfg.state_dir).load()["incidents"], [])
+
+    def test_a_launch_in_progress_is_reported_without_a_ticket(self) -> None:
+        from codex_autopilot.launch_gate import LaunchVerdict
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+        from unittest import mock
+
+        with mock.patch(
+            "codex_autopilot.control.launch_verdict",
+            return_value=LaunchVerdict.IN_PROGRESS,
+        ):
+            result = self.report()
+        self.assertNotIn("Тикет", result["reason"])
         self.assertEqual(PipelineIncidentStore(self.cfg.state_dir).load()["incidents"], [])
 
     def test_an_unconfirmed_launch_blocks_instead_of_claiming_success(self) -> None:
