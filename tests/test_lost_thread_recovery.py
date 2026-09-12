@@ -153,3 +153,33 @@ class LostThreadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinishedOwnerTurnTests(unittest.TestCase):
+    """Барьер причинности ждёт конца хода владельца, а не его успеха.
+
+    Stop-хук обязан вернуть decision "block", иначе Codex не покажет отчёт
+    о запуске. Ход, чей Stop-хук ответил block, завершается со статусом
+    "interrupted". Барьер, принимавший только "completed", ждал его до
+    таймаута: показ лестницы и запуск исключали друг друга.
+    """
+
+    def test_an_interrupted_owner_turn_counts_as_finished(self) -> None:
+        from codex_autopilot.lifecycle_dispatch import FINISHED_TURN_STATUSES
+
+        self.assertIn("interrupted", FINISHED_TURN_STATUSES)
+
+    def test_a_running_owner_turn_does_not(self) -> None:
+        from codex_autopilot.lifecycle_dispatch import FINISHED_TURN_STATUSES
+
+        for ongoing in ("in_progress", "queued", "pending", None):
+            self.assertNotIn(ongoing, FINISHED_TURN_STATUSES)
+
+    def test_the_worker_result_check_stays_strict(self) -> None:
+        """Успех самой работы по-прежнему только "completed"."""
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src/codex_autopilot/lifecycle_dispatch.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('if completed_turn.get("status") != "completed":', source)

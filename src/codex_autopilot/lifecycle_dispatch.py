@@ -505,6 +505,22 @@ def _creator_process_is_gone(session: Mapping[str, Any]) -> bool:
     return not pid_alive(pid)
 
 
+# Ход владельца, на который смотрит барьер причинности, считается
+# состоявшимся в любом конечном состоянии, а не только в "completed".
+#
+# Замерено: Stop-хук обязан вернуть decision "block", иначе Codex не
+# покажет человеку отчёт о запуске - других видимых ответов у хука нет. Но
+# ход, чей Stop-хук ответил block, завершается со статусом "interrupted".
+# Барьер, принимавший только "completed", ждал его до самого таймаута, и
+# ветка воркера не создавалась никогда. Показ лестницы и запуск исключали
+# друг друга.
+#
+# Смысл барьера - "владелец больше не действует", и любое конечное
+# состояние это обеспечивает. Строгая проверка результата самой работы
+# осталась там, где ей место: на ходе воркера.
+FINISHED_TURN_STATUSES = frozenset({"completed", "interrupted", "failed", "aborted"})
+
+
 def _require_thread_placement(
     cfg: Config,
     reservation_token: str,
@@ -657,13 +673,17 @@ def run_automatic_app_server_turn(
                 ),
                 None,
             )
-            if turn and turn.get("status") == "completed":
+            if turn and turn.get("status") in FINISHED_TURN_STATUSES:
                 break
             if time.monotonic() >= deadline:
                 raise DesktopLifecycleError(
-                    "causal predecessor did not reach durable completed state"
+                    "causal predecessor did not reach a finished state; "
+                    f"последний статус хода: {(turn or {}).get('status')!r}"
                 )
-            time.sleep(0.25)
+            # Раз в секунду, а не четыре: read_thread тянет всю историю
+            # ветки целиком. На живом прогоне это дало 42 МБ журнала за
+            # две минуты ожидания.
+            time.sleep(1.0)
 
     session = _session_by_token(StateStore(cfg.state_dir).load(), reservation_token)
     if session.get("status") == "PREPARED" and _thread_is_gone(
