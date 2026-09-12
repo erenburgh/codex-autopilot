@@ -151,9 +151,17 @@ instead, one line at a time, so the user watches progress rather than silence:
 
 1. Run `codex-autopilot timeline --project <root>`.
 2. Print only the lines that are new since your previous run of it, verbatim.
-3. Wait a few seconds and repeat, until the ladder shows the task started, or a
-   line marked `[✗]` appears, or about two minutes pass.
+3. Wait a few seconds and repeat. Stop at the first of these, whichever comes
+   first — never later:
+   - the ladder shows the task started;
+   - a line marked `[✗]` appears;
+   - the ladder came back unchanged twice in a row;
+   - you have run the command five times.
 4. Finish with one short line: started, or stopped at which step.
+
+Five runs is a hard ceiling, not a target. An unchanged ladder means nothing is
+happening and more polling will not change that: report the stall and stop.
+Looping past this burns the user's usage for no new information.
 
 The final visible line carries the verdict. If the ladder stopped, say so there,
 naming the step — never end on progress counts while the stall sits in collapsed
