@@ -333,10 +333,14 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
             ).LaunchVerdict.IN_PROGRESS,
         ):
             result = self.report()
-        # Отчёт приходит и на идущем запуске: systemMessage пользователю не
-        # виден, и успех выглядел бы такой же тишиной, как затык.
-        self.assertIn("reason", result)
-        self.assertNotIn("Тикет", result["reason"])
+        # Отчёт приходит и на идущем запуске.
+        self.assertIn("systemMessage", result)
+        # Идущий запуск обязан отвечать continue: блокирующий ответ
+        # оставляет инициирующий ход в "interrupted", а диспетчер ждёт
+        # устойчивого "completed" и не создаёт ветку никогда.
+        self.assertTrue(result.get("continue"))
+        self.assertNotIn("decision", result)
+        self.assertNotIn("Тикет", result["systemMessage"])
         self.assertEqual(PipelineIncidentStore(self.cfg.state_dir).load()["incidents"], [])
 
     def test_a_launch_in_progress_is_reported_without_a_ticket(self) -> None:
@@ -349,7 +353,8 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
             return_value=LaunchVerdict.IN_PROGRESS,
         ):
             result = self.report()
-        self.assertNotIn("Тикет", result["reason"])
+        self.assertTrue(result.get("continue"))
+        self.assertNotIn("Тикет", result["systemMessage"])
         self.assertEqual(PipelineIncidentStore(self.cfg.state_dir).load()["incidents"], [])
 
     def test_an_unconfirmed_launch_blocks_instead_of_claiming_success(self) -> None:

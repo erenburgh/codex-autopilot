@@ -155,25 +155,36 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class FinishedOwnerTurnTests(unittest.TestCase):
-    """Барьер причинности ждёт конца хода владельца, а не его успеха.
+class OwnerTurnBarrierTests(unittest.TestCase):
+    """Ворота воркера открывает только устойчивое "completed".
 
-    Stop-хук обязан вернуть decision "block", иначе Codex не покажет отчёт
-    о запуске. Ход, чей Stop-хук ответил block, завершается со статусом
-    "interrupted". Барьер, принимавший только "completed", ждал его до
-    таймаута: показ лестницы и запуск исключали друг друга.
+    Пока синхронный Stop-хук работает, второй App Server наблюдает тот же
+    ход как "interrupted". Замерено в рабочем прогоне 0.7: ход
+    01a097aa-4832 виден сначала interrupted, затем completed. Принимать
+    interrupted значило бы открывать ворота ровно в тот момент, от
+    которого барьер и защищает.
+
+    Поэтому Stop-хук обязан отвечать continue: ход, чей хук ответил block,
+    остаётся interrupted навсегда, и барьер не откроется никогда.
     """
 
-    def test_an_interrupted_owner_turn_counts_as_finished(self) -> None:
-        from codex_autopilot.lifecycle_dispatch import FINISHED_TURN_STATUSES
+    def test_the_barrier_accepts_only_completed(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src/codex_autopilot/lifecycle_dispatch.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('if turn and turn.get("status") == "completed":', source)
 
-        self.assertIn("interrupted", FINISHED_TURN_STATUSES)
+    def test_a_proceeding_launch_never_blocks_the_owner_turn(self) -> None:
+        from codex_autopilot.control import _launch_report
 
-    def test_a_running_owner_turn_does_not(self) -> None:
-        from codex_autopilot.lifecycle_dispatch import FINISHED_TURN_STATUSES
-
-        for ongoing in ("in_progress", "queued", "pending", None):
-            self.assertNotIn(ongoing, FINISHED_TURN_STATUSES)
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src/codex_autopilot/control.py"
+        ).read_text(encoding="utf-8")
+        head = source[source.index("def _launch_report") :]
+        body = head[: head.index("\ndef ", 1)]
+        self.assertIn('return {"continue": True, "systemMessage": report}', body)
 
     def test_the_worker_result_check_stays_strict(self) -> None:
         """Успех самой работы по-прежнему только "completed"."""

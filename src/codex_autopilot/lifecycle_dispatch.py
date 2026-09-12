@@ -505,22 +505,6 @@ def _creator_process_is_gone(session: Mapping[str, Any]) -> bool:
     return not pid_alive(pid)
 
 
-# Ход владельца, на который смотрит барьер причинности, считается
-# состоявшимся в любом конечном состоянии, а не только в "completed".
-#
-# Замерено: Stop-хук обязан вернуть decision "block", иначе Codex не
-# покажет человеку отчёт о запуске - других видимых ответов у хука нет. Но
-# ход, чей Stop-хук ответил block, завершается со статусом "interrupted".
-# Барьер, принимавший только "completed", ждал его до самого таймаута, и
-# ветка воркера не создавалась никогда. Показ лестницы и запуск исключали
-# друг друга.
-#
-# Смысл барьера - "владелец больше не действует", и любое конечное
-# состояние это обеспечивает. Строгая проверка результата самой работы
-# осталась там, где ей место: на ходе воркера.
-FINISHED_TURN_STATUSES = frozenset({"completed", "interrupted", "failed", "aborted"})
-
-
 def _require_thread_placement(
     cfg: Config,
     reservation_token: str,
@@ -673,11 +657,17 @@ def run_automatic_app_server_turn(
                 ),
                 None,
             )
-            if turn and turn.get("status") in FINISHED_TURN_STATUSES:
+            # Только устойчивое "completed" открывает ворота воркера, как в
+            # v0.7. Пока синхронный Stop-хук работает, второй App Server
+            # наблюдает этот же ход как "interrupted" - замерено в рабочем
+            # прогоне 0.7: ход 01a097aa-4832 виден сначала interrupted,
+            # затем completed. Принимать interrupted значило бы открывать
+            # ворота ровно в тот момент, от которого барьер и защищает.
+            if turn and turn.get("status") == "completed":
                 break
             if time.monotonic() >= deadline:
                 raise DesktopLifecycleError(
-                    "causal predecessor did not reach a finished state; "
+                    "causal predecessor did not reach durable completed state; "
                     f"последний статус хода: {(turn or {}).get('status')!r}"
                 )
             # Раз в секунду, а не четыре: read_thread тянет всю историю
