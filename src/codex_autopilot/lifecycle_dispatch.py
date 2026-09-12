@@ -414,6 +414,76 @@ def create_desktop_thread_via_app_server(
         "app_server_process_exited_at": timestamp if owns_client else None,
     }
 
+def _thread_is_gone(
+    cfg: Config,
+    reservation_token: str,
+    *,
+    client_factory: Callable[..., AppServerClient] = AppServerClient,
+    connected_client: AppServerClient | None = None,
+) -> bool:
+    """Ветки, к которой привязана резервация, на App Server больше нет.
+
+    Проверяется чтением: отсутствие ветки - это ответ сервера, а не вывод
+    из наших записей. Любая другая ошибка чтения исчезновением не
+    считается, иначе временный сбой связи приводил бы к пересозданию
+    живой ветки и раздвоению работы.
+    """
+
+    state = StateStore(cfg.state_dir).load()
+    session = _session_by_token(state, reservation_token)
+    thread_id = str(session.get("thread_id") or "")
+    if not thread_id:
+        return False
+    context = (
+        client_factory(cfg.desktop.binary, cfg.state_dir / "logs" / "thread-probe.jsonl")
+        if connected_client is None
+        else nullcontext(connected_client)
+    )
+    try:
+        with context as client:
+            client.read_thread(thread_id)
+    except AppServerRpcError as error:
+        return "not found" in str(error).lower()
+    except Exception:
+        return False
+    return False
+
+
+def _reset_to_create_requested(cfg: Config, reservation_token: str) -> None:
+    """Отвязать резервацию от исчезнувшей ветки и дать создать новую."""
+
+    store = StateStore(cfg.state_dir)
+    coordinator = ResourceLockCoordinator(store, cfg.root)
+    with coordinator.transaction():
+        state = store.load()
+        session = _session_by_token(state, reservation_token)
+        lost = str(session.get("thread_id") or "")
+        session["status"] = "CREATE_REQUESTED"
+        for field in (
+            "thread_id",
+            "turn_id",
+            "actual_cwd",
+            "actual_thread_name",
+            "actual_project_id",
+            "app_server_project_id",
+            "creation_transport",
+            "app_server_create_exited_at",
+            "create_acknowledged_at",
+            "desktop_placement",
+            "title_verification",
+            "project_association_verification",
+        ):
+            session[field] = None
+        _append_event(
+            state,
+            "lost_thread_recreate_requested",
+            session,
+            utc_now(),
+            detail=f"thread {lost} no longer exists on App Server",
+        )
+        store.save(state)
+
+
 def _creator_process_is_gone(session: Mapping[str, Any]) -> bool:
     """Процесс, создавший ветку, больше не существует.
 
@@ -588,6 +658,22 @@ def run_automatic_app_server_turn(
             time.sleep(0.25)
 
     session = _session_by_token(StateStore(cfg.state_dir).load(), reservation_token)
+    if session.get("status") == "PREPARED" and _thread_is_gone(
+        cfg,
+        reservation_token,
+        client_factory=client_factory,
+        connected_client=connected_client,
+    ):
+        # v0.7 создавала ветку и тут же ею пользовалась - одним соединением,
+        # без разрыва. v0.8 создаёт ветку в одном процессе, требует его
+        # полного выхода и стартует ход другим процессом позже. В этом
+        # промежутке ветка живёт без подписчика, и после перезапуска её
+        # может уже не быть: turn/start отвечает "thread not found", а
+        # резервация остаётся навсегда привязанной к мёртвому идентификатору.
+        # Исчезнувшая ветка - повод создать новую, а не повод встать.
+        _reset_to_create_requested(cfg, reservation_token)
+        session = _session_by_token(StateStore(cfg.state_dir).load(), reservation_token)
+
     if session.get("status") == "CREATE_REQUESTED":
         create_desktop_thread_via_app_server(
             cfg,
