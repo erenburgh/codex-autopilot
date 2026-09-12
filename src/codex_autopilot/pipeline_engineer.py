@@ -96,6 +96,38 @@ def escalate_to_user(
     incident["escalated_at"] = at
 
 
+class TransportStatus(str, Enum):
+    """Состояние резервации транспорта.
+
+    Определения не существовало ни в одном коммите, хотя код ссылался на
+    него в пяти местах: любое чтение состояния с непустым списком
+    резерваций падало с NameError. Тесты этого не ловили, потому что ни
+    один из них не создавал резерваций, а в живом прогоне они есть.
+
+    Значения восстановлены по долговременному состоянию прогона
+    (ACKNOWLEDGED, CLAIMED) и по местам использования (RESERVED, FAILED).
+    """
+
+    RESERVED = "RESERVED"
+    CLAIMED = "CLAIMED"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    FAILED = "FAILED"
+
+
+class AuthorityKind(str, Enum):
+    """На каком основании транспорт вправе быть использован.
+
+    Набор намеренно узкий: подтверждён только USER_AUTHORIZED_TASK -
+    он встречается в долговременном состоянии. Лишний член здесь означал
+    бы, что система принимает основание, которого никто не вводил.
+    PIPELINE_RECOVERY_MANDATE сюда не входит: он объявлен устаревшим в
+    LEGACY_PERSISTED_AUTHORITY_KINDS и принимается только у уже
+    записанных резерваций.
+    """
+
+    USER_AUTHORIZED_TASK = "USER_AUTHORIZED_TASK"
+
+
 class SideEffectOutcome(str, Enum):
     NONE = "NONE"
     KNOWN_SUCCEEDED = "KNOWN_SUCCEEDED"
@@ -184,6 +216,41 @@ def classify_incident(signal: IncidentSignal) -> IncidentClass:
     return signal.surface
 
 
+SIGNATURE_VERSION = "v1"
+
+# Сколько одинаковых успешных решений одной подписи нужно, чтобы способ
+# перестал требовать инженера и стал детерминированным раннбуком.
+PROMOTION_THRESHOLD = 2
+
+
+
+def incident_signature(signal: IncidentSignal) -> str:
+    """Нормализованная подпись поломки - тождество тикета.
+
+    Считается ТОЛЬКО по структурным полям. Намеренно не входят:
+
+    - signal_id: в него подмешан идентификатор попытки, поэтому один и
+      тот же отказ каждый раз выглядел новым. В живом прогоне v0.9 из
+      трёх инцидентов два были одной поломкой, разведённой этим полем;
+    - summary: свободный текст, он меняется от случая к случаю и не
+      должен влиять на маршрутизацию (то же основание, что у
+      classify_incident);
+    - affected_task_ids: отказ транспорта на M4 и на M9 - одна и та же
+      инфраструктурная поломка, а не две.
+
+    Подпись отвечает на вопрос "что сломалось", а не "когда и у кого".
+    """
+
+    parts = (
+        SIGNATURE_VERSION,
+        signal.code,
+        classify_incident(signal).value,
+        signal.operation or "-",
+        signal.side_effect_outcome.value,
+    )
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
 @dataclass(frozen=True, slots=True)
 class RecoveryRunbook:
     id: str
@@ -236,6 +303,7 @@ class PipelineIncidentStore:
         retry_maximum_seconds: int = 300,
     ) -> dict[str, Any]:
         classification = classify_incident(signal)
+        signature = incident_signature(signal)
         runbook = select_runbook(signal)
         _positive(retry_budget, "retry_budget")
         _positive(retry_initial_seconds, "retry_initial_seconds")
@@ -250,12 +318,14 @@ class PipelineIncidentStore:
                 "signal_id": signal.signal_id,
                 "code": signal.code,
                 "classification": classification.value,
+                "signature": signature,
                 "summary": _bounded(signal.summary, MAX_EVENT_CHARS),
                 "affected_task_ids": list(signal.affected_task_ids),
                 "operation": signal.operation,
                 "side_effect_outcome": signal.side_effect_outcome.value,
                 "phase": IncidentPhase.DEGRADED.value,
                 "runbook_id": runbook.id if runbook else None,
+                "runbook_healthcheck": runbook.healthcheck if runbook else None,
                 "recovery_attempts": 0,
                 "retry_budget": retry_budget,
                 "retry_initial_seconds": retry_initial_seconds,
@@ -270,8 +340,24 @@ class PipelineIncidentStore:
                 "updated_at": at,
                 "resolved_at": None,
             }
+            if incident["runbook_id"] is None:
+                learned = _promoted_runbook(state, signature)
+                if learned is not None:
+                    # Способ уже выучен на прошлых повторах: инженер не нужен.
+                    incident["runbook_id"] = learned["id"]
+                    incident["runbook_healthcheck"] = learned.get("healthcheck")
             state["incidents"].append(incident)
+            occurrences = _record_signature(state, signature, incident, at=at)
             _append_event(state, "incident_opened", at, incident=incident)
+            if occurrences > 1:
+                # Повтор той же поломки - не новая загадка, а известная.
+                _append_event(
+                    state,
+                    "incident_recurrence_observed",
+                    at,
+                    incident=incident,
+                    detail=f"signature {signature} seen {occurrences} times",
+                )
             return _copy(incident)
 
     def route_incident(self, incident_id: str, *, at: str) -> IncidentPhase:
@@ -318,6 +404,96 @@ class PipelineIncidentStore:
 
 
 
+
+    def begin_auto_recovery(
+        self,
+        incident_id: str,
+        *,
+        at: str,
+        owner_id: str,
+    ) -> dict[str, Any]:
+        """Уровень 1: детерминированная попытка без участия модели.
+
+        Занимает единственный слот восстановления, тратит одну попытку из
+        бюджета и назначает следующую с растущей задержкой. Модель здесь
+        не участвует: если способ известен, он применяется сам.
+        """
+
+        _nonempty(owner_id, "owner_id")
+        with self._transaction() as state:
+            incident = _incident(state, incident_id)
+            phase = IncidentPhase(str(incident["phase"]))
+            if phase is not IncidentPhase.DEGRADED:
+                raise PipelineIncidentError("auto-recovery requires a DEGRADED incident")
+            if incident.get("runbook_id") is None:
+                raise PipelineIncidentError(
+                    "auto-recovery requires an allowlisted or promoted runbook"
+                )
+            attempts = int(incident["recovery_attempts"])
+            if attempts >= int(incident["retry_budget"]):
+                raise PipelineIncidentError("auto-recovery budget is already exhausted")
+            slot = state.get("recovery_slot")
+            if isinstance(slot, Mapping) and slot.get("incident_id") != incident_id:
+                raise PipelineIncidentError("another incident owns the recovery slot")
+            token = _stable_token(incident_id, str(attempts + 1), at)
+            incident["recovery_attempts"] = attempts + 1
+            incident["phase"] = IncidentPhase.AUTO_RECOVERY.value
+            incident["recovery_lock_token"] = token
+            incident["recovery_owner_id"] = owner_id
+            incident["next_retry_at"] = _backoff_seconds(incident)
+            incident["updated_at"] = at
+            state["recovery_slot"] = {"incident_id": incident_id, "token": token}
+            _append_event(
+                state,
+                "auto_recovery_started",
+                at,
+                incident=incident,
+                detail=f"attempt {attempts + 1} of {incident['retry_budget']}",
+            )
+            return _copy(incident)
+
+    def complete_auto_recovery(
+        self,
+        incident_id: str,
+        *,
+        token: str,
+        success: bool,
+        at: str,
+        healthcheck: HealthcheckResult | None = None,
+    ) -> IncidentPhase:
+        """Итог уровня 1. Исчерпанный бюджет открывает дорогу уровню 2."""
+
+        with self._transaction() as state:
+            incident = _incident(state, incident_id)
+            self._require_recovery_claim(state, incident, token)
+            state["recovery_slot"] = None
+            incident["recovery_lock_token"] = None
+            incident["recovery_owner_id"] = None
+            if success:
+                _require_passing_healthcheck(
+                    healthcheck,
+                    expected_name=_expected_healthcheck(incident),
+                )
+                incident["healthcheck"] = _healthcheck_dict(healthcheck)
+                incident["phase"] = IncidentPhase.RECOVERED.value
+                incident["resolved_at"] = at
+                incident["next_retry_at"] = None
+                event = "auto_recovery_succeeded"
+            elif int(incident["recovery_attempts"]) >= int(incident["retry_budget"]):
+                incident["phase"] = IncidentPhase.AUTO_RECOVERY_FAILED.value
+                event = "auto_recovery_exhausted"
+            else:
+                # Бюджет не исчерпан: инцидент ждёт следующей попытки.
+                incident["phase"] = IncidentPhase.DEGRADED.value
+                event = "auto_recovery_attempt_failed"
+            incident["updated_at"] = at
+            _append_event(state, event, at, incident=incident)
+            return IncidentPhase(str(incident["phase"]))
+
+    def signature_ledger(self) -> dict[str, Any]:
+        """Реестр подписей: сколько раз что ломалось и чем чинилось."""
+
+        return _copy(self.load().get("signatures", {}))
 
     def ensure_pipeline_engineer(self, incident_id: str, *, at: str) -> dict[str, Any]:
         """Idempotently route an infrastructure incident to one engineer lane.
@@ -366,21 +542,24 @@ class PipelineIncidentStore:
         at: str,
         healthcheck: HealthcheckResult | None = None,
         reason: str = "",
+        actions: Sequence[str] = (),
     ) -> IncidentPhase:
         with self._transaction() as state:
             incident = _incident(state, incident_id)
             if IncidentPhase(str(incident["phase"])) is not IncidentPhase.PIPELINE_ENGINEER:
                 raise PipelineIncidentError("Pipeline Engineer completion requires PIPELINE_ENGINEER")
             if success:
-                runbook = _runbook(str(incident.get("runbook_id") or ""))
                 _require_passing_healthcheck(
                     healthcheck,
-                    expected_name=runbook.healthcheck if runbook else None,
+                    expected_name=_expected_healthcheck(incident),
                 )
                 incident["healthcheck"] = _healthcheck_dict(healthcheck)
                 incident["phase"] = IncidentPhase.RESOLVED.value
                 incident["resolved_at"] = at
                 event = "pipeline_engineer_resolved"
+                promoted = _record_resolution(
+                    state, incident, actions=actions, healthcheck=healthcheck, at=at
+                )
             else:
                 # Pipeline Engineer исчерпал свои возможности - это
                 # единственная причина, по которой он вправе обратиться
@@ -392,6 +571,7 @@ class PipelineIncidentStore:
                     detail="Pipeline Engineer could not resolve the incident",
                 )
                 event = "pipeline_engineer_escalated_to_user"
+                promoted = None
             incident["updated_at"] = at
             _append_event(
                 state,
@@ -400,6 +580,18 @@ class PipelineIncidentStore:
                 incident=incident,
                 detail=_bounded(reason, MAX_EVENT_CHARS),
             )
+            if promoted is not None:
+                _append_event(
+                    state,
+                    "runbook_promoted",
+                    at,
+                    incident=incident,
+                    detail=(
+                        f"{promoted}: один и тот же способ решил подпись "
+                        f"{incident.get('signature')} {PROMOTION_THRESHOLD} раза; "
+                        "дальше он применяется без инженера"
+                    ),
+                )
             return IncidentPhase(str(incident["phase"]))
 
     def invalidate_pipeline_engineer_resolution(
@@ -604,6 +796,7 @@ def _empty_state() -> dict[str, Any]:
         "incidents": [],
         "transport_reservations": [],
         "journal": [],
+        "signatures": {},
     }
 
 
@@ -615,6 +808,12 @@ def _validate_state(raw: Any) -> dict[str, Any]:
         raise PipelineIncidentError("incomplete Pipeline Engineer state")
     if not all(isinstance(raw[key], list) for key in ("incidents", "transport_reservations", "journal")):
         raise PipelineIncidentError("Pipeline Engineer collections must be arrays")
+    # Реестр подписей добавлен позже и намеренно не поднимает версию схемы:
+    # живое состояние прогона версии 1 должно читаться как есть.
+    if "signatures" not in raw:
+        raw["signatures"] = {}
+    if not isinstance(raw["signatures"], dict):
+        raise PipelineIncidentError("Pipeline Engineer signature ledger must be a map")
     sequences = [item.get("sequence") for item in raw["journal"]]
     if sequences != list(range(1, int(raw["sequence"]) + 1)):
         raise PipelineIncidentError("Pipeline Engineer journal sequence is not contiguous")
@@ -661,6 +860,120 @@ def _validate_state(raw: Any) -> dict[str, Any]:
         ):
             raise PipelineIncidentError("recovery slot does not match its durable incident lock")
     return raw
+
+
+def _backoff_seconds(incident: Mapping[str, Any]) -> int:
+    """Растущая задержка следующей попытки, ограниченная потолком."""
+
+    attempt = int(incident["recovery_attempts"])
+    initial = int(incident["retry_initial_seconds"])
+    maximum = int(incident["retry_maximum_seconds"])
+    return min(initial * (2 ** max(0, attempt - 1)), maximum)
+
+
+def _expected_healthcheck(incident: Mapping[str, Any]) -> str | None:
+    """Имя проверки здоровья: у выученного раннбука оно лежит на инциденте."""
+
+    declared = incident.get("runbook_healthcheck")
+    if isinstance(declared, str) and declared:
+        return declared
+    runbook = _runbook(str(incident.get("runbook_id") or ""))
+    return runbook.healthcheck if runbook else None
+
+
+def _promoted_runbook(state: Mapping[str, Any], signature: str) -> dict[str, Any] | None:
+    entry = state.get("signatures", {}).get(signature)
+    if not isinstance(entry, Mapping):
+        return None
+    promoted = entry.get("promoted_runbook")
+    return dict(promoted) if isinstance(promoted, Mapping) else None
+
+
+def _record_resolution(
+    state: dict[str, Any],
+    incident: Mapping[str, Any],
+    *,
+    actions: Sequence[str],
+    healthcheck: HealthcheckResult | None,
+    at: str,
+) -> str | None:
+    """Накопить способ решения под подписью и, если пора, сделать раннбук.
+
+    Возвращает id продвинутого раннбука, если продвижение случилось.
+    """
+
+    signature = str(incident.get("signature") or "")
+    entry = state.get("signatures", {}).get(signature)
+    if not signature or not isinstance(entry, dict):
+        # Инцидент старой схемы: подписи нет, накапливать не под чем.
+        return None
+    normalized = tuple(sorted({str(item) for item in actions if str(item).strip()}))
+    check = healthcheck.name if healthcheck is not None else None
+    entry["resolutions"].append(
+        {"actions": list(normalized), "healthcheck": check, "at": at}
+    )
+    if entry.get("promoted_runbook") is not None or not normalized:
+        return None
+    forbidden = [item for item in normalized if item in FORBIDDEN_ACTIONS]
+    if forbidden:
+        return None
+    if not set(normalized).issubset(READ_ONLY_DIAGNOSTIC_ACTIONS):
+        # Продвигаются только действия из списка безопасных: уровень 1
+        # работает без человека, поэтому не вправе делать ничего, кроме
+        # диагностики и ограниченной повторной попытки.
+        return None
+    identical = [
+        item
+        for item in entry["resolutions"]
+        if tuple(item.get("actions") or ()) == normalized
+        and item.get("healthcheck") == check
+    ]
+    if len(identical) < PROMOTION_THRESHOLD:
+        return None
+    runbook_id = f"learned-{signature}"
+    entry["promoted_runbook"] = {
+        "id": runbook_id,
+        "actions": list(normalized),
+        "healthcheck": check,
+        "promoted_at": at,
+        "from_resolutions": len(identical),
+    }
+    entry["promoted_runbook_id"] = runbook_id
+    return runbook_id
+
+
+def _record_signature(
+    state: dict[str, Any],
+    signature: str,
+    incident: Mapping[str, Any],
+    *,
+    at: str,
+) -> int:
+    """Учесть инцидент в реестре подписей и вернуть число повторов."""
+
+    ledger = state["signatures"]
+    entry = ledger.get(signature)
+    if entry is None:
+        entry = {
+            "signature": signature,
+            "code": incident["code"],
+            "classification": incident["classification"],
+            "operation": incident.get("operation"),
+            "side_effect_outcome": incident.get("side_effect_outcome"),
+            "occurrences": 0,
+            "incident_ids": [],
+            "first_seen_at": at,
+            "last_seen_at": at,
+            "resolutions": [],
+            "promoted_runbook_id": None,
+        }
+        ledger[signature] = entry
+    entry["occurrences"] = int(entry["occurrences"]) + 1
+    entry["last_seen_at"] = at
+    incident_id = str(incident["incident_id"])
+    if incident_id not in entry["incident_ids"]:
+        entry["incident_ids"].append(incident_id)
+    return int(entry["occurrences"])
 
 
 def _append_event(
