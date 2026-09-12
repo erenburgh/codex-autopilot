@@ -44,6 +44,14 @@ class TurnResult:
     errors: list[dict[str, Any]]
 
 
+# Originator, которым само приложение поднимает свой App Server. Ветка,
+# созданная под другим значением, принадлежит "другому приложению": она
+# видна в сайдбаре, но требует ручного перехвата, а пайплайн нажать эту
+# кнопку не может. Значение взято из самого Codex Desktop, где оно стоит
+# значением по умолчанию для CODEX_INTERNAL_ORIGINATOR_OVERRIDE.
+DESKTOP_ORIGINATOR = "Codex Desktop"
+
+
 class AppServerClient:
     """Short-lived or explicitly headless JSON-RPC client for App Server.
 
@@ -60,7 +68,7 @@ class AppServerClient:
         log_path: Path,
         *,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
-        originator: str | None = None,
+        originator: str | None = DESKTOP_ORIGINATOR,
         popen_factory=subprocess.Popen,
     ) -> None:
         self.binary = binary

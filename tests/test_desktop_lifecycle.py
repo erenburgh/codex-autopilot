@@ -12,7 +12,7 @@ from unittest import mock
 
 from _gates import patch_hook_trust_gates
 
-from codex_autopilot.appserver import AppServerRpcError, TurnResult
+from codex_autopilot.appserver import DESKTOP_ORIGINATOR, AppServerRpcError, TurnResult
 from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.cli import (
     _run_automatic_relay_dispatch,
@@ -747,7 +747,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                client.kwargs["originator"] == "codex_work_desktop"
+                client.kwargs.get("originator", DESKTOP_ORIGINATOR) == DESKTOP_ORIGINATOR
                 for client in clients
             )
         )

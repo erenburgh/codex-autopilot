@@ -309,7 +309,6 @@ def _automatic_relay_loop(
         client = AppServerClient(
             cfg.desktop.binary,
             dispatcher_log,
-            originator="codex_work_desktop",
         )
         with client:
             outcome = run_automatic_app_server_turn(
