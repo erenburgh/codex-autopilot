@@ -38,7 +38,7 @@ def task(task_id: str, *, depends_on: tuple[str, ...] = ()) -> dict[str, object]
         "depends_on": list(depends_on),
         "priority": 0,
         "verification": {
-            "policy": "self",
+            "policy": "independent",
             "required": True,
             "max_revision_attempts": 1,
         },

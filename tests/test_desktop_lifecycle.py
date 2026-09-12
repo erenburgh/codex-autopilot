@@ -68,7 +68,7 @@ def task(
     depends_on: tuple[str, ...] = (),
     path: str | None = None,
     verification_required: bool = True,
-    verification_policy: str = "self",
+    verification_policy: str = "independent",
 ) -> dict[str, object]:
     return {
         "id": task_id,

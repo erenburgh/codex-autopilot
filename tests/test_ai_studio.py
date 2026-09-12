@@ -42,7 +42,7 @@ def task(
 ) -> dict:
     dependency_ids = dependencies or []
     verification: dict = {
-        "policy": "independent" if verifier_role else "self",
+        "policy": "independent",
         "required": True,
         "max_revision_attempts": 2,
     }

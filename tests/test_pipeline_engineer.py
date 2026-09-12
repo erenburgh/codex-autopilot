@@ -34,7 +34,7 @@ def graph() -> dict[str, object]:
             "role": "builder",
             "depends_on": [],
             "priority": 0,
-            "verification": {"policy": "self", "required": True},
+            "verification": {"policy": "independent", "required": True},
             "resources": [],
             "required_capabilities": [],
             "context": {},

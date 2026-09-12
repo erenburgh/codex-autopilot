@@ -380,6 +380,31 @@ def _validate_legacy_plan(data: dict[str, Any], profile: str) -> Plan:
     return plan
 
 
+def _reject_self_acceptance(plan: "Plan") -> None:
+    """Правило R8 (ENFORCED): каноническая задача не принимает сама себя.
+
+    policy="self" означает, что вердикт выносит тот же воркер, который
+    делал работу. Именно так восемь задач из девяти получили VERIFIED
+    в ту же секунду, что и IMPLEMENTED, и именно поэтому неверные
+    реализации проходили дальше по графу.
+
+    Мигрированный план v0.8 (legacy_serial) - единственное исключение:
+    он предшествует появлению верификации, и менять его задним числом
+    значило бы переписывать историю чужого прогона. Такой план остаётся
+    serial и новую работу в этом режиме не принимает.
+    """
+
+    if plan.legacy_serial:
+        return
+    offenders = [task.id for task in plan.tasks if task.verification.policy == "self"]
+    if offenders:
+        raise ValueError(
+            "R8: policy=\"self\" запрещена для канонических задач "
+            f"{', '.join(offenders)}; задача не может принимать сама себя. "
+            "Используй deterministic, independent или auto"
+        )
+
+
 def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
     _reject_unknown(
         data,
@@ -467,6 +492,7 @@ def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
         source_schema_version=source_schema,
         legacy_serial=legacy_serial,
     )
+    _reject_self_acceptance(plan)
     _validate_graph(plan)
     return plan
 

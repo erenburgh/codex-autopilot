@@ -103,7 +103,7 @@ def task(
     task_id: str,
     *,
     depends_on: tuple[str, ...] = (),
-    policy: str = "self",
+    policy: str = "independent",
     required: bool = True,
     checks: list[dict[str, object]] | None = None,
     verifier_role: str | None = None,
@@ -235,25 +235,21 @@ class VerificationLifecycleTests(unittest.TestCase):
         )
         return str(item["id"])
 
-    def test_self_policy_evidence_never_replaces_independent_acceptance(self) -> None:
-        self.initialize(task("A", policy="self"))
-        implementation = reserve_ready_frontier(self.cfg)[0]
-        self.activate(implementation, "implementation-thread")
-        self.evidence("A", "self verification")
-        outcome = complete_desktop_worker(
-            self.cfg,
-            thread_id="implementation-thread",
-            turn_id="implementation-turn",
-            final_message="AUTOPILOT_STATUS: ROTATE",
-        )
-        self.assertEqual([item.task_id for item in outcome.descriptors], ["A"])
-        self.assertEqual(outcome.descriptors[0].kind, "verifier")
-        state = self.store.load()
-        self.assertEqual(state.task_states["A"], TaskState.VERIFYING.value)
-        self.assertEqual(
-            [item["kind"] for item in state.worker_sessions if item["task_id"] == "A"],
-            ["implementation", "verifier"],
-        )
+    def test_self_policy_is_rejected_before_any_task_exists(self) -> None:
+        """R8: самопринятие невозможно не потому, что верификатор всё равно
+        запустится, а потому, что такой план не принимается вовсе.
+
+        Раньше этот тест проверял более слабое: что при policy="self"
+        верификатор всё-таки создаётся. Именно это и не сработало
+        в реальном прогоне - восемь задач из девяти получили VERIFIED
+        в ту же секунду, что и IMPLEMENTED.
+        """
+        with self.assertRaises(ValueError) as caught:
+            self.initialize(task("A", policy="self"))
+        message = str(caught.exception)
+        self.assertIn("R8", message)
+        self.assertIn("A", message)
+        self.assertIn("self", message)
 
     def test_false_success_revise_revision_then_fresh_verifier_unlocks_dependency(self) -> None:
         self.initialize(

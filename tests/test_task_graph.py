@@ -119,7 +119,10 @@ def graph() -> dict:
         "roles": [role("builder"), role("reviewer")],
         "tasks": [
             task("A"),
-            task("B", required_verification=False, policy="self"),
+            # R8: даже задача, не гейтящая зависимости, не принимает
+            # сама себя. "Не требует верификации" - тот же самосуд,
+            # объявленный планировщиком заранее.
+            task("B", required_verification=False, policy="independent"),
             task("C", dependencies=["A", "B"], policy="deterministic"),
         ],
     }

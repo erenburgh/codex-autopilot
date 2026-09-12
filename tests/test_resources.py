@@ -40,7 +40,7 @@ def raw_task(
         "depends_on": [],
         "priority": 0,
         "verification": {
-            "policy": "self",
+            "policy": "independent",
             "required": True,
             "max_revision_attempts": 0,
         },
