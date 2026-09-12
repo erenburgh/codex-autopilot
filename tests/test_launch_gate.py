@@ -493,3 +493,46 @@ class OrphanedReservationTests(unittest.TestCase):
         ), mock.patch("codex_autopilot.control.pid_alive", return_value=True):
             store.return_value.load.return_value = state
             self.assertEqual(_orphaned_pending_descriptors(mock.Mock(state_dir=Path('/tmp'))), ())
+
+
+class CausalPredecessorTests(unittest.TestCase):
+    """Завершённость хода доказывается журналом, а не статусом сессии."""
+
+    def state(self, status: str):
+        from unittest import mock
+
+        state = mock.Mock()
+        state.worker_sessions = [
+            {"thread_id": "owner", "turn_id": "turn-1", "status": status}
+        ]
+        state.lifecycle_journal = [
+            {"event": "turn_completed", "thread_id": "owner", "turn_id": "turn-1"}
+        ]
+        return state
+
+    def test_a_plan_change_requester_is_a_valid_predecessor(self) -> None:
+        """Задача, запросившая смену плана, свой ход завершила."""
+
+        from codex_autopilot.control import _turn_is_completed
+
+        self.assertTrue(
+            _turn_is_completed(self.state("PLAN_CHANGE_REQUESTED"), "owner", "turn-1")
+        )
+
+    def test_a_turn_without_a_completion_record_is_not_accepted(self) -> None:
+        from unittest import mock
+
+        from codex_autopilot.control import _turn_is_completed
+
+        state = mock.Mock()
+        state.lifecycle_journal = [
+            {"event": "turn_identity_bound", "thread_id": "owner", "turn_id": "turn-1"}
+        ]
+        self.assertFalse(_turn_is_completed(state, "owner", "turn-1"))
+
+    def test_another_threads_completion_does_not_count(self) -> None:
+        from codex_autopilot.control import _turn_is_completed
+
+        self.assertFalse(
+            _turn_is_completed(self.state("COMPLETED"), "someone-else", "turn-1")
+        )

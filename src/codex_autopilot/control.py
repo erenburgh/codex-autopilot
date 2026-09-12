@@ -225,6 +225,24 @@ def spawn_automatic_app_server_relay(
     return proc.pid
 
 
+def _turn_is_completed(state: Any, thread_id: str, turn_id: str) -> bool:
+    """Ход владельца завершён - по записи в журнале, а не по статусу сессии.
+
+    Проверка статуса "COMPLETED" отсекала законного предшественника:
+    задача, вернувшая PLAN_CHANGE_REQUEST, завершила свой ход и записала
+    turn_completed, но её сессия остаётся в PLAN_CHANGE_REQUESTED. Из-за
+    этого зарезервированный планировщик некому было поднять, и прогон
+    вставал с ошибкой про отсутствующего причинного предшественника.
+    """
+
+    return any(
+        str(item.get("event") or "") == "turn_completed"
+        and str(item.get("thread_id") or "") == thread_id
+        and str(item.get("turn_id") or "") == turn_id
+        for item in state.lifecycle_journal
+    )
+
+
 def _spawn_automatic_descriptors(
     cfg: Any,
     descriptors: tuple[LaunchDescriptor, ...],
@@ -249,8 +267,8 @@ def _spawn_automatic_descriptors(
                     item
                     for item in reversed(state.worker_sessions)
                     if item.get("thread_id") == owner
-                    and item.get("status") == "COMPLETED"
                     and item.get("turn_id")
+                    and _turn_is_completed(state, owner, str(item["turn_id"]))
                 ),
                 None,
             )
