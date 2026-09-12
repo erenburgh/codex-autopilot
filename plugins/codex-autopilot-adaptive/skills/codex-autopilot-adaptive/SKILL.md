@@ -141,40 +141,36 @@ Exact pause, resume, status, and uninstall prompts are handled by the plugin hoo
 Never run the helper with `resume` on a `desktop_owned` run. Only the trusted
 Stop hook may resume it, on the user's own command; the helper refuses a model
 caller by design. Attempting it wastes the turn and reports a failure that is
-not one. On a resume prompt your whole job is the reporting protocol below.
+not one. On a resume prompt, arm the resume and end the turn; see below.
 
-## Reporting a launch while it happens
+## Reporting a launch
 
-After a resume is armed, the turn stays open while the dispatcher works. Do not
-fill that time with reasoning about the pipeline. Report what is happening
-instead, one line at a time, so the user watches progress rather than silence:
+Finish the initiating turn as soon as the plan is shown. The dispatcher waits
+for that turn to reach `completed` before it creates the worker task: it polls
+the owner thread four times a second and creates nothing until the turn ends.
+Holding the turn open to watch the launch therefore prevents the very launch
+being watched. Measured: the turn streamed the ladder, the dispatcher read the
+owner thread 554 times in two minutes, and no branch was ever created.
 
-1. Run `scripts/codex-autopilot timeline --project <target-root>`, resolving
-   `scripts/codex-autopilot` relative to this `SKILL.md` exactly as the start
-   command above does. It is always there; never search the filesystem for it
-   and never report its location — that hunt wastes the user's turn.
-2. Print only the lines that are new since your previous run of it, verbatim.
-3. Wait a few seconds and repeat. Stop at the first of these, whichever comes
-   first — never later:
-   - the ladder shows the task started;
-   - a line marked `[✗]` appears;
-   - the ladder came back unchanged twice in a row;
-   - you have run the command five times.
-4. Finish with one short line: started, or stopped at which step.
+The ladder reaches the user without this turn. The Stop hook returns the launch
+report itself, and Codex shows it as hook feedback - the `[✓]` lines the user
+already sees come from there, not from this session.
 
-Five runs is a hard ceiling, not a target. An unchanged ladder means nothing is
-happening and more polling will not change that: report the stall and stop.
-Looping past this burns the user's usage for no new information.
+So: print the short task list and selected routes, end the turn, and let the
+hook report. Do not poll `timeline` inside the initiating turn.
 
-The final visible line carries the verdict. If the ladder stopped, say so there,
-naming the step — never end on progress counts while the stall sits in collapsed
-reasoning. "10 of 11 verified, M11 active" is not a verdict when the launch did
-not start; "остановилось на проверке видимости" is.
+`scripts/codex-autopilot timeline --project <target-root>` stays available for a
+*later* turn, when the user asks what happened. Resolve it relative to this
+`SKILL.md` exactly as the start command does; never search the filesystem for it.
 
-Rules for this reporting:
+Rules for any such report:
 
 - Never invent a step, a checkmark, or a result. Print only what the command
   returned. The ladder is the observation; your summary is not.
+- The final visible line carries the verdict. If the ladder stopped, say so
+  there, naming the step - never end on progress counts while the stall sits in
+  collapsed reasoning. "10 of 11 verified, M11 active" is not a verdict when the
+  launch did not start; "остановилось на проверке видимости" is.
 - A `[✗]` line is not yours to fix. Repairing the pipeline is Pipeline Engineer
   work on a ticket, never an improvisation from this session.
 - Never create or message a task to work around a stalled launch.
