@@ -6,6 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from _gates import patch_hook_trust_gates
+
 from codex_autopilot.launch_gate import (
     LaunchCheck,
     launch_checklist,
@@ -176,6 +178,10 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
         )
         gate.start()
         self.addCleanup(gate.stop)
+        # Гейт доверия хукам читает НАСТОЯЩИЙ App Server машины. Без этой
+        # подстановки набор проходил только потому, что у разработчика хуки
+        # оказались доверены, и рушился сразу после переустановки плагина.
+        patch_hook_trust_gates(self)
 
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

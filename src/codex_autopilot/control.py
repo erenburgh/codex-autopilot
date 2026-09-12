@@ -655,13 +655,30 @@ def reactivate_desktop_relay_owner(root: Path, *, incident_id: str | None = None
         initiator_thread_id=owner_thread_id,
         initiator_turn_id=predecessor_turn_id,
     )
+    # Починка девопса заканчивается тем же гейтом, что и обычный запуск.
+    # Иначе "REARMED" означало бы только "процесс релея порождён" - ровно
+    # то заявление вместо наблюдения, ради которого гейт и написан.
+    checks = await_launch(cfg, task_ids=[task_id], timeout=15.0)
+    confirmed = launch_confirmed(checks)
+    if not confirmed:
+        # Решение инженера не подтвердилось наблюдением: инцидент не
+        # считается закрытым, иначе починка сертифицирует сама себя.
+        package = incident_store.incident_package(incident_id)["incident"]
+        if package["phase"] == IncidentPhase.RESOLVED.value:
+            incident_store.invalidate_pipeline_engineer_resolution(
+                incident_id,
+                at=utc_now(),
+                reason="re-armed relay did not pass the launch checklist",
+            )
     return {
         "incident_id": incident_id,
         "owner_thread_id": owner_thread_id,
         "destination_task_id": task_id,
         "reservation_token": descriptor.reservation_token,
         "destination_title": descriptor.title,
-        "status": "REARMED",
+        "status": "REARMED" if confirmed else "LAUNCH_NOT_CONFIRMED",
+        "launch_confirmed": confirmed,
+        "launch_checklist": render_launch_checklist(checks),
         "automatic_dispatch_pid": pid,
     }
 

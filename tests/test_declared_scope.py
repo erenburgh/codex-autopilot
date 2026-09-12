@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _gates import patch_hook_trust_gates
+
 from codex_autopilot.plan import ResourceClaim, Task, TaskContext, VerificationPolicy
 from codex_autopilot.scope import (
     ScopeNotObservable,
@@ -149,6 +151,10 @@ class ScopeIsCheckedOnCompletionTests(unittest.TestCase):
         )
         gate.start()
         self.addCleanup(gate.stop)
+        # Гейт доверия хукам читает НАСТОЯЩИЙ App Server машины. Без этой
+        # подстановки набор проходил только потому, что у разработчика хуки
+        # оказались доверены, и рушился сразу после переустановки плагина.
+        patch_hook_trust_gates(self)
         dispatch = mock.patch(
             "codex_autopilot.control.spawn_automatic_app_server_relay", return_value=4242
         )

@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _gates import patch_hook_trust_gates
+
 from codex_autopilot.appserver import TurnResult
 from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
@@ -189,6 +191,10 @@ class VerificationLifecycleTests(unittest.TestCase):
         )
         self.hook_gate.start()
         self.addCleanup(self.hook_gate.stop)
+        # Гейт доверия хукам читает НАСТОЯЩИЙ App Server машины. Без этой
+        # подстановки набор проходил только потому, что у разработчика хуки
+        # оказались доверены, и рушился сразу после переустановки плагина.
+        patch_hook_trust_gates(self)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         (self.root / ".git").mkdir()

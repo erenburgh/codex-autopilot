@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _gates import patch_hook_trust_gates
+
 from codex_autopilot.appserver import AppServerRpcError, TurnResult
 from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.cli import (
@@ -504,11 +506,12 @@ class DesktopLifecycleTests(unittest.TestCase):
         )
 
     def setUp(self) -> None:
-        self.hook_gate = mock.patch(
-            "codex_autopilot.lifecycle_reservations.require_trusted_stop_hook_for_config"
-        )
-        self.hook_gate_mock = self.hook_gate.start()
-        self.addCleanup(self.hook_gate.stop)
+        # Гейт доверия хукам читает НАСТОЯЩИЙ App Server машины. Без этой
+        # подстановки набор проходил только потому, что у разработчика хуки
+        # оказались доверены, и рушился сразу после переустановки плагина.
+        # Патч ровно один на точку вызова: второй поверх первого сделал бы
+        # проверки мока бессмысленными.
+        self.hook_gate_mock = patch_hook_trust_gates(self)["lifecycle_reservations"]
         self.automatic_dispatch = mock.patch(
             "codex_autopilot.control.spawn_automatic_app_server_relay",
             return_value=4242,
