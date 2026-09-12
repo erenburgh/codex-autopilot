@@ -198,7 +198,9 @@ def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> P
     """Validate a complete replacement graph before any durable write."""
 
     candidate = validate_plan(data, profile)
-    if candidate.source_schema_version != PLAN_SCHEMA_VERSION:
+    # Migration provenance can remain schema 2 inside a canonical schema-3
+    # graph. Check the submitted format, preserving its serial compatibility.
+    if data.get("schema_version") != PLAN_SCHEMA_VERSION:
         raise ValueError("plan changes must use the canonical v0.9 schema")
     if candidate.graph_version != current.graph_version + 1:
         raise ValueError(

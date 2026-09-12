@@ -8,8 +8,14 @@ change under R7. It is neither release acceptance nor an independent verdict.
 The canonical checkout is on `repair/m10-p0` at
 `67289d3b1d341a3f7d3949e3ee252efec0d65c09`. The starting dirty paths were
 `ROADMAP.md`, `docs/RELEASE_VERIFICATION_0.9.0-beta.md`, and the untracked
-`scripts/promote_thread_visibility.py`. They were preserved. No production
-implementation, plugin, installer, or existing test was changed in this attempt.
+`scripts/promote_thread_visibility.py`. Their bytes were preserved.
+
+During verification, HEAD advanced outside M11's command sequence to
+`293d319d06faae45703e9e5aa31a630a474c6ef7`, including this checkpoint and
+additional placement-gate source/tests. M11 neither created nor reverted that
+commit. The new diff was inspected and retained. M11's own source changes are
+limited to `plan.py` and two regressions in `tests/test_plan_evolution.py`;
+no plugin, installer, or live harness was edited.
 
 The structured M11 task, its reservation, source files, and freshly executed
 checks were inspected. The M10 issue list in section 11.6 of the independent
@@ -23,12 +29,18 @@ No worker transcript or historical handoff was used.
 | `M11-BASELINE-TESTS` | `EVID-071` | 381 tests in 7.317 seconds; exit 0; 4 skips; no failures/errors. Process wall time was 7.407 seconds. This is the pre-change deterministic baseline. |
 | `M11-CONTRACT-SCOPE` | `EVID-072` | Production `audit_declared_scope()` rejects all seven required paths below for the current M11 task. The probe exits 2 with `PLAN_CHANGE_REQUIRED`. |
 | `M11-LIVE-AUTHORIZATION` | `EVID-073` | The current user instruction prohibits this worker from creating, starting, or messaging other tasks. This is a task-contract boundary, not an observed App Server limitation. |
+| `M11-MIGRATED-REPLAN-BEFORE` | `EVID-074` | The new production lifecycle regression failed before the guard repair: 2 tests, 1 error. |
+| `M11-MIGRATED-REPLAN-AFTER` | `EVID-075` | All 26 plan-evolution/task-graph checks passed after the repair. |
+| `M11-STABLE-TESTS` | `EVID-076` | 388 tests in 7.492 seconds; exit 0; 4 skips. HEAD `293d319` and 126 source-file hashes were unchanged during the run; process wall time 7.589 seconds. |
+| `M11-CHECKPOINT-VALIDATION` | `EVID-077` | The resource request parses and an additive candidate passes the production schema/DAG validator; initial dirty-file bytes are preserved. This is lint, not acceptance of the plan's meaning. |
+| `M11-MIGRATED-REPLAN-PATCH` | `EVID-078` | Exact M11 source/test patch, SHA-256 `9f5973fd8e3a58a0444ca1a331d0f7c1160257baec4b6625d47984018860e6a1`. |
 
 Exact deterministic commands:
 
 ```sh
 env -u CODEX_THREAD_ID -u CODEX_TURN_ID -u CODEX_SESSION_ID PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 python3 dist/m11-evidence-c4cd11ab/scope_probe.py
+python3 dist/m11-evidence-c4cd11ab/run_stable_tests.py
 ```
 
 The first command's final output was:
@@ -54,6 +66,11 @@ Full logs, the reproducible probe, initial file hashes, and MCP receipts are in
 The scope-probe log SHA-256 is
 `7f0c3118c16a8939a56c8e4b96d762e70fd7db451e95b0a105e9f68a982c1bb9`.
 These are evidence-file checksums, not release-artifact checksums.
+The post-repair snapshot and complete test output are in `stable-tests.json`;
+its SHA-256 is
+`b0d45105cad8677f5c5ba95972c54c6f5b38eb4d538442f19ea870d1d33da890`.
+This report's result rows were added after that test snapshot; no production
+source or test changed after the stable run.
 
 ## Required resource additions
 
@@ -77,9 +94,34 @@ entrypoints inconsistent and would not close the audited issues. The proposed
 resource change does not authorize this worker to launch another task or
 change the canonical run state.
 
+## Bounded migration repair
+
+Validating the proposed resource extension exposed a separate production bug:
+the canonical plan is schema 3 with
+`compatibility={"migrated_from_schema":2,"legacy_serial":true}`. The previous
+`validate_plan_change()` guard confused this preserved migration provenance
+with the submitted plan's format and raised:
+
+```text
+ValueError: plan changes must use the canonical v0.9 schema
+```
+
+M11 changed that guard to check the submitted `schema_version`. It retains
+migration provenance and the existing serial/one-worker compatibility checks.
+The new lifecycle regression exercises resource request, fresh replanner
+reservation, replanner completion, durable graph application, and preserved
+serial settings using deterministic test doubles. It failed before the fix.
+A second regression confirms that an actual schema-2 replacement is still
+rejected. All 26 plan-evolution/task-graph tests then passed in 0.249 seconds.
+The canonical plan/state and the installed active runtime were not rewritten.
+
+This is a source repair with deterministic evidence; it is not a live
+replanner test or independent acceptance. The original failure log is retained
+as `migration-regression-before.log` in the evidence directory.
+
 ## Remaining acceptance work
 
-All other section-11.6 issues still require implementation and fresh evidence:
+The section-11.6 issues still require implementation or fresh acceptance evidence:
 the prompt-time retired-session fence; creation-causality reachability;
 Desktop membership/editability and timeout incidents; root drift fail-closed
 behavior; task attribution and budgets; closed escalation reasons; structured
