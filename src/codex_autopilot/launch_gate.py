@@ -415,11 +415,20 @@ def _desktop_visibility(
         return LaunchCheck(
             "visible_in_desktop", task_id, None, f"состояние Desktop не прочитано: {error}"
         )
-    for key in DESKTOP_UI_KEYS:
-        if thread_id in json.dumps(payload.get(key), ensure_ascii=False):
-            return LaunchCheck(
-                "visible_in_desktop", task_id, True, f"ветка есть в записи {key}"
-            )
+    # Одна проверка на весь рантайм: гейт и чек-лист обязаны отвечать
+    # одинаково, иначе один из них снова начнёт врать.
+    placement = desktop_placement(thread_id)
+    if placement == INSIDE:
+        return LaunchCheck(
+            "visible_in_desktop", task_id, True, "ветка в проекте и видна в сайдбаре"
+        )
+    if placement == OUTSIDE:
+        return LaunchCheck(
+            "visible_in_desktop",
+            task_id,
+            False,
+            "Desktop знает ветку, но она вне проекта",
+        )
     created = _created_at(events)
     written = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
     if created is not None and written < created:
@@ -518,11 +527,22 @@ OUTSIDE = "OUTSIDE"    # видна, но вне проекта (Recents)
 INSIDE = "INSIDE"      # в проекте: привязка и порядок сайдбара
 
 _PROJECT_KEYS = ("thread-project-assignments", "sidebar-project-thread-orders")
-_KNOWN_KEYS = _PROJECT_KEYS + ("projectless-thread-ids", "electron-persisted-atom-state")
+# Список веток, который ведёт само приложение: сайдбар рисуется из него.
+KNOWN_THREADS_KEY = "electron-persisted-atom-state"
 
 
 def desktop_placement(thread_id: str) -> str:
-    """Прочитать размещение ветки из собственных записей Desktop."""
+    """Прочитать размещение ветки из собственных записей Desktop.
+
+    Решающая запись - electron-persisted-atom-state: это список веток,
+    который знает само приложение, и сайдбар рисуется из него. Привязка к
+    проекту без него висит в пустоте: запись есть, ветки в интерфейсе нет.
+
+    Замерено: видимые ветки (M7, M8) лежат во всех трёх записях, невидимые
+    (M11 и её планировщик) - только в привязке и в порядке сайдбара.
+    Проверка, смотревшая лишь на эти две, отвечала "в проекте" про ветку,
+    которой в интерфейсе не существует.
+    """
 
     from .preflight import default_codex_home
 
@@ -531,14 +551,14 @@ def desktop_placement(thread_id: str) -> str:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return ABSENT
-    hits = [
-        key
-        for key in _KNOWN_KEYS
-        if thread_id in json.dumps(payload.get(key), ensure_ascii=False)
-    ]
-    if any(key in _PROJECT_KEYS for key in hits):
-        return INSIDE
-    return OUTSIDE if hits else ABSENT
+    known = thread_id in json.dumps(payload.get(KNOWN_THREADS_KEY), ensure_ascii=False)
+    if not known:
+        return ABSENT
+    assigned = any(
+        thread_id in json.dumps(payload.get(key), ensure_ascii=False)
+        for key in _PROJECT_KEYS
+    )
+    return INSIDE if assigned else OUTSIDE
 
 
 def promote_into_project(

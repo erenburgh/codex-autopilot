@@ -76,10 +76,15 @@ class ChecklistTests(unittest.TestCase):
     def desktop_knows_thread(self, known: bool, thread_id: str = "thread-a") -> None:
         import json as _json
 
-        payload = {
-            "thread-project-assignments": {thread_id: "project-a"} if known else {},
-            "sidebar-project-thread-orders": {},
-        }
+        payload = (
+            {
+                "electron-persisted-atom-state": {"threads": [thread_id]},
+                "thread-project-assignments": {thread_id: "project-a"},
+                "sidebar-project-thread-orders": {},
+            }
+            if known
+            else {}
+        )
         (self.codex_home / ".codex-global-state.json").write_text(
             _json.dumps(payload), encoding="utf-8"
         )
@@ -428,21 +433,46 @@ class PlacementGateTests(unittest.TestCase):
     def test_thread_known_but_projectless_is_outside(self) -> None:
         from codex_autopilot.launch_gate import OUTSIDE, desktop_placement
 
-        self.write_state(**{"projectless-thread-ids": ["t1"]})
+        # Решает список веток самого приложения: из него рисуется сайдбар.
+        self.write_state(**{"electron-persisted-atom-state": {"threads": ["t1"]}})
         self.assertEqual(desktop_placement("t1"), OUTSIDE)
 
     def test_thread_in_project_records_is_inside(self) -> None:
         from codex_autopilot.launch_gate import INSIDE, desktop_placement
 
-        self.write_state(**{"thread-project-assignments": {"t1": "p1"}})
+        self.write_state(
+            **{
+                "electron-persisted-atom-state": {"threads": ["t1"]},
+                "thread-project-assignments": {"t1": "p1"},
+            }
+        )
         self.assertEqual(desktop_placement("t1"), INSIDE)
+
+    def test_an_assignment_for_an_unknown_thread_is_not_visibility(self) -> None:
+        """Замерено на живых данных: привязка без записи приложения висит
+        в пустоте - запись есть, ветки в интерфейсе нет."""
+
+        from codex_autopilot.launch_gate import ABSENT, desktop_placement
+
+        self.write_state(
+            **{
+                "thread-project-assignments": {"t1": "p1"},
+                "sidebar-project-thread-orders": {"p1": {"threadIds": ["t1"]}},
+            }
+        )
+        self.assertEqual(desktop_placement("t1"), ABSENT)
 
     def test_promotion_is_skipped_when_already_inside(self) -> None:
         from unittest import mock
 
         from codex_autopilot.launch_gate import INSIDE, promote_into_project
 
-        self.write_state(**{"thread-project-assignments": {"t1": "p1"}})
+        self.write_state(
+            **{
+                "electron-persisted-atom-state": {"threads": ["t1"]},
+                "thread-project-assignments": {"t1": "p1"},
+            }
+        )
         client = mock.Mock()
         before, after = promote_into_project(
             "t1", "p1", client=client, sleep=lambda _s: None

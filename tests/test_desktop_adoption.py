@@ -43,7 +43,7 @@ class DesktopAdoptionTests(unittest.TestCase):
 
     def test_adoption_writes_the_same_record_desktop_writes(self) -> None:
         from codex_autopilot.launch_gate import (
-            INSIDE,
+            ABSENT,
             adopt_into_desktop_project,
             desktop_placement,
         )
@@ -58,7 +58,9 @@ class DesktopAdoptionTests(unittest.TestCase):
             state["sidebar-project-thread-orders"]["legacy-1"]["threadIds"], ["t1"]
         )
         self.assertEqual(state["projectless-thread-ids"], [])
-        self.assertEqual(desktop_placement("t1"), INSIDE)
+        # Записи недостаточно: пока приложение не знает ветку, её нет в
+        # сайдбаре. Замерено на живых данных.
+        self.assertEqual(desktop_placement("t1"), ABSENT)
 
     def test_an_unmapped_project_is_never_guessed(self) -> None:
         from codex_autopilot.launch_gate import adopt_into_desktop_project
@@ -110,12 +112,19 @@ class DesktopAdoptionTests(unittest.TestCase):
         )
         client.assign_thread_to_project.assert_called_once()
         self.assertNotEqual(before, INSIDE)
-        self.assertEqual(after, INSIDE)
+        # Приложение ветку не знает - значит в проекте её нет, что бы мы
+        # ни записали.
+        self.assertNotEqual(after, INSIDE)
 
-    def test_promotion_from_absent_also_reaches_the_project(self) -> None:
-        """Живой случай: Desktop о ветке не знает вовсе."""
+    def test_promotion_cannot_make_an_unknown_thread_visible(self) -> None:
+        """Живой случай: Desktop о ветке не знает вовсе.
 
-        from codex_autopilot.launch_gate import ABSENT, INSIDE, promote_into_project
+        Ни привязка через App Server, ни запись в сайдбар не делают её
+        видимой - приложение показывает только те ветки, о которых знает
+        само. Честный ответ здесь ABSENT, а не выдуманное INSIDE.
+        """
+
+        from codex_autopilot.launch_gate import ABSENT, promote_into_project
 
         self.write(
             **{
@@ -128,7 +137,7 @@ class DesktopAdoptionTests(unittest.TestCase):
         before, after = promote_into_project(
             "t1", "server-1", client=client, sleep=lambda _s: None
         )
-        self.assertEqual((before, after), (ABSENT, INSIDE))
+        self.assertEqual((before, after), (ABSENT, ABSENT))
 
 
 if __name__ == "__main__":
