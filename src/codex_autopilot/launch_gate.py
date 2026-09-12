@@ -19,6 +19,7 @@ App Server: резервирование, привязанная ветка, с�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -50,11 +51,32 @@ ACTIVE_STATUS = "ACTIVE"
 
 __all__ = [
     "LaunchCheck",
+    "LaunchVerdict",
+    "launch_verdict",
     "await_launch",
     "launch_checklist",
     "launch_confirmed",
     "render_launch_checklist",
 ]
+
+
+class LaunchVerdict(str, Enum):
+    """Три состояния запуска, а не два.
+
+    Создание ветки через App Server занимает десятки секунд, а хук живёт
+    тридцать. Пока шагов не хватает, но диспетчер жив и отказов не
+    записано, это ИДЁТ, а не СЛОМАЛОСЬ. Смешение этих двух состояний
+    превращает нормальный запуск в ложный тикет - тот самый шум, из-за
+    которого проверки перестают читать.
+    """
+
+    CONFIRMED = "CONFIRMED"
+    IN_PROGRESS = "IN_PROGRESS"
+    FAILED = "FAILED"
+
+
+# Пункты, недостижимость которых означает поломку, а не незавершённость.
+DECISIVE_CHECKS = frozenset({"reserved", "dispatcher_alive", "no_failure_after_launch"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +187,22 @@ def launch_checklist(
     return tuple(checks)
 
 
+def launch_verdict(checks: Iterable[LaunchCheck]) -> LaunchVerdict:
+    """Подтверждён, ещё идёт или отказ - по наличию признаков поломки."""
+
+    items = list(checks)
+    if not items:
+        return LaunchVerdict.FAILED
+    if all(item.passed is True for item in items):
+        return LaunchVerdict.CONFIRMED
+    broken = [
+        item
+        for item in items
+        if item.id in DECISIVE_CHECKS and item.passed is not True
+    ]
+    return LaunchVerdict.FAILED if broken else LaunchVerdict.IN_PROGRESS
+
+
 def launch_confirmed(checks: Iterable[LaunchCheck]) -> bool:
     """Запуск подтверждён, только если каждый пункт прошёл.
 
@@ -184,11 +222,13 @@ def render_launch_checklist(checks: Sequence[LaunchCheck]) -> str:
         for item in checks:
             if item.task_id == task_id:
                 lines.append(f"  [{item.mark}] {item.id}: {item.detail}")
-    verdict = (
-        "ЗАПУСК ПОДТВЕРЖДЁН"
-        if launch_confirmed(checks)
-        else "ЗАПУСК НЕ ПОДТВЕРЖДЁН — это отказ запуска, а не успех"
-    )
+    verdict = {
+        LaunchVerdict.CONFIRMED: "ЗАПУСК ПОДТВЕРЖДЁН",
+        LaunchVerdict.IN_PROGRESS: (
+            "ЗАПУСК ИДЁТ — диспетчер жив, отказов нет, часть шагов ещё впереди"
+        ),
+        LaunchVerdict.FAILED: "ЗАПУСК ОТКАЗАЛ — это отказ, а не успех",
+    }[launch_verdict(checks)]
     return verdict + "\n" + "\n".join(lines)
 
 
@@ -214,7 +254,7 @@ def await_launch(
     store = StateStore(cfg.state_dir)
     deadline = now() + timeout
     checks = launch_checklist(cfg, store.load(), task_ids=task_ids, pid_alive=pid_alive)
-    while not launch_confirmed(checks) and now() < deadline:
+    while launch_verdict(checks) is LaunchVerdict.IN_PROGRESS and now() < deadline:
         rest(interval)
         checks = launch_checklist(
             cfg, store.load(), task_ids=task_ids, pid_alive=pid_alive

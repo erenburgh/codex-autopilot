@@ -10,6 +10,8 @@ from _gates import patch_hook_trust_gates
 
 from codex_autopilot.launch_gate import (
     LaunchCheck,
+    LaunchVerdict,
+    launch_verdict,
     launch_checklist,
     launch_confirmed,
     render_launch_checklist,
@@ -157,8 +159,60 @@ class ChecklistTests(unittest.TestCase):
             self.cfg, self.state(sessions=[], events=[]), task_ids=["A"]
         )
         rendered = render_launch_checklist(checks)
-        self.assertIn("ЗАПУСК НЕ ПОДТВЕРЖДЁН", rendered)
-        self.assertIn("отказ запуска, а не успех", rendered)
+        self.assertIn("ЗАПУСК ОТКАЗАЛ", rendered)
+        self.assertIn("это отказ, а не успех", rendered)
+
+
+class VerdictTests(ChecklistTests):
+    """Три состояния: подтверждён, ещё идёт, отказал."""
+
+    def test_a_launch_still_creating_its_thread_is_in_progress(self) -> None:
+        """Создание ветки занимает десятки секунд - это не отказ."""
+
+        checks = launch_checklist(
+            self.cfg,
+            self.state(
+                sessions=[session(thread_id=None, status="CREATE_REQUESTED")],
+                events=journal((1, "reservation_created"), (2, "create_requested")),
+            ),
+            task_ids=["A"],
+            pid_alive=lambda pid: True,
+        )
+        self.assertIs(launch_verdict(checks), LaunchVerdict.IN_PROGRESS)
+        self.assertIn("ЗАПУСК ИДЁТ", render_launch_checklist(checks))
+
+    def test_a_dead_dispatcher_is_a_failure_not_progress(self) -> None:
+        checks = launch_checklist(
+            self.cfg,
+            self.state(
+                sessions=[session(thread_id=None, status="CREATE_REQUESTED")],
+                events=journal((1, "reservation_created")),
+            ),
+            task_ids=["A"],
+            pid_alive=lambda pid: False,
+        )
+        self.assertIs(launch_verdict(checks), LaunchVerdict.FAILED)
+
+    def test_a_failure_event_is_a_failure_not_progress(self) -> None:
+        checks = launch_checklist(
+            self.cfg,
+            self.state(
+                sessions=[session(status="RETRY_WAIT")],
+                events=journal(*LAUNCHED, (6, "interrupt_observed")),
+            ),
+            task_ids=["A"],
+            pid_alive=lambda pid: True,
+        )
+        self.assertIs(launch_verdict(checks), LaunchVerdict.FAILED)
+
+    def test_a_complete_launch_is_confirmed(self) -> None:
+        checks = launch_checklist(
+            self.cfg,
+            self.state(sessions=[session()], events=journal(*LAUNCHED)),
+            task_ids=["A"],
+            pid_alive=lambda pid: True,
+        )
+        self.assertIs(launch_verdict(checks), LaunchVerdict.CONFIRMED)
 
 
 class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
@@ -208,11 +262,28 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
             self.cfg, ["A"], started="Codex Autopilot dispatcher started", timeout=0.0
         )
 
+    def test_a_launch_in_progress_does_not_open_a_ticket(self) -> None:
+        """Ложный тикет на идущий запуск - тот самый шум, из-за которого
+        проверки перестают читать."""
+
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+        from unittest import mock
+
+        with mock.patch(
+            "codex_autopilot.control.launch_verdict",
+            return_value=__import__(
+                "codex_autopilot.launch_gate", fromlist=["LaunchVerdict"]
+            ).LaunchVerdict.IN_PROGRESS,
+        ):
+            result = self.report()
+        self.assertTrue(result.get("continue"))
+        self.assertEqual(PipelineIncidentStore(self.cfg.state_dir).load()["incidents"], [])
+
     def test_an_unconfirmed_launch_blocks_instead_of_claiming_success(self) -> None:
         result = self.report()
         self.assertEqual(result.get("decision"), "block")
         self.assertNotIn("continue", result)
-        self.assertIn("ЗАПУСК НЕ ПОДТВЕРЖДЁН", result["reason"])
+        self.assertIn("ЗАПУСК ОТКАЗАЛ", result["reason"])
 
     def test_an_unconfirmed_launch_opens_a_devops_ticket(self) -> None:
         from codex_autopilot.pipeline_engineer import PipelineIncidentStore
@@ -226,6 +297,13 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
 
     def test_the_session_is_told_not_to_repair_the_pipeline_itself(self) -> None:
         self.assertIn("Не чини запуск в этом ходе", self.report()["reason"])
+
+    def test_the_ticket_does_not_claim_an_owner_that_does_not_exist(self) -> None:
+        """Ссылка на несуществующего девопса - ложь, а не маршрутизация."""
+
+        reason = self.report()["reason"]
+        self.assertIn("Автоматический исполнитель не поднят", reason)
+        self.assertNotIn("владелец — DevOps", reason)
 
     def test_the_same_failure_twice_is_one_signature(self) -> None:
         """Нормализованная подпись: повтор опознаётся как повтор."""

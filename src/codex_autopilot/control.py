@@ -27,8 +27,9 @@ from .pipeline_engineer import (
     SideEffectOutcome,
 )
 from .launch_gate import (
+    LaunchVerdict,
     await_launch,
-    launch_confirmed,
+    launch_verdict,
     render_launch_checklist,
 )
 from .lifecycle import (
@@ -892,10 +893,12 @@ def _launch_report(
 
     checks = await_launch(cfg, task_ids=task_ids, timeout=timeout)
     report = started + "\n" + render_launch_checklist(checks)
-    if launch_confirmed(checks):
+    verdict = launch_verdict(checks)
+    if verdict is not LaunchVerdict.FAILED:
+        # Идущий запуск - не отказ. Создание ветки через App Server занимает
+        # десятки секунд, а хук живёт тридцать: объявлять отказ по нехватке
+        # времени значит плодить ложные тикеты.
         return {"continue": True, "systemMessage": report}
-    # Неподтверждённый запуск - инфраструктурный отказ. Сессия не чинит
-    # его сама: она заводит тикет, а владельцем становится DevOps.
     ticket = _open_launch_incident(cfg, task_ids, checks)
     return {
         "decision": "block",
@@ -903,8 +906,8 @@ def _launch_report(
             report
             + "\n\n"
             + ticket
-            + "\nНе чини запуск в этом ходе: починка пайплайна - работа "
-            "Pipeline Engineer по тикету, а не задача этой сессии."
+            + "\nНе чини запуск в этом ходе: починка пайплайна идёт по тикету, "
+            "а не правками из этой сессии."
         ),
     }
 
@@ -950,7 +953,12 @@ def _open_launch_incident(
             phase = IncidentPhase.PIPELINE_ENGINEER
     except PipelineIncidentError as error:
         return f"Тикет завести не удалось: {error}"
-    return f"Тикет {incident_id} открыт, владелец — DevOps (фаза {phase.value})."
+    # Владельца не выдумываем: автоматического исполнителя у тикета нет,
+    # пока его не поднимет живой Pipeline Engineer.
+    return (
+        f"Тикет {incident_id} открыт (фаза {phase.value}). "
+        "Автоматический исполнитель не поднят — тикет ждёт разбора."
+    )
 
 
 def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
