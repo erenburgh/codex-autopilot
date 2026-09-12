@@ -1364,9 +1364,17 @@ def status_text(root: Path) -> str:
     from .status import render_project_status
     plan = load_plan(cfg.state_dir, cfg.profile)
     running = pid_alive(state.dispatcher_pid)
-    return render_project_status(
+    summary = render_project_status(
         cfg,
         state,
         plan,
         dispatcher_running=running,
     )
+    # Лента шагов прямо в чате: хук не умеет дописывать строки по ходу
+    # дела, но по запросу может показать, где сейчас находится задача и
+    # что уже чинилось. Иначе за этим пришлось бы идти в терминал.
+    active = list(state.active_task_ids or ())
+    if not active:
+        return summary
+    timeline = render_launch_timeline(state, active)
+    return f"{summary}\n\nШаги активных задач:\n{timeline}"
