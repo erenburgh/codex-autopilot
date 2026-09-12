@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Sequence
 
 from . import lifecycle as lifecycle_runtime
 from .appserver import AppServerClient  # sentinel: DevOps recovery must never construct it
@@ -17,6 +17,19 @@ from .config import (
     STATE_DIR_NAME,
     load_config,
     set_worker_surface,
+)
+from .pipeline_engineer import (
+    IncidentClass,
+    IncidentPhase,
+    IncidentSignal,
+    PipelineIncidentError,
+    PipelineIncidentStore,
+    SideEffectOutcome,
+)
+from .launch_gate import (
+    await_launch,
+    launch_confirmed,
+    render_launch_checklist,
 )
 from .lifecycle import (
     LaunchDescriptor,
@@ -845,6 +858,84 @@ def handle_post_tool_hook(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _launch_report(
+    cfg: Config,
+    task_ids: Sequence[str],
+    *,
+    started: str,
+    timeout: float,
+) -> dict[str, Any]:
+    """Ответ хука о запуске: наблюдение вместо заявления.
+
+    Прежние сообщения сообщали только pid порождённого процесса. Ход
+    завершался, и если задача при этом не поднималась, об этом никто не
+    узнавал. Теперь ход заканчивается чек-листом, а неподтверждённый
+    запуск явно называется отказом.
+    """
+
+    checks = await_launch(cfg, task_ids=task_ids, timeout=timeout)
+    report = started + "\n" + render_launch_checklist(checks)
+    if launch_confirmed(checks):
+        return {"continue": True, "systemMessage": report}
+    # Неподтверждённый запуск - инфраструктурный отказ. Сессия не чинит
+    # его сама: она заводит тикет, а владельцем становится DevOps.
+    ticket = _open_launch_incident(cfg, task_ids, checks)
+    return {
+        "decision": "block",
+        "reason": (
+            report
+            + "\n\n"
+            + ticket
+            + "\nНе чини запуск в этом ходе: починка пайплайна - работа "
+            "Pipeline Engineer по тикету, а не задача этой сессии."
+        ),
+    }
+
+
+def _open_launch_incident(
+    cfg: Config,
+    task_ids: Sequence[str],
+    checks: Sequence[Any],
+) -> str:
+    """Завести тикет на неподтверждённый запуск и отдать его девопсу.
+
+    Подпись инцидента нормализованная, поэтому повтор того же отказа
+    опознаётся как повтор, а не как новая загадка.
+    """
+
+    store = PipelineIncidentStore(cfg.state_dir)
+    failed = [item.id for item in checks if item.passed is not True]
+    now = utc_now()
+    signal = IncidentSignal(
+        signal_id=f"launch-not-confirmed:{','.join(task_ids)}:{':'.join(sorted(set(failed)))}",
+        code="launch_not_confirmed",
+        surface=IncidentClass.PIPELINE,
+        summary=(
+            "Запуск не подтверждён чек-листом: "
+            + ", ".join(sorted(set(failed)))
+        ),
+        affected_task_ids=tuple(task_ids),
+        operation="create_thread",
+        side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+        system_state={"failed_checks": sorted(set(failed))},
+    )
+    try:
+        incident = store.open_incident(signal, at=now)
+        incident_id = str(incident["incident_id"])
+        phase = store.route_incident(incident_id, at=now)
+        if phase is IncidentPhase.DEGRADED:
+            # Уровень 1: способ уже выучен, модель не поднимается.
+            phase = store.attempt_known_recovery(
+                incident_id, at=now, owner_id="launch-gate"
+            )
+        if phase is IncidentPhase.AUTO_RECOVERY_FAILED:
+            store.ensure_pipeline_engineer(incident_id, at=now)
+            phase = IncidentPhase.PIPELINE_ENGINEER
+    except PipelineIncidentError as error:
+        return f"Тикет завести не удалось: {error}"
+    return f"Тикет {incident_id} открыт, владелец — DevOps (фаза {phase.value})."
+
+
 def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     registry = LaunchRegistry()
     root = find_project_root(Path(str(payload.get("cwd") or ".")))
@@ -894,13 +985,15 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
                         triggering_thread_id=str(payload.get("session_id") or ""),
                         triggering_turn_id=str(payload.get("turn_id") or ""),
                     )
-                    return {
-                        "continue": True,
-                        "systemMessage": (
+                    return _launch_report(
+                        cfg,
+                        [item.task_id for item in outcome.descriptors],
+                        started=(
                             "Codex Autopilot automatic dispatcher started: "
                             + ", ".join(str(pid) for pid in pids)
                         ),
-                    }
+                        timeout=15.0,
+                    )
                 return {}
             continuation = _desktop_relay_continuation(
                 cfg,
@@ -924,13 +1017,15 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
                     triggering_thread_id=str(payload.get("session_id") or ""),
                     triggering_turn_id=str(payload.get("turn_id") or ""),
                 )
-                return {
-                    "continue": True,
-                    "systemMessage": (
+                return _launch_report(
+                    cfg,
+                    [item.task_id for item in recovered],
+                    started=(
                         "Codex Autopilot automatic retry dispatcher started: "
                         + ", ".join(str(pid) for pid in pids)
                     ),
-                }
+                    timeout=15.0,
+                )
     store = StateStore(root / STATE_DIR_NAME) if root else None
     request = store.claim_launch() if store else None
     if request:
@@ -975,13 +1070,15 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
             triggering_thread_id=str(payload.get("session_id") or ""),
             triggering_turn_id=str(payload.get("turn_id") or ""),
         )
-        return {
-            "continue": True,
-            "systemMessage": (
+        return _launch_report(
+            cfg,
+            [item.task_id for item in descriptors],
+            started=(
                 "Codex Autopilot automatic dispatcher started: "
                 + ", ".join(str(pid) for pid in pids)
             ),
-        }
+            timeout=15.0,
+        )
     try:
         thread_id = str(payload["session_id"])
         turn_id = str(payload["turn_id"])

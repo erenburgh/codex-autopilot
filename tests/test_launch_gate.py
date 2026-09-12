@@ -1,0 +1,236 @@
+"""Гейт запуска: подтверждение вместо заявления, и тикет вместо самодеятельности."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import tempfile
+import unittest
+
+from codex_autopilot.launch_gate import (
+    LaunchCheck,
+    launch_checklist,
+    launch_confirmed,
+    render_launch_checklist,
+)
+from codex_autopilot.run_state import RunState
+
+
+class Cfg:
+    """Минимальная подстановка: гейт читает только каталог состояния."""
+
+    def __init__(self, state_dir: Path) -> None:
+        self.state_dir = state_dir
+
+
+def session(**overrides) -> dict:
+    base = {
+        "task_id": "A",
+        "reservation_token": "token-a",
+        "status": "ACTIVE",
+        "thread_id": "thread-a",
+        "automatic_dispatch_pid": 4242,
+    }
+    base.update(overrides)
+    return base
+
+
+def journal(*events: tuple[int, str]) -> list[dict]:
+    return [
+        {"sequence": number, "event": name, "reservation_token": "token-a"}
+        for number, name in events
+    ]
+
+
+LAUNCHED = (
+    (1, "reservation_created"),
+    (2, "create_requested"),
+    (3, "app_server_thread_created"),
+    (4, "start_acknowledged"),
+    (5, "visible_launch_report_ready"),
+)
+
+
+class ChecklistTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.cfg = Cfg(Path(self.temp.name))
+
+    def state(self, *, sessions, events) -> RunState:
+        state = RunState(run_id="r")
+        state.worker_sessions = list(sessions)
+        state.lifecycle_journal = list(events)
+        return state
+
+    def check(self, checks, check_id: str) -> LaunchCheck:
+        return next(item for item in checks if item.id == check_id)
+
+    def test_a_fully_launched_task_is_confirmed(self) -> None:
+        checks = launch_checklist(
+            self.cfg,
+            self.state(sessions=[session()], events=journal(*LAUNCHED)),
+            task_ids=["A"],
+            pid_alive=lambda pid: True,
+        )
+        self.assertTrue(launch_confirmed(checks))
+        self.assertIn("ЗАПУСК ПОДТВЕРЖДЁН", render_launch_checklist(checks))
+
+    def test_a_task_that_was_never_reserved_is_not_confirmed(self) -> None:
+        checks = launch_checklist(
+            self.cfg, self.state(sessions=[], events=[]), task_ids=["A"]
+        )
+        self.assertFalse(launch_confirmed(checks))
+        self.assertFalse(self.check(checks, "reserved").passed)
+
+    def test_a_reservation_without_a_thread_is_not_confirmed(self) -> None:
+        checks = launch_checklist(
+            self.cfg,
+            self.state(
+                sessions=[session(thread_id=None, status="CREATE_REQUESTED")],
+                events=journal((1, "reservation_created")),
+            ),
+            task_ids=["A"],
+            pid_alive=lambda pid: True,
+        )
+        self.assertFalse(launch_confirmed(checks))
+        self.assertFalse(self.check(checks, "thread_bound").passed)
+
+    def test_a_thread_that_never_acknowledged_the_send_is_not_confirmed(self) -> None:
+        """Именно так выглядела зависшая задача: ветка есть, работа не идёт."""
+
+        checks = launch_checklist(
+            self.cfg,
+            self.state(
+                sessions=[session(status="SEND_RELAYING")],
+                events=journal(*LAUNCHED[:3]),
+            ),
+            task_ids=["A"],
+            pid_alive=lambda pid: True,
+        )
+        self.assertFalse(launch_confirmed(checks))
+        self.assertFalse(self.check(checks, "send_acknowledged").passed)
+
+    def test_a_failure_recorded_after_the_launch_is_not_confirmed(self) -> None:
+        checks = launch_checklist(
+            self.cfg,
+            self.state(
+                sessions=[session()],
+                events=journal(*LAUNCHED, (6, "interrupt_observed")),
+            ),
+            task_ids=["A"],
+            pid_alive=lambda pid: True,
+        )
+        self.assertFalse(launch_confirmed(checks))
+        self.assertIn("interrupt_observed", self.check(checks, "no_failure_after_launch").detail)
+
+    def test_a_dead_dispatcher_is_not_confirmed(self) -> None:
+        checks = launch_checklist(
+            self.cfg,
+            self.state(sessions=[session()], events=journal(*LAUNCHED)),
+            task_ids=["A"],
+            pid_alive=lambda pid: False,
+        )
+        self.assertFalse(launch_confirmed(checks))
+
+    def test_an_unassessable_check_is_not_a_pass(self) -> None:
+        """"Проверить не удалось" и "проверено" - разные вещи."""
+
+        checks = launch_checklist(
+            self.cfg,
+            self.state(
+                sessions=[session(automatic_dispatch_pid=None)],
+                events=journal(*LAUNCHED),
+            ),
+            task_ids=["A"],
+            pid_alive=lambda pid: True,
+        )
+        self.assertIsNone(self.check(checks, "dispatcher_alive").passed)
+        self.assertFalse(launch_confirmed(checks))
+
+    def test_an_empty_checklist_never_confirms(self) -> None:
+        self.assertFalse(launch_confirmed([]))
+
+    def test_the_rendered_verdict_names_a_failure_as_a_failure(self) -> None:
+        checks = launch_checklist(
+            self.cfg, self.state(sessions=[], events=[]), task_ids=["A"]
+        )
+        rendered = render_launch_checklist(checks)
+        self.assertIn("ЗАПУСК НЕ ПОДТВЕРЖДЁН", rendered)
+        self.assertIn("отказ запуска, а не успех", rendered)
+
+
+class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
+    """Задача не поднялась - сессия не чинит сама, а заводит тикет."""
+
+    def setUp(self) -> None:
+        from unittest import mock
+
+        from codex_autopilot.bootstrap import initialize_project
+        from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
+        import json
+
+        from test_desktop_lifecycle import graph
+
+        gate = mock.patch(
+            "codex_autopilot.lifecycle_reservations.require_trusted_stop_hook_for_config"
+        )
+        gate.start()
+        self.addCleanup(gate.stop)
+
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        (self.root / ".git").mkdir()
+        skill = self.root / "SKILL.md"
+        skill.write_text("# test skill\n", encoding="utf-8")
+        plan_file = self.root / "input-plan.json"
+        plan_file.write_text(json.dumps(graph()), encoding="utf-8")
+        initialize_project(
+            self.root,
+            plan_file,
+            profile="adaptive",
+            skill_path=skill,
+            desktop_project_id="desktop-project",
+            worker_surface=DESKTOP_OWNED_SURFACE,
+        )
+        self.cfg = load_config(self.root)
+
+    def report(self):
+        from codex_autopilot.control import _launch_report
+
+        return _launch_report(
+            self.cfg, ["A"], started="Codex Autopilot dispatcher started", timeout=0.0
+        )
+
+    def test_an_unconfirmed_launch_blocks_instead_of_claiming_success(self) -> None:
+        result = self.report()
+        self.assertEqual(result.get("decision"), "block")
+        self.assertNotIn("continue", result)
+        self.assertIn("ЗАПУСК НЕ ПОДТВЕРЖДЁН", result["reason"])
+
+    def test_an_unconfirmed_launch_opens_a_devops_ticket(self) -> None:
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        result = self.report()
+        self.assertIn("Тикет", result["reason"])
+        incidents = PipelineIncidentStore(self.cfg.state_dir).load()["incidents"]
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0]["code"], "launch_not_confirmed")
+        self.assertEqual(incidents[0]["affected_task_ids"], ["A"])
+
+    def test_the_session_is_told_not_to_repair_the_pipeline_itself(self) -> None:
+        self.assertIn("Не чини запуск в этом ходе", self.report()["reason"])
+
+    def test_the_same_failure_twice_is_one_signature(self) -> None:
+        """Нормализованная подпись: повтор опознаётся как повтор."""
+
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        self.report()
+        self.report()
+        ledger = PipelineIncidentStore(self.cfg.state_dir).signature_ledger()
+        self.assertEqual(len(ledger), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

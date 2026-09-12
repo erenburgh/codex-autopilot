@@ -487,6 +487,22 @@ class DesktopLifecycleTests(unittest.TestCase):
         """Живой путь: так задачу поднимает продакшен-диспетчер."""
         return activate_via_app_server(self.cfg, self.root, descriptor, thread_id)
 
+    def bypass_launch_gate(self):
+        """Эти тесты проверяют резервирование, а не подтверждение запуска.
+
+        Диспетчер здесь замокан, поэтому сессия никогда не станет ACTIVE и
+        гейт честно ответит "запуск не подтверждён". Сам гейт покрыт
+        отдельно в test_launch_gate.py.
+        """
+
+        return mock.patch(
+            "codex_autopilot.control._launch_report",
+            side_effect=lambda cfg, task_ids, *, started, timeout: {
+                "continue": True,
+                "systemMessage": started,
+            },
+        )
+
     def setUp(self) -> None:
         self.hook_gate = mock.patch(
             "codex_autopilot.lifecycle_reservations.require_trusted_stop_hook_for_config"
@@ -1470,6 +1486,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             HeadlessAppServerOrchestrator(self.cfg).run()
 
     def test_stop_hook_reserves_and_requests_same_task_relay(self) -> None:
+        self.enterContext(self.bypass_launch_gate())
         arm(self.root)
         with mock.patch("codex_autopilot.control.spawn_dispatcher") as spawn, mock.patch(
             "codex_autopilot.appserver.AppServerClient.resume_thread"
@@ -1500,6 +1517,7 @@ class DesktopLifecycleTests(unittest.TestCase):
 
 
     def test_m7_stop_alone_recovers_due_legacy_m8_retry(self) -> None:
+        self.enterContext(self.bypass_launch_gate())
         root, cfg, store, first_m8 = self.legacy_retry_fixture()
         state_path = root / ".codex-autopilot" / "run-state.json"
         retry_at = store.load().task_retry_at["M8"]
@@ -1630,6 +1648,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertEqual(m8_sessions[-1]["relay_owner_thread_id"], "M7-thread")
 
     def test_retry_derived_ready_state_keeps_m7_owner_requirement(self) -> None:
+        self.enterContext(self.bypass_launch_gate())
         root, cfg, store, _first_m8 = self.legacy_retry_fixture()
         state = store.load()
         retry_at = state.task_retry_at.pop("M8")
