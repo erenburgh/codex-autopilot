@@ -22,6 +22,8 @@ codex_autopilot.lifecycle.
 from __future__ import annotations
 
 from .lifecycle_base import (  # noqa: F401
+    audit_creation_causality,
+    creation_causality_coverage,
     pending_descriptors,
     reconcile_desktop_runtime,
     ALLOWED_STATUSES,

@@ -1088,3 +1088,103 @@ def pending_descriptors(cfg: Config) -> tuple[LaunchDescriptor, ...]:
         if item.get("status") in PENDING_SESSION_STATUSES
         and isinstance(item.get("descriptor"), dict)
     )
+
+
+def creation_causality_coverage(state: RunState) -> tuple[int, int]:
+    """Сколько создаваний аудит может оценить, и сколько их всего.
+
+    Журнал прогона переживает перезапуски рантайма, и поле
+    relay_owner_thread_id появилось в схеме события не с первого дня.
+    События, записанные до его появления, аудитом не оцениваются -
+    у них нет данных, а не нарушена причинность. Функция делает эту
+    слепую зону измеримой, чтобы "нарушений нет" нельзя было спутать
+    с "проверено не было".
+    """
+
+    journal = _causal_journal(state)
+    schema_start = _causality_schema_start(journal)
+    creations = [
+        index
+        for index, event in enumerate(journal)
+        if str(event.get("event") or "") == "create_requested"
+    ]
+    return sum(1 for index in creations if index >= schema_start), len(creations)
+
+
+def _causal_journal(state: RunState) -> list[dict[str, Any]]:
+    return sorted(state.lifecycle_journal, key=lambda item: int(item.get("sequence") or 0))
+
+
+def _causality_schema_start(journal: list[dict[str, Any]]) -> int:
+    """Позиция первого события, несущего relay_owner_thread_id.
+
+    _append_event пишет этот ключ всегда - со значением None, если
+    владельца нет. Поэтому полное отсутствие ключа означает запись
+    более старой версией рантайма, а не отсутствие владельца.
+    """
+
+    for index, event in enumerate(journal):
+        if "relay_owner_thread_id" in event:
+            return index
+    return len(journal)
+
+
+def audit_creation_causality(state: RunState) -> list[str]:
+    """Правило R1: задача создаётся пайплайном, а не по команде в чат.
+
+    Проверяется на журнале постфактум: у каждого create_requested,
+    кроме самого первого в прогоне, обязан быть предшествующий
+    turn_completed владельца релея. Создание, у которого такого
+    предшественника нет, означает, что задачу породило что-то другое -
+    например прямое распоряжение пользователя в чате.
+
+    События, записанные до появления relay_owner_thread_id в схеме,
+    пропускаются как неоцениваемые - их объём отдаёт
+    creation_causality_coverage. Но если ключ пропал уже ПОСЛЕ того,
+    как появился, это нарушение: иначе правило обходится тем, что
+    поле перестают писать.
+
+    Возвращает список нарушений; пустой список означает, что цепочка
+    причинности не прерывалась.
+    """
+
+    journal = _causal_journal(state)
+    schema_start = _causality_schema_start(journal)
+    completed_owners: set[str] = set()
+    violations: list[str] = []
+    first_seen = False
+    for index, event in enumerate(journal):
+        name = str(event.get("event") or "")
+        if name == "turn_completed":
+            thread = str(event.get("thread_id") or "")
+            if thread:
+                completed_owners.add(thread)
+            continue
+        if name != "create_requested":
+            continue
+        if not first_seen:
+            # Первая задача прогона не имеет предшественника по определению.
+            first_seen = True
+            continue
+        if index < schema_start:
+            # Старая схема события: владельца в записи нет физически.
+            continue
+        if "relay_owner_thread_id" not in event:
+            violations.append(
+                f"R1: create_requested #{event.get('sequence')} for "
+                f"{event.get('task_id')} dropped relay_owner_thread_id after "
+                "the field was introduced"
+            )
+            continue
+        owner = str(event.get("relay_owner_thread_id") or "")
+        if not owner:
+            violations.append(
+                f"R1: create_requested #{event.get('sequence')} for "
+                f"{event.get('task_id')} has no relay owner"
+            )
+        elif owner not in completed_owners:
+            violations.append(
+                f"R1: create_requested #{event.get('sequence')} for "
+                f"{event.get('task_id')} precedes turn_completed of its owner {owner}"
+            )
+    return violations

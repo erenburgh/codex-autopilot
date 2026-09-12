@@ -36,12 +36,15 @@ IMPLEMENTED = {
     "R9": "thread_titles._role_segment + test_workspace_ux",
     "R17": "test_r17_rules_come_before_specifications_and_are_not_truncatable",
     "R13": "test_r13_escalation_requires_a_reason_from_the_closed_list",
+    "R6": "test_r6_preflight_rejects_a_target_outside_desktop_root_paths",
+    "R1": "test_r1_owner_that_never_completed_is_reported",
+    "R5": "test_r5_project_id_is_never_reported_as_sidebar_placement",
 }
 
 # Правила, проверка которых ещё не написана. Список намеренно явный:
 # пустая строка здесь означала бы, что всё покрыто, а это неправда.
 PENDING = {
-    "R1", "R3", "R4", "R5", "R6", "R7", "R10", "R11", "R12",
+    "R3", "R4", "R7", "R10", "R11", "R12",
     "R14", "R15", "R16", "R18", "R19", "R20", "R22", "R23",
     "R24", "R25", "R26", "R27", "R28", "R29", "R30",
 }
@@ -243,6 +246,169 @@ class EscalationTests(unittest.TestCase):
             after,
             "эскалация выполняется только через escalate_to_user",
         )
+
+
+class ProjectPlacementTests(unittest.TestCase):
+    """R6 и раздел 4a: рассинхрон директорий обнаруживается до воркера."""
+
+    def _global_state(self, roots: list[str]) -> Path:
+        import json
+
+        home = Path(tempfile.mkdtemp(prefix="codex-home-"))
+        (home / ".codex-global-state.json").write_text(
+            json.dumps(
+                {
+                    "local-projects": {
+                        "proj-1": {
+                            "id": "proj-1",
+                            "name": "Test",
+                            "rootPaths": roots,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return home
+
+    def test_r6_preflight_rejects_a_target_outside_desktop_root_paths(self) -> None:
+        from codex_autopilot.project_association import (
+            ProjectAssociationError,
+            require_desktop_project_root,
+        )
+
+        target = Path(tempfile.mkdtemp(prefix="codex-target-"))
+        other = Path(tempfile.mkdtemp(prefix="codex-other-"))
+        home = self._global_state([str(other)])
+
+        with self.assertRaises(ProjectAssociationError) as caught:
+            require_desktop_project_root(home, "proj-1", target)
+        message = str(caught.exception)
+        # Сообщение обязано называть ОБА пути: иначе диагноз бесполезен.
+        self.assertIn(str(target.resolve()), message)
+        self.assertIn(str(other.resolve()), message)
+
+    def test_r6_accepts_a_target_inside_the_declared_roots(self) -> None:
+        from codex_autopilot.project_association import require_desktop_project_root
+
+        root = Path(tempfile.mkdtemp(prefix="codex-root-"))
+        nested = root / "work" / "project"
+        nested.mkdir(parents=True)
+        home = self._global_state([str(root)])
+        roots = require_desktop_project_root(home, "proj-1", nested)
+        self.assertEqual(roots, (root.resolve(),))
+
+    def test_r6_is_reachable_from_the_production_preflight(self) -> None:
+        """R19: существования функции недостаточно, нужен путь вызова."""
+        source = (SRC / "preflight.py").read_text(encoding="utf-8")
+        self.assertIn("require_desktop_project_root(", source)
+        self.assertIn("PreflightError", source)
+        # Отказ обязан наступать ДО создания задачи.
+        checked = source.index("require_desktop_project_root(")
+        created = source.index("start_thread(")
+        self.assertLess(
+            checked, created, "сверка rootPaths обязана предшествовать созданию треда"
+        )
+
+
+class CausalCreationTests(unittest.TestCase):
+    """R1 на журнале: создание обязано следовать за завершением владельца."""
+
+    def _state(self, journal: list[dict]):
+        from codex_autopilot.run_state import RunState
+
+        state = RunState(run_id="r1")
+        state.lifecycle_journal = journal
+        return state
+
+    def _audit(self, journal: list[dict]) -> list[str]:
+        from codex_autopilot.lifecycle import audit_creation_causality
+
+        return audit_creation_causality(self._state(journal))
+
+    def test_r1_chain_with_a_completed_owner_is_clean(self) -> None:
+        journal = [
+            {"sequence": 1, "event": "create_requested", "task_id": "A", "relay_owner_thread_id": None},
+            {"sequence": 2, "event": "turn_completed", "thread_id": "thread-a"},
+            {"sequence": 3, "event": "create_requested", "task_id": "B", "relay_owner_thread_id": "thread-a"},
+        ]
+        self.assertEqual(self._audit(journal), [])
+
+    def test_r1_owner_that_never_completed_is_reported(self) -> None:
+        """Форма настоящего дефекта: владелец назвался, но ничего не выполнил.
+
+        Так была создана M9 в живом прогоне - владельцем записан поток,
+        который не встречается в журнале ни одним собственным событием.
+        """
+
+        journal = [
+            {"sequence": 1, "event": "create_requested", "task_id": "A", "relay_owner_thread_id": None},
+            {"sequence": 2, "event": "turn_completed", "thread_id": "thread-a"},
+            {"sequence": 3, "event": "create_requested", "task_id": "B", "relay_owner_thread_id": "outsider"},
+        ]
+        violations = self._audit(journal)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("R1", violations[0])
+        self.assertIn("outsider", violations[0])
+
+    def test_r1_creation_with_an_empty_owner_is_reported(self) -> None:
+        journal = [
+            {"sequence": 1, "event": "create_requested", "task_id": "A", "relay_owner_thread_id": None},
+            {"sequence": 2, "event": "create_requested", "task_id": "B", "relay_owner_thread_id": None},
+        ]
+        violations = self._audit(journal)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("no relay owner", violations[0])
+
+    def test_r1_events_predating_the_field_are_not_assessed(self) -> None:
+        """Записи старого рантайма не несут поля вообще - это не нарушение.
+
+        _append_event пишет ключ всегда, поэтому его отсутствие означает
+        другую версию схемы, а не отсутствие владельца.
+        """
+
+        from codex_autopilot.lifecycle import creation_causality_coverage
+
+        journal = [
+            {"sequence": 1, "event": "create_requested", "task_id": "A"},
+            {"sequence": 2, "event": "create_requested", "task_id": "B"},
+            {"sequence": 3, "event": "turn_completed", "thread_id": "thread-c"},
+            {"sequence": 4, "event": "create_requested", "task_id": "C", "relay_owner_thread_id": "thread-c"},
+        ]
+        self.assertEqual(self._audit(journal), [])
+        assessed, total = creation_causality_coverage(self._state(journal))
+        self.assertEqual((assessed, total), (1, 3))
+
+    def test_r1_dropping_the_field_after_it_appeared_is_a_violation(self) -> None:
+        """Иначе правило обходится тем, что поле перестают писать."""
+
+        journal = [
+            {"sequence": 1, "event": "create_requested", "task_id": "A", "relay_owner_thread_id": None},
+            {"sequence": 2, "event": "turn_completed", "thread_id": "thread-a"},
+            {"sequence": 3, "event": "create_requested", "task_id": "B"},
+        ]
+        violations = self._audit(journal)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("dropped relay_owner_thread_id", violations[0])
+
+
+class PlacementHonestyTests(unittest.TestCase):
+    def test_r5_project_id_is_never_reported_as_sidebar_placement(self) -> None:
+        """R5: "projectId проставлен" и "задача видна в проекте" - разное.
+
+        Выдача первого за второе и была причиной того, что событие
+        app_server_project_scoped_create писалось честно, а задача
+        в сайдбаре не появлялась.
+        """
+        source = (SRC / "lifecycle_dispatch.py").read_text(encoding="utf-8")
+        self.assertIn("require separate verification", source)
+        claim = source.split("project_association_verification", 1)[1][:600]
+        self.assertNotIn("sidebar placement verified", claim)
+        self.assertNotIn("visible in project", claim)
+
+    def test_r5_status_separates_the_two_namespaces(self) -> None:
+        source = (SRC / "status.py").read_text(encoding="utf-8")
+        self.assertIn("separate namespace", source)
 
 
 if __name__ == "__main__":
