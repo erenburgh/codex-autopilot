@@ -1083,7 +1083,7 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 relay_owner_turn_id=str(payload.get("turn_id") or ""),
             )
             if continuation:
-                return {"continue": True, "systemMessage": continuation}
+                return continuation
             try:
                 recovered = recover_desktop_frontier_from_predecessor_stop(
                     cfg,
@@ -1352,10 +1352,10 @@ def _desktop_relay_continuation(
     relay_owner_thread_id: str,
     relay_owner_turn_id: str,
 ) -> str:
-    """Start any already-reserved automatic relay; hook text is informational."""
+    """Поднять уже зарезервированный релей и отчитаться лентой."""
 
     if not relay_owner_thread_id or not relay_owner_turn_id:
-        return ""
+        return {}
     descriptors = relayable_descriptors(
         cfg,
         relay_owner_thread_id=relay_owner_thread_id,
@@ -1367,15 +1367,23 @@ def _desktop_relay_continuation(
         in {"CREATE_REQUESTED", "PREPARED"}
     )
     if not launchable:
-        return ""
+        return {}
     pids = _spawn_automatic_descriptors(
         cfg,
         launchable,
         triggering_thread_id=relay_owner_thread_id,
         triggering_turn_id=relay_owner_turn_id,
     )
-    return "Codex Autopilot automatic dispatcher started: " + ", ".join(
-        str(pid) for pid in pids
+    # Отчёт лентой, как на всех остальных путях запуска: голое "диспетчер
+    # запущен, pid такой-то" - это заявление, а не наблюдение.
+    return _launch_report(
+        cfg,
+        [item.task_id for item in launchable],
+        started=(
+            "Codex Autopilot automatic dispatcher started: "
+            + ", ".join(str(pid) for pid in pids)
+        ),
+        timeout=15.0,
     )
 
 
