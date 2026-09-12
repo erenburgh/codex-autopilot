@@ -1108,14 +1108,65 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     return {"continue": True, "systemMessage": f"Codex Autopilot dispatcher started (pid {pid}, {phase}). Worker 1 waits for this turn to complete."}
 
 
+# Название продукта, записанное так, как его реально произносят. Диктовка
+# по-русски неизбежно даёт кириллицу: управляющая фраза не должна зависеть
+# от того, переключил ли говорящий раскладку в середине предложения.
+PRODUCT_ALIASES = ("codex autopilot", "кодекс автопайлот", "кодекс автопилот")
+
+# Знаки, которые речь и диктовка добавляют, не меняя смысла команды.
+_STRIPPED_PUNCTUATION = ",.!?;:"
+
+
+# Вводные слова, которые речь добавляет в начало, не меняя команды.
+# Список намеренно короткий: сопоставление остаётся точным, иначе хук
+# начнёт перехватывать обычные просьбы пользователя.
+_LEADING_FILLERS = frozenset({"просто", "давай", "давайте", "пожалуйста", "just", "please"})
+
+
 def _normalized_prompt(value: str) -> str:
-    return " ".join(value.strip().lower().rstrip(".!?").split())
+    text = value.strip().lower()
+    for mark in _STRIPPED_PUNCTUATION:
+        text = text.replace(mark, " ")
+    words = text.split()
+    while words and words[0] in _LEADING_FILLERS:
+        words.pop(0)
+    return " ".join(words)
 
 
-PAUSE_PROMPTS = {"pause codex autopilot", "stop codex autopilot", "приостанови codex autopilot", "останови codex autopilot"}
-RESUME_PROMPTS = {"resume codex autopilot", "continue codex autopilot", "возобнови codex autopilot", "продолжи codex autopilot"}
-STATUS_PROMPTS = {"codex autopilot status", "what is codex autopilot doing right now", "что сейчас делает codex autopilot", "статус codex autopilot"}
-UNINSTALL_PROMPTS = {"uninstall codex autopilot", "remove codex autopilot", "удали codex autopilot"}
+def _phrases(*templates: str) -> set[str]:
+    """Развернуть шаблоны по всем написаниям названия продукта."""
+
+    return {
+        template.format(product=product)
+        for template in templates
+        for product in PRODUCT_ALIASES
+    }
+
+
+PAUSE_PROMPTS = _phrases(
+    "pause {product}",
+    "stop {product}",
+    "приостанови {product}",
+    "останови {product}",
+)
+RESUME_PROMPTS = _phrases(
+    "resume {product}",
+    "continue {product}",
+    "возобнови {product}",
+    "продолжи {product}",
+    "продолжить {product}",
+)
+STATUS_PROMPTS = _phrases(
+    "{product} status",
+    "what is {product} doing right now",
+    "что сейчас делает {product}",
+    "статус {product}",
+)
+UNINSTALL_PROMPTS = _phrases(
+    "uninstall {product}",
+    "remove {product}",
+    "удали {product}",
+)
 
 
 def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
