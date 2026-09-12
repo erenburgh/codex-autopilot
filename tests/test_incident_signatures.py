@@ -282,6 +282,65 @@ class TwoLevelRecoveryTests(StoreTestCase):
         self.assertLessEqual(second, incident["retry_maximum_seconds"])
 
 
+class KnownRecoveryTests(TwoLevelRecoveryTests):
+    """Уровень 1 одним заходом: слот не удерживается между вызовами."""
+
+    def test_known_failure_is_recovered_without_an_engineer(self) -> None:
+        incident = self.promoted_incident()
+        phase = self.store.attempt_known_recovery(
+            incident["incident_id"], at="t10", owner_id="dispatcher"
+        )
+        self.assertEqual(phase, IncidentPhase.RECOVERED)
+        self.assertIsNone(self.store.load()["recovery_slot"])
+        events = [item["event"] for item in self.store.load()["journal"]]
+        self.assertIn("auto_recovery_succeeded", events)
+
+    def test_an_ambiguous_side_effect_is_never_retried_blindly(self) -> None:
+        from dataclasses import replace
+
+        self.promoted_incident()
+        ambiguous = self.store.open_incident(
+            replace(
+                signal("ambiguous"), side_effect_outcome=SideEffectOutcome.UNKNOWN
+            ),
+            at="t20",
+        )
+        # Неоднозначный побочный эффект - отдельный класс, не инфраструктура.
+        self.assertEqual(
+            self.store.route_incident(ambiguous["incident_id"], at="t21"),
+            IncidentPhase.ESCALATE_TO_USER,
+        )
+
+    def test_the_slot_is_released_on_a_failed_attempt_too(self) -> None:
+        """Инвариант: слот не остаётся занятым ни при каком исходе."""
+
+        incident = self.promoted_incident()
+        started = self.store.begin_auto_recovery(
+            incident["incident_id"], at="t10", owner_id="dispatcher"
+        )
+        self.assertEqual(
+            self.store.load()["recovery_slot"]["incident_id"], incident["incident_id"]
+        )
+        self.store.complete_auto_recovery(
+            incident["incident_id"],
+            token=started["recovery_lock_token"],
+            success=False,
+            at="t11",
+        )
+        self.assertIsNone(self.store.load()["recovery_slot"])
+
+    def test_a_second_incident_cannot_take_a_held_slot(self) -> None:
+        first = self.promoted_incident()
+        self.store.begin_auto_recovery(
+            first["incident_id"], at="t10", owner_id="dispatcher"
+        )
+        second = self.store.open_incident(signal("another"), at="t11")
+        with self.assertRaises(PipelineIncidentError):
+            self.store.begin_auto_recovery(
+                second["incident_id"], at="t12", owner_id="dispatcher"
+            )
+
+
 class PromotionSafetyTests(StoreTestCase):
     def resolve_with(self, actions: list[str], *, times: int) -> None:
         for _ in range(times):

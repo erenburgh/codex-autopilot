@@ -490,6 +490,65 @@ class PipelineIncidentStore:
             _append_event(state, event, at, incident=incident)
             return IncidentPhase(str(incident["phase"]))
 
+    def attempt_known_recovery(
+        self,
+        incident_id: str,
+        *,
+        at: str,
+        owner_id: str,
+    ) -> IncidentPhase:
+        """Уровень 1 целиком, в один заход: занять слот и отпустить его.
+
+        Известная поломка не должна поднимать сессию модели. Проверка
+        здесь детерминированная и опирается только на запись инцидента:
+
+        - неоднозначный побочный эффект повторять нельзя вслепую (то же
+          основание, по которому classify_incident выделяет его в
+          отдельный класс);
+        - непрофильный класс инцидента - не работа инженера пайплайна.
+
+        Если условия держатся, инцидент помечается восстановленным и
+        обычный ограниченный повтор идёт своим ходом.
+
+        Ветка отказа - защита, а не рабочий путь: через маршрутизацию
+        сюда не попадает ни неоднозначный побочный эффект (он уходит к
+        пользователю), ни непрофильный класс (раннбук для него не
+        выучивается). Проверка оставлена на случай, если будущая правка
+        откроет такой путь: вслепую повторять операцию с неизвестным
+        побочным эффектом - это ровно то, как в живом прогоне появились
+        лишние ветки.
+
+        Слот не удерживается между вызовами: застрявший в AUTO_RECOVERY
+        инцидент заблокировал бы восстановление всем остальным.
+        """
+
+        incident = self.begin_auto_recovery(incident_id, at=at, owner_id=owner_id)
+        token = str(incident["recovery_lock_token"])
+        side_effect = SideEffectOutcome(str(incident["side_effect_outcome"]))
+        classification = IncidentClass(str(incident["classification"]))
+        safe = (
+            side_effect is not SideEffectOutcome.UNKNOWN
+            and classification in INFRASTRUCTURE_INCIDENT_CLASSES
+        )
+        check = _expected_healthcheck(incident) or "known_recovery_preconditions"
+        return self.complete_auto_recovery(
+            incident_id,
+            token=token,
+            success=safe,
+            at=at,
+            healthcheck=HealthcheckResult(
+                name=check,
+                passed=True,
+                checks=(
+                    f"side_effect_outcome={side_effect.value}",
+                    f"classification={classification.value}",
+                ),
+                observed_at=at,
+            )
+            if safe
+            else None,
+        )
+
     def signature_ledger(self) -> dict[str, Any]:
         """Реестр подписей: сколько раз что ломалось и чем чинилось."""
 

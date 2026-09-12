@@ -37,6 +37,7 @@ from .memory import ProjectMemory
 from .models import MODEL_IDS, ModelRoutingError, logical_model
 from .pipeline_engineer import (
     IncidentClass,
+    IncidentPhase,
     IncidentSignal,
     PipelineIncidentStore,
     SideEffectOutcome,
@@ -656,8 +657,15 @@ def _record_app_server_create_failure(
         return incident_store.ensure_pipeline_engineer(
             str(incident["incident_id"]), at=timestamp
         )
-    incident_store.route_incident(str(incident["incident_id"]), at=timestamp)
-    return incident_store.incident_package(str(incident["incident_id"]))
+    incident_id = str(incident["incident_id"])
+    phase = incident_store.route_incident(incident_id, at=timestamp)
+    if phase is IncidentPhase.DEGRADED:
+        # Уровень 1: поломка уже известна, способ выучен - сессия модели
+        # не поднимается. Уровень 2 включается только если здесь не вышло.
+        incident_store.attempt_known_recovery(
+            incident_id, at=timestamp, owner_id=reservation_token
+        )
+    return incident_store.incident_package(incident_id)
 
 def _record_created_app_server_ambiguity(
     cfg: Config,
