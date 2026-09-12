@@ -42,6 +42,7 @@ IMPLEMENTED = {
     "R7": "test_declared_scope.py::test_change_outside_the_declared_area_is_recorded_on_completion",
     "R16": "test_declared_scope.py::test_r16_report_without_applied_rules_is_recorded",
     "R18": "test_rule_contract_and_external_input.py::ExternalInputTests",
+    "R31": "test_early_gate.py::EarlyMilestoneLinkTests",
 }
 
 # Правила, проверка которых ещё не написана. Список намеренно явный:

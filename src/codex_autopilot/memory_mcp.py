@@ -411,7 +411,49 @@ class MemoryMcpServer:
 
     def _record_evidence(self, args: dict[str, Any]) -> dict[str, Any]:
         allowed = {"kind", "summary", "milestone_id", "role", "path", "line_start", "line_end", "command", "result", "exit_code", "tool_name", "artifact_path", "user_instruction", "environment_probe", "created_by", "provider", "provider_thread_id"}
-        return self.memory.record_evidence(**self._validate_keys(args, allowed))
+        args = self._validate_keys(args, allowed)
+        self._require_active_milestone_link(args)
+        return self.memory.record_evidence(**args)
+
+    def _require_active_milestone_link(self, args: dict[str, Any]) -> None:
+        """Пока веха в работе, свидетельство обязано её называть.
+
+        Ворота завершения спрашивают свидетельства, связанные с вехой.
+        Запись без milestone_id принималась молча, и отказ наступал уже
+        после того, как весь ход потрачен.
+
+        Замерено: воркер M2 записал четыре свидетельства, положив
+        идентификатор вехи в created_by ("M2-FILE-EXISTS") вместо
+        milestone_id. В milestone_evidence не легло ничего, завершение
+        отклонили, ход пропал целиком.
+
+        Веха не подставляется за воркера: привязка, которую он не назвал,
+        была бы выдуманной. Вызов отклоняется с именем активной вехи,
+        чтобы он повторил его сам.
+        """
+
+        if str(args.get("milestone_id") or "").strip():
+            return
+        active = self._active_task_ids()
+        if not active:
+            return
+        raise MemoryValidationError(
+            "milestone_id is required while a milestone is active: "
+            + ", ".join(active)
+            + ". Completion evidence must name its milestone; created_by is "
+            "the author, not the milestone."
+        )
+
+    def _active_task_ids(self) -> tuple[str, ...]:
+        state_path = self.root / STATE_DIR_NAME / "run-state.json"
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ()
+        active = payload.get("active_task_ids")
+        if not isinstance(active, list):
+            return ()
+        return tuple(str(item) for item in active if str(item).strip())
 
     def _record_verified_fact(self, args: dict[str, Any]) -> dict[str, Any]:
         allowed = {"statement", "evidence_ids", "verification_method", "created_by", "scope", "contradicts", "provider", "provider_thread_id"}

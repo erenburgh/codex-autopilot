@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -257,11 +258,20 @@ def _run_automatic_relay_dispatch(
 ) -> int:
     """Run the v0.7-style local loop with one App Server process per task."""
 
+    # Цикл переходит от задачи к задаче, переприсваивая свой token. Снаружи
+    # оставался исходный, и отказ на поздней задаче приписывался первой:
+    # замерено, тикет incident-78e67b38680498f1 по отказу M2 назвал M1, а
+    # лестница "на отказе" напечатала шаги уже завершённой M1. Инженера
+    # послали бы чинить проверенную веху. Курсор общий: он всегда указывает
+    # на задачу, которую цикл ведёт сейчас.
+    cursor = _RelayCursor(token)
     try:
-        return _automatic_relay_loop(cfg, token=token, owner=owner, owner_turn=owner_turn)
+        return _automatic_relay_loop(
+            cfg, token=token, owner=owner, owner_turn=owner_turn, cursor=cursor
+        )
     except BaseException as error:
-        _print_relay_timeline(cfg, token, "на отказе")
-        _record_detached_dispatch_failure(cfg, token, error)
+        _print_relay_timeline(cfg, cursor.token, "на отказе")
+        _record_detached_dispatch_failure(cfg, cursor.token, error)
         raise
 
 
@@ -294,14 +304,24 @@ def _print_relay_timeline(cfg, token: str, headline: str) -> None:
         print(f"codex-autopilot: лента недоступна: {error}", flush=True)
 
 
+@dataclass
+class _RelayCursor:
+    """Задача, которую цикл ведёт прямо сейчас."""
+
+    token: str
+
+
 def _automatic_relay_loop(
     cfg,
     *,
     token: str,
     owner: str,
     owner_turn: str,
+    cursor: "_RelayCursor | None" = None,
 ) -> int:
+    cursor = cursor or _RelayCursor(token)
     while True:
+        cursor.token = token
         _print_relay_timeline(cfg, token, "перед запуском задачи")
         dispatcher_log = (
             cfg.state_dir / "logs" / f"app-server-dispatcher-{token}.jsonl"
