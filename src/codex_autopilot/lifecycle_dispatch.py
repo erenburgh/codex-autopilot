@@ -410,6 +410,27 @@ def create_desktop_thread_via_app_server(
         "app_server_process_exited_at": timestamp if owns_client else None,
     }
 
+def _creator_process_is_gone(session: Mapping[str, Any]) -> bool:
+    """Процесс, создавший ветку, больше не существует.
+
+    Отметку о своём выходе он ставит сам, штатно завершаясь. Если он упал -
+    например, на отказе гейта размещения, - отметки нет, и следующий
+    диспетчер не может взять ход: сессия остаётся неподъёмной навсегда.
+
+    Барьер защищает ровно от одного: от второго писателя в ту же ветку.
+    Мёртвый pid это доказывает.
+    """
+
+    from .control import pid_alive
+
+    pid = session.get("automatic_dispatch_connection_pid")
+    if pid is None:
+        pid = session.get("automatic_dispatch_pid")
+    if not isinstance(pid, int):
+        return False
+    return not pid_alive(pid)
+
+
 def _require_thread_placement(
     cfg: Config,
     reservation_token: str,
@@ -858,10 +879,30 @@ def claim_automatic_app_server_turn(
             _dispatcher_owns_reservation(session, dispatcher_pid=dispatcher_pid)
             and session.get("automatic_dispatch_connection_pid") == dispatcher_pid
         )
-        if not session.get("app_server_create_exited_at") and not retained_connection:
+        creator_gone = _creator_process_is_gone(session)
+        if (
+            not session.get("app_server_create_exited_at")
+            and not retained_connection
+            and not creator_gone
+        ):
             raise DesktopLifecycleError(
                 "automatic production requires either the v0.7 dispatcher connection "
                 "or the legacy creator process exit barrier"
+            )
+        if creator_gone and not session.get("app_server_create_exited_at"):
+            # Барьер существует ради одного: доказать, что создатель больше
+            # не пишет в эту ветку. Мёртвый процесс это доказывает не хуже
+            # штатной отметки, которую он не успел поставить, упав.
+            session["app_server_create_exited_at"] = utc_now()
+            _append_event(
+                state,
+                "app_server_create_exit_inferred",
+                session,
+                session["app_server_create_exited_at"],
+                detail=(
+                    "creator pid "
+                    f"{session.get('automatic_dispatch_connection_pid')} is gone"
+                ),
             )
         session["status"] = "SEND_RELAYING"
         timestamp = utc_now()
