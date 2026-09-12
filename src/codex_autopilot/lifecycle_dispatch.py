@@ -138,6 +138,7 @@ from .lifecycle_base import (
 )
 from .lifecycle_failures import (
     _record_app_server_create_failure,
+    _record_app_server_project_assignment,
     _record_created_app_server_ambiguity,
     record_desktop_failure,
 )
@@ -298,6 +299,23 @@ def create_desktop_thread_via_app_server(
             if cfg.desktop.project_id and actual_project_id != cfg.desktop.project_id:
                 raise DesktopLifecycleError(
                     "App Server did not preserve the configured project association"
+                )
+            if cfg.desktop.project_id:
+                # Явная привязка ветки к сохранённому проекту после создания.
+                # Такой шаг уже выполнялся в живом прогоне 11.09 (событие
+                # app_server_project_assigned), но кода, который его делал, не
+                # осталось ни в одном коммите и ни в одной установленной
+                # версии - работа была потеряна. Создание с projectId и
+                # явная привязка - разные вызовы, и второй пропал.
+                assigned = client.assign_thread_to_project(
+                    thread_id, cfg.desktop.project_id
+                )
+                _record_app_server_project_assignment(
+                    cfg,
+                    reservation_token,
+                    thread_id=thread_id,
+                    project_id=str(assigned.get("projectId") or ""),
+                    at=at,
                 )
         if owns_client and (client is None or not _client_process_exited(client)):
             raise DesktopLifecycleError(

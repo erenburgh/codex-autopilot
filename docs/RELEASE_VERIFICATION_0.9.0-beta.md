@@ -343,3 +343,179 @@ M10 changed documentation and tests only:
 
 No runtime implementation, commit, tag, push, publish, reset, clean, automatic
 approval, or production App Server action was performed by this audit.
+
+## 10. Repair branch re-audit — 2026-09-12
+
+### 10.1 Verdict and audited snapshot
+
+**REVISE — the repair branch is not release-ready.**
+
+This pass independently rechecked the repair claims against production source
+and named tests. Commit messages, the preceding sections of this report, and
+worker statements were not used as proof.
+
+- Branch at entry: `repair/m10-p0`.
+- HEAD at entry: `3dc21b1`; the worktree was clean.
+- While this audit was in progress, an external process advanced the same
+  branch to `42aaa80`. Those changes were preserved and inspected rather than
+  reverted. The final source/test verdict and full suite below are bound to
+  `42aaa80`.
+- Declared versions still remain `0.8.0b0`, `0.8.0-beta`, and
+  `0.8.0-beta+codex.20260911012326` in `pyproject.toml`, the package, and the
+  adaptive plugin manifest respectively.
+
+The full deterministic suite passes, but several claimed rule checks either
+do not run on every production path or accept the state only after a worker
+could already have produced side effects. In accordance with R29, green tests
+are admission to this independent judgment, not a substitute for it.
+
+### 10.2 Repair-item disposition
+
+| Earlier item | Disposition | Actual source and named-test evidence |
+| --- | --- | --- |
+| `M10-REV-001` | **CLOSED BY CONTRACT CHANGE, not by the formerly requested implementation** | R29 now explicitly forbids verifier-free promotion even after exhaustive deterministic checks. `V09ContractRegressionTests.test_deterministic_policy_still_requires_the_verifier` confirms that the current lifecycle still requires a verifier. The earlier finding is retained here rather than silently erased. |
+| `M10-REV-002` | **CLOSED (deterministic); live title readback NOT TESTED** | `thread_titles.task_phase_thread_title()` and `replanner_thread_title()` produce the required implementation, verifier, revision, planner, and replanner forms. `_build_descriptor()` uses them in the production reservation path; `create_desktop_thread_via_app_server()` writes the name and rejects a different `thread/read` name. Named tests: `V09ContractRegressionTests.test_thread_titles_match_the_required_human_readable_shapes`, `ThreadTitleTests.test_exact_phase_titles_are_human_readable_and_stable`, and `DesktopLifecycleTests.test_dispatcher_preserves_app_server_project_metadata_before_turn`. |
+| `M10-REV-003` | **CLOSED (deterministic); live Desktop association NOT TESTED** | `resolve_preflight_project()` has no initiating-project fallback: it accepts an explicit target-containing project, chooses the unique longest target-root match, or returns no project and keeps canonical cwd/Recents. Named tests: `V09ContractRegressionTests.test_unrelated_initiating_project_is_not_a_target_fallback`, `PreflightTests.test_initiating_project_is_never_a_placement_fallback`, and `PreflightTests.test_target_longest_root_project_is_sent_and_verified_with_canonical_cwd`. |
+| `M10-REV-004` | **PARTIAL — OPEN** | Schema-3 defaults are now `execution_strategy="auto"` and `max_parallel_workers=2`, and the `start-skill` CLI defaults to `desktop_owned`; named tests `test_auto_is_the_default_product_execution_strategy` and `test_start_skill_defaults_to_the_desktop_owned_v09_runtime` pass. However, the required product entry point, `plugins/codex-autopilot-adaptive/skills/codex-autopilot-adaptive/SKILL.md`, still instructs the planner to write `execution_strategy:"serial"` and `max_parallel_workers:1`. A normal skill-created run therefore bypasses the repaired code defaults. |
+| `M10-REV-005` | **CLOSED (deterministic)** | `task_checkpoint_path()` isolates `.codex-autopilot/handoff/<task-id>.md`; every reservation captures that task's own hash and completion rejects an unchanged task checkpoint. Named regression: `DesktopLifecycleTests.test_parallel_workers_cannot_satisfy_each_others_checkpoint`. |
+| `M10-REV-006` | **PARTIAL — OPEN** | `fence_superseded_sessions()` marks the old same-task session `RETIRED_SUPERSEDED`, and authoritative completion from it fails. Named regression: `DesktopLifecycleTests.test_superseded_desktop_task_fails_closed_beside_its_replacement`. The test does not exercise its stated precondition: it calls completion directly after the hypothetical input. The installed `UserPromptSubmit` hook calls `handle_prompt_hook()`, which immediately returns `{}` for every ordinary prompt before looking up the session. A retired, still-addressable thread can therefore execute and mutate the shared tree; only its eventual completion is rejected. This does not satisfy the pre-side-effect fence required by R24. |
+| `M10-REV-007` | **NOT TESTED** | No live App Server/Desktop run was authorized by this code-only M10 contract. Therefore parallel Sol, Sol+Astra overlap, real Computer Use serialization, live verifier/revision/unlock, actual project/sidebar placement, and actual title readback remain unobserved. Fakes and unit tests are not relabelled as live evidence. |
+| `M10-REV-008` | **NOT TESTED** | Release packaging/install was deliberately not run because its live acceptance prerequisite (`REV-007`) has no evidence and P0 issues remain. The source still declares v0.8, so producing or accepting a v0.9 ZIP/SHA-256 would be premature. No release artifact, tag, push, or publish was performed. |
+
+### 10.3 Claimed rule-enforcement audit
+
+| Rule | Result | Production reachability and named test |
+| --- | --- | --- |
+| R1 | **PARTIAL — OPEN** | The reservation/retry path carries and validates the causal relay owner; `test_worker_completion_binds_new_frontier_to_that_worker_thread`, `test_nonnull_foreign_retry_owner_without_causal_worker_fails_closed`, and `test_first_legacy_task_retry_preserves_its_bound_initiator_owner` pass. But `audit_creation_causality()` and `creation_causality_coverage()` are only exported and called by tests; no production status, preflight, completion, or recovery path invokes them. The advertised machine audit is dead code under R19. |
+| R5 | **PARTIAL — OPEN** | `launch_checklist()` now reads Desktop state, and `DesktopVisibilityTests.test_a_thread_missing_from_desktop_records_is_reported` passes. It searches only for a thread ID anywhere in the Desktop maps, not for association with the canonical target project, and never tests editability. `test_invisibility_is_reported_but_never_becomes_a_ticket` explicitly keeps a known-invisible task at `IN_PROGRESS`; after `_launch_report()`'s single bounded wait this yields `continue` and no infrastructure ticket. `CREATED_EVENTS` also permits plain `app_server_thread_created` while the check is labelled `created_in_project`. The rule is observable but not enforced. |
+| R6 | **PARTIAL — OPEN** | Canonical cwd, App Server `projectId`, Desktop `rootPaths`, and post-create metadata mismatches are checked by production preflight/dispatch; `test_r6_is_reachable_from_the_production_preflight` and `test_thread_start_project_metadata_mismatch_fails_closed` pass. However, `AppServerClient.ensure_project_root()` silently calls `project/update` when the root is absent, and `AppServerClientTests.test_project_root_is_added_before_project_scoped_thread_start` requires that mutation. No recorded Project Memory Decision is consulted. This is automatic reconciliation of a detected mismatch, contrary to R6 and R22. |
+| R7 | **PARTIAL — OPEN** | `_audit_task_scope()` runs on authoritative completion and named tests `test_change_outside_the_declared_area_is_recorded_on_completion` and `test_change_inside_the_declared_area_is_clean` pass. There is no task time/attempt/token budget in the plan schema or completion gate. In the shared tree, `observe_changed_paths()` returns all changes since the common HEAD plus all untracked files, so two disjoint parallel writers each see the other's paths; `M10-CHECK-R7-PARALLEL-ATTRIBUTION` reproduced mutual false violations through the production audit function. |
+| R13 | **PARTIAL — OPEN** | Pipeline incidents use the closed `EscalationReason` enum; `test_r13_escalation_requires_a_reason_from_the_closed_list` and `test_r13_no_direct_phase_assignment_bypasses_the_reason_code` pass. The authoritative worker protocol independently accepts bare `AUTOPILOT_STATUS: BLOCKED` or `ESCALATE`; completion moves the task to `BLOCKED` with free text and no reason code. Headless `CoreTests.test_escalate_at_max_blocks` exercises that bypass. The restriction is not unified across production escalation paths. |
+| R16 | **PARTIAL — OPEN** | Standard implementation/revision prompts request `AUTOPILOT_RULES`, and completion records missing or unknown IDs; the `test_r16_report_*` tests pass. The same completion audit also runs for verifier sessions, but the verifier prompt requests only `AUTOPILOT_VERIFICATION` and never requests `AUTOPILOT_RULES`, so a conforming verifier necessarily records an R16 violation. `test_every_prompt_variant_asks_for_the_list` misses this because it selects only prompts containing `AUTOPILOT_STATUS`. Replanner and Pipeline Engineer prompts also omit the structured rule block and applied-rule report, and no machine Conflict path implements the final sentence of R16. |
+| R17 | **PARTIAL — OPEN** | The standard `AIStudioRuntime` envelope places structured rules before task/DoD/context and fails if the full prompt exceeds its bound; `test_r17_rules_block_precedes_task_contract_in_the_worker_prompt` and `test_r17_rules_come_before_specifications_and_are_not_truncatable` pass. The production `_replanner_prompt()` starts with phase/request/current plan and contains no rules, while `build_pipeline_engineer_prompt()` also has no rules block. The ordering contract is not applied to every specialist phase. |
+| R18 | **PARTIAL — OPEN** | External evidence cannot directly create verified Truth or start a non-user decision as accepted; `ExternalInputTests.test_external_evidence_cannot_support_truth` and `test_decision_resting_on_external_content_cannot_start_accepted` pass. `set_decision_status()` does not recheck origin/evidence, so an external-backed proposed decision can immediately become accepted; `add_constraint()` likewise creates an active external-backed constraint. `M10-CHECK-R18-TRUST-TRANSITIONS` reproduced both results (`decision_status=accepted`, `constraint_status=active`). External evidence also does not require provider/source provenance. |
+| R21 | **CLOSED (deterministic)** | The complete suite passed with `CODEX_THREAD_ID`, `CODEX_TURN_ID`, and `CODEX_SESSION_ID` removed. `CleanEnvironmentTests.test_no_test_module_reads_session_scoped_environment`, `test_frontier_reservation_is_imported_through_the_explicit_helper`, and `test_production_environment_reads_stay_declared` constrain the remaining declared production reads. |
+
+R29 and R30 are now declared `ENFORCED`, but the repository's own
+`tests/test_rules_contract.py` still lists both in `PENDING`. R29's current
+no-verifier-free-acceptance behavior is covered elsewhere, as noted above.
+R30 has no department field, versioned department rubric in Project Memory, or
+fresh lead-derived verifier selection. Its required acceptance-title form also
+conflicts with the original v0.9 verifier-title form implemented for
+`REV-002`; this contract conflict must be recorded/resolved rather than guessed
+by an implementation worker.
+
+### 10.4 Incident signatures and two-level recovery
+
+**Normalized incident signatures: CLOSED (deterministic).**
+`incident_signature()` derives identity from version, code, normalized surface,
+operation, and side-effect outcome rather than task/signal IDs or prose. Named
+tests `test_the_same_failure_under_different_signal_ids_shares_a_signature`,
+`test_the_same_failure_on_another_task_shares_a_signature`,
+`test_free_text_never_changes_the_signature`, and
+`test_recurrence_is_counted_under_one_signature` cover the actual store path.
+
+**Two-level recovery: PARTIAL — OPEN.** The journal/state transitions, retry
+budget, one recovery slot, repeated-fix promotion, and Pipeline Engineer phase
+exist, and `test_a_repeated_fix_becomes_a_runbook_and_skips_the_engineer` plus
+`test_exhausted_budget_hands_over_to_the_engineer` pass. But
+`attempt_known_recovery()` executes no runbook action and runs no system probe:
+it derives `safe` only from stored classification/side-effect metadata, then
+constructs a passing `HealthcheckResult` from those same fields and marks the
+incident `RECOVERED`. `test_known_failure_is_recovered_without_an_engineer`
+asserts that state transition without asserting a repair side effect. Learned
+`actions` have no deterministic executor on this path. This is a simulated
+recovery, not evidence-backed level 1, and violates R22.
+
+### 10.5 Deterministic commands and adversarial probes
+
+Clean-environment full suite at final audited HEAD `42aaa80`:
+
+```text
+env -u CODEX_THREAD_ID -u CODEX_TURN_ID -u CODEX_SESSION_ID \
+  PYTHONPATH=src python3 -m unittest discover -s tests
+
+Ran 379 tests in 7.703s
+OK (skipped=4)
+```
+
+The four skips are the explicitly decorated legacy App Server slot-reuse
+regressions in `tests/test_core.py`; they are not newly hidden failures.
+
+Focused repair/rule suite:
+
+```text
+env -u CODEX_THREAD_ID -u CODEX_TURN_ID -u CODEX_SESSION_ID \
+  PYTHONPATH=src:tests python3 -m unittest \
+  tests.test_v09_acceptance_contract tests.test_workspace_ux \
+  tests.test_preflight tests.test_desktop_lifecycle \
+  tests.test_rules_contract tests.test_declared_scope \
+  tests.test_rule_contract_and_external_input tests.test_clean_environment \
+  tests.test_incident_signatures tests.test_launch_gate
+
+Ran 189 tests in 3.117s
+OK
+```
+
+Adversarial checks used production functions rather than changing source:
+
+- `M10-CHECK-REV006-PRESUBMIT`: ordinary input with a stale session ID passed
+  through `handle_prompt_hook()` as `{}`.
+- `M10-CHECK-R7-PARALLEL-ATTRIBUTION`: a common changed-path observation for
+  two tasks with disjoint declared directories produced one out-of-scope
+  violation for each task, each naming the other task's path.
+- `M10-CHECK-R18-TRUST-TRANSITIONS`: external evidence backed a proposed
+  project decision; `set_decision_status()` accepted it and `add_constraint()`
+  made an external-backed constraint active.
+
+The passing suite therefore proves that the checked-in tests agree with the
+implementation. It does not refute the uncovered paths above.
+
+Project Memory evidence recorded by exact check role:
+`M10-CHECK-CLEAN-SUITE` = `EVID-060`,
+`M10-CHECK-FOCUSED-CLAIMS` = `EVID-061`,
+`M10-CHECK-REV006-PRESUBMIT` = `EVID-062`,
+`M10-CHECK-R7-PARALLEL-ATTRIBUTION` = `EVID-063`, and
+`M10-CHECK-R18-TRUST-TRANSITIONS` = `EVID-064`.
+
+### 10.6 Remaining actionable work for M11
+
+1. Change the adaptive skill's schema-3 planning template to safe useful
+   `auto`/two-worker defaults while retaining migrated v0.8 serial behavior.
+2. Fence a retired Desktop session at `UserPromptSubmit` (or make it
+   unaddressable) before model/tool side effects; add a hook-level replay test.
+3. Make R5 verify the thread's exact target-project association and
+   editability, and convert a stable post-deadline mismatch into a normalized
+   infrastructure incident rather than perpetual `IN_PROGRESS`.
+4. Make target project-root drift fail closed unless a recorded user Decision
+   authorizes `project/update`; never self-heal and continue silently.
+5. Add task-attributed change tracking for shared-tree parallel scope audits
+   and structured time/attempt/token budgets with fail-closed enforcement.
+6. Route every user escalation, including worker `BLOCKED`/`ESCALATE`, through
+   a required closed reason code.
+7. Apply the structured rule contract and ordering to verifier, replanner, and
+   Pipeline Engineer prompts; require applied-rule reporting where completion
+   audits it and implement R16 Conflict recording.
+8. Revalidate trust on every transition to accepted Decision/active Constraint
+   and require external-source provenance before such evidence can influence
+   control state.
+9. Replace synthetic level-1 recovery with an allowlisted action executor and
+   an independent real healthcheck; never mark `RECOVERED` from incident
+   metadata alone.
+10. Implement R30's department-derived fresh lead, versioned department rubric
+    in Project Memory, stable two-attempt rubric loading, and resolve its title
+    conflict explicitly.
+11. After the P0 fixes, execute `REV-007` with a real authorized App Server and
+    Desktop, then and only then version/package/install-check `REV-008` and
+    record artifact hashes.
+
+### 10.7 Security and mutation audit
+
+Production source and the adaptive plugin contain no `danger-full-access`,
+sandbox bypass, automatic approval, unrestricted filesystem/shell MCP, silent
+permission escalation, or automatic Git push/tag/release path. App Server
+thread creation retains `:workspace`, allowlisted params, and explicit
+project/cwd metadata checks. This M10 pass changed only this report and its
+required task-scoped handoff; it did not alter or revert repaired code, run a
+production App Server, or create a commit, tag, push, publication, reset, or
+clean operation.

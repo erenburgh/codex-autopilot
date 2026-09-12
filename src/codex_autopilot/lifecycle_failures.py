@@ -667,6 +667,37 @@ def _record_app_server_create_failure(
         )
     return incident_store.incident_package(incident_id)
 
+def _record_app_server_project_assignment(
+    cfg: Config,
+    reservation_token: str,
+    *,
+    thread_id: str,
+    project_id: str,
+    at: str | None = None,
+) -> None:
+    """Записать явную привязку ветки к сохранённому проекту.
+
+    Событие названо так же, как в журнале живого прогона 11.09, чтобы
+    история до потери кода и после восстановления читалась одной цепочкой.
+    """
+
+    timestamp = at or utc_now()
+    store = StateStore(cfg.state_dir)
+    coordinator = ResourceLockCoordinator(store, cfg.root)
+    with coordinator.transaction():
+        state = store.load()
+        session = _session_by_token(state, reservation_token)
+        session["app_server_project_id"] = project_id
+        _append_event(
+            state,
+            "app_server_project_assigned",
+            session,
+            timestamp,
+            detail=f"thread {thread_id} assigned to project {project_id}",
+        )
+        store.save(state)
+
+
 def _record_created_app_server_ambiguity(
     cfg: Config,
     reservation_token: str,

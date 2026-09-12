@@ -887,6 +887,43 @@ class DesktopLifecycleTests(unittest.TestCase):
 
 
 
+    def test_created_thread_is_explicitly_assigned_to_the_saved_project(self) -> None:
+        """Создание с projectId и явная привязка - разные вызовы.
+
+        Второй существовал в живом прогоне (событие
+        app_server_project_assigned 11.09), но кода не осталось ни в одном
+        коммите и ни в одной установленной версии: работа была потеряна, и
+        ветки перестали доходить до проекта.
+        """
+
+        from dataclasses import replace
+
+        cfg = replace(
+            self.cfg,
+            desktop=replace(self.cfg.desktop, project_id="app-server-project"),
+        )
+        descriptor = reserve_ready_frontier(cfg)[0]
+        client, events = activate_via_app_server(
+            cfg, self.root, descriptor, "thread-a"
+        )
+        self.assertIn("thread-project-assigned", events)
+        self.assertEqual(client.project_id, "app-server-project")
+        assigned = [
+            item
+            for item in self.store.load().lifecycle_journal
+            if item["event"] == "app_server_project_assigned"
+            and item["reservation_token"] == descriptor.reservation_token
+        ]
+        self.assertEqual(len(assigned), 1)
+        self.assertIn("thread-a", assigned[0]["detail"])
+
+    def test_without_a_saved_project_nothing_is_assigned(self) -> None:
+        descriptor = reserve_ready_frontier(self.cfg)[0]
+        _, events = activate_via_app_server(
+            self.cfg, self.root, descriptor, "thread-a"
+        )
+        self.assertNotIn("thread-project-assigned", events)
+
     def test_dispatcher_preserves_app_server_project_metadata_before_turn(self) -> None:
         self.cfg = replace(
             self.cfg,
