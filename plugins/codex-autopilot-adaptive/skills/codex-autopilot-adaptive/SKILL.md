@@ -149,7 +149,10 @@ After a resume is armed, the turn stays open while the dispatcher works. Do not
 fill that time with reasoning about the pipeline. Report what is happening
 instead, one line at a time, so the user watches progress rather than silence:
 
-1. Run `codex-autopilot timeline --project <root>`.
+1. Run `scripts/codex-autopilot timeline --project <target-root>`, resolving
+   `scripts/codex-autopilot` relative to this `SKILL.md` exactly as the start
+   command above does. It is always there; never search the filesystem for it
+   and never report its location — that hunt wastes the user's turn.
 2. Print only the lines that are new since your previous run of it, verbatim.
 3. Wait a few seconds and repeat. Stop at the first of these, whichever comes
    first — never later:
