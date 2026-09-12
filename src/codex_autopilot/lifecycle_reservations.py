@@ -67,6 +67,7 @@ from .resources import (
     build_scheduler_availability,
     release_resources_in_state,
 )
+from .scope import scope_baseline
 from .run_state import RunState, StateStore, utc_now
 from .scheduler import schedule
 from .task_state import (
@@ -399,6 +400,7 @@ def _reserve_in_state(
             "created_at": descriptor.created_at,
             "memory_audit_before": memory_audit_before,
             "checkpoint_before": task_checkpoint(cfg.state_dir, task_id),
+            "scope_baseline": scope_baseline(cfg.root),
             "descriptor": descriptor.to_dict(),
         }
         fence_superseded_sessions(
@@ -525,6 +527,7 @@ def _reserve_replanner_in_state(
         "created_at": descriptor.created_at,
         "memory_audit_before": memory_audit_before,
         "checkpoint_before": task_checkpoint(cfg.state_dir, task_id),
+        "scope_baseline": scope_baseline(cfg.root),
         "descriptor": descriptor.to_dict(),
     }
     state.worker_sessions.append(session)
@@ -702,6 +705,7 @@ def _reserve_followup_sessions_in_state(
             "created_at": descriptor.created_at,
             "memory_audit_before": memory_audit_before,
             "checkpoint_before": task_checkpoint(cfg.state_dir, task.id),
+            "scope_baseline": scope_baseline(cfg.root),
             "descriptor": descriptor.to_dict(),
         }
         fence_superseded_sessions(

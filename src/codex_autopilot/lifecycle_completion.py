@@ -34,6 +34,12 @@ from .lifecycle_prompts import (
     _worker_prompt,
 )
 from .memory import ProjectMemory
+from .rules import record_violation
+from .scope import (
+    ScopeNotObservable,
+    audit_declared_scope,
+    observe_changed_paths,
+)
 from .models import MODEL_IDS, ModelRoutingError, logical_model
 from .pipeline_engineer import (
     IncidentClass,
@@ -147,6 +153,35 @@ from .lifecycle_failures import (
 from .lifecycle_reservations import (
     _reserve_in_state,
 )
+
+
+def _audit_task_scope(
+    cfg: Config,
+    plan: Plan,
+    state: RunState,
+    session: dict[str, Any],
+    at: str,
+) -> None:
+    """Правило R7: сверить фактически изменённые пути с объявленной областью.
+
+    Правило в режиме CHECKED: расхождение записывается как дефект и
+    поднимает R7 в приоритете правил следующего воркера, но не рушит
+    завершение. Невозможность наблюдать пути записывается отдельно -
+    "не проверено" не должно выглядеть как "нарушений нет".
+    """
+
+    task = plan.task_map.get(str(session.get("task_id") or ""))
+    if task is None:
+        return
+    try:
+        changed = observe_changed_paths(cfg.root, session.get("scope_baseline"))
+    except ScopeNotObservable as error:
+        _append_event(state, "scope_not_observed", session, at, detail=str(error))
+        return
+    violations = audit_declared_scope(task, changed, project_root=cfg.root)
+    for detail in violations:
+        record_violation(cfg.state_dir, "R7", detail=detail)
+        _append_event(state, "scope_violation_recorded", session, at, detail=detail)
 
 
 def complete_desktop_worker(
@@ -352,6 +387,7 @@ def complete_desktop_worker(
         )
         _append_event(state, "turn_identity_bound", current, timestamp)
         _append_event(state, "turn_completed", current, timestamp, detail=worker_status)
+        _audit_task_scope(cfg, plan, state, current, timestamp)
 
         release_resources_in_state(
             state,
