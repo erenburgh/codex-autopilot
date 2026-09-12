@@ -254,8 +254,38 @@ def _run_automatic_relay_dispatch(
     try:
         return _automatic_relay_loop(cfg, token=token, owner=owner, owner_turn=owner_turn)
     except BaseException as error:
+        _print_relay_timeline(cfg, token, "на отказе")
         _record_detached_dispatch_failure(cfg, token, error)
         raise
+
+
+def _print_relay_timeline(cfg, token: str, headline: str) -> None:
+    """Печатать лестницу шагов из самого диспетчера, а не по запросу.
+
+    Диспетчер - единственный, кто знает, что происходит, пока идёт работа.
+    Раньше он молчал до конца, и узнать ход дела можно было только спросив.
+    """
+
+    from .launch_gate import render_launch_timeline
+    from .run_state import StateStore
+
+    try:
+        state = StateStore(cfg.state_dir).load()
+        session = next(
+            (
+                item
+                for item in state.worker_sessions
+                if item.get("reservation_token") == token
+            ),
+            None,
+        )
+        task_id = str((session or {}).get("task_id") or "")
+        if not task_id:
+            return
+        print(f"\n=== {headline} ===")
+        print(render_launch_timeline(state, [task_id]), flush=True)
+    except Exception as error:  # отчёт не вправе ронять работу
+        print(f"codex-autopilot: лента недоступна: {error}", flush=True)
 
 
 def _automatic_relay_loop(
@@ -266,6 +296,7 @@ def _automatic_relay_loop(
     owner_turn: str,
 ) -> int:
     while True:
+        _print_relay_timeline(cfg, token, "перед запуском задачи")
         dispatcher_log = (
             cfg.state_dir / "logs" / f"app-server-dispatcher-{token}.jsonl"
         )
@@ -282,6 +313,7 @@ def _automatic_relay_loop(
                 initiator_turn_id=owner_turn,
                 connected_client=client,
             )
+        _print_relay_timeline(cfg, token, "после хода задачи")
         proc = client.proc
         if proc is None or proc.poll() is None:
             raise RuntimeError("per-task App Server process did not fully exit")
