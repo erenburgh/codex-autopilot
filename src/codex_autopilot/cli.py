@@ -111,6 +111,12 @@ def parser() -> argparse.ArgumentParser:
     recreate_archived.add_argument("--reservation-token", required=True)
     recreate_archived.add_argument("--archived-thread-id", required=True)
     recreate_archived.add_argument("--predecessor-thread-id", required=True)
+    timeline = sub.add_parser(
+        "timeline",
+        help="ladder of launch steps for the active tasks, one line per step",
+    )
+    timeline.add_argument("--project", type=Path, default=Path.cwd())
+    timeline.add_argument("--task", action="append", default=[])
     relay_status = sub.add_parser("relay-status", help=argparse.SUPPRESS)
     relay_status.add_argument("--project", type=Path, default=Path.cwd())
     relay_status.add_argument("--token", required=True)
@@ -515,6 +521,17 @@ def main(argv: list[str] | None = None) -> int:
                     ensure_ascii=False,
                 )
             )
+            return 0
+        if args.command == "timeline":
+            from .launch_gate import render_launch_timeline
+
+            cfg = load_config(args.project)
+            state = StateStore(cfg.state_dir).load()
+            tasks = list(args.task) or list(state.active_task_ids or ())
+            if not tasks:
+                print("активных задач нет")
+                return 0
+            print(render_launch_timeline(state, tasks))
             return 0
         if args.command == "relay-status":
             print(json.dumps(relay_session_status(load_config(args.project), args.token), ensure_ascii=False))

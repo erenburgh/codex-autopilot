@@ -138,6 +138,26 @@ If the target is not Git, state that this beta requires a Git repository and sug
 
 Exact pause, resume, status, and uninstall prompts are handled by the plugin hook without a model request. If control reaches this skill, run the bundled helper with `stop`, `resume`, `status`, or `uninstall --yes`. Project state is removed only with explicit `--purge-project-state --project <root>`.
 
+## Reporting a launch while it happens
+
+After a resume is armed, the turn stays open while the dispatcher works. Do not
+fill that time with reasoning about the pipeline. Report what is happening
+instead, one line at a time, so the user watches progress rather than silence:
+
+1. Run `codex-autopilot timeline --project <root>`.
+2. Print only the lines that are new since your previous run of it, verbatim.
+3. Wait a few seconds and repeat, until the ladder shows the task started, or a
+   line marked `[✗]` appears, or about two minutes pass.
+4. Finish with one short line: started, or stopped at which step.
+
+Rules for this reporting:
+
+- Never invent a step, a checkmark, or a result. Print only what the command
+  returned. The ladder is the observation; your summary is not.
+- A `[✗]` line is not yours to fix. Repairing the pipeline is Pipeline Engineer
+  work on a ticket, never an improvisation from this session.
+- Never create or message a task to work around a stalled launch.
+
 ## Status protocol
 
 - `ROTATE`: current milestone verified with recorded evidence; another milestone remains.
