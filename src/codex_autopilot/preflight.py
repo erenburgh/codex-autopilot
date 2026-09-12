@@ -249,12 +249,24 @@ def run_preflight(
                 "no saved project contains the target root; task stays in Recents with canonical cwd",
             )
 
-        if desktop_project_id:
+        if desktop_project_id and worker_thread_ids:
             _validate_worker_slots(client, worker_thread_ids)
             report(
                 "Desktop UI placement",
                 "OK",
                 f"{len(worker_thread_ids)} Desktop-created slot(s) assigned to project {desktop_project_id}",
+            )
+        elif desktop_project_id:
+            # Заранее созданные слоты были обходом вокруг мнимой
+            # невозможности завести видимую задачу через App Server.
+            # Замерено: thread/start с originator самого приложения даёт
+            # задачу, видимую в сайдбаре проекта. Требовать слот здесь
+            # значило противоречить скиллу, который прямо запрещает их
+            # создавать заранее - и прогон не мог стартовать вовсе.
+            report(
+                "Desktop UI placement",
+                "OK",
+                f"dispatcher creates its own visible task in project {desktop_project_id}",
             )
         elif worker_thread_ids:
             raise PreflightError("worker slots require --desktop-project-id")

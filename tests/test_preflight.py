@@ -545,21 +545,31 @@ class PreflightTests(unittest.TestCase):
             result.checks,
         )
 
-    def test_desktop_project_preflight_requires_only_the_current_frontier_slot(self):
+    def test_desktop_project_preflight_does_not_require_a_pre_created_slot(self):
+        """Слоты были обходом вокруг мнимой невозможности завести видимую
+        задачу. Скилл прямо запрещает создавать их заранее, поэтому
+        требование слота здесь останавливало прогон целиком."""
+
         root = project()
         DesktopSlotPreflightClient.slots = {}
-        with self.assertRaisesRegex(PreflightError, "at least one just-in-time worker slot"):
-            run_preflight(
-                root,
-                plan=plan(),
-                profile="adaptive",
-                skill_path=SKILL,
-                binary="/bin/echo",
-                client_factory=DesktopSlotPreflightClient,
-                emit=None,
-                desktop_project_id="desktop-project-1",
-            )
-        self.assertIsNone(PreflightClient.instances[-1].thread_args)
+        result = run_preflight(
+            root,
+            plan=plan(),
+            profile="adaptive",
+            skill_path=SKILL,
+            binary="/bin/echo",
+            client_factory=DesktopSlotPreflightClient,
+            emit=None,
+            desktop_project_id="desktop-project-1",
+        )
+        self.assertIn(
+            (
+                "Desktop UI placement",
+                "OK",
+                "dispatcher creates its own visible task in project desktop-project-1",
+            ),
+            result.checks,
+        )
 
     def test_replace_archives_each_previous_worker_once_after_trust_passes(self):
         root = project()
