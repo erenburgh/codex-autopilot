@@ -135,14 +135,32 @@ for legacy in astra-autopilot-adaptive astra-autopilot-inherit; do
   fi
 done
 
-if ! "$codex_bin" plugin marketplace list --json 2>/dev/null | "$python_bin" -c '
+# Проверять только наличие marketplace недостаточно. Установщик другой
+# версии регистрирует его по разрешённому пути своего каталога, и тогда
+# "есть?" отвечает "есть", указывая на чужую версию: current перевешен на
+# эту, а скилл и хуки грузятся из прежней. Замерено: после установки 0.7
+# поверх 0.8 marketplace остался на 0.7.0-beta, рантайм под ним - 0.8.
+# Поэтому сверяется корень, и перерегистрация делается только когда он
+# чужой - иначе обычное обновление зря сбрасывало бы доверие хукам.
+marketplace_root=$("$codex_bin" plugin marketplace list --json 2>/dev/null | "$python_bin" -c '
 import json, sys
 try:
     payload = json.load(sys.stdin)
 except Exception:
-    raise SystemExit(1)
-raise SystemExit(0 if any(item.get("name") == "codex-autopilot-local" for item in payload.get("marketplaces", [])) else 1)
-'; then
+    raise SystemExit(0)
+for item in payload.get("marketplaces", []):
+    if item.get("name") == "codex-autopilot-local":
+        print(item.get("root") or "")
+        break
+' || true)
+marketplace_root=${marketplace_root%/}
+if [ -z "$marketplace_root" ]; then
+  "$codex_bin" plugin marketplace add "$install_root/current" >/dev/null
+elif [ "$marketplace_root" != "$target" ] && [ "$marketplace_root" != "$install_root/current" ]; then
+  echo "Marketplace codex-autopilot-local points at $marketplace_root; re-registering it for $version."
+  "$codex_bin" plugin remove "codex-autopilot-adaptive@codex-autopilot-local" >/dev/null 2>&1 || true
+  "$codex_bin" plugin remove "codex-autopilot-host-settings@codex-autopilot-local" >/dev/null 2>&1 || true
+  "$codex_bin" plugin marketplace remove codex-autopilot-local >/dev/null 2>&1 || true
   "$codex_bin" plugin marketplace add "$install_root/current" >/dev/null
 fi
 
