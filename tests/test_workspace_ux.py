@@ -304,5 +304,125 @@ class SemanticStatusTests(unittest.TestCase):
             self.assertIn(expected, rendered)
 
 
+class WaitingReasonTests(unittest.TestCase):
+    """Раздел 33: статус обязан называть причину ожидания."""
+
+    def test_a_task_blocked_by_a_held_resource_says_who_holds_it(self) -> None:
+        from pathlib import Path
+
+        from codex_autopilot.status import _resource_reason
+
+        root = Path("/project").resolve()
+        plan = _two_task_plan_sharing_a_resource()
+        state = _state_with_lock_held_by("A", root)
+        self.assertEqual(_resource_reason(plan, state, "B", root), "resource locked by A")
+
+    def test_an_unreadable_lock_is_not_reported_as_free(self) -> None:
+        from pathlib import Path
+
+        from codex_autopilot.status import _resource_reason
+
+        root = Path("/project").resolve()
+        plan = _two_task_plan_sharing_a_resource()
+        state = _state_with_lock_held_by("A", root)
+        state.resource_locks[0]["acquired_at"] = "не время"
+        reason = _resource_reason(plan, state, "B", root)
+        self.assertIsNotNone(reason)
+        self.assertIn("unreadable", reason)
+
+    def test_no_holder_when_resources_do_not_overlap(self) -> None:
+        from pathlib import Path
+
+        from codex_autopilot.status import _resource_reason
+
+        root = Path("/project").resolve()
+        plan = _two_task_plan_sharing_a_resource(second_target="src/other")
+        state = _state_with_lock_held_by("A", root)
+        self.assertIsNone(_resource_reason(plan, state, "B", root))
+
+
+def _two_task_plan_sharing_a_resource(second_target: str = "src/shared"):
+    from codex_autopilot.plan import (
+        Plan,
+        ResourceClaim,
+        Task,
+        TaskContext,
+        VerificationPolicy,
+    )
+
+    def task(task_id: str, target: str) -> Task:
+        return Task(
+            id=task_id,
+            title=f"Task {task_id}",
+            objective="o",
+            definition_of_done=("d",),
+            execution_mode="code",
+            execution_mode_reason="r",
+            reasoning=None,
+            role="builder",
+            depends_on=(),
+            priority=0,
+            verification=VerificationPolicy(policy="deterministic", required=True),
+            resources=(
+                ResourceClaim(
+                    id=f"{task_id}-claim",
+                    kind="directory",
+                    target=target,
+                    access="write",
+                ),
+            ),
+            required_capabilities=(),
+            context=TaskContext(),
+            outputs=(),
+            tags=(),
+        )
+
+    tasks = (task("A", "src/shared"), task("B", second_target))
+    return Plan(
+        goal="g",
+        user_request="u",
+        model_strategy="auto",
+        tasks=tasks,
+        roles=(),
+        graph_version=1,
+        execution_strategy="parallel",
+        max_parallel_workers=2,
+        computer_use_slots=1,
+        legacy_serial=False,
+    )
+
+
+def _state_with_lock_held_by(task_id: str, root):
+    from codex_autopilot.run_state import RunState
+
+    state = RunState(run_id="r")
+    state.resource_locks = [
+        {
+            "lock_id": "lock-1",
+            "owner": {
+                "ownership_token": "token-1",
+                "run_id": "r",
+                "task_id": task_id,
+                "attempt": 1,
+                "worker_id": "w1",
+                "thread_id": None,
+                "turn_id": None,
+            },
+            "claims": [
+                {
+                    "id": "A-claim",
+                    "kind": "directory",
+                    "target": str(root / "src/shared"),
+                    "access": "write",
+                }
+            ],
+            "acquired_at": "2026-09-11T00:00:00+00:00",
+            "heartbeat_at": "2026-09-11T00:00:00+00:00",
+            "computer_use_slot": None,
+        }
+    ]
+    return state
+
+
 if __name__ == "__main__":
     unittest.main()

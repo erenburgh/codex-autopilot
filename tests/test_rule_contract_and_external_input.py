@@ -47,6 +47,26 @@ class AppliedRulesReportTests(unittest.TestCase):
         self.assertIn("строку AUTOPILOT_RULES с id правил", source)
         self.assertIn("an AUTOPILOT_RULES line with the ids", source)
 
+    def test_every_prompt_variant_asks_for_the_list(self) -> None:
+        """Счёт вхождений здесь не годится: вариантов финальной строки
+        несколько, и достаточно пропустить один, чтобы воркер получал
+        дефект R16 за то, о чём его не просили."""
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "codex_autopilot"
+            / "ai_studio.py"
+        ).read_text(encoding="utf-8")
+        silent = [
+            index
+            for index, line in enumerate(source.splitlines(), 1)
+            if "AUTOPILOT_STATUS:" in line
+            and ("Заверши" in line or "Finish with" in line)
+            and "AUTOPILOT_RULES" not in line
+        ]
+        self.assertEqual(silent, [], f"варианты промпта без требования правил: {silent}")
+
 
 class ExternalInputTests(unittest.TestCase):
     def setUp(self) -> None:

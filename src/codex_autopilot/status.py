@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from .config import Config
@@ -59,7 +60,7 @@ def project_status_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[st
         elif task_state is TaskState.READY:
             ready.append(item)
         elif task_state is not TaskState.VERIFIED:
-            item["reason"] = _waiting_reason(plan, state, task.id, task_state)
+            item["reason"] = _waiting_reason(plan, state, task.id, task_state, cfg.root)
             waiting.append(item)
 
     verified = sum(
@@ -259,13 +260,17 @@ def _waiting_reason(
     state: RunState,
     task_id: str,
     task_state: TaskState,
+    project_root: Path,
 ) -> str:
     if task_state is TaskState.WAITING:
         dependencies = unmet_dependencies(plan, task_id, state.task_states)
-        return (
-            f"waiting for verified dependencies: {', '.join(dependencies)}"
-            if dependencies
-            else "waiting for scheduler eligibility"
+        if dependencies:
+            return f"waiting for verified dependencies: {', '.join(dependencies)}"
+        # Раздел 33 спецификации требует называть причину ожидания:
+        # "T18 · resource locked by T14". Без этого задача, у которой
+        # зависимости выполнены, стоит без объяснения.
+        return _resource_reason(plan, state, task_id, project_root) or (
+            "waiting for scheduler eligibility"
         )
     if task_state is TaskState.RETRY_WAIT:
         retry_at = state.task_retry_at.get(task_id)
@@ -281,6 +286,41 @@ def _waiting_reason(
     if task_state is TaskState.CANCELLED:
         return "cancelled"
     return f"state={task_state.value}"
+
+
+def _resource_reason(
+    plan: Plan, state: RunState, task_id: str, project_root: Path
+) -> str | None:
+    """Почему задача стоит из-за ресурса, если стоит.
+
+    Нечитаемая запись блокировки не выдаётся за отсутствие владельца:
+    "не удалось прочитать" и "никто не держит" - разные вещи, и вторая
+    успокаивает там, где успокаивать нечем.
+    """
+
+    task = plan.task_map.get(task_id)
+    if task is None or not task.resources:
+        return None
+    from .resources import DurableResourceLock, claims_conflict, normalize_task_claims
+
+    try:
+        wanted = normalize_task_claims(task, project_root)
+    except (ValueError, TypeError) as error:
+        return f"resource claims are unreadable: {error}"
+    unreadable = 0
+    for raw in state.resource_locks:
+        try:
+            lock = DurableResourceLock.from_dict(raw)
+        except (ValueError, KeyError, TypeError):
+            unreadable += 1
+            continue
+        if lock.owner.task_id == task_id:
+            continue
+        if any(claims_conflict(left, right) for left in wanted for right in lock.claims):
+            return f"resource locked by {lock.owner.task_id}"
+    if unreadable:
+        return f"resource lock state is unreadable ({unreadable} of {len(state.resource_locks)})"
+    return None
 
 
 def _computer_use_used(
