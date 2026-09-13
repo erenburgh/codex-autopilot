@@ -42,8 +42,25 @@ class PipelineEngineerPromiseTests(unittest.TestCase):
     def setUp(self) -> None:
         self.text = SKILL.read_text(encoding="utf-8")
 
-    def test_the_skill_says_no_engineer_worker_is_created(self) -> None:
-        self.assertIn("Nothing creates an engineer worker", self.text)
+    def test_the_skill_says_the_engineer_is_created_as_a_worker(self) -> None:
+        """Прежде скилл честно говорил, что воркера не создаёт никто.
+
+        Теперь создаёт - и обещание снова должно совпадать с рантаймом,
+        только в другую сторону.
+        """
+
+        self.assertIn("creates it as a visible worker task", self.text)
+        self.assertNotIn("Nothing creates an engineer worker", self.text)
+
+    def test_the_skill_states_the_engineer_repair_authority(self) -> None:
+        """R13: пользователь не участвует в выборе способа фикса."""
+
+        self.assertIn("full authority to repair", self.text)
+        self.assertIn("The user does not choose the repair", self.text)
+
+    def test_the_skill_requires_a_code_for_escalation(self) -> None:
+        self.assertIn("RECOVERY_EXHAUSTED", self.text)
+        self.assertIn("A bare escalation is refused", self.text)
 
     def test_the_procedure_names_real_commands(self) -> None:
         for command in ("relay-status", "relay-complete", "relay-fail",
@@ -56,7 +73,7 @@ class PipelineEngineerPromiseTests(unittest.TestCase):
         правильно. Замена задачи здесь раздвоила бы работу."""
 
         self.assertIn("AMBIGUOUS", self.text)
-        self.assertIn("Never create a", self.text)
+        self.assertIn("never guess", self.text)
 
 
 class CommandsInTheSkillExistTests(unittest.TestCase):

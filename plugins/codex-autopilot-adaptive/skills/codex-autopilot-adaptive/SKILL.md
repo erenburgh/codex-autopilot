@@ -183,42 +183,44 @@ Rules for any such report:
   work, by the procedure below, never an improvisation from this session.
 - Never create or message a task to work around a stalled launch.
 
-## Pipeline Engineer: the actual procedure
+## Pipeline Engineer
 
-An incident in phase `PIPELINE_ENGINEER` stops the run and waits for a person.
-Nothing creates an engineer worker; saying "DevOps will fix it" without doing
-this is a promise the runtime does not keep.
+An incident routed to `PIPELINE_ENGINEER` reserves one on-call engineer and
+creates it as a visible worker task in the project, exactly like any other
+worker. Nothing about this lane is manual any more, and nothing in it waits for
+the user by default.
 
-Recovery runs from a Codex task opened on the target project, because every
-mutating command below refuses a caller without the owning `CODEX_THREAD_ID`.
-That refusal is a protection, not an obstacle: never work around it.
+The engineer holds full authority to repair the pipeline on the user's behalf.
+The user does not choose the repair (R13). It never performs destination
+`thread/start` or `turn/start` itself: it repairs the fault and re-arms the
+causal predecessor, so that predecessor performs its own reserved transport
+under the already granted run authorization.
 
-1. **Read the ticket.** `.codex-autopilot/pipeline-incidents.json` names the
-   code, the affected task, and the phase.
-2. **Read the reservation.**
-   `scripts/codex-autopilot relay-status --project <root> --token <reservation>`
-3. **Ask the server what actually happened to the worker task.** The run state
-   says what Autopilot recorded; the server says what occurred. They differ
-   exactly when a dispatcher died mid-flight.
-4. **Then choose one, and only from evidence:**
-   - the worker turn completed and reported a status → record it:
-     `relay-complete --project <root> --thread-id <thread> --turn-id <turn> --status <ROTATE|DONE|BLOCKED|ESCALATE>`.
-     This runs the full completion gate, including Project Memory evidence; it
-     cannot mark unverified work as done.
-   - the create definitively failed before any side effect → `relay-fail
-     --project <root> --token <reservation> --reason <text> --definitive`.
-   - the outcome is unknown → leave the task `AMBIGUOUS`. Never create a
-     replacement and never guess. An ambiguous side effect is the one case
-     where stopping is correct.
-5. **Close the ticket only with a passing healthcheck**, then re-arm the same
-   causal owner where the incident code allows it:
-   `devops-rearm-relay-owner --project <root> --incident-id <id>`.
-   It accepts only `transport_policy_rejected` and
-   `app_server_thread_start_failed`; other codes are recovered through step 4
-   and a fresh user resume.
+It is reserved before any other work — a broken pipeline outranks new tasks —
+and it deliberately holds none of the affected task's resources: those may still
+be held by the session that failed, and the repairer must not be blocked by the
+thing it came to repair.
 
-DevOps never performs destination `thread/start` or `turn/start` itself, never
-reassigns causal ownership, and never edits trust state.
+Its tools are the helper commands, resolved relative to this `SKILL.md`:
+`relay-status`, `relay-complete`, `relay-fail --definitive`,
+`devops-rearm-relay-owner`, `arm`, and `devops-resolve-incident`.
+
+Three rules bind it:
+
+- **Ask the server before deciding.** Run state records what Autopilot believed;
+  App Server records what occurred. They differ exactly when a dispatcher died
+  mid-flight.
+- **An unknown side effect is a stop.** Never replace an `AMBIGUOUS` task and
+  never guess. That is the one case where standing still is correct.
+- **Close the ticket with evidence.** `RESOLVED` counts only when the ticket is
+  actually closed through `devops-resolve-incident` with a passing healthcheck.
+  The word in the final line is a claim, not an observation.
+
+It finishes with exactly one line: `PIPELINE_ENGINEER_STATUS: RESOLVED`, or —
+only when repair is genuinely outside its authority — `ESCALATE_TO_USER` with
+one code from the closed list: `DANGEROUS_PERMISSION`, `GLOBAL_CONFIG_CHANGE`,
+`PROJECT_DAMAGE_RISK`, `RECOVERY_EXHAUSTED`, `PRODUCT_DECISION`,
+`ARCHITECTURE_DECISION`. A bare escalation is refused.
 
 ## Status protocol
 
