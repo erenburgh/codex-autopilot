@@ -149,3 +149,47 @@ class EntrypointDefaultsTests(unittest.TestCase):
                     "the resource lock",
                     skill.read_text(encoding="utf-8"),
                 )
+
+
+class RoleNameLanguageTests(unittest.TestCase):
+    """Роль - профессия, а профессии во всей среде названы по-английски.
+
+    Правило языка велело писать в языке прогона всё, кроме протокольных
+    идентификаторов, и планировщик послушно переводил имена ролей. А
+    формат заголовка ветки дописывает английские Verifier и Verify -
+    получалось "Инженер основания Verifier | M1 | Verify ...", половина
+    на половину. Это не вкусовщина: смешанный заголовок производит сам
+    код, а не человек.
+    """
+
+    SKILLS = (
+        Path(__file__).resolve().parents[1]
+        / "plugins/codex-autopilot-adaptive/skills/codex-autopilot-adaptive/SKILL.md",
+        Path(__file__).resolve().parents[1]
+        / "plugins/codex-autopilot-host-settings/skills/codex-autopilot-host-settings/SKILL.md",
+    )
+
+    def test_both_skills_exempt_role_names_from_the_run_language(self) -> None:
+        for skill in self.SKILLS:
+            with self.subTest(skill=skill.name):
+                text = skill.read_text(encoding="utf-8")
+                self.assertIn("stay in English always", text)
+                self.assertIn("Resilience Engineer", text)
+
+    def test_both_skills_say_why_rather_than_only_what(self) -> None:
+        """Правило без причины планировщик переиначит при первом конфликте."""
+
+        for skill in self.SKILLS:
+            with self.subTest(skill=skill.name):
+                text = skill.read_text(encoding="utf-8")
+                self.assertIn("`Verifier` and `Verify`", text)
+                self.assertIn("half-translated title", text)
+
+    def test_the_title_format_really_appends_english_words(self) -> None:
+        """Обоснование правила проверяется, а не принимается на слово."""
+
+        from codex_autopilot.thread_titles import verifier_thread_title
+
+        title = verifier_thread_title("M1", "Create the foundation", role_name="Foundation Engineer")
+        self.assertIn("Verifier", title)
+        self.assertIn("Verify", title)

@@ -40,14 +40,15 @@ Resolve the user's target Git repository explicitly, even when it is outside thi
 - `sol-only` for `Use Codex Autopilot with Sol only for this project`.
 - `astra-only` for `Use Codex Autopilot with Astra only for this project`.
 
-Infer one BCP-47 response language from the initiating user's request (for example `ru` or `en`; use the user's explicit language preference when present). Write the goal, milestone titles, objectives, Definition of Done items, execution reasons, and every user-facing reservation/update in that language. Pass the same tag with `--language`; it is durable run metadata inherited by every implementation, verification, revision, planner, and replanner task. Protocol identifiers such as `AUTOPILOT_STATUS`, `AUTOPILOT_SLOT_READY`, file names, code, and tool names remain exact and are never translated.
+Infer one BCP-47 response language from the initiating user's request (for example `ru` or `en`; use the user's explicit language preference when present). Write the goal, milestone titles, objectives, Definition of Done items, execution reasons, and every user-facing reservation/update in that language. Pass the same tag with `--language`; it is durable run metadata inherited by every implementation, verification, revision, planner, and replanner task. Protocol identifiers such as `AUTOPILOT_STATUS`, `AUTOPILOT_SLOT_READY`, file names, code, and tool names remain exact and are never translated. Role names are the exception and stay in English always, whatever the run language is: `Resilience Engineer`, `DevOps`, `UX Designer`, `Release Engineer`. A role is a profession, and the whole environment names professions in English; the thread-title format also appends the English words `Verifier` and `Verify`, so a translated role produces a half-translated title like `Инженер основания Verifier | M1 | Verify ...`. Task titles, objectives, DoD items and every user-facing line keep the run language.
 
 Do not rely on the initiating task to expose or probe Project Memory. The `start-skill` command below creates a dedicated, visible preflight task and performs one harmless real model-to-MCP call with `operation=current` before it creates run-state or Worker 1. Autopilot never answers approval on the user's behalf, changes MCP approval configuration, or bypasses trust.
 
 Create one independently verifiable outcome per milestone. Preserve the initiating
 request verbatim in `user_request`. Assign every milestone a concrete structured
-`RoleProfile` with a human-readable specialist name such as `Resilience Engineer`,
-`DevOps`, or `UX Designer`, and store its role ID on the task. Never replace a
+`RoleProfile` with a human-readable English specialist name such as
+`Resilience Engineer`, `DevOps`, or `UX Designer`, and store its role ID on the
+task. The name is English even when the run language is not. Never replace a
 known specialist with `legacy-worker`, derive a role from task prose, or wait
 until launch time to guess one. For every milestone ask whether its Definition
 of Done requires Computer Use. Use `computer_use` only for required browser or
