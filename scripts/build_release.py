@@ -33,10 +33,28 @@ USER_ITEMS = [".agents", "plugins", "src", "docs", "install.sh", "README.md", "G
 # Внутренние документы, которые живут в репозитории ради воркеров, но не
 # уезжают пользователю: целевая спецификация следующей версии - это
 # рабочий план и коммерческое позиционирование, а не документация продукта.
-INTERNAL_DOCS = {"docs/V1_TARGET.md"}
-SOURCE_EXCLUDES = {"__pycache__", ".git", ".DS_Store", ".venv", "dist", "build"}
+INTERNAL_DOCS = {
+    # Целевая спецификация следующей версии: рабочий план и коммерческое
+    # позиционирование, а не документация продукта.
+    "docs/V1_TARGET.md",
+    # Записи о том, как строился сам скилл. Пользователю они не нужны:
+    # это аудит наших собственных прогонов и отчёты о починке вех.
+    "docs/RELEASE_VERIFICATION_0.9.0-beta.md",
+    "docs/M11_COMPLETION.md",
+    "docs/M11_CONTRACT_CHECKPOINT.md",
+    "docs/RELEASE_REPORT_0.8.0-beta.md",
+}
+# .codex-autopilot - состояние прогона в ЭТОМ репозитории: план, журнал,
+# память проекта, логи. Оно принадлежит тому, кто здесь работал, и в
+# исходный архив попадать не должно ни при каких условиях. Защита
+# релиза ловила его по абсолютным путям, но ловить надо не следствие.
+SOURCE_EXCLUDES = {"__pycache__", ".git", ".DS_Store", ".venv", "dist", "build", ".codex-autopilot"}
 BANNED_PARTS = {"__pycache__", ".git", ".venv", "venv", "logs"}
 BANNED_SUFFIXES = {".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".wal", ".shm"}
+
+# Файлы, которые автопилот генерирует в каждом проекте сам. В архиве
+# скилла это остаток чужого прогона.
+GENERATED_FILES = {"ROADMAP.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md"}
 
 
 def copy_clean(source: Path, destination: Path) -> None:
@@ -87,6 +105,12 @@ def main() -> int:
     source_stage = output / f".codex-autopilot-{VERSION}-source-stage"
     if source_stage.exists(): shutil.rmtree(source_stage)
     shutil.copytree(ROOT, source_stage, ignore=shutil.ignore_patterns(*SOURCE_EXCLUDES, "*.pyc", "*.zip"))
+    # Исходный архив - это репозиторий для того, кто хочет собрать или
+    # доработать. Внутренние документы не относятся ни к тому, ни к
+    # другому, а исходный ZIP висит в том же публичном релизе, что и
+    # пользовательский: исключать надо из обоих.
+    for internal in INTERNAL_DOCS | GENERATED_FILES:
+        (source_stage / internal).unlink(missing_ok=True)
     validate(source_stage)
     source_zip = output / f"codex-autopilot-{VERSION}-source.zip"
     zip_tree(release_tree, user_zip, release_tree.name)

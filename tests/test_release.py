@@ -115,10 +115,59 @@ class ReleaseTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         self.assertIn("docs/V1_TARGET.md", module.INTERNAL_DOCS)
+        # Записи о разработке самого скилла: аудиты наших прогонов и
+        # отчёты о починке вех. Тысяча строк внутренней истории, которую
+        # пользователь скачивал вместе со скиллом.
+        for record in (
+            "docs/RELEASE_VERIFICATION_0.9.0-beta.md",
+            "docs/M11_COMPLETION.md",
+            "docs/M11_CONTRACT_CHECKPOINT.md",
+            "docs/RELEASE_REPORT_0.8.0-beta.md",
+        ):
+            with self.subTest(record=record):
+                self.assertIn(record, module.INTERNAL_DOCS)
         for internal in module.INTERNAL_DOCS:
             with self.subTest(internal=internal):
                 self.assertTrue((ROOT / internal).is_file(), internal)
                 self.assertNotIn(internal.split("/")[-1], module.USER_ITEMS)
+
+    def test_run_state_never_reaches_the_source_archive(self):
+        """Состояние прогона принадлежит тому, кто здесь работал.
+
+        Защита релиза ловила его по абсолютным путям внутри plan.json -
+        то есть по следствию. Ловить надо причину: каталог состояния
+        исключается из исходного архива целиком.
+        """
+
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_release", ROOT / "scripts/build_release.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertIn(".codex-autopilot", module.SOURCE_EXCLUDES)
+        # Исходный ZIP висит в том же публичном релизе, что и
+        # пользовательский: внутреннее исключается из обоих.
+        source = (ROOT / "scripts/build_release.py").read_text(encoding="utf-8")
+        self.assertIn("INTERNAL_DOCS | GENERATED_FILES", source)
+        self.assertIn("ROADMAP.md", module.GENERATED_FILES)
+
+    def test_the_repository_ships_no_generated_roadmap(self):
+        """ROADMAP.md автопайлот генерирует в каждом проекте сам.
+
+        В репозитории скилла это остаток прогона, которым его строили:
+        одиннадцать вех чужой работы со всеми DoD.
+        """
+
+        import subprocess
+
+        tracked = subprocess.run(
+            ["git", "ls-files", "ROADMAP.md"],
+            cwd=ROOT, capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(tracked, "", "ROADMAP.md снова под git")
+
     def test_no_separate_model_quota_or_silent_fallback_claim(self):
         text = "\n".join(path.read_text(encoding="utf-8", errors="replace") for base in (ROOT / "src", ROOT / "plugins", ROOT / "docs", ROOT / "README.md") for path in ([base] if base.is_file() else base.rglob("*")) if path.is_file())
         for phrase in ("Astra quota", "Sol quota", "fallback to Sol", "fallback to Astra"):
