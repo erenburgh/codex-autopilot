@@ -522,33 +522,14 @@ class PreflightTests(unittest.TestCase):
                 emit=None,
             )
 
-    def test_desktop_project_slots_are_verified_before_memory_probe(self):
-        root = project()
-        DesktopSlotPreflightClient.slots = {
-            "slot-1": {"id": "slot-1", "status": {"type": "idle"}, "canAcceptDirectInput": True},
-        }
-        result = run_preflight(
-            root,
-            plan=plan(),
-            profile="adaptive",
-            skill_path=SKILL,
-            binary="/bin/echo",
-            client_factory=DesktopSlotPreflightClient,
-            emit=None,
-            desktop_project_id="desktop-project-1",
-            worker_thread_ids=("slot-1",),
-        )
-        self.assertEqual(result.desktop_project_id, "desktop-project-1")
-        self.assertEqual(result.worker_thread_ids, ("slot-1",))
-        self.assertIn(
-            ("Desktop UI placement", "OK", "1 Desktop-created slot(s) assigned to project desktop-project-1"),
-            result.checks,
-        )
 
-    def test_desktop_project_preflight_does_not_require_a_pre_created_slot(self):
-        """Слоты были обходом вокруг мнимой невозможности завести видимую
-        задачу. Скилл прямо запрещает создавать их заранее, поэтому
-        требование слота здесь останавливало прогон целиком."""
+    def test_desktop_project_preflight_reports_self_created_placement(self):
+        """Заранее созданных слотов больше нет как понятия.
+
+        Они были обходом вокруг мнимой невозможности завести видимую
+        задачу, а требование слота в префлайте противоречило скиллу,
+        который запрещал их создавать, и останавливало прогон целиком.
+        Механизм снят в 0.8.1; ветку заводит сам диспетчер."""
 
         root = project()
         DesktopSlotPreflightClient.slots = {}

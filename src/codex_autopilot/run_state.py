@@ -97,7 +97,6 @@ class RunState:
     permission_profile: str | None = None
     project_id: str | None = None
     desktop_project_id: str | None = None
-    worker_slot_cursor: int = 0
     dispatcher_pid: int | None = None
     initiator_thread_id: str | None = None
     initiator_turn_id: str | None = None

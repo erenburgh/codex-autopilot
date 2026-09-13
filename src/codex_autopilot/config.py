@@ -37,7 +37,6 @@ class DesktopConfig:
     # namespaces. project_id is App Server-owned metadata only.
     project_id: str | None = None
     desktop_project_id: str | None = None
-    worker_thread_ids: tuple[str, ...] = ()
     title_prefix: str = "Codex Autopilot"
     turn_timeout_seconds: int = 14_400
     reconcile_timeout_seconds: int = 300
@@ -90,44 +89,6 @@ class Config:
 
 def config_path(root: Path) -> Path:
     return root.resolve() / STATE_DIR_NAME / CONFIG_NAME
-
-
-def append_worker_slot(root: Path, thread_id: str, desktop_project_id: str) -> bool:
-    """Append one app-verified Desktop task to a stopped run, atomically."""
-    path = config_path(root)
-    if not path.is_file():
-        raise FileNotFoundError(f"Codex Autopilot is not initialized: {path}")
-    if not thread_id:
-        raise ValueError("worker thread id must be non-empty")
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
-    desktop = data.get("desktop") or {}
-    configured_project = _optional_string(desktop.get("desktop_project_id"))
-    if configured_project != desktop_project_id:
-        raise ValueError("Desktop worker slot project does not match the initialized run")
-    ids = list(_string_tuple(desktop.get("worker_thread_ids"), "desktop.worker_thread_ids"))
-    if thread_id in ids:
-        return False
-    ids.append(thread_id)
-    lines = path.read_text(encoding="utf-8").splitlines()
-    replacement = f"worker_thread_ids = {json.dumps(ids, ensure_ascii=False)}"
-    for index, line in enumerate(lines):
-        if line.startswith("worker_thread_ids ="):
-            lines[index] = replacement
-            break
-    else:
-        marker = next(index for index, line in enumerate(lines) if line.startswith("turn_timeout_seconds ="))
-        lines.insert(marker, replacement)
-    fd, raw = tempfile.mkstemp(prefix=".config-", dir=path.parent)
-    temp = Path(raw)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
-    return True
 
 
 def set_worker_surface(root: Path, worker_surface: str) -> bool:
@@ -201,7 +162,6 @@ def load_config(root_or_path: Path) -> Config:
             permission_profile=permission,
             project_id=_optional_string(desktop.get("project_id")),
             desktop_project_id=_optional_string(desktop.get("desktop_project_id")),
-            worker_thread_ids=_string_tuple(desktop.get("worker_thread_ids"), "desktop.worker_thread_ids"),
             title_prefix=str(desktop.get("title_prefix", "Codex Autopilot")),
             turn_timeout_seconds=_positive_int(desktop.get("turn_timeout_seconds", 14_400), "turn_timeout_seconds"),
             reconcile_timeout_seconds=_positive_int(desktop.get("reconcile_timeout_seconds", 300), "reconcile_timeout_seconds"),

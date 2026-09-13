@@ -24,7 +24,6 @@ def initialize_project(
     language: str = DEFAULT_LANGUAGE,
     project_id: str | None = None,
     desktop_project_id: str | None = None,
-    worker_thread_ids: tuple[str, ...] = (),
     worker_surface: str = DESKTOP_OWNED_SURFACE,
 ) -> Plan:
     root = root.expanduser().resolve()
@@ -64,7 +63,6 @@ def initialize_project(
         language=language,
         project_id=project_id,
         desktop_project_id=desktop_project_id,
-        worker_thread_ids=worker_thread_ids,
         worker_surface=worker_surface,
     )
     completed = min(completed, len(plan.milestones))
@@ -145,7 +143,6 @@ def _write_config(
     language: str,
     project_id: str | None = None,
     desktop_project_id: str | None = None,
-    worker_thread_ids: tuple[str, ...] = (),
     worker_surface: str = DESKTOP_OWNED_SURFACE,
 ) -> None:
     lines = [
@@ -164,8 +161,6 @@ def _write_config(
         lines.append(f"project_id = {_toml_string(project_id)}")
     if desktop_project_id:
         lines.append(f"desktop_project_id = {_toml_string(desktop_project_id)}")
-    if worker_thread_ids:
-        lines.append(f"worker_thread_ids = {json.dumps(list(worker_thread_ids), ensure_ascii=False)}")
     lines.extend([
         "turn_timeout_seconds = 14400",
         "reconcile_timeout_seconds = 300",

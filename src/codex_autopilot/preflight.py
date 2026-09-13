@@ -84,7 +84,6 @@ class PreflightResult:
     routing: str = "HOST SETTINGS"
     project_id: str | None = None
     desktop_project_id: str | None = None
-    worker_thread_ids: tuple[str, ...] = ()
     project_name: str | None = None
     project_source: str | None = None
     memory_preflight_thread_id: str | None = None
@@ -128,7 +127,6 @@ def run_preflight(
     approve_project_memory_always: bool = False,
     app_server_project_id: str | None = None,
     desktop_project_id: str | None = None,
-    worker_thread_ids: tuple[str, ...] = (),
     worker_surface: str | None = None,
 ) -> PreflightResult:
     project = root.expanduser().resolve()
@@ -137,7 +135,6 @@ def run_preflight(
         project=project,
         codex_binary=codex_binary or binary,
         desktop_project_id=desktop_project_id,
-        worker_thread_ids=worker_thread_ids,
     )
 
     def report(name: str, status: str, detail: str = "") -> None:
@@ -249,35 +246,23 @@ def run_preflight(
                 "no saved project contains the target root; task stays in Recents with canonical cwd",
             )
 
-        if desktop_project_id and worker_thread_ids:
-            _validate_worker_slots(client, worker_thread_ids)
-            report(
-                "Desktop UI placement",
-                "OK",
-                f"{len(worker_thread_ids)} Desktop-created slot(s) assigned to project {desktop_project_id}",
-            )
-        elif desktop_project_id:
+        if desktop_project_id:
             # Заранее созданные слоты были обходом вокруг мнимой
             # невозможности завести видимую задачу через App Server.
             # Замерено: thread/start с originator самого приложения даёт
-            # задачу, видимую в сайдбаре проекта. Требовать слот здесь
-            # значило противоречить скиллу, который прямо запрещает их
-            # создавать заранее - и прогон не мог стартовать вовсе.
+            # задачу, видимую в сайдбаре проекта - шесть воркеров приёмки
+            # 0.8.0 все оказались INSIDE. Механизм слотов снят в 0.8.1.
             report(
                 "Desktop UI placement",
                 "OK",
                 f"dispatcher creates its own visible task in project {desktop_project_id}",
             )
-        elif worker_thread_ids:
-            raise PreflightError("worker slots require --desktop-project-id")
-        elif project_source in {"target", "explicit target"}:
+        else:
             report(
                 "Desktop UI placement",
-                "UNVERIFIED",
-                "App Server project metadata is not Desktop sidebar assignment; use Desktop-created worker slots for guaranteed placement",
+                "TASKS/RECENTS",
+                "no Desktop project was supplied; the task stays in Recents",
             )
-        else:
-            report("Desktop UI placement", "TASKS/RECENTS", "no Desktop-created project slots were supplied")
 
         selection = None
         if profile == "adaptive":
@@ -550,23 +535,6 @@ def _validate_memory_preflight_turn(turn: dict[str, Any]) -> None:
         raise PreflightError("Project Memory MCP preflight did not complete exactly one memory tool call")
     if final_agent_message(turn).strip() != MEMORY_PREFLIGHT_OK:
         raise PreflightError("Project Memory MCP preflight returned an unexpected final response")
-
-
-def _validate_worker_slots(client: Any, thread_ids: tuple[str, ...]) -> None:
-    if not thread_ids:
-        raise PreflightError("Desktop project placement needs at least one just-in-time worker slot")
-    if len(set(thread_ids)) != len(thread_ids):
-        raise PreflightError("Desktop worker slot ids must be unique")
-    for thread_id in thread_ids:
-        thread = client.read_thread(thread_id)
-        if str(thread.get("id")) != thread_id:
-            raise PreflightError(f"Desktop worker slot {thread_id} resolved to an unexpected task")
-        status = thread.get("status") or {}
-        status_type = status.get("type") if isinstance(status, dict) else status
-        if status_type not in {"idle", "notLoaded"}:
-            raise PreflightError(f"Desktop worker slot {thread_id} is not idle: {status_type}")
-        if thread.get("canAcceptDirectInput") is False:
-            raise PreflightError(f"Desktop worker slot {thread_id} cannot accept the production turn")
 
 
 def _archive_replaced_workers(project: Path, client: Any, *, exclude: set[str]) -> list[str]:

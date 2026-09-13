@@ -295,7 +295,7 @@ def wait_for_dispatcher(root: Path, pid: int, timeout: float = 20) -> str:
         state = store.load()
         if state.status == "BLOCKED":
             raise RuntimeError(f"dispatcher blocked during startup: {state.last_error or 'see BLOCKED.json'}")
-        if state.dispatcher_pid == pid and state.phase in {"WAITING_INITIATOR", "PREPARING", "WAITING_PROJECT_SLOT", "WAITING_PROJECT_SLOT_RELEASE", "WAITING_RATE_LIMIT", "CREATING_THREAD", "THREAD_CREATED", "VERIFYING_MEMORY_MCP", "STARTING_TURN", "RUNNING_TURN"}:
+        if state.dispatcher_pid == pid and state.phase in {"WAITING_INITIATOR", "PREPARING", "WAITING_RATE_LIMIT", "CREATING_THREAD", "THREAD_CREATED", "VERIFYING_MEMORY_MCP", "STARTING_TURN", "RUNNING_TURN"}:
             return state.phase
         time.sleep(0.1)
     raise RuntimeError(f"dispatcher {pid} did not become ready; see {cfg.state_dir / 'logs' / 'dispatcher.log'}")

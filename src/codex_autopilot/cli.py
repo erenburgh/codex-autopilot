@@ -13,7 +13,7 @@ import time
 from . import __version__
 from .appserver import AppServerClient
 from .bootstrap import initialize_project, purge_project_state
-from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, append_worker_slot, load_config
+from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, load_config
 from .control import arm, find_project_root, handle_interrupt_hook, handle_post_tool_hook, handle_prompt_hook, handle_stop_hook, pid_alive, reactivate_desktop_relay_owner, recreate_archived_desktop_retry, spawn_automatic_app_server_relay, spawn_dispatcher, status_text, wait_for_dispatcher
 from .hook_trust import HookPreflightError, HookTrustApprovalRequired
 from .lifecycle import (
@@ -47,7 +47,6 @@ def parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--language", default=DEFAULT_LANGUAGE)
     bootstrap.add_argument("--app-server-project-id")
     bootstrap.add_argument("--desktop-project-id")
-    bootstrap.add_argument("--worker-thread-id", action="append", default=[])
     start_skill = sub.add_parser("start-skill", help=argparse.SUPPRESS)
     start_skill.add_argument("--project", type=Path, default=Path.cwd())
     start_skill.add_argument("--plan-file", type=Path, required=True)
@@ -55,7 +54,6 @@ def parser() -> argparse.ArgumentParser:
     start_skill.add_argument("--language", default=DEFAULT_LANGUAGE)
     start_skill.add_argument("--app-server-project-id")
     start_skill.add_argument("--desktop-project-id")
-    start_skill.add_argument("--worker-thread-id", action="append", default=[])
     start_skill.add_argument("--approve-project-memory-always", action="store_true", help=argparse.SUPPRESS)
     preflight = sub.add_parser("preflight", help="validate a target before creating Autopilot state")
     preflight.add_argument("--project", type=Path, default=Path.cwd())
@@ -66,11 +64,6 @@ def parser() -> argparse.ArgumentParser:
     preflight.add_argument("--language", default=DEFAULT_LANGUAGE)
     preflight.add_argument("--app-server-project-id")
     preflight.add_argument("--desktop-project-id")
-    preflight.add_argument("--worker-thread-id", action="append", default=[])
-    add_slot = sub.add_parser("add-worker-slot", help="register one app-created Desktop project worker task")
-    add_slot.add_argument("--project", type=Path, default=Path.cwd())
-    add_slot.add_argument("--desktop-project-id", required=True)
-    add_slot.add_argument("--thread-id", required=True)
     armed = sub.add_parser("arm", help=argparse.SUPPRESS)
     armed.add_argument("--project", type=Path, default=Path.cwd())
     automatic_relay = sub.add_parser("_relay_dispatch", help=argparse.SUPPRESS)
@@ -365,7 +358,6 @@ def main(argv: list[str] | None = None) -> int:
                 approve_project_memory_always=getattr(args, "approve_project_memory_always", False),
                 app_server_project_id=getattr(args, "app_server_project_id", None),
                 desktop_project_id=getattr(args, "desktop_project_id", None),
-                worker_thread_ids=tuple(getattr(args, "worker_thread_id", [])),
                 worker_surface=worker_surface,
             )
             if args.command == "preflight":
@@ -380,7 +372,6 @@ def main(argv: list[str] | None = None) -> int:
                 language=language,
                 project_id=preflight_result.project_id,
                 desktop_project_id=getattr(args, "desktop_project_id", None),
-                worker_thread_ids=tuple(getattr(args, "worker_thread_id", [])),
                 worker_surface=worker_surface,
             )
             if args.command == "start-skill":
@@ -414,28 +405,15 @@ def main(argv: list[str] | None = None) -> int:
                 "'Resume Codex Autopilot.' in a Codex task opened on this "
                 "project, so its trusted Stop hook launches the dispatcher"
             )
-        if args.command == "add-worker-slot":
-            root = args.project.resolve()
-            cfg = load_config(root)
-            store = StateStore(cfg.state_dir)
-            state = store.load()
-            if pid_alive(state.dispatcher_pid):
-                raise RuntimeError("stop or wait for the dispatcher before adding a Desktop worker slot")
-            added = append_worker_slot(root, args.thread_id, args.desktop_project_id)
-            if state.status == "WAITING" and state.phase == "WAITING_PROJECT_SLOT":
-                state.status = "READY"
-                state.phase = "PREPARING"
-                state.last_error = None
-                store.save(state)
-            print(f"Worker slot {'added' if added else 'already registered'}: {args.thread_id}")
-            return 0
-        if args.command == "_dispatch":
-            cfg = load_config(args.project)
-            if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
-                raise RuntimeError(
-                    "desktop_owned production cannot run through the App Server dispatcher"
-                )
-            return HeadlessAppServerOrchestrator(cfg).run(args.initiator_thread, args.initiator_turn)
+        if args.command == "resume":
+            # Единственная поверхность - desktop_owned, и запуск в ней
+            # принадлежит доверенному Stop-хуку. Команда оставлена как
+            # указатель: молча отсутствующая resume заставляла бы искать.
+            raise RuntimeError(
+                "resume is hook-owned: send the exact phrase "
+                "'Resume Codex Autopilot.' in a Codex task opened on this "
+                "project, so its trusted Stop hook launches the dispatcher"
+            )
         if args.command == "_relay_dispatch":
             cfg = load_config(args.project)
             return _run_automatic_relay_dispatch(
