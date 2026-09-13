@@ -9,8 +9,26 @@ import stat
 import zipfile
 
 
-VERSION = "0.8.0-beta"
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _package_version() -> str:
+    """Версия берётся из пакета, а не из третьей прибитой копии.
+
+    Здесь стояло "0.8.0-beta", когда пакет был на 0.8.2: скрипт сборки
+    релиза назвал бы архив двумя версиями назад. Это третий случай той
+    же болезни за день - до него разошлись версия MCP-сервера памяти и
+    версия клиента в рукопожатии App Server.
+    """
+
+    source = (ROOT / "src" / "codex_autopilot" / "__init__.py").read_text(encoding="utf-8")
+    for line in source.splitlines():
+        if line.startswith("__version__"):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    raise SystemExit("не нашла __version__ в пакете")
+
+
+VERSION = _package_version()
 USER_ITEMS = [".agents", "plugins", "src", "docs", "install.sh", "README.md", "GETTING_STARTED.md", "CHANGELOG.md", "LICENSE"]
 SOURCE_EXCLUDES = {"__pycache__", ".git", ".DS_Store", ".venv", "dist", "build"}
 BANNED_PARTS = {"__pycache__", ".git", ".venv", "venv", "logs"}
