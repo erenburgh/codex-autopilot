@@ -20,7 +20,6 @@ from codex_autopilot.cli import (
 )
 from codex_autopilot.config import (
     DESKTOP_OWNED_SURFACE,
-    HEADLESS_APP_SERVER_SURFACE,
     load_config,
 )
 from codex_autopilot.control import (
@@ -884,8 +883,6 @@ class DesktopLifecycleTests(unittest.TestCase):
         )
 
 
-
-
     def test_created_thread_is_explicitly_assigned_to_the_saved_project(self) -> None:
         """Создание с projectId и явная привязка - разные вызовы.
 
@@ -1079,8 +1076,6 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertEqual(successor["automatic_dispatch_pid"], os.getpid())
 
 
-
-
     def test_reserves_only_two_parallel_sol_workers_after_trust_gate(self) -> None:
         self.assertEqual(self.cfg.runtime.worker_surface, DESKTOP_OWNED_SURFACE)
         descriptors = reserve_ready_frontier(self.cfg)
@@ -1236,8 +1231,6 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertIn("must not continue production", str(caught.exception))
 
 
-
-
     def test_failed_trust_gate_cannot_reserve_frontier(self) -> None:
         self.hook_gate_mock.side_effect = HookTrustApprovalRequired(
             plugin_id="codex-autopilot-adaptive@codex-autopilot-local",
@@ -1249,7 +1242,6 @@ class DesktopLifecycleTests(unittest.TestCase):
         with self.assertRaises(HookTrustApprovalRequired):
             reserve_ready_frontier(self.cfg)
         self.assertEqual(state_path.read_bytes(), before)
-
 
 
     def test_atomic_reservation_prevents_duplicate_concurrent_creation(self) -> None:
@@ -1399,7 +1391,6 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertEqual(ambiguous["status"], "AMBIGUOUS")
 
 
-
     def test_platform_handoff_identity_reconciliation_preserves_completion(self) -> None:
         descriptor = reserve_ready_frontier(self.cfg)[0]
         self.activate(descriptor, "original-thread")
@@ -1464,10 +1455,6 @@ class DesktopLifecycleTests(unittest.TestCase):
                 current_thread_id="continued-thread",
                 expected_task_id="B",
             )
-
-
-
-
 
 
     def test_one_rate_limit_preserves_other_worker_and_retries_deterministically(self) -> None:
@@ -1550,7 +1537,6 @@ class DesktopLifecycleTests(unittest.TestCase):
             [item["status"] for item in self.store.load().worker_sessions],
             ["CREATE_REQUESTED", "CREATE_REQUESTED"],
         )
-
 
 
     def test_m7_stop_alone_recovers_due_legacy_m8_retry(self) -> None:
@@ -1871,21 +1857,6 @@ class DesktopLifecycleTests(unittest.TestCase):
             if item["reservation_token"] == outcome.descriptors[0].reservation_token
         )
         self.assertEqual(session["relay_owner_thread_id"], "M7-thread")
-
-
-
-
-    def test_headless_mode_is_explicit_and_has_no_desktop_promise(self) -> None:
-        path = self.root / ".codex-autopilot" / "config.toml"
-        text = path.read_text(encoding="utf-8").replace(
-            'worker_surface = "desktop_owned"',
-            'worker_surface = "headless_app_server"',
-        )
-        path.write_text(text, encoding="utf-8")
-        cfg = load_config(self.root)
-        self.assertEqual(cfg.runtime.worker_surface, HEADLESS_APP_SERVER_SURFACE)
-        with self.assertRaisesRegex(DesktopLifecycleError, "explicitly headless_app_server"):
-            reserve_ready_frontier(cfg)
 
 
 if __name__ == "__main__":

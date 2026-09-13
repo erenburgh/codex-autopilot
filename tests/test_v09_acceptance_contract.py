@@ -134,10 +134,17 @@ class V09ContractRegressionTests(unittest.TestCase):
         self.assertEqual(plan.execution_strategy, "auto")
 
     def test_start_skill_defaults_to_the_desktop_owned_v09_runtime(self) -> None:
-        args = cli_parser().parse_args(
-            ["start-skill", "--plan-file", "plan.json"]
-        )
-        self.assertEqual(args.worker_surface, "desktop_owned")
+        """Поверхность больше не выбирается: она одна.
+
+        Флаг --worker-surface снят вместе с headless-путём, который не мог
+        выполниться. Контракт теперь в том, что другой поверхности нет.
+        """
+
+        from codex_autopilot.config import DESKTOP_OWNED_SURFACE, WORKER_SURFACES
+
+        self.assertEqual(WORKER_SURFACES, {DESKTOP_OWNED_SURFACE})
+        args = cli_parser().parse_args(["start-skill", "--plan-file", "plan.json"])
+        self.assertFalse(hasattr(args, "worker_surface"))
 
     def test_thread_titles_match_the_required_human_readable_shapes(self) -> None:
         self.assertEqual(

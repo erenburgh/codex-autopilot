@@ -11,9 +11,10 @@ import unittest
 from unittest import mock
 
 from codex_autopilot.appserver import AppServerRpcError, ApprovalRequired, PauseRequested, TurnResult, is_rate_limit_error, rate_limit_reset_at
+from _gates import patch_hook_trust_gates
 from codex_autopilot.bootstrap import initialize_project
-from codex_autopilot.config import DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE, append_worker_slot, load_config, set_worker_surface
-from codex_autopilot.control import arm, handle_prompt_hook, handle_stop_hook, restore_app_server_transport
+from codex_autopilot.config import DESKTOP_OWNED_SURFACE, append_worker_slot, load_config, set_worker_surface
+from codex_autopilot.control import arm, handle_prompt_hook, handle_stop_hook
 from codex_autopilot.control import status_text
 from codex_autopilot.cli import uninstall
 from codex_autopilot.models import MODEL_IDS, ModelRoutingError, logical_model, resolve_reasoning, resolve_selection
@@ -46,6 +47,7 @@ def make_project(
     strategy: str | None = None,
     modes: list[str] | None = None,
     language: str = "en",
+    desktop_project_id: str = "desktop-project",
 ) -> Path:
     root = Path(tempfile.mkdtemp(prefix="codex-autopilot-test-"))
     subprocess.run(["git", "init", "-q", str(root)], check=True)
@@ -71,6 +73,9 @@ def make_project(
         profile=profile,
         skill_path=ADAPTIVE_SKILL if profile == "adaptive" else HOST_SKILL,
         language=language,
+        # Поверхность одна - desktop_owned, и она требует проект. Прежде
+        # умолчанием был headless, и фикстура обходилась без него.
+        desktop_project_id=desktop_project_id,
     )
     return root
 
@@ -407,75 +412,6 @@ class CoreTests(unittest.TestCase):
         self.assertFalse((root / ".git").exists())
 
 
-    def test_restore_app_server_transport_cancels_only_uncreated_reservation(self):
-        root = make_project("adaptive", 2)
-        set_worker_surface(root, DESKTOP_OWNED_SURFACE)
-        cfg = load_config(root)
-        plan = load_plan(cfg.state_dir, cfg.profile)
-        store = StateStore(cfg.state_dir)
-        state = store.load()
-        state.task_states = transition_task(plan, state.task_states, "M1", TaskState.RUNNING)
-        state.task_states = transition_task(plan, state.task_states, "M1", TaskState.IMPLEMENTED)
-        state.task_states = transition_task(plan, state.task_states, "M1", TaskState.VERIFYING)
-        state.task_states = transition_task(plan, state.task_states, "M1", TaskState.VERIFIED)
-        state.task_states = transition_task(plan, state.task_states, "M2", TaskState.READY)
-        state.task_states = transition_task(plan, state.task_states, "M2", TaskState.RUNNING)
-        state.active_task_ids = ["M2"]
-        state.status = "RUNNING"
-        state.phase = "AWAITING_DESKTOP_CREATE"
-        state.milestone_index = 1
-        state.milestone_id = "M2"
-        state.current_thread_id = "verified-m1-thread"
-        state.task_attempts["M2"] = 1
-        token = "reservation-m2"
-        state.worker_sessions = [
-            {
-                "reservation_token": token,
-                "resource_ownership_token": token,
-                "operation_id": "operation-m2",
-                "client_user_message_id": "message-m2",
-                "task_id": "M2",
-                "kind": "worker",
-                "attempt": 1,
-                "worker_sequence": 2,
-                "status": "CREATE_REQUESTED",
-                "thread_id": None,
-                "turn_id": None,
-                "relay_owner_thread_id": "verified-m1-thread",
-                "created_at": utc_now(),
-            }
-        ]
-        acquired = acquire_resources_in_state(
-            plan,
-            state,
-            root,
-            "M2",
-            LockOwner.create(
-                run_id=state.run_id,
-                task_id="M2",
-                attempt=1,
-                worker_id="desktop-worker-2",
-                ownership_token=token,
-            ),
-        )
-        self.assertTrue(acquired.acquired)
-        store.save(state)
-
-        self.assertEqual(restore_app_server_transport(root), "M2")
-
-        restored = store.load()
-        self.assertEqual(load_config(root).runtime.worker_surface, HEADLESS_APP_SERVER_SURFACE)
-        self.assertEqual(restored.task_states["M1"], TaskState.VERIFIED.value)
-        self.assertEqual(restored.task_states["M2"], TaskState.READY.value)
-        self.assertEqual(restored.active_task_ids, [])
-        self.assertEqual(restored.resource_locks, [])
-        self.assertEqual(restored.worker_sessions[-1]["status"], "CANCELLED_TRANSPORT_MIGRATION")
-        self.assertEqual(restored.status, "READY")
-        self.assertEqual(restored.phase, "PREPARING")
-        self.assertIsNone(restored.current_thread_id)
-        self.assertIn("verified-m1-thread", restored.previous_thread_ids)
-
-
     def test_rate_limit_detection_and_reset(self):
         self.assertTrue(is_rate_limit_error({"nested": {"codexErrorInfo": "usageLimitExceeded"}}))
         snapshot = {"rateLimitsByLimitId": {"weekly": {"secondary": {"usedPercent": 100, "resetsAt": 999}}}}
@@ -494,15 +430,29 @@ class CoreTests(unittest.TestCase):
         }
         self.assertEqual(rate_limit_reset_at(snapshot), 1788878029)
 
-    def test_arm_and_stop_hook_pass_initiator_ids(self):
+    def test_arm_and_stop_hook_bind_the_initiating_thread_as_owner(self):
+        """Владельцем становится ветка того самого Stop-события."""
+
+        patch_hook_trust_gates(self)
         root = make_project()
+        spawned: list[tuple] = []
         with isolated_launch_registry():
             arm(root)
-            with mock.patch("codex_autopilot.control.spawn_dispatcher", return_value=42) as spawn, mock.patch("codex_autopilot.control.wait_for_dispatcher", return_value="WAITING_INITIATOR"):
-                output = handle_stop_hook({"cwd": str(root), "session_id": "session", "turn_id": "turn"})
-        spawn.assert_called_once_with(root.resolve(), initiator_thread_id="session", initiator_turn_id="turn")
-        self.assertIn("dispatcher started", output["systemMessage"])
+            with mock.patch(
+                "codex_autopilot.control.spawn_automatic_app_server_relay",
+                side_effect=lambda project, **kw: spawned.append((project, kw)) or 42,
+            ):
+                output = handle_stop_hook(
+                    {"cwd": str(root), "session_id": "session", "turn_id": "turn"}
+                )
+        self.assertTrue(spawned, "резервация не поднята")
+        self.assertEqual(spawned[0][1]["initiator_thread_id"], "session")
+        self.assertEqual(spawned[0][1]["initiator_turn_id"], "turn")
+        self.assertTrue(output, "хук обязан отчитаться о запуске")
         self.assertFalse((root / ".codex-autopilot/launch-request.json").exists())
+        state = StateStore(root / ".codex-autopilot").load()
+        session = state.worker_sessions[-1]
+        self.assertEqual(session["relay_owner_thread_id"], "session")
 
     def test_stale_stop_hook_arm_does_not_start_duplicate_dispatcher(self):
         root = make_project()
@@ -521,15 +471,29 @@ class CoreTests(unittest.TestCase):
         self.assertFalse((root / ".codex-autopilot/launch-request.json").exists())
 
     def test_stop_hook_claims_target_outside_initiating_cwd(self):
+        """Инициирующая задача может стоять не в целевой папке."""
+
+        patch_hook_trust_gates(self)
         root = make_project()
         outside = Path(tempfile.mkdtemp(prefix="codex-autopilot-initiator-outside-"))
-        launch_dir = Path(tempfile.mkdtemp(prefix="codex-autopilot-launch-registry-")) / "requests"
-        with mock.patch.dict(os.environ, {"CODEX_AUTOPILOT_LAUNCH_DIR": str(launch_dir)}):
+        spawned: list[tuple] = []
+        with isolated_launch_registry():
             arm(root)
-            with mock.patch("codex_autopilot.control.spawn_dispatcher", return_value=43) as spawn, mock.patch("codex_autopilot.control.wait_for_dispatcher", return_value="WAITING_INITIATOR"):
-                output = handle_stop_hook({"cwd": str(outside), "session_id": "outside-session", "turn_id": "outside-turn"})
-        spawn.assert_called_once_with(root.resolve(), initiator_thread_id="outside-session", initiator_turn_id="outside-turn")
-        self.assertIn("dispatcher started", output["systemMessage"])
+            with mock.patch(
+                "codex_autopilot.control.spawn_automatic_app_server_relay",
+                side_effect=lambda project, **kw: spawned.append((project, kw)) or 43,
+            ):
+                output = handle_stop_hook(
+                    {
+                        "cwd": str(outside),
+                        "session_id": "outside-session",
+                        "turn_id": "outside-turn",
+                    }
+                )
+        self.assertTrue(spawned, "цель вне инициирующей папки не поднята")
+        self.assertEqual(spawned[0][0], root.resolve())
+        self.assertEqual(spawned[0][1]["initiator_thread_id"], "outside-session")
+        self.assertTrue(output, "хук обязан отчитаться о запуске")
 
 
     def test_exact_control_prompt_does_not_use_model(self):

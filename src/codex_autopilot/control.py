@@ -13,10 +13,8 @@ from . import lifecycle as lifecycle_runtime
 from .appserver import AppServerClient  # sentinel: DevOps recovery must never construct it
 from .config import (
     DESKTOP_OWNED_SURFACE,
-    HEADLESS_APP_SERVER_SURFACE,
     STATE_DIR_NAME,
     load_config,
-    set_worker_surface,
 )
 from .pipeline_engineer import (
     IncidentClass,
@@ -285,129 +283,6 @@ def _spawn_automatic_descriptors(
             )
         )
     return tuple(pids)
-
-
-def restore_app_server_transport(root: Path) -> str:
-    """Move one provably uncreated Desktop reservation to App Server dispatch."""
-
-    root = root.resolve()
-    cfg = load_config(root)
-    store = StateStore(cfg.state_dir)
-    store.acquire()
-    try:
-        state = store.load()
-        if pid_alive(state.dispatcher_pid):
-            raise RuntimeError(
-                f"dispatcher is already running with pid {state.dispatcher_pid}"
-            )
-        if state.status == "DONE":
-            raise RuntimeError("the run is already DONE")
-        if len(state.active_task_ids) > 1:
-            raise RuntimeError("transport restoration requires at most one active task")
-        task_id = state.active_task_ids[0] if state.active_task_ids else state.milestone_id
-        if not task_id or task_id not in state.task_states:
-            raise RuntimeError("transport restoration cannot identify the current task")
-
-        pending_statuses = {
-            "RESERVED",
-            "CREATE_REQUESTED",
-            "RELAYING",
-            "CREATED",
-            "PREPARING",
-            "PREPARED",
-            "SEND_RELAYING",
-            "ACTIVE",
-            "AMBIGUOUS",
-        }
-        pending = [
-            item
-            for item in state.worker_sessions
-            if item.get("status") in pending_statuses
-        ]
-        if any(item.get("task_id") != task_id for item in pending):
-            raise RuntimeError("another task still has a pending Desktop session")
-        if any(item.get("thread_id") or item.get("turn_id") for item in pending):
-            raise RuntimeError(
-                "a Desktop worker may already exist; refusing an ambiguous transport switch"
-            )
-
-        plan = load_plan(cfg.state_dir, cfg.profile)
-        now = utc_now()
-        for session in pending:
-            session["status"] = "CANCELLED_TRANSPORT_MIGRATION"
-            session["completed_at"] = now
-            session["failure_reason"] = (
-                "Superseded before thread creation by controller-owned App Server transport."
-            )
-            token = str(session["reservation_token"])
-            release_resources_in_state(
-                state,
-                token,
-                reason="controller_owned_app_server_restore",
-                now=now,
-            )
-            state.lifecycle_journal_sequence += 1
-            state.lifecycle_journal.append(
-                {
-                    "sequence": state.lifecycle_journal_sequence,
-                    "event": "transport_migration_cancelled",
-                    "operation_id": str(session["operation_id"]),
-                    "task_id": task_id,
-                    "attempt": int(session["attempt"]),
-                    "reservation_token": token,
-                    "thread_id": None,
-                    "relay_owner_thread_id": session.get("relay_owner_thread_id"),
-                    "turn_id": None,
-                    "client_user_message_id": str(session["client_user_message_id"]),
-                    "at": now,
-                }
-            )
-
-        current = TaskState(state.task_states[task_id])
-        if current is TaskState.RUNNING:
-            state.task_states = transition_task(
-                plan, state.task_states, task_id, TaskState.RETRY_WAIT
-            )
-        elif current not in {TaskState.RETRY_WAIT, TaskState.READY}:
-            raise RuntimeError(
-                f"task {task_id} cannot move to App Server from {current.value}"
-            )
-        state.active_task_ids = [
-            value for value in state.active_task_ids if value != task_id
-        ]
-        state.task_retry_at.pop(task_id, None)
-        if state.current_thread_id and state.current_thread_id not in state.previous_thread_ids:
-            state.previous_thread_ids.append(state.current_thread_id)
-        state.current_thread_id = None
-        state.current_turn_id = None
-        state.client_user_message_id = None
-        state.prompt_sha256 = None
-        state.checkpoint_before = None
-        state.memory_audit_before = None
-        state.status = "PAUSED"
-        state.phase = "TRANSPORT_MIGRATION"
-        state.dispatcher_pid = None
-        state.last_error = None
-        state.completed_at = None
-        store.save(state)
-
-        set_worker_surface(root, HEADLESS_APP_SERVER_SURFACE)
-
-        state = store.load()
-        if TaskState(state.task_states[task_id]) is TaskState.RETRY_WAIT:
-            state.task_states = transition_task(
-                plan, state.task_states, task_id, TaskState.READY
-            )
-        if TaskState(state.task_states[task_id]) is not TaskState.READY:
-            raise RuntimeError(f"task {task_id} was not restored to READY")
-        state.scheduler_sequence += 1
-        state.task_ready_since[task_id] = state.scheduler_sequence
-        state.status = "READY"
-        state.phase = "PREPARING"
-        store.save(state)
-        return task_id
-    finally:
-        store.release()
 
 
 def wait_for_dispatcher(root: Path, pid: int, timeout: float = 20) -> str:

@@ -21,9 +21,12 @@ from .plan import (
 CONFIG_NAME = "config.toml"
 STATE_DIR_NAME = ".codex-autopilot"
 PROFILES = {"adaptive", "host-settings"}
+# Единственная поверхность воркера. Вторая, headless_app_server, вела в
+# orchestrator.py, который не мог выполниться в продукте: run, resume и
+# _dispatch отказывали при desktop_owned, а умолчание везде было
+# desktop_owned. В 0.8.1 и путь, и поверхность сняты.
 DESKTOP_OWNED_SURFACE = "desktop_owned"
-HEADLESS_APP_SERVER_SURFACE = "headless_app_server"
-WORKER_SURFACES = {DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE}
+WORKER_SURFACES = {DESKTOP_OWNED_SURFACE}
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,9 +57,7 @@ class RuntimeConfig:
     execution_strategy: str = COMPAT_EXECUTION_STRATEGY
     max_parallel_workers: int = COMPAT_MAX_PARALLEL_WORKERS
     computer_use_slots: int = DEFAULT_COMPUTER_USE_SLOTS
-    # Missing values and new runs retain the historical controller-owned App
-    # Server behavior. Desktop ownership must be selected explicitly.
-    worker_surface: str = HEADLESS_APP_SERVER_SURFACE
+    worker_surface: str = DESKTOP_OWNED_SURFACE
     # До какого размещения ветки в Desktop задача не вправе начинать работу.
     # "in_project" - только внутри проекта; "visible" - достаточно того, что
     # Desktop о ней знает; "any" - не проверять. Невидимая задача обесценивает
@@ -223,7 +224,7 @@ def load_config(root_or_path: Path) -> Config:
                 "runtime.computer_use_slots",
             ),
             worker_surface=_worker_surface(
-                runtime.get("worker_surface", HEADLESS_APP_SERVER_SURFACE)
+                runtime.get("worker_surface", DESKTOP_OWNED_SURFACE)
             ),
             required_thread_placement=_thread_placement(
                 runtime.get("required_thread_placement", "in_project")

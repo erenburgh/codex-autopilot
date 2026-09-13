@@ -13,8 +13,8 @@ import time
 from . import __version__
 from .appserver import AppServerClient
 from .bootstrap import initialize_project, purge_project_state
-from .config import DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE, STATE_DIR_NAME, append_worker_slot, load_config
-from .control import arm, find_project_root, handle_interrupt_hook, handle_post_tool_hook, handle_prompt_hook, handle_stop_hook, pid_alive, reactivate_desktop_relay_owner, recreate_archived_desktop_retry, restore_app_server_transport, spawn_automatic_app_server_relay, spawn_dispatcher, status_text, wait_for_dispatcher
+from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, append_worker_slot, load_config
+from .control import arm, find_project_root, handle_interrupt_hook, handle_post_tool_hook, handle_prompt_hook, handle_stop_hook, pid_alive, reactivate_desktop_relay_owner, recreate_archived_desktop_retry, spawn_automatic_app_server_relay, spawn_dispatcher, status_text, wait_for_dispatcher
 from .hook_trust import HookPreflightError, HookTrustApprovalRequired
 from .lifecycle import (
     adopt_automatic_dispatcher_successor,
@@ -48,11 +48,6 @@ def parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--app-server-project-id")
     bootstrap.add_argument("--desktop-project-id")
     bootstrap.add_argument("--worker-thread-id", action="append", default=[])
-    bootstrap.add_argument(
-        "--worker-surface",
-        choices=sorted({DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE}),
-        default=DESKTOP_OWNED_SURFACE,
-    )
     start_skill = sub.add_parser("start-skill", help=argparse.SUPPRESS)
     start_skill.add_argument("--project", type=Path, default=Path.cwd())
     start_skill.add_argument("--plan-file", type=Path, required=True)
@@ -61,11 +56,6 @@ def parser() -> argparse.ArgumentParser:
     start_skill.add_argument("--app-server-project-id")
     start_skill.add_argument("--desktop-project-id")
     start_skill.add_argument("--worker-thread-id", action="append", default=[])
-    start_skill.add_argument(
-        "--worker-surface",
-        choices=sorted({DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE}),
-        default=DESKTOP_OWNED_SURFACE,
-    )
     start_skill.add_argument("--approve-project-memory-always", action="store_true", help=argparse.SUPPRESS)
     preflight = sub.add_parser("preflight", help="validate a target before creating Autopilot state")
     preflight.add_argument("--project", type=Path, default=Path.cwd())
@@ -77,22 +67,12 @@ def parser() -> argparse.ArgumentParser:
     preflight.add_argument("--app-server-project-id")
     preflight.add_argument("--desktop-project-id")
     preflight.add_argument("--worker-thread-id", action="append", default=[])
-    preflight.add_argument(
-        "--worker-surface",
-        choices=sorted({DESKTOP_OWNED_SURFACE, HEADLESS_APP_SERVER_SURFACE}),
-        default=DESKTOP_OWNED_SURFACE,
-    )
     add_slot = sub.add_parser("add-worker-slot", help="register one app-created Desktop project worker task")
     add_slot.add_argument("--project", type=Path, default=Path.cwd())
     add_slot.add_argument("--desktop-project-id", required=True)
     add_slot.add_argument("--thread-id", required=True)
     armed = sub.add_parser("arm", help=argparse.SUPPRESS)
     armed.add_argument("--project", type=Path, default=Path.cwd())
-    restore = sub.add_parser(
-        "restore-app-server",
-        help="restore an uncreated Desktop reservation to controller-owned App Server dispatch",
-    )
-    restore.add_argument("--project", type=Path, default=Path.cwd())
     automatic_relay = sub.add_parser("_relay_dispatch", help=argparse.SUPPRESS)
     automatic_relay.add_argument("--project", type=Path, required=True)
     automatic_relay.add_argument("--token", required=True)
@@ -375,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
             language = normalize_language(args.language)
             raw = json.loads(args.plan_file.read_text(encoding="utf-8"))
             checked_plan = validate_plan(raw, profile)
-            worker_surface = args.worker_surface
+            worker_surface = DESKTOP_OWNED_SURFACE
             preflight_result = run_preflight(
                 args.project,
                 plan=checked_plan,
@@ -424,16 +404,6 @@ def main(argv: list[str] | None = None) -> int:
             surface = load_config(args.project).runtime.worker_surface
             name = "Desktop reservation" if surface == DESKTOP_OWNED_SURFACE else "Headless dispatcher"
             print(f"{name} armed for this turn's Stop hook; the causal task performs the fixed relay.")
-            return 0
-        if args.command == "restore-app-server":
-            root = args.project.resolve()
-            task_id = restore_app_server_transport(root)
-            pid = spawn_dispatcher(root)
-            phase = wait_for_dispatcher(root, pid)
-            print(
-                f"Restored {task_id} to controller-owned App Server dispatch: "
-                f"pid {pid}, phase {phase}"
-            )
             return 0
         if args.command == "resume":
             # Единственная поверхность - desktop_owned, и запуск в ней

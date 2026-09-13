@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import shutil
 
-from .config import HEADLESS_APP_SERVER_SURFACE, STATE_DIR_NAME, WORKER_SURFACES
+from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, WORKER_SURFACES
 from .language import DEFAULT_LANGUAGE, is_russian, normalize_language
 from .memory import ProjectMemory
 from .migration import detect_v07, migrate_v07
@@ -25,7 +25,7 @@ def initialize_project(
     project_id: str | None = None,
     desktop_project_id: str | None = None,
     worker_thread_ids: tuple[str, ...] = (),
-    worker_surface: str = HEADLESS_APP_SERVER_SURFACE,
+    worker_surface: str = DESKTOP_OWNED_SURFACE,
 ) -> Plan:
     root = root.expanduser().resolve()
     if not root.is_dir():
@@ -146,7 +146,7 @@ def _write_config(
     project_id: str | None = None,
     desktop_project_id: str | None = None,
     worker_thread_ids: tuple[str, ...] = (),
-    worker_surface: str = HEADLESS_APP_SERVER_SURFACE,
+    worker_surface: str = DESKTOP_OWNED_SURFACE,
 ) -> None:
     lines = [
         f"profile = {_toml_string(profile)}",
