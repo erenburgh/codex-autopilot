@@ -293,3 +293,66 @@ class ServerViewTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("`server_view` carries the App Server's own record", source)
         self.assertIn("Do not run anything outside the project working directory", source)
+
+
+class PlanChangeUserRequestTests(unittest.TestCase):
+    """user_request переносит runtime, а не повторяет реплэннер.
+
+    Промпт требовал сохранить его дословно. В живом прогоне M11 это 35 234
+    символа: модель, переписывающая граф, такую строку не воспроизводит, и
+    ЛЮБАЯ законная смена плана отклонялась целиком с "plan changes must not
+    replace the original user request". Ход реплэннера при этом проходил
+    успешно - отвергался результат.
+
+    Перенос строже прежней проверки: эхо можно подделать, а поле, которое
+    не читается из ответа, изменить нельзя вовсе.
+    """
+
+    def plan_data(self, **overrides):
+        from test_desktop_lifecycle import graph
+
+        data = dict(graph())
+        data.update(overrides)
+        return data
+
+    def test_a_replanner_may_omit_user_request(self) -> None:
+        from codex_autopilot.plan import validate_plan, validate_plan_change
+
+        current = validate_plan(self.plan_data(user_request="и" * 35_000), "adaptive")
+        data = self.plan_data(graph_version=current.graph_version + 1)
+        data.pop("user_request", None)
+        candidate = validate_plan_change(current, data, "adaptive")
+        self.assertEqual(candidate.user_request, current.user_request)
+
+    def test_a_returned_user_request_cannot_replace_the_original(self) -> None:
+        """Поле не читается из ответа, поэтому подмена невозможна."""
+
+        from codex_autopilot.plan import validate_plan, validate_plan_change
+
+        current = validate_plan(self.plan_data(user_request="исходный запрос"), "adaptive")
+        data = self.plan_data(
+            graph_version=current.graph_version + 1,
+            user_request="подменённый запрос",
+        )
+        candidate = validate_plan_change(current, data, "adaptive")
+        self.assertEqual(candidate.user_request, "исходный запрос")
+
+    def test_goal_stays_strict(self) -> None:
+        """goal — 542 символа, модель повторяет его надёжно."""
+
+        from codex_autopilot.plan import validate_plan, validate_plan_change
+
+        current = validate_plan(self.plan_data(), "adaptive")
+        data = self.plan_data(graph_version=current.graph_version + 1, goal="другая цель")
+        with self.assertRaisesRegex(ValueError, "goal"):
+            validate_plan_change(current, data, "adaptive")
+
+    def test_the_prompt_no_longer_demands_the_impossible(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src/codex_autopilot/lifecycle_prompts.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("user_request переносит runtime", source)
+        self.assertIn("The runtime carries user_request over", source)
+        self.assertNotIn("Дословно сохрани user_request", source)
+        self.assertNotIn("Preserve user_request verbatim", source)
