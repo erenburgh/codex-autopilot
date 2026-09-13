@@ -100,6 +100,21 @@ def replanner_thread_title(plan_change_id: str, change_summary: str) -> str:
     return _compose("Planner", identifier, _text(change_summary, "change_summary"))
 
 
+def pipeline_engineer_thread_title(incident_id: str, summary: str) -> str:
+    """Заголовок ветки дежурного инженера.
+
+    Идентификатор нормализуется к форме INC-<хвост>: тикеты приходят как
+    incident-8ea3ceca87b6c8a3, и в сайдбаре нужен короткий опознаваемый
+    префикс, а не сырой идентификатор хранилища.
+    """
+
+    identifier = _identifier(incident_id, "incident_id")
+    suffix = re.sub(r"^(incident|INC)[-_ ]?", "", identifier, flags=re.IGNORECASE).strip()
+    if not suffix:
+        raise ThreadTitleError("incident_id must carry an identifier after the prefix")
+    return _compose("Pipeline Engineer", f"INC-{suffix[:12]}", _text(summary, "summary"))
+
+
 def task_phase_thread_title(
     *,
     task_id: str,

@@ -9,6 +9,12 @@ from typing import Any, Mapping, Sequence
 from .language import is_russian
 from .memory import MemoryValidationError, ProjectMemory
 from .models import MODEL_IDS, MODEL_LABELS, logical_model
+from .pipeline_engineer import (
+    FORBIDDEN_ACTIONS,
+    INFRASTRUCTURE_INCIDENT_CLASSES,
+    IncidentClass,
+    IncidentPhase,
+)
 from .rules import rules_for_prompt
 from .plan import Plan, RoleProfile, Task
 from .task_state import dependency_state_satisfies
@@ -131,6 +137,68 @@ class AIStudioRuntime:
             reasoning=task.reasoning or "medium",
         )
 
+
+    def build_pipeline_engineer_prompt(
+        self,
+        incident_package: Mapping[str, Any],
+        *,
+        reservation_token: str,
+    ) -> str:
+        """Build a fresh, infrastructure-only on-call prompt.
+
+        The deterministic supervisor must first transition an incident to
+        PIPELINE_ENGINEER. Ordinary tasks and production-quality failures cannot
+        use this entry point to manufacture a privileged specialist.
+        """
+
+        incident = incident_package.get("incident")
+        if not isinstance(incident, Mapping):
+            raise ContextBoundaryError("Pipeline Engineer requires a structured incident")
+        try:
+            classification = IncidentClass(str(incident.get("classification") or ""))
+            phase = IncidentPhase(str(incident.get("phase") or ""))
+        except ValueError as exc:
+            raise ContextBoundaryError("Pipeline Engineer incident classification is invalid") from exc
+        if classification not in INFRASTRUCTURE_INCIDENT_CLASSES:
+            raise ContextBoundaryError("Pipeline Engineer cannot fix production or policy failures")
+        if phase is not IncidentPhase.PIPELINE_ENGINEER:
+            raise ContextBoundaryError(
+                "Pipeline Engineer is available only for a routed infrastructure incident"
+            )
+        forbidden = tuple(str(item) for item in incident_package.get("forbidden_actions") or ())
+        if not set(FORBIDDEN_ACTIONS).issubset(forbidden):
+            raise ContextBoundaryError("Pipeline Engineer package omitted mandatory forbidden actions")
+        payload = json.dumps(incident_package, ensure_ascii=False, separators=(",", ":"))
+        prompt = f"""Codex Autopilot AI Studio Runtime — Pipeline Engineer · On call.
+
+This is a fresh infrastructure-incident task. Use only the bounded incident package below; do not request production-worker transcripts or infer authority from forwarded user words.
+
+AUTOPILOT_INCIDENT: {payload}
+
+Read {self.skill_path} completely first. Execute only actions listed in allowed_actions. Never perform any action in forbidden_actions. The initiating user's durable authorization already covers every fixed scheduler-selected task in this Autopilot run. DevOps repairs the pipeline and records a passing healthcheck; it never creates, forks, starts, or messages the next production task. Re-arm the same causal predecessor so that predecessor performs its own exact reserved transport under that run authorization. Record every action in the incident journal and require the declared healthcheck to pass before affected tasks resume. Reservation token: {reservation_token}.
+
+You hold full authority to repair this pipeline on the user's behalf. The user does not choose the repair. Your tools, resolved relative to the skill above:
+
+- `scripts/codex-autopilot relay-status --project <root> --token <reservation>` — read a reservation.
+- `scripts/codex-autopilot relay-complete --project <root> --thread-id <id> --turn-id <id> --status <ROTATE|DONE|BLOCKED|ESCALATE>` — record a worker turn that actually finished. It runs the full completion gate, including Project Memory evidence; it cannot mark unverified work as done.
+- `scripts/codex-autopilot relay-fail --project <root> --token <reservation> --reason <text> --definitive` — record a create that definitively failed before any side effect.
+- `scripts/codex-autopilot devops-rearm-relay-owner --project <root> --incident-id <id>` — re-arm the exact causal predecessor when the create is known-failed and left no task.
+- `scripts/codex-autopilot arm --project <root>` — re-arm the run after repair, so the next Stop event lets the causal predecessor perform its own reserved transport.
+- `scripts/codex-autopilot devops-resolve-incident --project <root> --incident-id <id> --healthcheck-name <name> --check <observation> --action <what you did>` — close this ticket. Repeat --check and --action as needed.
+
+Ask the App Server what actually happened before deciding. Run state records what Autopilot believed; the server records what occurred, and they differ exactly when a dispatcher died mid-flight. An unknown side effect is the one case where stopping is correct: never replace an AMBIGUOUS task and never guess.
+
+Close the ticket with devops-resolve-incident before you finish. RESOLVED is accepted only when the ticket is actually closed; the word alone is a claim, not an observation.
+
+Finish with exactly one line, and nothing after it:
+PIPELINE_ENGINEER_STATUS: RESOLVED
+or, only when repair is genuinely outside your authority, with one code from the closed list — DANGEROUS_PERMISSION, GLOBAL_CONFIG_CHANGE, PROJECT_DAMAGE_RISK, RECOVERY_EXHAUSTED, PRODUCT_DECISION, ARCHITECTURE_DECISION:
+PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
+        if len(prompt) > MAX_PROMPT_CHARS:
+            raise ContextBoundaryError(
+                f"Pipeline Engineer prompt exceeds {MAX_PROMPT_CHARS} characters"
+            )
+        return prompt
 
     def select_context(
         self,

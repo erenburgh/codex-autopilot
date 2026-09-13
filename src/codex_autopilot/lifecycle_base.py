@@ -66,7 +66,7 @@ SUCCESS_STATUSES = frozenset({"ROTATE", "DONE"})
 ALLOWED_STATUSES = frozenset({"ROTATE", "DONE", "BLOCKED", "ESCALATE"})
 IMPLEMENTATION_SESSION_KINDS = frozenset({"worker", "implementation"})
 SESSION_KINDS = IMPLEMENTATION_SESSION_KINDS | frozenset(
-    {"verifier", "revision", "replanner"}
+    {"verifier", "revision", "replanner", "pipeline_engineer"}
 )
 
 

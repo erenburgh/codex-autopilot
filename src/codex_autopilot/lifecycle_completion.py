@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 
 from .bootstrap import mark_roadmap, select_milestone
@@ -188,6 +189,15 @@ def complete_desktop_worker(
     kind = _session_kind(session)
     verdict: VerificationVerdict | None = None
     plan_change_request = None
+    if kind == "pipeline_engineer":
+        return _complete_pipeline_engineer(
+            cfg,
+            session=session,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            final_message=final_message,
+            at=at,
+        )
     if kind == "replanner":
         try:
             replanner_result = parse_plan_change_result(final_message)
@@ -552,6 +562,128 @@ def complete_desktop_worker(
         select_milestone(cfg.state_dir, plan, next_index, language=cfg.language)
     _materialize(descriptors)
     return CompletionOutcome(True, worker_status, descriptors, done)
+
+# R13: DevOps решает инфраструктурные баги от имени пользователя, и
+# пользователь не участвует в выборе способа фикса. Поэтому эскалация -
+# не второй равноправный выход, а исключение, и она обязана назвать
+# причину кодом из закрытого списка.
+ESCALATION_CODES = frozenset({
+    "DANGEROUS_PERMISSION",
+    "GLOBAL_CONFIG_CHANGE",
+    "PROJECT_DAMAGE_RISK",
+    "RECOVERY_EXHAUSTED",
+    "PRODUCT_DECISION",
+    "ARCHITECTURE_DECISION",
+})
+PIPELINE_ENGINEER_STATUS = re.compile(
+    r"(?m)^PIPELINE_ENGINEER_STATUS:\s*(RESOLVED|ESCALATE_TO_USER(?:\s+\S+)?)\s*$"
+)
+
+
+def parse_pipeline_engineer_status(message: str) -> tuple[str, str]:
+    """Финальная строка инженера: итог и, для эскалации, код причины."""
+
+    matches = PIPELINE_ENGINEER_STATUS.findall(message or "")
+    last = next(
+        (line.strip() for line in reversed((message or "").splitlines()) if line.strip()),
+        "",
+    )
+    if len(matches) != 1 or last != f"PIPELINE_ENGINEER_STATUS: {matches[0]}":
+        raise DesktopLifecycleError(
+            "дежурный инженер обязан закончить ровно одной строкой "
+            "PIPELINE_ENGINEER_STATUS: RESOLVED или "
+            "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <КОД>"
+        )
+    parts = matches[0].split()
+    if parts[0] == "RESOLVED":
+        return "RESOLVED", ""
+    if len(parts) != 2 or parts[1] not in ESCALATION_CODES:
+        raise DesktopLifecycleError(
+            "эскалация требует кода причины из закрытого списка (R13): "
+            + ", ".join(sorted(ESCALATION_CODES))
+        )
+    return "ESCALATE_TO_USER", parts[1]
+
+
+def _complete_pipeline_engineer(
+    cfg: Config,
+    *,
+    session: dict[str, Any],
+    thread_id: str,
+    turn_id: str,
+    final_message: str,
+    at: str | None,
+) -> CompletionOutcome:
+    """Принять итог инженера, ничего не принимая на слово.
+
+    RESOLVED засчитывается только если тикет действительно закрыт - через
+    devops-resolve-incident, с пройденной проверкой здоровья. Слово в
+    финальной строке заявлением о починке не является: ровно эта подмена
+    наблюдения заявлением и стоила прогону ночи.
+    """
+
+    from .pipeline_engineer import IncidentPhase, PipelineIncidentStore
+
+    status, escalation_code = parse_pipeline_engineer_status(final_message)
+    timestamp = at or utc_now()
+    incident_id = str(session.get("incident_id") or "")
+    incidents = PipelineIncidentStore(cfg.state_dir).load()
+    incident = next(
+        (
+            item
+            for item in incidents.get("incidents", [])
+            if str(item.get("incident_id")) == incident_id
+        ),
+        None,
+    )
+    if incident is None:
+        raise DesktopLifecycleError(
+            f"инцидент {incident_id} дежурного инженера не найден"
+        )
+    resolved = str(incident.get("phase")) == IncidentPhase.RESOLVED.value
+    if status == "RESOLVED" and not resolved:
+        raise DesktopLifecycleError(
+            f"инженер объявил RESOLVED, а тикет {incident_id} остался в фазе "
+            f"{incident.get('phase')}: закрытие выполняется devops-resolve-incident "
+            "с пройденной проверкой здоровья"
+        )
+
+    store = StateStore(cfg.state_dir)
+    coordinator = ResourceLockCoordinator(store, cfg.root)
+    with coordinator.transaction():
+        state = store.load()
+        current = _active_session_by_thread(state, thread_id)
+        if current is None or current.get("reservation_token") != session.get(
+            "reservation_token"
+        ):
+            return CompletionOutcome(False, None, (), state.status == "DONE")
+        current["turn_id"] = turn_id
+        current["status"] = "COMPLETED"
+        current["final_status"] = status
+        if escalation_code:
+            current["escalation_code"] = escalation_code
+        current["completed_at"] = timestamp
+        _append_event(
+            state,
+            "pipeline_engineer_completed",
+            current,
+            timestamp,
+            detail=f"{incident_id}: {status}",
+        )
+        if status == "ESCALATE_TO_USER":
+            state.status = "BLOCKED"
+            state.phase = "PIPELINE_ENGINEER_ESCALATED"
+            state.last_error = (
+                f"дежурный инженер передал инцидент {incident_id} пользователю: "
+                f"{escalation_code}"
+            )
+        else:
+            state.status = "READY"
+            state.phase = "PREPARING"
+            state.last_error = None
+        store.save(state)
+    return CompletionOutcome(True, status, (), False)
+
 
 def _complete_replanner(
     cfg: Config,

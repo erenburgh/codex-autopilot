@@ -35,7 +35,11 @@ from .task_state import (
     transition_task,
     validate_task_states,
 )
-from .thread_titles import replanner_thread_title, task_phase_thread_title
+from .thread_titles import (
+    pipeline_engineer_thread_title,
+    replanner_thread_title,
+    task_phase_thread_title,
+)
 from .verification import (
     VerificationIssue,
     verifier_route,
@@ -239,6 +243,21 @@ def _reserve_in_state(
         )
         state.rate_limit_until = None
         _prepare_state(plan, state, now_epoch=epoch)
+    # Сломанный пайплайн старше любой работы: пока инцидент доведён до
+    # дежурного инженера, новых задач не берём, а заводим инженера.
+    # Прежде эта фаза была только ярлыком в JSON, и прогон вставал молча.
+    engineer = _reserve_pipeline_engineer_in_state(
+        cfg,
+        plan,
+        state,
+        memory_audit_before=memory_audit_before,
+        relay_owner_thread_id=relay_owner_thread_id,
+    )
+    if engineer:
+        return engineer
+    if open_pipeline_engineer_incident(cfg) is not None:
+        # Инженер уже заведён и работает - новых задач не берём.
+        return ()
     if state.active_plan_change_id is not None:
         return _reserve_replanner_in_state(
             cfg,
@@ -343,6 +362,131 @@ def _reserve_in_state(
         state.phase = "AWAITING_DESKTOP_CREATE"
         state.milestone_id = descriptors[0].task_id
     return tuple(descriptors)
+
+def open_pipeline_engineer_incident(cfg: Config) -> dict[str, Any] | None:
+    """Незакрытый инцидент, доведённый до дежурного инженера."""
+
+    from .pipeline_engineer import IncidentPhase, PipelineIncidentStore
+
+    store = PipelineIncidentStore(cfg.state_dir)
+    for item in store.load().get("incidents", []):
+        if item.get("resolved_at"):
+            continue
+        if str(item.get("phase")) == IncidentPhase.PIPELINE_ENGINEER.value:
+            return item
+    return None
+
+
+def pipeline_engineer_package(cfg: Config, state: RunState) -> dict[str, Any]:
+    """Ограниченный пакет инцидента - единственный вход инженера в контекст."""
+
+    from .pipeline_engineer import PipelineIncidentStore
+
+    incident = open_pipeline_engineer_incident(cfg)
+    if incident is None:
+        raise DesktopLifecycleError(
+            "дежурный инженер запрашивается без инцидента в фазе PIPELINE_ENGINEER"
+        )
+    return PipelineIncidentStore(cfg.state_dir).incident_package(
+        str(incident["incident_id"])
+    )
+
+
+def _reserve_pipeline_engineer_in_state(
+    cfg: Config,
+    plan: Plan,
+    state: RunState,
+    *,
+    memory_audit_before: int,
+    relay_owner_thread_id: str,
+) -> tuple[LaunchDescriptor, ...]:
+    """Завести ровно одного дежурного инженера на открытый инцидент.
+
+    Инженер чинит пайплайн, а не задачу. Поэтому он намеренно НЕ берёт
+    ресурсы пострадавшей задачи: их может держать сорвавшаяся сессия, и
+    ожидание блокировки означало бы, что чинить приходит тот, кто сам
+    заблокирован. По той же причине состояние задачи не переводится и в
+    active_task_ids она не добавляется - инженер не занимает слот работы.
+
+    Задача из инцидента нужна только как контекст: от неё берётся
+    каталог, роль в заголовке и базовая линия области.
+    """
+
+    incident = open_pipeline_engineer_incident(cfg)
+    if incident is None:
+        return ()
+    incident_id = str(incident["incident_id"])
+    if any(
+        item.get("kind") == "pipeline_engineer"
+        and item.get("incident_id") == incident_id
+        and item.get("status") in PENDING_SESSION_STATUSES
+        for item in state.worker_sessions
+    ):
+        return ()
+    affected = [
+        str(item)
+        for item in incident.get("affected_task_ids") or ()
+        if str(item) in plan.task_map
+    ]
+    if not affected:
+        raise DesktopLifecycleError(
+            f"инцидент {incident_id} не называет задачи из текущего плана; "
+            "дежурного инженера не к чему привязать"
+        )
+    task_id = affected[0]
+
+    worker_sequence = state.worker_sequence + 1
+    token = _stable_id(
+        state,
+        f"reservation:{task_id}:pipeline_engineer:{incident_id}:{worker_sequence}",
+    )
+    state.worker_sequence = worker_sequence
+    operation_id = _stable_id(state, f"operation:{token}")
+    client_id = f"autopilot-{_stable_id(state, f'client:{token}')[:24]}"
+    descriptor = _build_descriptor(
+        cfg,
+        plan,
+        state,
+        task_id=task_id,
+        kind="pipeline_engineer",
+        attempt=int(state.task_attempts.get(task_id, 0)) or 1,
+        token=token,
+        operation_id=operation_id,
+        client_id=client_id,
+    )
+    session: dict[str, Any] = {
+        "reservation_token": token,
+        "resource_ownership_token": None,
+        "operation_id": operation_id,
+        "client_user_message_id": client_id,
+        "task_id": task_id,
+        "kind": "pipeline_engineer",
+        "attempt": int(state.task_attempts.get(task_id, 0)) or 1,
+        "worker_sequence": worker_sequence,
+        "incident_id": incident_id,
+        "status": "CREATE_REQUESTED",
+        "thread_id": None,
+        "turn_id": None,
+        "host_id": None,
+        "relay_owner_thread_id": relay_owner_thread_id,
+        "created_at": descriptor.created_at,
+        "memory_audit_before": memory_audit_before,
+        "checkpoint_before": task_checkpoint(cfg.state_dir, task_id),
+        "scope_baseline": scope_baseline(cfg.root),
+        "descriptor": descriptor.to_dict(),
+    }
+    state.worker_sessions.append(session)
+    state.status = "RUNNING"
+    state.phase = "PIPELINE_ENGINEER_ACTIVE"
+    _append_event(
+        state,
+        "pipeline_engineer_reserved",
+        session,
+        utc_now(),
+        detail=f"{incident_id} -> {task_id}",
+    )
+    return (descriptor,)
+
 
 def _reserve_replanner_in_state(
     cfg: Config,
@@ -938,7 +1082,7 @@ def _build_descriptor(
         model = route.model_id
         thinking = route.reasoning
         execution_mode = route.execution_mode
-    elif kind == "replanner":
+    elif kind in {"replanner", "pipeline_engineer"}:
         execution_mode = "code"
         if plan.model_strategy == "host-settings":
             model = None
@@ -956,7 +1100,20 @@ def _build_descriptor(
             key = logical_model(plan.model_strategy, execution_mode)
             model = MODEL_IDS[key]
             thinking = task.reasoning or "medium"
-    if kind == "replanner":
+    if kind == "pipeline_engineer":
+        package = pipeline_engineer_package(cfg, state)
+        incident = package["incident"]
+        title = pipeline_engineer_thread_title(
+            str(incident["incident_id"]),
+            str(incident.get("summary") or incident.get("code") or "инцидент"),
+        )
+        prompt = AIStudioRuntime(
+            plan,
+            cfg.root,
+            language=cfg.language,
+            skill_path=cfg.skill_path,
+        ).build_pipeline_engineer_prompt(package, reservation_token=token)
+    elif kind == "replanner":
         change = active_plan_change(state)
         title = replanner_thread_title(
             str(change["id"]),

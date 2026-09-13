@@ -106,6 +106,12 @@ def parser() -> argparse.ArgumentParser:
     relay_rearm = sub.add_parser("devops-rearm-relay-owner", help=argparse.SUPPRESS)
     relay_rearm.add_argument("--project", type=Path, default=Path.cwd())
     relay_rearm.add_argument("--incident-id")
+    devops_resolve = sub.add_parser("devops-resolve-incident", help=argparse.SUPPRESS)
+    devops_resolve.add_argument("--project", type=Path, default=Path.cwd())
+    devops_resolve.add_argument("--incident-id", required=True)
+    devops_resolve.add_argument("--healthcheck-name", required=True)
+    devops_resolve.add_argument("--check", action="append", required=True)
+    devops_resolve.add_argument("--action", action="append", default=[])
     prep_exit = sub.add_parser("confirm-prep-exit", help=argparse.SUPPRESS)
     prep_exit.add_argument("--project", type=Path, default=Path.cwd())
     for name in ("status", "stop", "resume", "logs"):
@@ -406,6 +412,31 @@ def main(argv: list[str] | None = None) -> int:
                 owner=args.initiator_thread,
                 owner_turn=args.initiator_turn,
             )
+        if args.command == "devops-resolve-incident":
+            # Дежурный инженер закрывает свой тикет сам, но только с
+            # пройденной проверкой здоровья: закрытие без неё - это
+            # заявление, а не наблюдение. Мутация требует владеющей
+            # ветки, как и остальные команды восстановления.
+            from .pipeline_engineer import HealthcheckResult, PipelineIncidentStore
+            from .run_state import utc_now
+
+            _relay_executor_thread_id()
+            cfg = load_config(args.project)
+            healthcheck = HealthcheckResult(
+                name=args.healthcheck_name,
+                passed=True,
+                observed_at=utc_now(),
+                checks=tuple(args.check),
+            )
+            phase = PipelineIncidentStore(cfg.state_dir).complete_pipeline_engineer(
+                args.incident_id,
+                success=True,
+                at=utc_now(),
+                healthcheck=healthcheck,
+                actions=tuple(args.action),
+            )
+            print(json.dumps({"incident_id": args.incident_id, "phase": phase.value}, ensure_ascii=False))
+            return 0
         if args.command == "devops-rearm-relay-owner":
             print(json.dumps(reactivate_desktop_relay_owner(args.project, incident_id=args.incident_id), ensure_ascii=False))
             return 0

@@ -21,7 +21,14 @@ from .task_state import ACTIVE_TASK_STATES, TaskState, coerce_task_state
 TERMINAL_STATUSES = {"DONE", "BLOCKED"}
 RUN_STATE_SCHEMA_VERSION = 5
 LEGACY_RUN_STATE_SCHEMA_VERSION = 4
-WORKER_SESSION_KINDS = {"worker", "implementation", "verifier", "revision", "replanner"}
+WORKER_SESSION_KINDS = {
+    "worker",
+    "implementation",
+    "verifier",
+    "revision",
+    "replanner",
+    "pipeline_engineer",
+}
 
 
 def utc_now() -> str:
