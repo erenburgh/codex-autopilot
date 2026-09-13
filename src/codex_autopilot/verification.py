@@ -38,10 +38,19 @@ class VerificationIssue:
     def from_dict(cls, raw: object) -> "VerificationIssue":
         if not isinstance(raw, dict):
             raise VerificationProtocolError("verification issues must be JSON objects")
-        unknown = set(raw) - {"code", "summary", "details", "dod_refs"}
+        allowed = ("code", "summary", "details", "dod_refs")
+        unknown = set(raw) - set(allowed)
         if unknown:
+            # R31: отказ обязан называть допустимое. Замерено на чистом
+            # прогоне: проверяющий вернул finding/requirement/required_fix/
+            # severity/id/evidence_ids - все шесть правдоподобны, ни одного
+            # ему не называли, и весь вердикт отвергся целиком.
             raise VerificationProtocolError(
-                f"verification issue has unknown fields: {sorted(unknown)}"
+                f"verification issue has unknown fields: {sorted(unknown)}. "
+                f"an issue has exactly these fields: {', '.join(allowed)} "
+                "(code: short identifier; summary: one line; details: what does "
+                "not add up and how to check it; dod_refs: optional array of "
+                "1-based DoD item numbers)"
             )
         code = _required_text(raw.get("code"), "issue.code", 128)
         summary = _required_text(raw.get("summary"), "issue.summary", 1_000)

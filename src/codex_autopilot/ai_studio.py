@@ -558,7 +558,14 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 'критерии приёмки. PASS допустим только после этой независимой проверки. Запиши '
                 'новое evidence с role=independent_verification. Последняя непустая строка: '
                 'AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]} или REVISE с непустым '
-                'массивом структурированных issues.'
+                'массивом issues. У каждого issue ровно четыре поля и никаких других: '
+                'code (короткий идентификатор), summary (одна строка), details (что '
+                'именно не сходится и как проверить) и необязательный dod_refs — массив '
+                'номеров пунктов DoD с единицы, без повторов. Пример: '
+                'AUTOPILOT_VERIFICATION: {"verdict":"REVISE","issues":[{"code":"missing-dry-run",'
+                '"summary":"archive без --yes ничего не печатает","details":"Запуск ... вывел '
+                'пустую строку вместо списка веток","dod_refs":[3]}]}. '
+                'Лишнее поле отвергает весь вердикт целиком.'
                 if russian
                 else 'Independently compare the result with '
                 'acceptance_gate.original_user_request, run_goal, the structured task contract, '
@@ -566,7 +573,13 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 'define nor waive acceptance criteria. PASS is allowed only after this independent '
                 'check. Record new evidence with role=independent_verification. Final non-empty line: '
                 'AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]} or REVISE with a non-empty '
-                'structured issues array.'
+                'issues array. Every issue has exactly four fields and no others: code (a short '
+                'identifier), summary (one line), details (what does not add up and how to check '
+                'it), and optional dod_refs - an array of 1-based DoD item numbers with no '
+                'duplicates. Example: AUTOPILOT_VERIFICATION: {"verdict":"REVISE","issues":'
+                '[{"code":"missing-dry-run","summary":"archive prints nothing without --yes",'
+                '"details":"Running ... printed an empty line instead of the thread list",'
+                '"dod_refs":[3]}]}. Any extra field rejects the whole verdict.'
             )
         elif phase == "revision":
             identity = f"свежий revision worker R{revision_number}" if russian else f"fresh revision worker R{revision_number}"
