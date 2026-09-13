@@ -65,3 +65,45 @@ class WrittenConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FacadeBoundaryTests(unittest.TestCase):
+    """Фасад реэкспортирует ровно то, что через него импортируют.
+
+    Механическое разрезание монолита протащило в фасад 91 имя, из них 47
+    приватных. Приватный помощник публичным API не был никогда, а его
+    присутствие делало границу модуля неотличимой от его содержимого.
+    """
+
+    def test_the_facade_exports_no_private_names(self) -> None:
+        from codex_autopilot import lifecycle
+
+        private = sorted(n for n in lifecycle.__all__ if n.startswith("_"))
+        self.assertEqual(private, [])
+
+    def test_every_exported_name_resolves(self) -> None:
+        from codex_autopilot import lifecycle
+
+        missing = [n for n in lifecycle.__all__ if not hasattr(lifecycle, n)]
+        self.assertEqual(missing, [])
+
+    def test_the_facade_exports_nothing_nobody_imports(self) -> None:
+        import ast
+        from pathlib import Path
+
+        from codex_autopilot import lifecycle
+
+        root = Path(__file__).resolve().parents[1]
+        wanted: set[str] = set()
+        for path in list((root / "src/codex_autopilot").glob("*.py")) + list(
+            (root / "tests").glob("*.py")
+        ):
+            if path.name == "lifecycle.py":
+                continue
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.ImportFrom) and node.module in {
+                    "lifecycle",
+                    "codex_autopilot.lifecycle",
+                }:
+                    wanted.update(alias.name for alias in node.names)
+        self.assertEqual(sorted(set(lifecycle.__all__)), sorted(wanted))
