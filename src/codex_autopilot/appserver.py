@@ -12,6 +12,8 @@ import threading
 import time
 from typing import Any, Callable
 
+from . import __version__
+
 
 class AppServerError(RuntimeError):
     pass
@@ -139,7 +141,12 @@ class AppServerClient:
                 "clientInfo": {
                     "name": "codex-autopilot",
                     "title": "Codex Autopilot Desktop Native",
-                    "version": "0.8.0-beta",
+                    # Версия берётся из пакета, а не из прибитой строки.
+                    # Замерено на живом сервере: userAgent сообщал
+                    # "codex-autopilot; 0.8.0-beta", когда установлена была
+                    # 0.8.2. Ровно эта ошибка чинилась в 0.8.1 у
+                    # MCP-сервера памяти - здесь она осталась второй копией.
+                    "version": __version__,
                 },
                 "capabilities": {
                     "experimentalApi": True,

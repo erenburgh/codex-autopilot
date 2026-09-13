@@ -301,3 +301,23 @@ class AppServerTests(unittest.TestCase):
 
 
 if __name__ == "__main__": unittest.main()
+
+
+class ClientVersionTests(unittest.TestCase):
+    """Версия клиента берётся из пакета, а не из прибитой строки.
+
+    Замерено на живом сервере: userAgent сообщал
+    "codex-autopilot; 0.8.0-beta", когда установлена была 0.8.2. Ровно
+    эта ошибка чинилась в 0.8.1 у MCP-сервера памяти; здесь она жила
+    второй копией и никем не проверялась.
+    """
+
+    def test_initialize_sends_the_package_version(self) -> None:
+        from codex_autopilot import __version__
+
+        source = (
+            Path(__file__).resolve().parents[1] / "src/codex_autopilot/appserver.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"version": __version__,', source)
+        self.assertNotIn('"version": "0.8', source)
+        self.assertTrue(__version__)
