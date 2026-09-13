@@ -1100,12 +1100,21 @@ RESUME_PROMPTS = _phrases(
     "продолжи {product}",
     "продолжить {product}",
 )
+DETAILED_STATUS_PROMPTS = _phrases(
+    "{product} status detail",
+    "подробный статус {product}",
+) | {
+    "подробный статус",
+    "статус подробно",
+    "detailed status",
+    "status detail",
+}
 STATUS_PROMPTS = _phrases(
     "{product} status",
     "what is {product} doing right now",
     "что сейчас делает {product}",
     "статус {product}",
-) | {
+) | DETAILED_STATUS_PROMPTS | {
     # Скилл обещает пользователю ровно одно слово: "спроси `статус`".
     # Развёрнутых форм хук знал четыре, а этой - ни одной, и обещанный
     # видимый путь не работал как написано. Совпадение идёт по всему
@@ -1214,7 +1223,12 @@ def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
                 "Codex Autopilot resume is armed for this turn's Stop hook."
             )
         }
-    return {"decision": "block", "reason": status_text(root)}
+    # Короткий ответ по умолчанию: текст хука приходит пользователю одним
+    # куском, и полный отчёт в переписке читается как стена.
+    return {
+        "decision": "block",
+        "reason": status_text(root, detailed=prompt in DETAILED_STATUS_PROMPTS),
+    }
 
 
 def handle_interrupt_hook(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1285,13 +1299,15 @@ def _desktop_relay_continuation(
     )
 
 
-def status_text(root: Path) -> str:
+def status_text(root: Path, *, detailed: bool = True) -> str:
     cfg = load_config(root)
     state = StateStore(cfg.state_dir).load()
     from .plan import load_plan
-    from .status import render_project_status
+    from .status import render_project_status, render_short_status
     plan = load_plan(cfg.state_dir, cfg.profile)
     running = pid_alive(state.dispatcher_pid)
+    if not detailed:
+        return render_short_status(cfg, state, plan, dispatcher_running=running)
     summary = render_project_status(
         cfg,
         state,

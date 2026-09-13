@@ -177,7 +177,7 @@ see it.
 Therefore the last visible line of the initiating turn must tell the user how to
 look. Name the phrase:
 
-> Запуск взведён. Чтобы увидеть ход дела, спроси `статус`.
+> Запуск взведён. Чтобы увидеть ход дела, спроси `статус` — ответит хук, коротко и сразу; `подробный статус` даёт полный отчёт.
 
 The status phrase runs on `UserPromptSubmit`, which is outside the causal chain
 and may block safely - that is why its output is visible when the Stop hook's is

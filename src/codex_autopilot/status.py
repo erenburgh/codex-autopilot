@@ -149,6 +149,62 @@ def _creation_causality(state: RunState) -> dict[str, Any]:
     return {"assessed": assessed, "total": total, "violations": violations}
 
 
+def render_short_status(
+    cfg: Config,
+    state: RunState,
+    plan: Plan,
+    *,
+    dispatcher_running: bool,
+) -> str:
+    """Ответ в чат: несколько строк, а не выгрузка состояния.
+
+    Хук отвечает на «статус» блокировкой ввода, и его текст приходит
+    пользователю целиком, одним куском. Полный отчёт - двадцать пять
+    строк с путями и метаданными: в терминале это уместно, в переписке
+    читается как стена и прячет единственное, что нужно знать сейчас.
+
+    Здесь ровно то, что отвечает на вопрос «и что дальше»: сколько
+    сделано, что идёт прямо сейчас, что мешает. Полный отчёт остаётся
+    по отдельной фразе.
+    """
+
+    snapshot = project_status_snapshot(cfg, state, plan)
+    progress = snapshot["progress"]
+    lines = [
+        f"Codex Autopilot — {snapshot['status']}: "
+        f"{progress['verified']}/{progress['total']} проверено"
+    ]
+    for heading, key in (("Идёт", "running"), ("Проверяется", "verifying")):
+        for item in snapshot[key]:
+            lines.append(f"{heading}: {item['id']} — {item['title']}")
+    blocked = [
+        item
+        for item in snapshot["pipeline_engineer"].get("incidents") or []
+        if item["phase"] not in {"RECOVERED", "RESOLVED"}
+    ]
+    for incident in blocked:
+        lines.append(
+            f"Тикет {incident['incident_id']}: {incident['phase']} — "
+            f"{_clip(incident['summary'], 120)}"
+        )
+    if snapshot["pause"]["requested"]:
+        lines.append("Пауза запрошена: новых задач не запускается.")
+    if not dispatcher_running and not snapshot["running"] and not blocked:
+        lines.append("Диспетчер не работает.")
+    audit = snapshot["creation_causality"]
+    if audit["violations"]:
+        lines.append(
+            f"Причинность создания (R1): {len(audit['violations'])} разрыв(ов)."
+        )
+    lines.append("Подробно: скажи «подробный статус».")
+    return "\n".join(lines)
+
+
+def _clip(text: str, limit: int) -> str:
+    value = str(text)
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
 def render_project_status(
     cfg: Config,
     state: RunState,

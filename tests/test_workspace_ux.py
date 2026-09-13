@@ -425,3 +425,49 @@ def _state_with_lock_held_by(task_id: str, root):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShortStatusTests(unittest.TestCase):
+    """Ответ хука приходит одним куском: длина - часть контракта.
+
+    Полный отчёт - двадцать пять строк с путями и метаданными. В
+    терминале это уместно, в переписке читается как стена и прячет
+    единственное, что нужно знать: что идёт и что мешает.
+    """
+
+    def test_the_short_form_names_progress_work_and_blocker(self) -> None:
+        from codex_autopilot.status import _clip, render_short_status
+
+        self.assertEqual(_clip("короткая", 120), "короткая")
+        self.assertTrue(_clip("x" * 200, 30).endswith("…"))
+        self.assertEqual(len(_clip("x" * 200, 30)), 30)
+        self.assertTrue(callable(render_short_status))
+
+    def test_the_short_form_points_at_the_full_one(self) -> None:
+        """Сокращение без выхода к полному - потеря, а не краткость."""
+
+        source = (
+            Path(__file__).resolve().parents[1] / "src/codex_autopilot/status.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("подробный статус", source)
+
+    def test_the_detailed_phrase_is_recognised(self) -> None:
+        from codex_autopilot.control import (
+            DETAILED_STATUS_PROMPTS,
+            STATUS_PROMPTS,
+            _normalized_prompt,
+        )
+
+        for phrase in ("подробный статус", "статус подробно", "detailed status"):
+            with self.subTest(phrase=phrase):
+                normalized = _normalized_prompt(phrase)
+                self.assertIn(normalized, DETAILED_STATUS_PROMPTS)
+                self.assertIn(normalized, STATUS_PROMPTS)
+        # Обычное слово остаётся коротким ответом.
+        self.assertNotIn(_normalized_prompt("статус"), DETAILED_STATUS_PROMPTS)
+
+    def test_the_hook_chooses_the_form_by_the_phrase(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "src/codex_autopilot/control.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("detailed=prompt in DETAILED_STATUS_PROMPTS", source)
