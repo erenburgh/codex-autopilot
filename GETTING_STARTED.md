@@ -25,7 +25,7 @@ The installer:
 
 1. checks macOS, Python 3.11+, `codex app-server`, and Codex login;
 2. optionally installs missing Python through an existing Homebrew and missing Codex CLI through npm;
-3. creates `~/Library/Application Support/CodexAutopilot/0.8.0-beta/` with a pip-free venv, runtime, docs, and both profile bundles;
+3. creates `~/Library/Application Support/CodexAutopilot/<version>/` with a pip-free venv, runtime, docs, and both profile bundles;
 4. replaces the memory MCP and lifecycle-hook launcher placeholders with the absolute, stable `current/bin/codex-autopilot` runtime path;
 5. updates the `current` symlink;
 6. registers the local marketplace and exactly one selected profile through `codex plugin`.
@@ -37,12 +37,6 @@ Open `/hooks` in Codex and trust the current Autopilot **Stop** hook once. Hook 
 Start a fresh Codex task after installation. On the first Autopilot request, `start-skill` creates a dedicated preflight task and makes a harmless real model-to-MCP call with `operation=current`. If Codex requires approval, the command stops before run-state or Worker 1 and the initiating task asks whether you approve **Always** for the single bundled memory tool. Only after an explicit yes may it repeat the command with `--approve-project-memory-always`; that flag answers the exact pending App Server request and cannot bypass a different approval. Project initialization and Worker 1 begin only after a subsequent fresh-task probe completes without interruption.
 
 ## Start
-
-> **Current v0.9 candidate limitation:** `start-skill` still defaults to the
-> legacy `headless_app_server` surface and the bundled schema-3 example still
-> selects serial execution. Until the release-blocking contract regressions in
-> `docs/RELEASE_VERIFICATION_0.9.0-beta.md` are fixed, this document describes
-> the intended v0.9 workflow rather than a release-ready default path.
 
 In any Codex task, name the target repository explicitly:
 
@@ -137,6 +131,36 @@ The executable is:
 ```
 
 It is intentionally not added to PATH. Commands include `preflight`, `doctor`, `status`, `logs`, `stop`, `timeline`, and `uninstall`, plus the Pipeline Engineer recovery set (`relay-status`, `relay-complete`, `relay-fail`, `devops-rearm-relay-owner`). `resume` is hook-owned: send the resume phrase in a Codex task instead.
+
+## Watching a run
+
+Say `status` in any task of the project. The hook answers directly, without a
+model turn, in a few lines: progress, what is running, what blocks it. Say
+`status detail` for the full report. Codex labels a hook answer as a blocked
+message; that means the hook replied instead of the model, not that anything
+failed.
+
+The sidebar is a separate matter. Desktop runs its own App Server process,
+Autopilot drives another, and the two share only the filesystem, so nothing can
+tell the app that a task appeared. A created task becomes listable about a second
+after its turn starts, but the sidebar shows it when the app next re-reads its
+list - which your own activity triggers. To learn that work started or finished
+without watching the sidebar, turn on the system banner:
+
+```toml
+# .codex-autopilot/config.toml
+[runtime]
+desktop_notifications = true
+```
+
+It is off by default, because a banner is a side effect on your machine and
+those are not switched on silently. Three events raise one: a task taken into
+work, a task verified or stopped, and the run finished.
+
+Every worker opens its turn with a short brief - what it took, what it will
+deliver, by which route, who judges it, and which files it holds for writing -
+before it reads a single file. Opening the task tells you where it is without
+reading the whole transcript.
 
 ## Uninstall
 

@@ -12,20 +12,18 @@ persistent manager LLM.
 Codex Autopilot is a Codex plugin plus a deterministic dependency scheduler. The
 initiating task turns a goal into tasks. In the v0.9 `desktop_owned` surface,
 the scheduler atomically reserves only the READY frontier and records exact
-causal provenance. The trusted Stop hook launches a detached local dispatcher;
-that dispatcher performs persistent App Server `thread/start` and production
-`turn/start` itself, waits for completion, and exits. Hook feedback is
-informational only. Codex App `create_thread` and `send_message_to_thread` are
+causal provenance. The trusted Stop hook starts one local dispatcher under the
+authorization the user already gave; that dispatcher performs persistent App
+Server `thread/start` and production `turn/start` itself, waits for authoritative
+completion, and exits. There is no separate detached launcher: a task is created
+only by the exact causal predecessor that reserved it. The hook answers
+`continue` on a healthy launch - a blocking answer would leave the initiating
+turn `interrupted` and the dispatcher would never start - and blocks only to
+show a failure. Codex App `create_thread` and `send_message_to_thread` are
 not used, and no transition waits for a model continuation or new user input.
 Infrastructure incidents are handled by the deterministic
 `Pipeline Engineer · On call` capability described in
 [docs/PIPELINE_ENGINEER.md](docs/PIPELINE_ENGINEER.md).
-
-> **v0.9 audit status:** the working candidate is not release-ready. The CLI
-> still defaults new `start-skill` runs to `headless_app_server`, the bootstrap
-> example defaults to serial execution, and several acceptance-contract
-> regressions remain. See
-> [the independent v0.9 verification report](docs/RELEASE_VERIFICATION_0.9.0-beta.md).
 
 Desktop placement and canonical filesystem scope are distinct. The automatic dispatcher supplies the canonical cwd and App Server project ID, verifies returned title/cwd/project metadata, starts the production turn through App Server, and fully exits after the turn. App Server and Desktop project IDs are separate namespaces, so actual Desktop visibility/editability must be observed rather than inferred from App Server metadata. `thread/unsubscribe` is cleanup, not an ownership handoff. See [Desktop-owned runtime](docs/DESKTOP_RUNTIME.md).
 
@@ -68,10 +66,17 @@ Explicit strategies are `Sol only` and `Astra only`. The Host Settings profile s
 
 Exact no-model controls are:
 
+- `status` - a few lines: progress, what is running, what blocks it.
+- `status detail` - the full report, including the R1 creation-causality audit.
 - `Pause Codex Autopilot.`
-- `Resume Codex Autopilot.`
-- `What is Codex Autopilot doing right now?`
+- `Resume Codex Autopilot.` It is also the user's answer to an escalation: it
+  closes an incident the Pipeline Engineer handed over and returns a task whose
+  worker is no longer alive to retry.
 - `Uninstall Codex Autopilot.`
+
+Each control is answered by the hook itself, without a model turn. Codex marks
+such an answer as a blocked message: that label means the hook replied instead
+of the model, not that something failed.
 
 ## Persistent state
 
@@ -87,6 +92,12 @@ Exact no-model controls are:
 
 Workers use the configured `:workspace` App Server permission profile. App Server preflight and automatic worker processes never answer approval requests; an approval request fails closed. Autopilot does not call Codex App task APIs, change global Codex settings, change Git configuration, grant permissions, or auto-commit by default. The memory server exposes one tool with a strict operation union; Project Memory has no network service, shell tool, raw SQL tool, embedding service, or external database.
 
-The v0.8 beta supports macOS. It is developed against Codex CLI/App Server 0.153.4; App Server remains experimental. A real multi-hour rate-limit wake-up, Host Settings inheritance across all Desktop configurations, and an external clean-Mac v0.8 run remain beta verification items.
+The v0.8 beta supports macOS. It is developed against Codex CLI/App Server 0.154.0; App Server remains experimental.
+
+Verified live, not only by tests: parallel workers on one dependency frontier, dependency unlock, independent verification, the Pipeline Engineer incident path including a closed-code escalation and the user's answer to it, and canonical project placement for every created task.
+
+Not verified live and openly outstanding: a real multi-hour rate-limit wake-up, Host Settings inheritance across all Desktop configurations, an external clean-Mac install from the release ZIP, and Computer Use scheduling alongside code work.
+
+Desktop cannot be told that a task started. Its App Server is a separate process from the one Autopilot drives, and the two share only the filesystem, so the sidebar refreshes on the app's own schedule. A created task becomes listable about a second after its turn starts; until the app re-reads, `runtime.desktop_notifications = true` is the only way to learn that work began or finished.
 
 Read [Getting Started](GETTING_STARTED.md), [Project Memory](docs/PROJECT_MEMORY.md), [Architecture](docs/ARCHITECTURE.md), [v0.9 task graph](docs/DEPENDENCY_GRAPH.md), [parallel execution](docs/PARALLEL_EXECUTION.md), [roles](docs/ROLES.md), [resource locks](docs/RESOURCE_LOCKS.md), [thread naming](docs/THREAD_NAMING.md), [project association](docs/PROJECT_ASSOCIATION.md), [plan evolution and recovery](docs/PLAN_EVOLUTION_AND_RECOVERY.md), [v0.8 → v0.9 migration](docs/MIGRATION_0.8_TO_0.9.md), [MCP](docs/MCP.md), [Security](docs/SECURITY.md), [Testing](docs/TESTING.md), and [Verification](docs/VERIFICATION.md).

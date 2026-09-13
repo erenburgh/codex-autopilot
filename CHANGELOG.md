@@ -97,7 +97,13 @@
 `docs/M11_COMPLETION.md` перечисляет пункты независимой проверки,
 оставшиеся открытыми, и почему каждый из них не закрыт здесь.
 
-## 0.9.0-beta (unreleased; independent audit blocked)
+## 0.9.0-beta — не выпущена
+
+Работа M10: контракт задач-графа, планировщик, роли, ресурсные замки,
+независимая проверка, эволюция плана. Всё это вошло в линию 0.8.x и
+выпускается оттуда; отдельного релиза 0.9.0 не было и номер остаётся
+свободным. Что из набора независимой проверки закрыто, а что нет,
+перечислено в `docs/M11_COMPLETION.md`.
 
 - Added independent contract regressions for the required v0.9 execution
   default, Desktop-owned start surface, exact thread-title formats, canonical
