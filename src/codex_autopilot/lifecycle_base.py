@@ -934,14 +934,6 @@ def _client_process_pid(client: Any) -> int | None:
     pid = getattr(proc, "pid", None)
     return pid if isinstance(pid, int) and pid > 0 else None
 
-def _process_id_alive(pid: Any) -> bool:
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except (OSError, ValueError):
-        return False
-    return True
 
 def _stable_text_id(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -964,8 +956,27 @@ def _require_desktop_owned(cfg: Config) -> None:
         raise DesktopLifecycleError("desktop_owned requires desktop.desktop_project_id")
 
 def _pid_alive(pid: int | None) -> bool:
-    if not pid:
+    """Жив ли записанный диспетчер. Битое значение - отказ, а не догадка.
+
+    Оба вызова этой проверки - охранные: они отказываются работать, пока
+    диспетчер жив. Поэтому ошибка в любую сторону дорога.
+
+    Отрицательный pid уходил в os.kill(-N, 0), а это сигнал ГРУППЕ
+    процессов: посторонний живой процесс в группе давал "диспетчер жив", и
+    прогон вставал навсегда. Нецелое значение роняло TypeError, который
+    здесь не ловится.
+
+    Считать такое значение мёртвым тоже нельзя: тогда поверх живого
+    диспетчера поднялся бы второй. Единственный честный ответ - назвать
+    испорченную запись и остановиться.
+    """
+
+    if pid is None or pid == 0:
         return False
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid < 0:
+        raise DesktopLifecycleError(
+            f"состояние прогона содержит непригодный dispatcher_pid: {pid!r}"
+        )
     try:
         os.kill(pid, 0)
     except (OSError, ValueError):
@@ -1005,7 +1016,7 @@ def reconcile_desktop_runtime(
                 and session.get("automatic_dispatch_state") == "RUNNING"
             ):
                 dispatcher_pid = session.get("automatic_dispatch_pid")
-                if _process_id_alive(dispatcher_pid):
+                if _pid_alive(dispatcher_pid):
                     raise DesktopLifecycleError(
                         "retry-wait task still has a live automatic dispatcher"
                     )

@@ -71,7 +71,7 @@ class McpTests(unittest.TestCase):
         first = run_server(root, message)
         second = run_server(root, message)
         self.assertEqual((first.returncode, second.returncode), (0, 0))
-        self.assertEqual(json.loads(second.stdout)["result"]["serverInfo"]["version"], "0.8.1-beta")
+        self.assertEqual(json.loads(second.stdout)["result"]["serverInfo"]["version"], "0.8.2-beta")
 
     def test_unknown_arguments_are_rejected_without_sql_execution(self):
         root = git_project()

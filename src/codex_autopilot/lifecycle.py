@@ -58,7 +58,6 @@ from .lifecycle_base import (  # noqa: F401
     _latest_verification_issues,
     _materialize,
     _pid_alive,
-    _process_id_alive,
     _record_deterministic_evidence,
     _record_deterministic_verification_results,
     _require_desktop_owned,

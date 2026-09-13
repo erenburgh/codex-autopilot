@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-autopilot"
-version = "0.8.1b0"
+version = "0.8.2b0"
 description = "Serial visible Codex workers with evidence-backed project memory"
 requires-python = ">=3.11"
 license = {text = "MIT"}
