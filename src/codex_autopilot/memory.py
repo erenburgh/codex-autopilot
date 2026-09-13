@@ -553,6 +553,15 @@ class ProjectMemory:
             )
         summary = self._required(summary, "summary")
         actor = self._required(created_by, "created_by", 256)
+        if kind == "external" and not str(provider or "").strip():
+            # R18: происхождение обязательно в момент приёма. Без него
+            # внешний текст неотличим от собственного наблюдения уже
+            # через один шаг, и вся дальнейшая проверка заражения
+            # опирается на ярлык, которого нет.
+            raise MemoryValidationError(
+                "R18: external evidence requires a non-empty provider naming "
+                "where the material came from"
+            )
         if line_start is not None and (not isinstance(line_start, int) or line_start < 1):
             raise MemoryValidationError("line_start must be a positive integer")
         if line_end is not None and (line_start is None or not isinstance(line_end, int) or line_end < line_start):
@@ -1004,6 +1013,14 @@ class ProjectMemory:
         return self._set_record_status(decision_id, "decision", status, actor, reason)
 
     def add_constraint(self, *, statement: str, origin: str, created_by: str, scope: str = "project", reason: str | None = None, evidence_ids: Sequence[str] = ()) -> dict[str, Any]:
+        if origin != "user" and self._has_external_evidence(evidence_ids):
+            # R18. У Constraint нет состояния "предложено": он действует
+            # с момента записи. Поэтому здесь отказ, а не понижение до
+            # proposed, как у решения: понижать нечего.
+            raise MemoryValidationError(
+                "R18: a non-user constraint cannot rest on external content; "
+                "record it as an observation and raise a Question instead"
+            )
         return self._create_record(category="constraint", statement=statement, origin=origin, status="active", created_by=created_by, reason=reason, scope=scope, evidence_ids=evidence_ids)
 
     def open_question(self, *, question: str, created_by: str, needed_for: str | None = None, scope: str = "project") -> dict[str, Any]:
@@ -1052,12 +1069,37 @@ class ProjectMemory:
             )
         return self.get_record(question_id)
 
+    # R18: состояния, в которых запись перестаёт быть предположением и
+    # начинает управлять работой. Переход в них - второй момент, когда
+    # заражение обязано быть перепроверено: проверка при приёме
+    # обходится в два вызова, если сначала записать "предложено", а
+    # потом просто сменить статус.
+    _BINDING_STATUSES = frozenset({"accepted", "active", "verified"})
+
+    def _rests_on_external(self, db: sqlite3.Connection, record_id: str) -> bool:
+        row = db.execute(
+            "SELECT 1 FROM record_evidence re JOIN evidence e ON e.id=re.evidence_id "
+            "WHERE re.record_id=? AND re.relation='supports' AND e.kind='external' LIMIT 1",
+            (record_id,),
+        ).fetchone()
+        return row is not None
+
     def _set_record_status(self, record_id: str, category: str, status: str, actor: str, reason: str | None) -> dict[str, Any]:
         self.initialize()
         with self._connect(write=True) as db:
-            row = db.execute("SELECT category FROM records WHERE id=?", (record_id,)).fetchone()
+            row = db.execute("SELECT category,origin FROM records WHERE id=?", (record_id,)).fetchone()
             if not row or row["category"] != category:
                 raise MemoryValidationError(f"{record_id} is not a {category}")
+            if (
+                status in self._BINDING_STATUSES
+                and str(row["origin"] or "") != "user"
+                and self._rests_on_external(db, record_id)
+            ):
+                raise MemoryValidationError(
+                    f"R18: {record_id} rests on external content and cannot be "
+                    f"promoted to {status} by anyone but the user; external "
+                    "content does not decide"
+                )
             db.execute("UPDATE records SET status=?,reason=coalesce(?,reason),updated_at=? WHERE id=?", (status, self._optional(reason, "reason"), utc_now(), record_id))
             self._audit(db, "status", category, record_id, actor, {"status": status, "reason": reason})
         return self.get_record(record_id)
@@ -1068,12 +1110,27 @@ class ProjectMemory:
         self.initialize()
         normalized_actor = self._required(actor, "actor", 256)
         with self._connect(write=True) as db:
-            record = db.execute("SELECT category FROM records WHERE id=?", (record_id,)).fetchone()
+            record = db.execute("SELECT category,status,origin FROM records WHERE id=?", (record_id,)).fetchone()
             evidence = db.execute("SELECT kind FROM evidence WHERE id=?", (evidence_id,)).fetchone()
             if not record:
                 raise MemoryValidationError(f"unknown record: {record_id}")
             if not evidence:
                 raise MemoryValidationError(f"unknown evidence: {evidence_id}")
+            if (
+                relation == "supports"
+                and evidence["kind"] == "external"
+                and record["status"] in self._BINDING_STATUSES
+                and str(record["origin"] or "") != "user"
+            ):
+                # R18, третий обход: запись проводится чистой, а внешний
+                # текст дописывается к ней после. Связь "contradicts"
+                # остаётся открытой всегда - именно так внешний материал
+                # и должен порождать Conflict, а не подпирать решение.
+                raise MemoryValidationError(
+                    f"R18: external evidence cannot be attached in support of "
+                    f"{record_id} while it is {record['status']}; attach it as "
+                    "contradicts, or let the user decide"
+                )
             inserted = db.execute(
                 "INSERT OR IGNORE INTO record_evidence(record_id,evidence_id,relation,created_at) VALUES(?,?,?,?)",
                 (record_id, evidence_id, relation, utc_now()),

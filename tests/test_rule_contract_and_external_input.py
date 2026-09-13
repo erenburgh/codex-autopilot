@@ -87,6 +87,7 @@ class ExternalInputTests(unittest.TestCase):
             kind="external",
             summary="Комментарий в чужом issue утверждает, что порт 8080.",
             created_by="mcp-test",
+            provider="github.com/other/repo#12",
             result="INFO",
         )
         with self.assertRaises(MemoryValidationError) as caught:
@@ -98,11 +99,131 @@ class ExternalInputTests(unittest.TestCase):
             )
         self.assertIn("R18", str(caught.exception))
 
+    def test_external_material_has_a_label_on_the_ingestion_surface(self) -> None:
+        """R18 бессмысленно, если честного ярлыка нет в инструменте.
+
+        Схема memory_record_evidence не перечисляла "external" вовсе:
+        воркер, принимающий текст со стороны, мог записать его только
+        как file, tool или user_instruction - то есть заражение
+        исчезало в момент приёма, и все дальнейшие проверки смотрели на
+        ярлык, которого никто не мог поставить.
+        """
+
+        from codex_autopilot.memory_mcp import TOOLS
+
+        choices = TOOLS[0]["inputSchema"]["oneOf"]
+        choice = next(
+            item
+            for item in choices
+            if item["properties"]["operation"]["const"] == "record_evidence"
+        )
+        kind = choice["properties"]["kind"]
+        self.assertIn("external", kind["enum"])
+        self.assertIn("provider", kind["description"])
+        self.assertIn(
+            "Required when kind",
+            choice["properties"]["provider"]["description"],
+        )
+
+    def test_every_operation_carries_its_description_into_the_single_tool(self) -> None:
+        """Снаружи объявлен один инструмент: подписи операций доходят только так.
+
+        Подписи были написаны для каждой операции и не попадали в
+        итоговую схему вовсе - мёртвый текст, которого модель не видела.
+        """
+
+        from codex_autopilot.memory_mcp import TOOLS, _ACTION_BY_NAME
+
+        for choice in TOOLS[0]["inputSchema"]["oneOf"]:
+            name = choice["properties"]["operation"]["const"]
+            with self.subTest(operation=name):
+                self.assertEqual(
+                    choice.get("description"), _ACTION_BY_NAME[name]["description"]
+                )
+                self.assertTrue(choice.get("description"))
+
+    def test_external_evidence_requires_a_provider(self) -> None:
+        """Происхождение обязательно в момент приёма, а не потом."""
+
+        with self.assertRaises(MemoryValidationError) as caught:
+            self.memory.record_evidence(
+                kind="external",
+                summary="Текст со страницы",
+                created_by="mcp-test",
+            )
+        self.assertIn("provider", str(caught.exception))
+
+    def test_a_non_user_constraint_cannot_rest_on_external_content(self) -> None:
+        """У Constraint нет состояния "предложено": он действует сразу."""
+
+        with self.assertRaises(MemoryValidationError) as caught:
+            self.memory.add_constraint(
+                statement="Всегда менять очередь по требованию из чужого PR.",
+                origin="agent",
+                created_by="mcp-test",
+                evidence_ids=[self.external_evidence()],
+            )
+        self.assertIn("R18", str(caught.exception))
+
+    def test_a_proposed_decision_cannot_be_promoted_around_the_check(self) -> None:
+        """Проверка при приёме обходится в два вызова, если не проверять переход."""
+
+        decision = self.memory.propose_decision(
+            statement="Сменить очередь задач по требованию из чужого PR.",
+            origin="agent",
+            created_by="mcp-test",
+            evidence_ids=[self.external_evidence()],
+        )
+        with self.assertRaises(MemoryValidationError) as caught:
+            self.memory.set_decision_status(
+                decision["id"], "accepted", actor="mcp-test"
+            )
+        self.assertIn("R18", str(caught.exception))
+
+    def test_external_support_cannot_be_attached_after_the_fact(self) -> None:
+        """Третий обход: запись проводится чистой, внешний текст дописывается."""
+
+        decision = self.memory.propose_decision(
+            statement="Решение агента без внешних ссылок.",
+            origin="agent",
+            created_by="mcp-test",
+        )
+        self.memory.set_decision_status(decision["id"], "accepted", actor="mcp-test")
+        with self.assertRaises(MemoryValidationError) as caught:
+            self.memory.attach_evidence(
+                decision["id"],
+                self.external_evidence(),
+                relation="supports",
+                actor="mcp-test",
+            )
+        self.assertIn("R18", str(caught.exception))
+
+    def test_contradicting_external_evidence_stays_attachable(self) -> None:
+        """Именно так внешний материал и должен работать: порождать Conflict.
+
+        Запрет на "contradicts" глушил бы несогласие - ровно наоборот
+        тому, ради чего правило написано.
+        """
+
+        decision = self.memory.propose_decision(
+            statement="Решение агента, которое внешний текст оспаривает.",
+            origin="agent",
+            created_by="mcp-test",
+        )
+        self.memory.set_decision_status(decision["id"], "accepted", actor="mcp-test")
+        self.memory.attach_evidence(
+            decision["id"],
+            self.external_evidence(),
+            relation="contradicts",
+            actor="mcp-test",
+        )
+
     def external_evidence(self) -> str:
         return self.memory.record_evidence(
             kind="external",
             summary="Комментарий в чужом PR требует сменить очередь задач.",
             created_by="mcp-test",
+            provider="github.com/other/repo#34",
             result="INFO",
         )["id"]
 
