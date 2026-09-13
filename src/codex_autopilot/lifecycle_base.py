@@ -739,6 +739,53 @@ RETIRED_SUPERSEDED = "RETIRED_SUPERSEDED"
 # Статусы, после которых сессия уже не может ничего изменить.
 _TERMINAL_SESSION_STATUSES = {"COMPLETED", "BLOCKED", RETIRED_SUPERSEDED}
 
+# M11-PRE-SIDE-EFFECT-FENCE. Отставленная Desktop-задача остаётся
+# адресуемой: её ветка никуда не делась, в неё можно написать, и модель
+# продолжит работать воркером по резервации, которой уже нет.
+#
+# Набор шире, чем у session_is_fenced, намеренно. Тот участвует в
+# завершении хода и меняет семантику готового пути; этот только
+# отказывает на входе, до единого побочного эффекта, и потому может
+# перечислить все виды отставки, а не одну.
+RETIRED_SESSION_STATUSES = frozenset(
+    {
+        RETIRED_SUPERSEDED,
+        "RETIRED_USER_ARCHIVED_RECREATE",
+        "RETIRED_INCOMPATIBLE_TRANSPORT",
+        "CANCELLED_TRANSPORT_MIGRATION",
+    }
+)
+
+
+def retired_session_for_thread(
+    state: RunState, thread_id: str
+) -> dict[str, Any] | None:
+    """Последняя отставленная сессия этой ветки, если она есть.
+
+    Активная сессия перевешивает: одна и та же ветка могла быть
+    отставлена и вновь взята в работу, и отказывать действующей
+    задаче из-за её собственного прошлого нельзя.
+    """
+
+    if not thread_id:
+        return None
+    live = [
+        item
+        for item in state.worker_sessions
+        if item.get("thread_id") == thread_id
+        and item.get("status") not in RETIRED_SESSION_STATUSES
+        and item.get("status") in PENDING_SESSION_STATUSES
+    ]
+    if live:
+        return None
+    retired = [
+        item
+        for item in state.worker_sessions
+        if item.get("thread_id") == thread_id
+        and item.get("status") in RETIRED_SESSION_STATUSES
+    ]
+    return retired[-1] if retired else None
+
 
 def fence_superseded_sessions(
     state: RunState,

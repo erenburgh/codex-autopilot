@@ -43,6 +43,7 @@ from .lifecycle import (
     relayable_descriptors,
     relay_session_status,
     reserve_ready_frontier,
+    retired_session_for_thread,
 )
 from .launch_registry import LaunchRegistry
 from .hook_trust import HookPreflightError
@@ -1104,7 +1105,16 @@ STATUS_PROMPTS = _phrases(
     "what is {product} doing right now",
     "что сейчас делает {product}",
     "статус {product}",
-)
+) | {
+    # Скилл обещает пользователю ровно одно слово: "спроси `статус`".
+    # Развёрнутых форм хук знал четыре, а этой - ни одной, и обещанный
+    # видимый путь не работал как написано. Совпадение идёт по всему
+    # вводу целиком, поэтому одинокое слово - это намерение, а не
+    # случайное попадание внутрь фразы.
+    "статус",
+    "status",
+    "статус автопилота",
+}
 UNINSTALL_PROMPTS = _phrases(
     "uninstall {product}",
     "remove {product}",
@@ -1112,10 +1122,59 @@ UNINSTALL_PROMPTS = _phrases(
 )
 
 
+def _retired_task_fence(payload: dict[str, Any]) -> dict[str, Any]:
+    """Заслон до побочного эффекта: в отставленную задачу писать нечего.
+
+    M11-PRE-SIDE-EFFECT-FENCE. Отставленная сессия уже падала закрыто -
+    но на завершении хода, то есть после того, как модель отработала
+    воркером по резервации, которой нет. Замерено на прогоне M11: у
+    исходников менялись mtime, пока рядом шла замена той же задачи.
+
+    Здесь отказ наступает на UserPromptSubmit, до единого вызова модели
+    или инструмента. Это единственный ответ хука, который пользователю
+    видно, поэтому он же и объясняет, куда идти.
+
+    Провал чтения состояния - не отказ. Заслон знает про конкретную
+    отставленную ветку; если состояние нечитаемо, знания нет, и глушить
+    из-за этого всю переписку в проекте было бы хуже болезни.
+    """
+
+    thread_id = str(payload.get("session_id") or "")
+    if not thread_id:
+        return {}
+    root = find_project_root(Path(str(payload.get("cwd") or ".")))
+    if not root:
+        return {}
+    try:
+        state = StateStore(root / STATE_DIR_NAME).load()
+        retired = retired_session_for_thread(state, thread_id)
+    except Exception:
+        return {}
+    if retired is None:
+        return {}
+    task_id = str(retired.get("task_id") or "?")
+    reason = str(
+        retired.get("retired_reason") or retired.get("failure_reason") or ""
+    ).strip()
+    detail = f" Причина отставки: {reason}" if reason else ""
+    return {
+        "decision": "block",
+        "reason": (
+            f"Эта задача отставлена ({retired.get('status')}) и больше не "
+            f"ведёт работу по {task_id}. Продолжать в ней нельзя: её "
+            f"резервации у пайплайна уже нет, и всё сделанное здесь пойдёт "
+            f"мимо прогона.{detail} Скажи «статус», чтобы увидеть, какая "
+            "задача сейчас действующая."
+        ),
+    }
+
+
 def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
     prompt = _normalized_prompt(str(payload.get("prompt") or ""))
     if prompt not in PAUSE_PROMPTS | RESUME_PROMPTS | STATUS_PROMPTS | UNINSTALL_PROMPTS:
-        return {}
+        # Управляющие фразы проходят и из отставленной ветки: они про
+        # прогон, а не про задачу, и до модели не доходят вовсе.
+        return _retired_task_fence(payload)
     root = find_project_root(Path(str(payload.get("cwd") or ".")))
     if prompt in UNINSTALL_PROMPTS:
         command = [sys.executable, "-m", "codex_autopilot.cli", "uninstall", "--yes"]
