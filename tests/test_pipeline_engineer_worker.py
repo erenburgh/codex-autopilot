@@ -11,6 +11,7 @@ R13: DevOps решает инфраструктурные баги от имен
 
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
 from codex_autopilot.lifecycle_base import DesktopLifecycleError, SESSION_KINDS
@@ -121,3 +122,106 @@ class AuthorityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EngineerIsActuallyReservedTests(unittest.TestCase):
+    """Сквозная проверка: инцидент в фазе PIPELINE_ENGINEER даёт воркера.
+
+    Этого теста не хватало, и цена была прямой: новый код сослался на имя,
+    чей импорт сняли раньше как неиспользуемый, а набор из проверок по
+    частям - заголовок, разбор статуса, текст промпта - NameError не видел.
+    Поймал его только живой прогон.
+    """
+
+    def setUp(self) -> None:
+        import json as _json
+        import tempfile
+
+        from _gates import patch_hook_trust_gates
+        from _relay import reserve_ready_frontier
+        from codex_autopilot.bootstrap import initialize_project
+        from codex_autopilot.config import load_config
+        from codex_autopilot.pipeline_engineer import (
+            IncidentClass,
+            IncidentSignal,
+            PipelineIncidentStore,
+            SideEffectOutcome,
+        )
+        from codex_autopilot.run_state import StateStore, utc_now
+        from test_desktop_lifecycle import graph
+
+        patch_hook_trust_gates(self)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        (self.root / ".git").mkdir()
+        skill = self.root / "SKILL.md"
+        skill.write_text("# test skill\n", encoding="utf-8")
+        plan_file = self.root / "input-plan.json"
+        plan_file.write_text(_json.dumps(graph()), encoding="utf-8")
+        initialize_project(
+            self.root,
+            plan_file,
+            profile="adaptive",
+            skill_path=skill,
+            desktop_project_id="desktop-project",
+        )
+        self.cfg = load_config(self.root)
+        self.store = StateStore(self.cfg.state_dir)
+        self.reserve = reserve_ready_frontier
+        first = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")[0]
+        self.task_id = first.task_id
+
+        incidents = PipelineIncidentStore(self.cfg.state_dir)
+        incident = incidents.open_incident(
+            IncidentSignal(
+                signal_id="probe:launch",
+                code="launch_not_confirmed",
+                surface=IncidentClass.PIPELINE,
+                summary="Запуск не подтверждён чек-листом",
+                affected_task_ids=(self.task_id,),
+                operation="create_thread",
+                side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+                system_state={},
+            ),
+            at=utc_now(),
+        )
+        self.incident_id = str(incident["incident_id"])
+        incidents.route_incident(self.incident_id, at=utc_now())
+        incidents.ensure_pipeline_engineer(self.incident_id, at=utc_now())
+
+    def engineer_sessions(self) -> list[dict]:
+        return [
+            item
+            for item in self.store.load().worker_sessions
+            if item.get("kind") == "pipeline_engineer"
+        ]
+
+    def test_an_open_incident_reserves_an_engineer(self) -> None:
+        descriptors = self.reserve(self.cfg, relay_owner_thread_id="owner-2")
+        self.assertEqual(len(descriptors), 1)
+        payload = descriptors[0].to_dict()
+        self.assertEqual(payload["kind"], "pipeline_engineer")
+        self.assertTrue(str(payload["title"]).startswith("Pipeline Engineer | INC-"))
+        self.assertIn("AUTOPILOT_INCIDENT", payload["prompt"])
+
+    def test_the_engineer_is_reserved_once_per_incident(self) -> None:
+        self.reserve(self.cfg, relay_owner_thread_id="owner-2")
+        self.reserve(self.cfg, relay_owner_thread_id="owner-3")
+        self.assertEqual(len(self.engineer_sessions()), 1)
+
+    def test_the_engineer_holds_no_resource_ownership(self) -> None:
+        """Ресурсы держит сорвавшаяся сессия; чинить придёт незаблокированный."""
+
+        self.reserve(self.cfg, relay_owner_thread_id="owner-2")
+        self.assertIsNone(self.engineer_sessions()[0]["resource_ownership_token"])
+
+    def test_the_engineer_outranks_ordinary_work(self) -> None:
+        """Сломанный пайплайн старше задач: пока тикет открыт, работы нет."""
+
+        self.reserve(self.cfg, relay_owner_thread_id="owner-2")
+        self.assertEqual(self.reserve(self.cfg, relay_owner_thread_id="owner-3"), ())
+
+    def test_the_incident_is_recorded_on_the_session(self) -> None:
+        self.reserve(self.cfg, relay_owner_thread_id="owner-2")
+        self.assertEqual(self.engineer_sessions()[0]["incident_id"], self.incident_id)

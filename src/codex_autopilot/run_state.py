@@ -490,7 +490,13 @@ def _validate_state(state: RunState) -> None:
                 raise ValueError(
                     "pending worker sessions require a bound relay_owner_thread_id"
                 )
-            pending_tasks.append(str(item["task_id"]))
+            # Дежурный инженер чинит пайплайн, а не задачу: он назван её
+            # идентификатором только ради контекста - каталога, роли в
+            # заголовке и базовой линии области. Считать его вторым
+            # исполнителем значило бы запретить чинить ровно ту задачу,
+            # на которой пайплайн и сломался.
+            if str(item.get("kind") or "") != "pipeline_engineer":
+                pending_tasks.append(str(item["task_id"]))
     if len(tokens) != len(set(tokens)) or len(operations) != len(set(operations)):
         raise ValueError("worker session tokens and operation ids must be unique")
     if len(pending_tasks) != len(set(pending_tasks)):

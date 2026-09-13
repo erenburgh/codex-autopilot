@@ -6,6 +6,7 @@ import os
 import time
 from typing import Any, Callable
 
+from .ai_studio import AIStudioRuntime
 from .config import Config, DESKTOP_OWNED_SURFACE
 from .hook_trust import require_trusted_stop_hook_for_config
 from .lifecycle_prompts import (
