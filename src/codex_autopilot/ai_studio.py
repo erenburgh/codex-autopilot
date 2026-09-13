@@ -186,7 +186,7 @@ You hold full authority to repair this pipeline on the user's behalf. The user d
 - `scripts/codex-autopilot arm --project <root>` — re-arm the run after repair, so the next Stop event lets the causal predecessor perform its own reserved transport.
 - `scripts/codex-autopilot devops-resolve-incident --project <root> --incident-id <id> --healthcheck-name <name> --check <observation> --action <what you did>` — close this ticket. Repeat --check and --action as needed.
 
-Ask the App Server what actually happened before deciding. Run state records what Autopilot believed; the server records what occurred, and they differ exactly when a dispatcher died mid-flight. An unknown side effect is the one case where stopping is correct: never replace an AMBIGUOUS task and never guess.
+The answer you need first is already in the package: `server_view` carries the App Server's own record of every thread of the affected task — gathered by the dispatcher over its open connection. Read it instead of probing. Run state records what Autopilot believed; `server_view` records what occurred, and they differ exactly when a dispatcher died mid-flight. Do not run anything outside the project working directory: that needs a permission Autopilot never answers, and it would strand you rather than help. An unknown side effect is the one case where stopping is correct: never replace an AMBIGUOUS task and never guess.
 
 Close the ticket with devops-resolve-incident before you finish. RESOLVED is accepted only when the ticket is actually closed; the word alone is a claim, not an observation.
 

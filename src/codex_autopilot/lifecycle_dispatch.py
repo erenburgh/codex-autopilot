@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .appserver import (
     AppServerClient,
@@ -481,6 +481,88 @@ def _record_placement_outcome(
         store.save(state)
 
 
+def server_view_for_incident(
+    client: Any,
+    cfg: Config,
+    state: RunState,
+    incident: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Что сервер думает о ветках пострадавшей задачи.
+
+    Инженеру эта справка нужна первым делом: состояние прогона говорит,
+    что автопилот записал, а сервер - что произошло, и расходятся они
+    ровно тогда, когда диспетчер умер на полпути.
+
+    Собирает её диспетчер, а не инженер. У диспетчера соединение уже
+    открыто и разрешений не требует; инженер же, добывая то же самое сам,
+    выходил питоном за пределы рабочего каталога и упирался в запрос
+    доступа, на который автопилот принципиально не отвечает. Замерено:
+    два тикета подряд, каждый - прерванный ход на этом запросе.
+
+    Только чтение и только метаданные: ходы не запрашиваются, стенограммы
+    воркеров не читаются.
+    """
+
+    affected = {str(item) for item in incident.get("affected_task_ids") or ()}
+    threads: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for session in state.worker_sessions:
+        if str(session.get("task_id") or "") not in affected:
+            continue
+        thread_id = str(session.get("thread_id") or "")
+        if not thread_id or thread_id in seen:
+            continue
+        seen.add(thread_id)
+        entry: dict[str, Any] = {
+            "thread_id": thread_id,
+            "session_kind": session.get("kind"),
+            "session_status": session.get("status"),
+        }
+        try:
+            thread = client.read_thread(thread_id) or {}
+        except Exception as error:  # сервер отвечает отказом - это тоже факт
+            entry["exists"] = False
+            entry["server_error"] = str(error)[:200]
+        else:
+            entry["exists"] = True
+            entry["name"] = thread.get("name")
+            entry["project_id"] = thread.get("projectId")
+            entry["status"] = thread.get("status")
+        threads.append(entry)
+    return {
+        "gathered_by": "dispatcher",
+        "configured_project_id": cfg.desktop.project_id,
+        "threads": threads,
+    }
+
+
+def _pipeline_engineer_prompt_with_server_view(
+    cfg: Config,
+    client: Any,
+    session: Mapping[str, Any],
+) -> str:
+    """Промпт инженера с готовым ответом сервера внутри."""
+
+    from .ai_studio import AIStudioRuntime
+    from .lifecycle_reservations import pipeline_engineer_package
+    from .plan import load_plan
+
+    state = StateStore(cfg.state_dir).load()
+    package = pipeline_engineer_package(cfg, state)
+    package["server_view"] = server_view_for_incident(
+        client, cfg, state, package["incident"]
+    )
+    plan = load_plan(cfg.state_dir, cfg.profile)
+    return AIStudioRuntime(
+        plan,
+        cfg.root,
+        language=cfg.language,
+        skill_path=cfg.skill_path,
+    ).build_pipeline_engineer_prompt(
+        package, reservation_token=str(session.get("reservation_token") or "")
+    )
+
+
 def run_automatic_app_server_turn(
     cfg: Config,
     reservation_token: str,
@@ -649,9 +731,18 @@ def run_automatic_app_server_turn(
                 raise DesktopLifecycleError(
                     "App Server production task lost its configured project association"
                 )
+            prompt = descriptor.prompt
+            if str(session.get("kind") or "") == "pipeline_engineer":
+                # Промпт инженера пересобирается здесь, а не при резервации:
+                # только тут есть открытое соединение, и справку о ветках
+                # можно взять у сервера, не выходя за рабочий каталог и не
+                # прося доступа, на который автопилот не отвечает.
+                prompt = _pipeline_engineer_prompt_with_server_view(
+                    cfg, production_client, session
+                )
             started = production_client.start_turn(
                 thread_id=thread_id,
-                prompt=descriptor.prompt,
+                prompt=prompt,
                 effort=(
                     descriptor.thinking
                     if descriptor.thinking

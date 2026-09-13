@@ -225,3 +225,71 @@ class EngineerIsActuallyReservedTests(unittest.TestCase):
     def test_the_incident_is_recorded_on_the_session(self) -> None:
         self.reserve(self.cfg, relay_owner_thread_id="owner-2")
         self.assertEqual(self.engineer_sessions()[0]["incident_id"], self.incident_id)
+
+
+class ServerViewTests(unittest.TestCase):
+    """Справку о ветках собирает диспетчер, а не инженер.
+
+    Инженер, добывая её сам, выходил питоном за пределы рабочего каталога
+    и упирался в запрос доступа, на который автопилот принципиально не
+    отвечает. Замерено: два тикета подряд, каждый - прерванный ход на этом
+    запросе. У диспетчера соединение уже открыто и разрешений не требует.
+    """
+
+    def view(self, client, sessions, affected=("M11",)):
+        from types import SimpleNamespace
+
+        from codex_autopilot.lifecycle_dispatch import server_view_for_incident
+
+        cfg = SimpleNamespace(desktop=SimpleNamespace(project_id="proj-1"))
+        state = SimpleNamespace(worker_sessions=list(sessions))
+        return server_view_for_incident(
+            client, cfg, state, {"affected_task_ids": list(affected)}
+        )
+
+    def test_a_live_thread_is_reported_with_its_project(self) -> None:
+        from unittest import mock
+
+        client = mock.MagicMock()
+        client.read_thread.return_value = {
+            "id": "t1", "name": "Worker", "projectId": "proj-1", "status": {"type": "idle"}
+        }
+        view = self.view(client, [{"task_id": "M11", "thread_id": "t1", "kind": "implementation", "status": "ACTIVE"}])
+        self.assertEqual(view["threads"][0]["exists"], True)
+        self.assertEqual(view["threads"][0]["project_id"], "proj-1")
+        self.assertEqual(view["gathered_by"], "dispatcher")
+
+    def test_a_refused_read_is_recorded_as_a_fact_not_an_exception(self) -> None:
+        from unittest import mock
+
+        client = mock.MagicMock()
+        client.read_thread.side_effect = RuntimeError("thread not found: t1")
+        view = self.view(client, [{"task_id": "M11", "thread_id": "t1", "kind": "replanner", "status": "PREPARED"}])
+        self.assertEqual(view["threads"][0]["exists"], False)
+        self.assertIn("not found", view["threads"][0]["server_error"])
+
+    def test_threads_of_other_tasks_are_not_gathered(self) -> None:
+        from unittest import mock
+
+        client = mock.MagicMock()
+        client.read_thread.return_value = {"id": "t1"}
+        view = self.view(client, [{"task_id": "M9", "thread_id": "t9", "kind": "implementation", "status": "COMPLETED"}])
+        self.assertEqual(view["threads"], [])
+
+    def test_turns_are_never_requested(self) -> None:
+        """Стенограммы воркеров инженеру не положены."""
+
+        from unittest import mock
+
+        client = mock.MagicMock()
+        client.read_thread.return_value = {"id": "t1"}
+        self.view(client, [{"task_id": "M11", "thread_id": "t1", "kind": "implementation", "status": "ACTIVE"}])
+        for call in client.read_thread.call_args_list:
+            self.assertNotIn("includeTurns", call.kwargs)
+
+    def test_the_prompt_points_at_the_package_instead_of_probing(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "src/codex_autopilot/ai_studio.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("`server_view` carries the App Server's own record", source)
+        self.assertIn("Do not run anything outside the project working directory", source)
