@@ -296,6 +296,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         prompt = self._render_prompt(
             task,
             phase=phase,
+            role_name=role.name,
             payload=payload,
             reservation_token=reservation_token,
             verification_round=verification_round,
@@ -539,6 +540,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         task: Task,
         *,
         phase: str,
+        role_name: str,
         payload: str,
         reservation_token: str,
         verification_round: int,
@@ -603,23 +605,54 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 else f"Record new verifiable evidence for {task.id}; use each exact check ID as the role for evidence checks. Before the final line, give an AUTOPILOT_RULES line with the ids of the rules from the rules block you applied to this task (for example AUTOPILOT_RULES: R7, R17). Finish with exactly one AUTOPILOT_STATUS: ROTATE, BLOCKED, or ESCALATE line; DONE is allowed only for the final plan task. BLOCKED and ESCALATE must carry a closed-list reason code on the same line (AUTOPILOT_STATUS: BLOCKED MISSING_RESOURCE): DANGEROUS_PERMISSION, MISSING_RESOURCE, DEPENDENCY_DEFECT, CONTRADICTORY_CONTRACT, ENVIRONMENT_FAILURE, PRODUCT_DECISION, ARCHITECTURE_DECISION, RECOVERY_EXHAUSTED. ROTATE and DONE carry none. If a prerequisite/dependency/resource/verification contract change is required, return exactly one final PLAN_CHANGE_REQUEST line instead, with JSON fields request_version=1, kind, target_task_id={task.id}, summary, rationale, change, and evidence_ids."
             )
 
+        # Превью в сайдбаре показывает начало промпта, а не ответа.
+        # Прежде там стояло "Codex Autopilot AI Studio Runtime — свежий
+        # implementation worker": одинаковая строка на всех задачах, по
+        # которой в списке нельзя отличить одну от другой.
+        headline = f"{role_name} · {task.id} · {task.title}"
         if russian:
-            return f"""Codex Autopilot AI Studio Runtime — {identity}.
+            return f"""{headline}
+
+Codex Autopilot AI Studio Runtime — {identity}.
 
 Работай только над {task.id}: {task.title} в каноническом каталоге {self.project_root}.
 Ниже расположен полный разрешённый стартовый контекст этого хода. Он селективный и ограниченный: не запрашивай полные транскрипты, HANDOFF prose, прошлые или параллельные разговоры и не считай утверждения другого worker доказательством.
 
 AUTOPILOT_CONTEXT: {payload}
 
+Первым делом, до любого чтения файлов и вызова инструментов, напиши короткий брифинг ровно в этой форме - он и есть первое, что человек увидит, открыв задачу:
+
+AUTOPILOT_BRIEF
+Задача: <id и суть одной строкой>
+Результат: <что будет предъявлено по завершении>
+Путь: <как решается: какие файлы и проверки>
+Судья: <кто и чем принимает: policy проверки, роль проверяющего, детерминированные проверки>
+Ресурсы: <что удерживается на запись, или "нет">
+
+Брифинг берётся только из контракта задачи выше. Сроков в нём нет: время выполнения автопилоту неизвестно, и названное наугад - обещание, которого никто не давал. Дальше работай как обычно.
+
 Сначала полностью прочитай {self.skill_path}. Используй только структурированную задачу, роль, DoD, проверенное состояние, выбранные dependency outputs, issues и ресурсы выше. При необходимости получай перечисленные record/evidence ID напрямую через Project Memory. NO EVIDENCE -> NO TRUTH. Сохраняй чужие изменения; не создавай commit, tag, push, publish, reset или clean. Обнови свой задачный файл передачи .codex-autopilot/handoff/{task.id}.md — это обязательный чекпойнт завершения, и он твой: запись другой задачи его не заменяет. Общий HANDOFF.md остаётся необязательной запиской для человека. Этот task остаётся Desktop-owned; не создавай, не запускай и не отправляй сообщения другим задачам. После финальной protocol line уже работающий локальный dispatcher получает авторитетное App Server completion, полностью закрывает App Server-процесс этого task, детерминированно обновляет state и запускает точного successor. Stop hook автоматически управляемого turn служит только наблюдателем. Если Pipeline Engineer устранил сбой, DevOps только повторно активирует causal dispatcher и никогда не создаёт и не запускает destination task. Reservation token: {reservation_token}.
 
 {finish}"""
-        return f"""Codex Autopilot AI Studio Runtime — {identity}.
+        return f"""{headline}
+
+Codex Autopilot AI Studio Runtime — {identity}.
 
 Work only on {task.id}: {task.title} in canonical directory {self.project_root}.
 The record below is the complete allowed starting context for this turn. It is selective and bounded: do not request full transcripts, HANDOFF prose, prior or concurrent conversations, and do not treat another worker's claims as evidence.
 
 AUTOPILOT_CONTEXT: {payload}
+
+Before anything else - before reading files or calling any tool - write a short brief in exactly this shape. It is the first thing a human sees when they open the task:
+
+AUTOPILOT_BRIEF
+Task: <id and the point in one line>
+Result: <what will be delivered>
+Route: <how it will be done: which files and checks>
+Judge: <who accepts it and how: verification policy, verifier role, deterministic checks>
+Resources: <what is held for writing, or "none">
+
+The brief comes only from the task contract above. It carries no time estimate: Autopilot does not know how long the work takes, and a number picked at random is a promise nobody made. Then work as usual.
 
 Read {self.skill_path} completely first. Use only the structured task, role, DoD, verified state, selected dependency outputs, issues, and resources above. Retrieve listed record/evidence IDs directly through Project Memory when needed. NO EVIDENCE -> NO TRUTH. Preserve unrelated changes; do not commit, tag, push, publish, reset, or clean. Update your own task handoff file .codex-autopilot/handoff/{task.id}.md - it is the required completion checkpoint and it is yours: another task's write does not satisfy it. The shared HANDOFF.md stays an optional human-facing note. This task remains Desktop-owned; never create, start, or message other tasks. After the final protocol line, the already-running local dispatcher consumes the authoritative App Server completion, closes this task's App Server process, advances deterministic state, and starts the exact successor. The Stop hook is only an observer for an automatically owned turn. If Pipeline Engineer repaired a fault, DevOps only re-arms the causal dispatcher and never creates or starts the destination task. Reservation token: {reservation_token}.
 
