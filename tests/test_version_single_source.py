@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _pep440(version: str) -> str:
-    """0.8.2-beta -> 0.8.2b0: та же версия в записи, которую требует pyproject."""
+    """X.Y.Z-beta -> X.Y.Zb0: та же версия в записи, которую требует pyproject."""
 
     return version.replace("-beta", "b0")
 
@@ -55,6 +55,32 @@ class VersionSingleSourceTests(unittest.TestCase):
         text = (ROOT / "scripts/build_release.py").read_text(encoding="utf-8")
         self.assertIn("_package_version()", text)
         self.assertNotIn('VERSION = "0.8', text)
+
+    def test_no_test_hardcodes_a_version_literal(self) -> None:
+        """Тест с прибитой версией ломается при подъёме - и ломался дважды.
+
+        test_install и test_mcp сверяли версию строкой и оба упали на
+        переходе к 0.9.0. Это тот же дефект, что и в продакшене, только
+        дороже: он срабатывает ровно в момент релиза.
+        """
+
+        # Ищется именно ТЕКУЩАЯ версия: старые номера в фикстурах
+        # законны - они изображают прежние установки, которые
+        # установщик обязан сохранить, и при подъёме не ломаются.
+        current = {__version__, _pep440(__version__)}
+        offenders = []
+        for path in sorted((ROOT / "tests").glob("*.py")):
+            if path.name == Path(__file__).name:
+                continue
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if any(f'"{value}"' in line or f"'{value}'" in line for value in current):
+                    offenders.append(f"{path.name}:{number}")
+        self.assertEqual(
+            offenders,
+            [],
+            "тест сверяется с текущей версией буквой и сломается при её "
+            "подъёме: " + ", ".join(offenders),
+        )
 
     def test_no_module_hardcodes_a_version_literal(self) -> None:
         """Единственное место, где версия записана буквой, - сам пакет."""

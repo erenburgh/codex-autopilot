@@ -5,7 +5,10 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import re
 import unittest
+
+from codex_autopilot import __version__
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +51,7 @@ class InstallerTests(unittest.TestCase):
         mcp = (install_root / "current/plugins/codex-autopilot-adaptive/.mcp.json").read_text(encoding="utf-8")
         self.assertNotIn("__CODEX_AUTOPILOT_RUNTIME__", mcp)
         stable_runtime = (
-            (install_root / "0.8.2-beta").resolve().parent
+            (install_root / __version__).resolve().parent
             / "current/bin/codex-autopilot"
         )
         self.assertIn(str(stable_runtime), mcp)
@@ -59,11 +62,18 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertNotIn("/0.8.2-beta/bin/codex-autopilot", hook_commands[0])
         self.assertNotIn("plugins/cache", hook_commands[0])
-        self.assertTrue(all(value.startswith("0.8.2-beta.local.") for value in installed_versions))
+        # Версия берётся из пакета: прибитая строка разошлась бы при
+        # первом же подъёме версии - ровно так и случилось дважды.
+        self.assertTrue(
+            all(value.startswith(f"{__version__}.local.") for value in installed_versions)
+        )
         installed_manifest = json.loads(
             (install_root / "current/plugins/codex-autopilot-adaptive/.codex-plugin/plugin.json").read_text(encoding="utf-8")
         )
-        self.assertRegex(installed_manifest["version"], r"^0\.8\.2-beta\.local\.\d{8}\.\d{6}$")
+        self.assertRegex(
+            installed_manifest["version"],
+            rf"^{re.escape(__version__)}\.local\.\d{{8}}\.\d{{6}}$",
+        )
         self.assertTrue((install_root / "legacy-backups/astra-autopilot-adaptive/SKILL.md").is_file())
         self.assertFalse(legacy.exists())
         command_text = calls.read_text()
@@ -76,7 +86,7 @@ class InstallerTests(unittest.TestCase):
         env["PATH"] = str(base) + os.pathsep + env.get("PATH", "")
         result = subprocess.run([str(install_root / "current/bin/codex-autopilot"), "uninstall", "--yes"], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse((install_root / "0.8.2-beta").exists())
+        self.assertFalse((install_root / __version__).exists())
         self.assertFalse((install_root / "current").exists())
         self.assertEqual(preserved_v06.read_text(encoding="utf-8"), "keep v0.6")
         self.assertEqual(preserved_v07.read_text(encoding="utf-8"), "keep v0.7")
