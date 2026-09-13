@@ -136,7 +136,7 @@ The executable is:
 ~/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot
 ```
 
-It is intentionally not added to PATH. Commands include `preflight`, `doctor`, `status`, `logs`, `stop`, `resume`, `run`, `test desktop`, and `uninstall`.
+It is intentionally not added to PATH. Commands include `preflight`, `doctor`, `status`, `logs`, `stop`, `timeline`, and `uninstall`, plus the Pipeline Engineer recovery set (`relay-status`, `relay-complete`, `relay-fail`, `devops-rearm-relay-owner`). `resume` is hook-owned: send the resume phrase in a Codex task instead.
 
 ## Uninstall
 

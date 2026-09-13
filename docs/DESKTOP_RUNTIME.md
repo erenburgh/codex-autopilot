@@ -2,7 +2,7 @@
 
 ## Supported ownership boundary
 
-`desktop_owned` and `headless_app_server` are separate execution surfaces.
+`desktop_owned` is the only execution surface; `headless_app_server` was removed in 0.8.1 as unreachable.
 
 In `desktop_owned`, deterministic local code computes the READY frontier,
 reserves it, acquires resource locks, persists launch descriptors, validates

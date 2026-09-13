@@ -14,6 +14,61 @@
   `docs/RELEASE_VERIFICATION_0.9.0-beta.md`; no release, tag, push, or publish
   was performed.
 
+## 0.8.1-beta
+
+Ревизия после первой успешной приёмки 0.8.0: снято то, что не могло
+выполниться, и исправлено то, что обещало невыполнимое.
+
+### Снято как недостижимое
+
+- `orchestrator.py` (1130 строк) и поверхность `headless_app_server`.
+  `run`, `resume` и `_dispatch` отказывали при `desktop_owned`, а
+  умолчание всех команд было именно `desktop_owned`. Живыми входами
+  оставались только `smoke.py` и тесты. Вместе с ними ушли `smoke.py`,
+  команды `run`, `_dispatch`, `test desktop`, `restore-app-server` и
+  `restore_app_server_transport`.
+- Механизм заранее созданных слотов: `add-worker-slot`,
+  `append_worker_slot`, `worker_thread_ids`, `worker_slot_cursor`,
+  `_validate_worker_slots`, фазы `WAITING_PROJECT_SLOT*`. Он был обходом
+  вокруг мнимой невозможности завести видимую задачу через App Server;
+  посылка опровергнута - шесть воркеров приёмки 0.8.0 все оказались
+  внутри проекта.
+- Повторная привязка ветки к проекту после создания. Код строкой выше
+  отклоняет создание, если ветка не в нужном проекте, то есть
+  `thread/metadata/update` привязывал привязанное. v0.7 его не вызывает.
+- Параметр `threadSource` в `start_thread`: значение
+  `agent_created_thread` помечало задачу созданной другим приложением.
+- Восемь функций, не упомянутых нигде: `system_roles`,
+  `build_pipeline_engineer_prompt`, `send_message_payload`, `_transport`,
+  `_require_transport_claim`, `_healthcheck_passed`, `_sha256`,
+  `_validate_owner_against_state`.
+
+### Исправлено
+
+- Дорожка Pipeline Engineer получила процедуру. Прежде скилл обещал, что
+  DevOps починит и перезаведёт, а кода, создающего инженера, не было
+  вовсе: `ensure_pipeline_engineer` меняет поле в JSON. Теперь названа
+  последовательность из существующих защищённых команд, и отдельно
+  сказано, что неизвестный побочный эффект остаётся остановкой.
+- Отчёт о запуске больше не выдаётся за видимый. Stop-хук обязан отвечать
+  `continue`, иначе инициирующий ход остаётся `interrupted` и диспетчер не
+  стартует; значит отчёт не показывается. Инициирующий ход обязан назвать
+  фразу `статус`, которая идёт через `UserPromptSubmit` и видима.
+- Версия MCP-сервера памяти бралась из прибитой строки и разошлась бы с
+  пакетом при любом подъёме версии.
+- Умолчание `worker_surface` в конфиге было `headless_app_server`: новый
+  прогон получал неработающую поверхность, если её не выбрали явно.
+
+### Покрытие
+
+- `test_model_routing.py` - маршрутизация моделей напрямую, без мёртвого
+  оркестратора: таблица маршрутов и отсутствие тихой подмены модели.
+- `test_skill_promises.py` - скилл не вправе обещать того, чего рантайм не
+  делает; проверяет и то, что процедура не называет несуществующих команд.
+- Снято 24 теста мёртвого пути, `test_recovery.py` и
+  `test_context_budget.py` целиком: последний мерил рост промпта сборкой,
+  которой больше нет, а у живой есть жёсткий предел `MAX_PROMPT_CHARS`.
+
 ## 0.8.0-beta
 
 - Added clean-machine preflight for target root, Git, installed runtime, official App Server, `:workspace`, target cwd, built-in Project Memory MCP, SQLite FTS5, and Adaptive model metadata.

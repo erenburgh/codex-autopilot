@@ -56,7 +56,7 @@ acknowledgement: the official contract permits a last-subscriber thread to
 remain loaded for 30 minutes, so it is never treated as a handoff primitive.
 See [Desktop-owned runtime](DESKTOP_RUNTIME.md).
 
-The historical serial runner remains available as explicit `headless_app_server`. It uses JSON-RPC App Server production turns and therefore promises no Desktop follow-up or steering while that external writer is active. The v0.8 `DesktopOrchestrator` import is retained only as a source compatibility alias for `HeadlessAppServerOrchestrator`.
+There is one execution surface: `desktop_owned`. The historical serial runner (`headless_app_server`, `HeadlessAppServerOrchestrator` and its `DesktopOrchestrator` alias) was removed in 0.8.1: it could not execute in the product, because `run`, `resume` and `_dispatch` all refused a `desktop_owned` run and every command defaulted to that surface.
 
 ## Why the Stop hook remains
 
