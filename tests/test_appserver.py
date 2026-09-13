@@ -123,7 +123,9 @@ class AppServerTests(unittest.TestCase):
             client.calls.append((method, params)) or next(responses)
         )
 
-        project = client.ensure_project_root("project-1", Path("/target"))
+        project = client.ensure_project_root(
+            "project-1", Path("/target"), authorized=True
+        )
 
         self.assertEqual(project["roots"][-1]["path"], "/target")
         self.assertEqual(
@@ -141,6 +143,73 @@ class AppServerTests(unittest.TestCase):
                     },
                 ),
             ],
+        )
+
+    def test_root_drift_fails_closed_without_authorization(self):
+        """R6: рантайм не правит сохранённый проект пользователя молча.
+
+        Прежде этот же вызов дописывал корень при каждом создании задачи.
+        Расхождение корней - состояние, о котором надо сказать, а не
+        починить втихую: сохранённый проект принадлежит пользователю.
+        """
+
+        from codex_autopilot.appserver import ProjectRootDrift
+
+        client = CaptureClient()
+        client.request = lambda method, params, timeout=60: (
+            client.calls.append((method, params))
+            or {"project": {"id": "project-1", "roots": [{"path": "/existing"}]}}
+        )
+
+        with self.assertRaises(ProjectRootDrift) as raised:
+            client.ensure_project_root("project-1", Path("/target"))
+
+        self.assertEqual(raised.exception.project_id, "project-1")
+        self.assertEqual(raised.exception.root, Path("/target"))
+        self.assertEqual(raised.exception.existing, (Path("/existing"),))
+        # Ни одной записи: project/update не вызывался.
+        self.assertEqual(
+            client.calls, [("project/read", {"projectId": "project-1"})]
+        )
+
+    def test_a_canonical_root_inside_a_project_root_is_membership(self):
+        """Обычный случай, а не расхождение.
+
+        preflight выбирает проект по вложенности (``_project_contains``),
+        поэтому канонический каталог сплошь и рядом лежит ВНУТРИ корня
+        проекта, а не равен ему. Проверка на равенство объявила бы это
+        расхождением - и прежний код именно поэтому дописывал ещё один
+        корень при каждом создании задачи.
+        """
+
+        client = CaptureClient()
+        client.request = lambda method, params, timeout=60: (
+            client.calls.append((method, params))
+            or {"project": {"id": "project-1", "roots": [{"path": "/work"}]}}
+        )
+
+        project = client.verify_project_root("project-1", Path("/work/sub/tool"))
+
+        self.assertEqual(project["id"], "project-1")
+        self.assertEqual(
+            client.calls, [("project/read", {"projectId": "project-1"})]
+        )
+
+    def test_verify_project_root_cannot_write_at_all(self):
+        """Отдельный read-only вход: у него нет ветки мутации вовсе."""
+
+        from codex_autopilot.appserver import ProjectRootDrift
+
+        client = CaptureClient()
+        client.request = lambda method, params, timeout=60: (
+            client.calls.append((method, params))
+            or {"project": {"id": "project-1", "roots": [{"path": "/existing"}]}}
+        )
+
+        with self.assertRaises(ProjectRootDrift):
+            client.verify_project_root("project-1", Path("/target"))
+        self.assertEqual(
+            client.calls, [("project/read", {"projectId": "project-1"})]
         )
 
     def test_existing_project_root_is_not_rewritten(self):

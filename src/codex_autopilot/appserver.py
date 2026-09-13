@@ -24,6 +24,34 @@ class AppServerRpcError(AppServerError):
         super().__init__(f"{method} failed: {json.dumps(error, ensure_ascii=False)}")
 
 
+def _is_within(target: Path, root: Path) -> bool:
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+class ProjectRootDrift(AppServerError):
+    """Канонический корень отсутствует среди корней сохранённого проекта.
+
+    R6: это расхождение состояния, а не задача клиента. Прежде оно молча
+    чинилось вызовом ``project/update``, то есть рантайм менял сохранённый
+    проект пользователя, ничего об этом не сказав. Теперь он отказывает,
+    а мутация остаётся отдельным, отдельно разрешённым действием.
+    """
+
+    def __init__(self, project_id: str, root: Path, existing: tuple[Path, ...]) -> None:
+        self.project_id = project_id
+        self.root = root
+        self.existing = existing
+        shown = ", ".join(str(item) for item in existing) or "none"
+        super().__init__(
+            f"saved project {project_id} does not contain the canonical root "
+            f"{root}; its roots are: {shown}"
+        )
+
+
 class ApprovalRequired(AppServerError):
     def __init__(self, payload: dict[str, Any]) -> None:
         self.payload = payload
@@ -464,13 +492,14 @@ class AppServerClient:
     def read_project(self, project_id: str) -> dict[str, Any]:
         return self.request("project/read", {"projectId": project_id})["project"]
 
-    def ensure_project_root(self, project_id: str, root: Path) -> dict[str, Any]:
-        """Ensure ``root`` belongs to the saved project before thread/start.
+    def verify_project_root(self, project_id: str, root: Path) -> dict[str, Any]:
+        """Read ``project_id`` and require ``root`` to be one of its roots.
 
-        This verifies the App Server project namespace only. A successful
-        update does not prove that the Electron saved project's ``rootPaths``
-        or the Desktop sidebar assignment changed; those are checked
-        independently.
+        Read-only by construction: it raises :class:`ProjectRootDrift` instead
+        of repairing the saved project. This verifies the App Server project
+        namespace only. Membership here does not prove that the Electron saved
+        project's ``rootPaths`` or the Desktop sidebar assignment match; those
+        are checked independently.
         """
 
         canonical_root = root.expanduser().resolve()
@@ -485,8 +514,37 @@ class AppServerClient:
             for item in roots
             if isinstance(item, dict) and item.get("path")
         ]
-        if canonical_root in existing_paths:
+        # Членство - вложенность, а не равенство: ровно то правило, по
+        # которому проект выбирается в preflight (``_project_contains``).
+        # Прежняя проверка на равенство считала расхождением обычный
+        # случай, когда канонический каталог лежит внутри корня проекта,
+        # и дописывала туда ещё один корень при каждом создании.
+        if any(_is_within(canonical_root, item) for item in existing_paths):
             return project
+        raise ProjectRootDrift(project_id, canonical_root, tuple(existing_paths))
+
+    def ensure_project_root(
+        self,
+        project_id: str,
+        root: Path,
+        *,
+        authorized: bool = False,
+    ) -> dict[str, Any]:
+        """Verify membership; add the root only when ``authorized`` is true.
+
+        R6 fails closed. ``authorized`` is not a convenience flag: the caller
+        passes it only after finding a recorded user Decision that names this
+        exact project and root. Without one, the drift surfaces as
+        :class:`ProjectRootDrift` and nothing is written.
+        """
+
+        try:
+            return self.verify_project_root(project_id, root)
+        except ProjectRootDrift as drift:
+            if not authorized:
+                raise
+            canonical_root = drift.root
+            existing_paths = list(drift.existing)
         updated_roots = [
             {"path": str(path)} for path in (*existing_paths, canonical_root)
         ]

@@ -11,12 +11,17 @@ from .appserver import (
     AppServerClient,
     AppServerRpcError,
     PauseRequested,
+    ProjectRootDrift,
     final_agent_message,
     is_rate_limit_error,
 )
 from .config import Config
 from .hook_trust import require_trusted_stop_hook_for_config
 from .preflight import installed_plugin_root
+from .project_association import (
+    project_root_authorization_statement,
+    project_root_mutation_authorized,
+)
 from .resources import ResourceLockCoordinator
 from .run_state import StateStore, utc_now
 
@@ -73,6 +78,28 @@ def app_server_creation_contract(
             },
         }
     return contract
+
+def _project_root_mutation_authorized(cfg: Config) -> bool:
+    """R6: разрешена ли правка корней сохранённого проекта в этом прогоне.
+
+    Открывается своя короткая сессия памяти: путь создания не держит
+    ProjectMemory, а заводить её ради одного лукапа на каждый запуск
+    дороже, чем спросить один раз здесь. Любая ошибка чтения - "нет":
+    закрытый отказ не должен зависеть от доступности хранилища.
+    """
+
+    from .memory import ProjectMemory
+
+    if not cfg.desktop.project_id:
+        return False
+    try:
+        memory = ProjectMemory(cfg.root)
+    except Exception:
+        return False
+    return project_root_mutation_authorized(
+        memory, cfg.desktop.project_id, cfg.root
+    )
+
 
 def create_desktop_thread_via_app_server(
     cfg: Config,
@@ -145,10 +172,24 @@ def create_desktop_thread_via_app_server(
                     "configured permission profile is unavailable to App Server create"
                 )
             if cfg.desktop.project_id:
-                project = client.ensure_project_root(
-                    cfg.desktop.project_id,
-                    cfg.root,
-                )
+                try:
+                    project = client.ensure_project_root(
+                        cfg.desktop.project_id,
+                        cfg.root,
+                        authorized=_project_root_mutation_authorized(cfg),
+                    )
+                except ProjectRootDrift as drift:
+                    # R6 закрытый отказ. Создание ещё не вызывалось, поэтому
+                    # исключение уходит в ветку definitive: открывается один
+                    # стабильный тикет, задача встаёт в RETRY_WAIT, и второй
+                    # попытки создания не будет. Молчаливая правка корней
+                    # сохранённого проекта здесь больше не происходит.
+                    raise DesktopLifecycleError(
+                        f"{drift} — Autopilot does not change a saved project on "
+                        "its own. To authorize this exact change, record the "
+                        "user Decision: "
+                        f"{project_root_authorization_statement(cfg.desktop.project_id, cfg.root)!r}"
+                    ) from drift
                 if str(project.get("id") or "") != cfg.desktop.project_id:
                     raise DesktopLifecycleError(
                         "configured App Server project could not be verified"

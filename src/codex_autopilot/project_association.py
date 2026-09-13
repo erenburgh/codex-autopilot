@@ -144,3 +144,43 @@ def _contains(root: Path, target: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+# --- R6: разрешение на мутацию корней сохранённого проекта -----------------
+
+PROJECT_ROOT_AUTHORIZATION_PREFIX = "AUTOPILOT_PROJECT_ROOT_AUTHORIZATION"
+
+
+def project_root_authorization_statement(project_id: str, root: Path) -> str:
+    """Канонический текст разрешения на добавление корня в проект.
+
+    Текст, а не флаг, потому что хранится он в Project Memory как решение
+    пользователя и должен опознаваться точным совпадением. Он называет
+    конкретный проект и конкретный корень: разрешение, данное одному
+    проекту, не открывает другой.
+    """
+
+    canonical = Path(str(root)).expanduser().resolve()
+    return (
+        f"{PROJECT_ROOT_AUTHORIZATION_PREFIX} "
+        f"project_id={project_id} root={canonical}"
+    )
+
+
+def project_root_mutation_authorized(memory: Any, project_id: str, root: Path) -> bool:
+    """Есть ли записанное решение пользователя на эту мутацию.
+
+    R6 отказывает по умолчанию. Прежде ``ensure_project_root`` при каждом
+    создании молча дописывал канонический корень в сохранённый проект -
+    то есть рантайм менял настройку пользователя, не спросив и не сказав.
+    Отсутствие памяти или ошибка чтения читаются как "разрешения нет":
+    закрытый отказ не должен зависеть от доступности хранилища.
+    """
+
+    if memory is None or not project_id:
+        return False
+    statement = project_root_authorization_statement(project_id, root)
+    try:
+        return memory.accepted_user_decision(statement) is not None
+    except Exception:
+        return False

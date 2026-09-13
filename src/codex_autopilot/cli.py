@@ -112,6 +112,13 @@ def parser() -> argparse.ArgumentParser:
     devops_resolve.add_argument("--healthcheck-name", required=True)
     devops_resolve.add_argument("--check", action="append", required=True)
     devops_resolve.add_argument("--action", action="append", default=[])
+    authorize_root = sub.add_parser(
+        "authorize-project-root",
+        help="authorize Autopilot to add this project's canonical root to the saved Codex project",
+    )
+    authorize_root.add_argument("--project", type=Path, default=Path.cwd())
+    authorize_root.add_argument("--yes", action="store_true")
+    authorize_root.add_argument("--revoke", action="store_true")
     prep_exit = sub.add_parser("confirm-prep-exit", help=argparse.SUPPRESS)
     prep_exit.add_argument("--project", type=Path, default=Path.cwd())
     for name in ("status", "stop", "resume", "logs"):
@@ -436,6 +443,60 @@ def main(argv: list[str] | None = None) -> int:
                 actions=tuple(args.action),
             )
             print(json.dumps({"incident_id": args.incident_id, "phase": phase.value}, ensure_ascii=False))
+            return 0
+        if args.command == "authorize-project-root":
+            # R6: единственный вход, которым разрешается правка корней
+            # сохранённого проекта. Разрешение хранится как принятое
+            # решение пользователя и называет конкретный проект и
+            # конкретный корень - на другой проект оно не переносится.
+            from .memory import ProjectMemory
+            from .project_association import project_root_authorization_statement
+
+            cfg = load_config(args.project)
+            if not cfg.desktop.project_id:
+                print(
+                    "This project has no configured App Server project; there is nothing to authorize.",
+                    file=sys.stderr,
+                )
+                return 2
+            statement = project_root_authorization_statement(
+                cfg.desktop.project_id, cfg.root
+            )
+            memory = ProjectMemory(cfg.root)
+            existing = memory.accepted_user_decision(statement)
+            if args.revoke:
+                if existing is None:
+                    print(json.dumps({"authorized": False, "changed": False}, ensure_ascii=False))
+                    return 0
+                memory.set_decision_status(
+                    str(existing["id"]),
+                    "superseded",
+                    actor="user",
+                    reason="Authorization withdrawn by the user",
+                )
+                print(json.dumps({"authorized": False, "changed": True}, ensure_ascii=False))
+                return 0
+            if existing is not None:
+                print(json.dumps({"authorized": True, "changed": False, "decision_id": existing["id"]}, ensure_ascii=False))
+                return 0
+            if not args.yes:
+                print(
+                    "Autopilot would add\n"
+                    f"  {cfg.root}\n"
+                    f"to the saved Codex project {cfg.desktop.project_id}.\n"
+                    "This changes your Codex project, not only this run. "
+                    "Re-run with --yes to authorize it, or --revoke to withdraw it later.",
+                    file=sys.stderr,
+                )
+                return 2
+            record = memory.propose_decision(
+                statement=statement,
+                origin="user",
+                created_by="user",
+                status="accepted",
+                reason="Explicit user authorization for saved-project root mutation",
+            )
+            print(json.dumps({"authorized": True, "changed": True, "decision_id": record["id"]}, ensure_ascii=False))
             return 0
         if args.command == "devops-rearm-relay-owner":
             print(json.dumps(reactivate_desktop_relay_owner(args.project, incident_id=args.incident_id), ensure_ascii=False))

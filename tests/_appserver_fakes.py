@@ -63,11 +63,26 @@ class FakeAppServerCreateClient:
             "roots": [{"path": str(self.canonical_cwd)}],
         }
 
-    def ensure_project_root(self, project_id, root):
+    def ensure_project_root(self, project_id, root, *, authorized=False):
+        # Подделка повторяет контракт настоящего клиента: членство
+        # проверяется, а корень дописывается только по разрешению.
+        from codex_autopilot.appserver import ProjectRootDrift
+
         self.events.append("app-server-project-root-ensured")
+        known = self.read_project(project_id)
+        existing = tuple(
+            Path(str(item["path"])).expanduser().resolve()
+            for item in known.get("roots") or []
+        )
+        canonical = Path(str(root)).expanduser().resolve()
+        if any(_within(canonical, item) for item in existing):
+            return known
+        if not authorized:
+            raise ProjectRootDrift(project_id, canonical, existing)
+        self.events.append("app-server-project-root-added")
         return {
             "id": project_id,
-            "roots": [{"path": str(root)}],
+            "roots": [{"path": str(item)} for item in (*existing, canonical)],
         }
 
     def resume_thread(self, thread_id):
@@ -149,3 +164,11 @@ def activate_via_app_server(cfg, root, descriptor, thread_id, *, owner=None):
     # run_automatic_app_server_turn после старта production-хода.
     acknowledge_desktop_send(cfg, descriptor.reservation_token, thread_id=thread_id)
     return client, events
+
+
+def _within(target, root) -> bool:
+    try:
+        Path(str(target)).relative_to(Path(str(root)))
+    except ValueError:
+        return False
+    return True

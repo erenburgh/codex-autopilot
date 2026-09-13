@@ -256,12 +256,18 @@ class FakeAppServerCreateClient:
         thread_id: str,
         project_id: str | None = None,
         fail_create: bool = False,
+        project_roots: tuple[Path, ...] | None = None,
     ) -> None:
         self.canonical_cwd = canonical_cwd
         self.events = events
         self.thread_id = thread_id
         self.project_id = project_id
         self.fail_create = fail_create
+        # Корни сохранённого проекта - отдельное состояние: расхождение с
+        # каноническим каталогом и есть предмет проверки R6.
+        self.project_roots = (
+            tuple(project_roots) if project_roots is not None else (canonical_cwd,)
+        )
         self.process_exited = False
         self.name: str | None = None
         # Настоящий клиент помнит, какие ветки он загрузил: ход стартует
@@ -291,14 +297,29 @@ class FakeAppServerCreateClient:
         self.events.append("app-server-project-verified")
         return {
             "id": project_id,
-            "roots": [{"path": str(self.canonical_cwd)}],
+            "roots": [{"path": str(item)} for item in self.project_roots],
         }
 
-    def ensure_project_root(self, project_id, root):
+    def ensure_project_root(self, project_id, root, *, authorized=False):
+        # Подделка повторяет контракт настоящего клиента: членство
+        # проверяется, а корень дописывается только по разрешению.
+        from codex_autopilot.appserver import ProjectRootDrift
+
         self.events.append("app-server-project-root-ensured")
+        known = self.read_project(project_id)
+        existing = tuple(
+            Path(str(item["path"])).expanduser().resolve()
+            for item in known.get("roots") or []
+        )
+        canonical = Path(str(root)).expanduser().resolve()
+        if any(_within(canonical, item) for item in existing):
+            return known
+        if not authorized:
+            raise ProjectRootDrift(project_id, canonical, existing)
+        self.events.append("app-server-project-root-added")
         return {
             "id": project_id,
-            "roots": [{"path": str(root)}],
+            "roots": [{"path": str(item)} for item in (*existing, canonical)],
         }
 
     def start_thread(self, **kwargs):
@@ -978,6 +999,146 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertIn(
             "project-scoped thread/start",
             session["project_association_verification"],
+        )
+
+    def _drifted_create(self, client_roots):
+        self.cfg = replace(
+            self.cfg,
+            desktop=replace(self.cfg.desktop, project_id="app-server-ui-project"),
+        )
+        state = self.store.load()
+        state.project_id = "app-server-ui-project"
+        self.store.save(state)
+        descriptor = reserve_ready_frontier(
+            self.cfg,
+            relay_owner_thread_id="M8-thread",
+        )[0]
+        events: list[str] = []
+        client = FakeAppServerCreateClient(
+            self.root,
+            events,
+            thread_id="M9-thread",
+            project_roots=client_roots,
+        )
+        return client, events, descriptor, mock.patch(
+            "codex_autopilot.lifecycle_dispatch.installed_plugin_root",
+            return_value=self.root,
+        )
+
+    def test_root_drift_stops_the_create_and_writes_nothing(self) -> None:
+        """R6: сохранённый проект пользователя не правится молча.
+
+        Прежде ``ensure_project_root`` при каждом создании дописывал
+        канонический корень в проект. Это меняло настройку Codex, а не
+        состояние прогона, и не сообщалось никак.
+        """
+
+        client, events, descriptor, patcher = self._drifted_create(
+            (self.root.parent / "somewhere-else",)
+        )
+        with patcher:
+            with self.assertRaises(DesktopLifecycleError) as raised:
+                create_desktop_thread_via_app_server(
+                    self.cfg,
+                    descriptor.reservation_token,
+                    client_factory=lambda *_args: client,
+                    relay_executor_thread_id="M8-thread",
+                )
+
+        self.assertIn("does not contain the canonical root", str(raised.exception))
+        self.assertIn("AUTOPILOT_PROJECT_ROOT_AUTHORIZATION", str(raised.exception))
+        # Ничего не создано и ничего не дописано.
+        self.assertNotIn("thread-start-called", events)
+        self.assertNotIn("app-server-project-root-added", events)
+
+    def test_recorded_user_decision_lets_the_same_create_through(self) -> None:
+        """Разрешение существует и работает: отказ не тупик."""
+
+        from codex_autopilot.memory import ProjectMemory
+        from codex_autopilot.project_association import (
+            project_root_authorization_statement,
+        )
+
+        memory = ProjectMemory(self.cfg.root)
+        memory.propose_decision(
+            statement=project_root_authorization_statement(
+                "app-server-ui-project", self.cfg.root
+            ),
+            origin="user",
+            created_by="user",
+            status="accepted",
+        )
+
+        client, events, descriptor, patcher = self._drifted_create(
+            (self.root.parent / "somewhere-else",)
+        )
+        with patcher:
+            created = create_desktop_thread_via_app_server(
+                self.cfg,
+                descriptor.reservation_token,
+                client_factory=lambda *_args: client,
+                relay_executor_thread_id="M8-thread",
+            )
+
+        self.assertEqual(created["app_server_project_id"], "app-server-ui-project")
+        self.assertIn("app-server-project-root-added", events)
+
+    def test_authorization_for_another_project_does_not_apply(self) -> None:
+        """Разрешение названо проектом и корнем и не переносится."""
+
+        from codex_autopilot.memory import ProjectMemory
+        from codex_autopilot.project_association import (
+            project_root_authorization_statement,
+        )
+
+        memory = ProjectMemory(self.cfg.root)
+        memory.propose_decision(
+            statement=project_root_authorization_statement(
+                "some-other-project", self.cfg.root
+            ),
+            origin="user",
+            created_by="user",
+            status="accepted",
+        )
+
+        client, events, descriptor, patcher = self._drifted_create(
+            (self.root.parent / "somewhere-else",)
+        )
+        with patcher:
+            with self.assertRaises(DesktopLifecycleError):
+                create_desktop_thread_via_app_server(
+                    self.cfg,
+                    descriptor.reservation_token,
+                    client_factory=lambda *_args: client,
+                    relay_executor_thread_id="M8-thread",
+                )
+        self.assertNotIn("app-server-project-root-added", events)
+
+    def test_an_agent_written_decision_is_not_authorization(self) -> None:
+        """Авторизацией является решение пользователя, а не запись агента."""
+
+        from codex_autopilot.memory import ProjectMemory
+        from codex_autopilot.project_association import (
+            project_root_authorization_statement,
+            project_root_mutation_authorized,
+        )
+
+        memory = ProjectMemory(self.cfg.root)
+        statement = project_root_authorization_statement(
+            "app-server-ui-project", self.cfg.root
+        )
+        # origin="agent" не может быть принят сразу - это уже запрещено;
+        # проверяем, что и proposed-запись авторизацией не становится.
+        memory.propose_decision(
+            statement=statement,
+            origin="agent",
+            created_by="worker",
+            status="proposed",
+        )
+        self.assertFalse(
+            project_root_mutation_authorized(
+                memory, "app-server-ui-project", self.cfg.root
+            )
         )
 
     def test_authorized_dispatcher_survives_modified_hook_without_chat_relay(self) -> None:
@@ -1865,3 +2026,11 @@ class DesktopLifecycleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _within(target, root) -> bool:
+    try:
+        Path(str(target)).relative_to(Path(str(root)))
+    except ValueError:
+        return False
+    return True

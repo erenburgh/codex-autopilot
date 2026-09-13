@@ -979,6 +979,25 @@ class ProjectMemory:
             ).fetchall()
         return any(row["kind"] == "external" for row in rows)
 
+    def accepted_user_decision(self, statement: str) -> dict[str, Any] | None:
+        """Принятое решение пользователя с ровно таким текстом, или None.
+
+        Точное совпадение, а не поиск: это лукап авторизации, и он не
+        должен срабатывать на похожую формулировку. Ограничение по
+        origin - часть проверки, а не фильтр для удобства: решение,
+        записанное агентом, авторизацией не является.
+        """
+
+        text = self._required(statement, "statement")
+        self.initialize()
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM records WHERE category='decision' AND status='accepted' "
+                "AND origin='user' AND statement=? ORDER BY updated_at DESC, id ASC LIMIT 1",
+                (text,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def set_decision_status(self, decision_id: str, status: str, *, actor: str, reason: str | None = None) -> dict[str, Any]:
         if status not in {"proposed", "accepted", "superseded", "rejected"}:
             raise MemoryValidationError("invalid decision status")

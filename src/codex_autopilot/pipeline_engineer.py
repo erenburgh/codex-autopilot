@@ -175,6 +175,7 @@ FORBIDDEN_ACTIONS = (
     "bypass_trust_or_permission_checks",
     "impersonate_or_speak_for_the_user",
     "change_global_codex_settings",
+    "authorize_project_root_mutation_on_behalf_of_the_user",
     "delete_project_state",
     "perform_destructive_or_unbounded_repairs",
     "repeat_ambiguous_create_thread_or_send_message_to_thread",
