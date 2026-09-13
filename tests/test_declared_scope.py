@@ -177,7 +177,6 @@ class ScopeIsCheckedOnCompletionTests(unittest.TestCase):
             profile="adaptive",
             skill_path=skill,
             desktop_project_id="desktop-project",
-            worker_surface=DESKTOP_OWNED_SURFACE,
         )
         # Всё, что существует до старта задачи, обязано быть в истории:
         # иначе чужие файлы попадут в диф и подтвердят правило ложно.

@@ -128,7 +128,6 @@ def run_preflight(
     approve_project_memory_always: bool = False,
     app_server_project_id: str | None = None,
     desktop_project_id: str | None = None,
-    worker_surface: str | None = None,
 ) -> PreflightResult:
     project = root.expanduser().resolve()
     codex_binary = shutil.which(binary) if not Path(binary).is_absolute() else binary
@@ -201,24 +200,28 @@ def run_preflight(
 
         plugin_root = installed_plugin_root(skill_path)
         expected_plugin_id = installed_plugin_id(plugin_root)
-        if desktop_project_id or worker_surface == DESKTOP_OWNED_SURFACE:
-            try:
-                stop_hook = require_trusted_stop_hook(
-                    client,
-                    project,
-                    plugin_id=expected_plugin_id,
-                )
-            except HookTrustApprovalRequired as exc:
-                report("Autopilot Stop hook", "APPROVAL REQUIRED", str(exc))
-                raise
-            except HookPreflightError as exc:
-                report("Autopilot Stop hook", "FAIL", str(exc))
-                raise PreflightError(str(exc)) from exc
-            report(
-                "Autopilot Stop hook",
-                "OK",
-                f"{stop_hook.plugin_id}; {stop_hook.trust_status}; {stop_hook.current_hash}",
+        # Проверка доверия Stop-хуку безусловна. Прежде она зависела от
+        # аргументов, которые в продукте всегда истинны, - то есть условие
+        # ничего не выбирало, но допускало зелёный префлайт при
+        # недоверенном хуке. Запуск принадлежит именно этому хуку: без
+        # доверия прогон не стартует, и зелёный префлайт был бы ложным.
+        try:
+            stop_hook = require_trusted_stop_hook(
+                client,
+                project,
+                plugin_id=expected_plugin_id,
             )
+        except HookTrustApprovalRequired as exc:
+            report("Autopilot Stop hook", "APPROVAL REQUIRED", str(exc))
+            raise
+        except HookPreflightError as exc:
+            report("Autopilot Stop hook", "FAIL", str(exc))
+            raise PreflightError(str(exc)) from exc
+        report(
+            "Autopilot Stop hook",
+            "OK",
+            f"{stop_hook.plugin_id}; {stop_hook.trust_status}; {stop_hook.current_hash}",
+        )
 
         try:
             saved_project, project_source = resolve_preflight_project(

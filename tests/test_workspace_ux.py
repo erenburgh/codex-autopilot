@@ -185,7 +185,6 @@ class SemanticStatusTests(unittest.TestCase):
                 execution_strategy="parallel",
                 max_parallel_workers=3,
                 computer_use_slots=1,
-                worker_surface="desktop_owned",
             ),
         )
         self.state = RunState(

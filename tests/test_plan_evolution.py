@@ -143,7 +143,6 @@ class PlanEvolutionTests(unittest.TestCase):
             profile="adaptive",
             skill_path=self.skill,
             desktop_project_id="desktop-project",
-            worker_surface=DESKTOP_OWNED_SURFACE,
         )
         return load_config(self.root), StateStore(self.root / ".codex-autopilot")
 

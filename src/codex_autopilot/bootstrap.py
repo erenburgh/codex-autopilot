@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import shutil
 
-from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, WORKER_SURFACES
+from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME
 from .language import DEFAULT_LANGUAGE, is_russian, normalize_language
 from .memory import ProjectMemory
 from .migration import detect_v07, migrate_v07
@@ -24,7 +24,6 @@ def initialize_project(
     language: str = DEFAULT_LANGUAGE,
     project_id: str | None = None,
     desktop_project_id: str | None = None,
-    worker_surface: str = DESKTOP_OWNED_SURFACE,
 ) -> Plan:
     root = root.expanduser().resolve()
     if not root.is_dir():
@@ -33,8 +32,6 @@ def initialize_project(
         raise ValueError("Codex Autopilot public beta requires an existing Git repository. Run `git init` if appropriate; Autopilot never changes Git identity or creates commits by default.")
     if profile not in {"adaptive", "host-settings"}:
         raise ValueError("profile must be adaptive or host-settings")
-    if worker_surface not in WORKER_SURFACES:
-        raise ValueError(f"worker_surface must be one of {sorted(WORKER_SURFACES)}")
     if not skill_path.is_file():
         raise ValueError(f"installed skill is missing: {skill_path}")
     language = normalize_language(language)
@@ -63,7 +60,6 @@ def initialize_project(
         language=language,
         project_id=project_id,
         desktop_project_id=desktop_project_id,
-        worker_surface=worker_surface,
     )
     completed = min(completed, len(plan.milestones))
     current_index = min(completed, len(plan.milestones) - 1)
@@ -143,7 +139,6 @@ def _write_config(
     language: str,
     project_id: str | None = None,
     desktop_project_id: str | None = None,
-    worker_surface: str = DESKTOP_OWNED_SURFACE,
 ) -> None:
     lines = [
         f"profile = {_toml_string(profile)}",
@@ -179,7 +174,10 @@ def _write_config(
         f"execution_strategy = {_toml_string(plan.execution_strategy)}",
         f"max_parallel_workers = {plan.max_parallel_workers}",
         f"computer_use_slots = {plan.computer_use_slots}",
-        f"worker_surface = {_toml_string(worker_surface)}",
+        # Поверхность одна. Поле пишется явно, чтобы конфиг читался
+        # без знания умолчаний, а проверка при чтении отвергает
+        # устаревший файл, называющий снятую поверхность.
+        f"worker_surface = {_toml_string(DESKTOP_OWNED_SURFACE)}",
         "",
         "[git]",
         "auto_commit = false",

@@ -357,7 +357,6 @@ def main(argv: list[str] | None = None) -> int:
                 approve_project_memory_always=getattr(args, "approve_project_memory_always", False),
                 app_server_project_id=getattr(args, "app_server_project_id", None),
                 desktop_project_id=getattr(args, "desktop_project_id", None),
-                worker_surface=DESKTOP_OWNED_SURFACE,
             )
             if args.command == "preflight":
                 return 0
@@ -371,7 +370,6 @@ def main(argv: list[str] | None = None) -> int:
                 language=language,
                 project_id=preflight_result.project_id,
                 desktop_project_id=getattr(args, "desktop_project_id", None),
-                worker_surface=DESKTOP_OWNED_SURFACE,
             )
             if args.command == "start-skill":
                 state = StateStore(args.project.resolve() / STATE_DIR_NAME).load()

@@ -220,7 +220,6 @@ class VerificationLifecycleTests(unittest.TestCase):
             profile="adaptive",
             skill_path=self.skill,
             desktop_project_id="desktop-project",
-            worker_surface=DESKTOP_OWNED_SURFACE,
         )
         self.cfg = load_config(self.root)
         self.store = StateStore(self.root / ".codex-autopilot")

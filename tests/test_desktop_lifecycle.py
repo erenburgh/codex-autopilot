@@ -529,7 +529,6 @@ class DesktopLifecycleTests(unittest.TestCase):
             profile="adaptive",
             skill_path=self.skill,
             desktop_project_id="desktop-project",
-            worker_surface=DESKTOP_OWNED_SURFACE,
         )
         self.cfg = load_config(self.root)
         self.store = StateStore(self.root / ".codex-autopilot")
@@ -551,7 +550,6 @@ class DesktopLifecycleTests(unittest.TestCase):
             profile="adaptive",
             skill_path=skill,
             desktop_project_id="desktop-project",
-            worker_surface=DESKTOP_OWNED_SURFACE,
         )
         cfg = load_config(root)
         store = StateStore(root / ".codex-autopilot")
@@ -1266,7 +1264,6 @@ class DesktopLifecycleTests(unittest.TestCase):
             skill_path=self.skill,
             replace=True,
             desktop_project_id="desktop-project",
-            worker_surface=DESKTOP_OWNED_SURFACE,
         )
         descriptors = reserve_ready_frontier(load_config(self.root))
         self.assertEqual([item.task_id for item in descriptors], ["A"])
@@ -1337,7 +1334,6 @@ class DesktopLifecycleTests(unittest.TestCase):
             skill_path=self.skill,
             replace=True,
             desktop_project_id="desktop-project",
-            worker_surface=DESKTOP_OWNED_SURFACE,
         )
         cfg = load_config(self.root)
         descriptor = reserve_ready_frontier(cfg)[0]
@@ -1768,7 +1764,6 @@ class DesktopLifecycleTests(unittest.TestCase):
             profile="adaptive",
             skill_path=skill,
             desktop_project_id="desktop-project",
-            worker_surface=DESKTOP_OWNED_SURFACE,
         )
         cfg = load_config(root)
         first = reserve_ready_frontier(
