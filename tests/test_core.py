@@ -18,7 +18,7 @@ from codex_autopilot.control import status_text
 from codex_autopilot.cli import uninstall
 from codex_autopilot.models import MODEL_IDS, ModelRoutingError, logical_model, resolve_reasoning, resolve_selection
 from codex_autopilot.memory import ProjectMemory
-from codex_autopilot.orchestrator import DesktopOrchestrator, OrchestrationError, WORKSPACE_HANDOFF_OK, build_worker_prompt, match_saved_project, parse_worker_status
+from codex_autopilot.project_association import match_saved_project
 from codex_autopilot.plan import load_plan, validate_plan
 from codex_autopilot.preflight import REQUIRED_MEMORY_TOOLS
 from codex_autopilot.reasoning import next_level, normalize
@@ -83,7 +83,6 @@ def update_handoff(root: Path, label: str) -> None:
 def completed_turn(status: str, turn_id: str = "turn") -> dict:
     reason = "\nCOMPUTER_USE_REASON: The Definition of Done requires interaction with a real browser GUI." if status == "REQUIRE_COMPUTER_USE" else ""
     return {"id": turn_id, "status": "completed", "items": [{"type": "agentMessage", "phase": "final_answer", "text": f"finished{reason}\nAUTOPILOT_STATUS: {status}"}]}
-
 
 
 @contextlib.contextmanager
@@ -335,84 +334,6 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(resolved, "medium")
         self.assertIn("resolved", adjustment)
 
-    def test_model_unavailable_blocks_without_fallback(self):
-        root = make_project("adaptive", 1)
-        FakeClient.root = root
-        FakeClient.catalog = [model_catalog()[1]]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=FakeClient).run(), 78)
-        state = StateStore(root / ".codex-autopilot").load()
-        self.assertIn(MODEL_IDS["sol"], state.last_error)
-        self.assertEqual(FakeClient.instances[-1].models, [])
-
-    def test_astra_only_routes_code_to_astra(self):
-        root = make_project("adaptive", 1, strategy="astra-only")
-        FakeClient.root = root
-        FakeClient.statuses = ["DONE"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=FakeClient).run(), 0)
-        self.assertEqual(FakeClient.instances[-1].models, [MODEL_IDS["astra"]])
-
-    def test_auto_computer_use_routes_to_astra(self):
-        root = make_project("adaptive", 1, strategy="auto", modes=["computer_use"])
-        FakeClient.root = root
-        FakeClient.statuses = ["DONE"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=FakeClient).run(), 0)
-        self.assertEqual(FakeClient.instances[-1].models, [MODEL_IDS["astra"]])
-
-    def test_sol_only_code_routes_to_sol(self):
-        root = make_project("adaptive", 1, strategy="sol-only", modes=["code"])
-        FakeClient.root = root
-        FakeClient.statuses = ["DONE"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=FakeClient).run(), 0)
-        self.assertEqual(FakeClient.instances[-1].models, [MODEL_IDS["sol"]])
-
-    def test_sol_only_computer_use_blocks(self):
-        root = make_project("adaptive", 1, strategy="sol-only", modes=["computer_use"])
-        FakeClient.root = root
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=FakeClient).run(), 78)
-        state = StateStore(root / ".codex-autopilot").load()
-        self.assertIn("configured as Sol-only", state.last_error)
-        self.assertEqual(FakeClient.instances[-1].models, [])
-
-    def test_require_computer_use_retries_same_milestone_in_fresh_astra(self):
-        root = make_project("adaptive", 1, strategy="auto", modes=["code"])
-        CapabilityClient.root = root
-        CapabilityClient.statuses = ["REQUIRE_COMPUTER_USE", "DONE"]
-        CapabilityClient.roadmap_was_unadvanced = False
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=CapabilityClient).run(), 0)
-        state = StateStore(root / ".codex-autopilot").load()
-        client = CapabilityClient.instances[-1]
-        self.assertEqual(client.models, [MODEL_IDS["sol"], MODEL_IDS["astra"]])
-        self.assertEqual(state.milestone_index, 0)
-        self.assertTrue(CapabilityClient.roadmap_was_unadvanced)
-        self.assertEqual([item["milestone_id"] for item in state.worker_history], ["M1", "M1"])
-        self.assertEqual([item["status"] for item in state.worker_history], ["REQUIRE_COMPUTER_USE", "DONE"])
-
-    def test_shared_rate_limit_retries_same_model_without_fallback(self):
-        root = make_project("adaptive", 1)
-        RateOnceClient.root = root
-        RateOnceClient.statuses = []
-        RateOnceClient.waits = 0
-        clock = [0]
-        def now():
-            clock[0] += 100
-            return clock[0]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=RateOnceClient, sleep_fn=lambda _seconds: None, now_fn=now).run(), 0)
-        state = StateStore(root / ".codex-autopilot").load()
-        self.assertEqual(RateOnceClient.instances[-1].models, [MODEL_IDS["sol"], MODEL_IDS["sol"]])
-        self.assertEqual([item["status"] for item in state.worker_history], ["RATE_LIMITED", "DONE"])
-
-    def test_approval_request_blocks_and_interrupts_active_worker(self):
-        root = make_project("adaptive", 1)
-        ApprovalClient.root = root
-        ApprovalClient.interrupted = []
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=ApprovalClient).run(), 78)
-        state = StateStore(root / ".codex-autopilot").load()
-        self.assertEqual(state.status, "BLOCKED")
-        self.assertEqual(state.worker_history[-1]["status"], "BLOCKED")
-        self.assertEqual(ApprovalClient.interrupted, [("thread-1", "turn-1")])
-        self.assertIsNone(state.current_thread_id)
-        self.assertIsNone(state.current_turn_id)
-        self.assertEqual(state.previous_thread_ids, ["thread-1"])
 
     def test_plan_has_one_adaptive_source(self):
         item = {"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "high"}
@@ -424,13 +345,6 @@ class CoreTests(unittest.TestCase):
         item = {"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "high"}
         with self.assertRaises(ValueError): validate_plan({"goal": "g", "model_strategy": "host-settings", "milestones": [item]}, "host-settings")
 
-    def test_status_protocol_profile_specific(self):
-        self.assertEqual(parse_worker_status("x\nAUTOPILOT_STATUS: ESCALATE", True), "ESCALATE")
-        require = "COMPUTER_USE_REASON: A real browser click is required.\nAUTOPILOT_STATUS: REQUIRE_COMPUTER_USE"
-        self.assertEqual(parse_worker_status(require, True, True), "REQUIRE_COMPUTER_USE")
-        with self.assertRaises(OrchestrationError): parse_worker_status("AUTOPILOT_STATUS: REQUIRE_COMPUTER_USE", True, False)
-        with self.assertRaises(OrchestrationError): parse_worker_status("AUTOPILOT_STATUS: ESCALATE", False)
-        with self.assertRaises(OrchestrationError): parse_worker_status("AUTOPILOT_STATUS: DONE\ntext", True)
 
     def test_bootstrap_creates_only_documented_state(self):
         root = make_project()
@@ -440,26 +354,6 @@ class CoreTests(unittest.TestCase):
         self.assertTrue((root / "ROADMAP.md").is_file())
         self.assertFalse((root / ".git/refs/heads/main").exists())
 
-    def test_run_language_is_persisted_and_applied_to_every_worker_surface(self):
-        root = make_project("adaptive", 1, language="ru-RU")
-        cfg = load_config(root)
-        state = StateStore(cfg.state_dir).load()
-        state.selected_model_key = "sol"
-        prompt = build_worker_prompt(cfg, state, load_plan(cfg.state_dir, cfg.profile))
-
-        self.assertEqual(cfg.language, "ru-ru")
-        self.assertIn("# Дорожная карта", (root / "ROADMAP.md").read_text(encoding="utf-8"))
-        self.assertIn("## Задача", (cfg.state_dir / "MILESTONE.md").read_text(encoding="utf-8"))
-        self.assertIn("Язык ответов: русский (ru)", prompt)
-        self.assertIn("Пиши на русском все сообщения пользователю", prompt)
-        for status in ("ROTATE", "DONE", "BLOCKED", "ESCALATE", "REQUIRE_COMPUTER_USE"):
-            self.assertIn(f"AUTOPILOT_STATUS: {status}", prompt)
-        FakeClient.root = root
-        FakeClient.statuses = ["DONE"]
-        self.assertEqual(DesktopOrchestrator(cfg, client_factory=FakeClient).run(), 0)
-        names = [event[2] for event in FakeClient.instances[-1].events if event[0] == "name"]
-        self.assertEqual(len(names), 1)
-        self.assertEqual(names[0], "Legacy serial worker | M1 | Step 1")
 
     def test_invalid_run_language_is_rejected_before_state_creation(self):
         root = Path(tempfile.mkdtemp(prefix="codex-autopilot-language-"))
@@ -503,195 +397,6 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(load_config(root).desktop.project_id, "project-1")
         self.assertEqual(StateStore(state_dir).load().project_id, "project-1")
 
-    def test_explicit_ui_project_does_not_change_or_constrain_worker_cwd(self):
-        root = Path(tempfile.mkdtemp(prefix="codex-autopilot-explicit-project-"))
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
-        state_dir = root / ".codex-autopilot"
-        state_dir.mkdir()
-        plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "g", "model_strategy": "auto", "milestones": [{"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
-        initialize_project(root, plan_file, profile="adaptive", skill_path=ADAPTIVE_SKILL, project_id="project-1")
-        ExplicitProjectClient.root = root
-        ExplicitProjectClient.statuses = ["DONE"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=ExplicitProjectClient).run(), 0)
-        client = ExplicitProjectClient.instances[-1]
-        self.assertEqual(client.project_ids, ["project-1"])
-        self.assertEqual(client.cwds, [root.resolve()])
-        started = next(event for event in client.events if event[0] == "thread/start")
-        self.assertEqual(started[1], "thread-1")
-
-    def test_desktop_project_metadata_does_not_switch_headless_transport(self):
-        root = Path(tempfile.mkdtemp(prefix="codex-autopilot-project-slot-"))
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
-        state_dir = root / ".codex-autopilot"
-        state_dir.mkdir()
-        plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "g", "model_strategy": "auto", "milestones": [{"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
-        initialize_project(
-            root,
-            plan_file,
-            profile="adaptive",
-            skill_path=ADAPTIVE_SKILL,
-            desktop_project_id="desktop-project-1",
-            worker_thread_ids=("slot-1",),
-        )
-        ProjectSlotClient.root = root
-        ProjectSlotClient.statuses = ["DONE"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=ProjectSlotClient).run(), 0)
-        client = ProjectSlotClient.instances[-1]
-        self.assertFalse(any(event[0] == "thread/resume" for event in client.events))
-        self.assertTrue(any(event[0] == "thread/start" for event in client.events))
-        self.assertFalse(any(event[0] == "slot/handoff" for event in client.events))
-        self.assertEqual(client.production_kwargs["cwd"], root.resolve())
-        self.assertNotIn("permission_profile", client.production_kwargs)
-        self.assertIn(("thread/unsubscribe", "thread-1"), client.events)
-        state = StateStore(state_dir).load()
-        self.assertEqual(state.desktop_project_id, "desktop-project-1")
-        self.assertEqual(state.worker_slot_cursor, 0)
-
-    @unittest.skip("legacy App Server slot reuse was the transport regression")
-    def test_restart_after_old_blocked_worker_uses_one_fresh_m1_slot(self):
-        root = Path(tempfile.mkdtemp(prefix="codex-autopilot-slot-restart-"))
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
-        state_dir = root / ".codex-autopilot"
-        state_dir.mkdir()
-        plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "g", "model_strategy": "auto", "milestones": [{"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
-        initialize_project(
-            root,
-            plan_file,
-            profile="adaptive",
-            skill_path=ADAPTIVE_SKILL,
-            desktop_project_id="desktop-project-1",
-            worker_thread_ids=("slot-1",),
-        )
-        store = StateStore(state_dir)
-        state = store.load()
-        state.status = "PAUSED"
-        state.phase = "PAUSED"
-        state.worker_sequence = 1
-        state.previous_thread_ids = ["old-m1"]
-        state.worker_history = [{"worker_sequence": 1, "milestone_id": "M1", "thread_id": "old-m1", "status": "DISCARDED"}]
-        store.save(state)
-        ProjectSlotClient.root = root
-        ProjectSlotClient.statuses = ["DONE"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=ProjectSlotClient).run(), 0)
-        client = ProjectSlotClient.instances[-1]
-        self.assertEqual([event for event in client.events if event[0] == "thread/resume"], [("thread/resume", "slot-1")])
-        self.assertEqual(store.load().worker_sequence, 2)
-
-    @unittest.skip("legacy App Server slot reuse was the transport regression")
-    def test_project_slots_are_requested_just_in_time_without_phantom_worker(self):
-        root = Path(tempfile.mkdtemp(prefix="codex-autopilot-slot-frontier-"))
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
-        state_dir = root / ".codex-autopilot"
-        state_dir.mkdir()
-        plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "g", "model_strategy": "auto", "milestones": [
-            {"title": "first", "objective": "o1", "definition_of_done": ["d1"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"},
-            {"title": "second", "objective": "o2", "definition_of_done": ["d2"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"},
-        ]}))
-        initialize_project(
-            root,
-            plan_file,
-            profile="adaptive",
-            skill_path=ADAPTIVE_SKILL,
-            desktop_project_id="desktop-project-1",
-            worker_thread_ids=("slot-1",),
-        )
-        ProjectSlotClient.root = root
-        ProjectSlotClient.statuses = ["ROTATE"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=ProjectSlotClient).run(), 0)
-        state = StateStore(state_dir).load()
-        self.assertEqual(state.status, "WAITING")
-        self.assertEqual(state.phase, "WAITING_PROJECT_SLOT")
-        self.assertEqual(state.milestone_index, 1)
-        self.assertEqual(state.worker_sequence, 1)
-        self.assertEqual(state.attempt, 0)
-        self.assertEqual(state.worker_slot_cursor, 1)
-        self.assertTrue(append_worker_slot(root, "slot-2", "desktop-project-1"))
-        self.assertFalse(append_worker_slot(root, "slot-2", "desktop-project-1"))
-        self.assertEqual(load_config(root).desktop.worker_thread_ids, ("slot-1", "slot-2"))
-
-    @unittest.skip("legacy App Server slot reuse was the transport regression")
-    def test_transient_desktop_writer_is_retried_without_duplicate_worker(self):
-        root = Path(tempfile.mkdtemp(prefix="codex-autopilot-slot-writer-"))
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
-        state_dir = root / ".codex-autopilot"
-        state_dir.mkdir()
-        plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "g", "model_strategy": "auto", "milestones": [
-            {"title": "first", "objective": "o1", "definition_of_done": ["d1"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"},
-        ]}))
-        initialize_project(
-            root,
-            plan_file,
-            profile="adaptive",
-            skill_path=ADAPTIVE_SKILL,
-            desktop_project_id="desktop-project-1",
-            worker_thread_ids=("slot-1",),
-        )
-        BusyOnceProjectSlotClient.root = root
-        BusyOnceProjectSlotClient.resume_attempts = 0
-        BusyOnceProjectSlotClient.statuses = ["DONE"]
-        self.assertEqual(
-            DesktopOrchestrator(
-                load_config(root),
-                client_factory=BusyOnceProjectSlotClient,
-                sleep_fn=lambda _seconds: None,
-            ).run(),
-            0,
-        )
-        state = StateStore(state_dir).load()
-        client = BusyOnceProjectSlotClient.instances[-1]
-        self.assertEqual(state.status, "DONE")
-        self.assertEqual(state.worker_sequence, 1)
-        self.assertEqual(state.worker_slot_cursor, 1)
-        self.assertEqual(
-            [event for event in client.events if event[0] == "thread/resume"],
-            [("thread/resume", "slot-1")],
-        )
-        self.assertEqual(BusyOnceProjectSlotClient.resume_attempts, 2)
-        self.assertEqual(len(state.worker_history), 1)
-
-    @unittest.skip("legacy App Server slot reuse was the transport regression")
-    def test_persistent_desktop_writer_times_out_without_consuming_slot(self):
-        root = Path(tempfile.mkdtemp(prefix="codex-autopilot-slot-writer-timeout-"))
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
-        state_dir = root / ".codex-autopilot"
-        state_dir.mkdir()
-        plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "g", "model_strategy": "auto", "milestones": [
-            {"title": "first", "objective": "o1", "definition_of_done": ["d1"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"},
-        ]}))
-        initialize_project(
-            root,
-            plan_file,
-            profile="adaptive",
-            skill_path=ADAPTIVE_SKILL,
-            desktop_project_id="desktop-project-1",
-            worker_thread_ids=("slot-1",),
-        )
-        clock = [0.0]
-        BusyProjectSlotClient.root = root
-        self.assertEqual(
-            DesktopOrchestrator(
-                load_config(root),
-                client_factory=BusyProjectSlotClient,
-                sleep_fn=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
-                now_fn=lambda: clock[0],
-            ).run(),
-            0,
-        )
-        state = StateStore(state_dir).load()
-        self.assertEqual(state.status, "WAITING")
-        self.assertEqual(state.phase, "WAITING_PROJECT_SLOT_RELEASE")
-        self.assertEqual(state.worker_slot_cursor, 0)
-        self.assertEqual(state.worker_sequence, 0)
-        self.assertEqual(state.attempt, 0)
-        self.assertIsNone(state.current_thread_id)
-        self.assertFalse(state.worker_history)
-        self.assertFalse((state_dir / "BLOCKED.json").exists())
 
     def test_non_git_is_rejected_without_initializing(self):
         root = Path(tempfile.mkdtemp())
@@ -701,27 +406,6 @@ class CoreTests(unittest.TestCase):
             initialize_project(root, plan, profile="adaptive", skill_path=ADAPTIVE_SKILL)
         self.assertFalse((root / ".git").exists())
 
-    def test_adaptive_serial_rotation(self):
-        root = make_project("adaptive", 2)
-        FakeClient.root = root
-        FakeClient.statuses = ["ROTATE", "DONE"]
-        code = DesktopOrchestrator(load_config(root), client_factory=FakeClient).run()
-        state = StateStore(root / ".codex-autopilot").load()
-        client = FakeClient.instances[-1]
-        self.assertEqual(code, 0)
-        self.assertEqual(state.status, "DONE")
-        self.assertEqual(state.previous_thread_ids, ["thread-1", "thread-2"])
-        self.assertEqual(state.task_states, {"M1": "VERIFIED", "M2": "VERIFIED"})
-        self.assertEqual(state.active_task_ids, [])
-        self.assertEqual(state.task_attempts, {"M1": 1, "M2": 1})
-        self.assertEqual(client.efforts, ["medium", "medium"])
-        self.assertEqual(client.models, [MODEL_IDS["sol"], MODEL_IDS["sol"]])
-        self.assertEqual([e[0] for e in client.events if e[0].startswith("turn/")], ["turn/start", "turn/completed", "turn/start", "turn/completed"])
-        self.assertEqual([item["model_id"] for item in state.worker_history], [MODEL_IDS["sol"], MODEL_IDS["sol"]])
-        self.assertEqual([item["execution_mode"] for item in state.worker_history], ["code", "code"])
-        visible_status = status_text(root)
-        self.assertIn("model=GPT-5.6 Sol", visible_status)
-        self.assertIn("execution_mode=code", visible_status)
 
     def test_restore_app_server_transport_cancels_only_uncreated_reservation(self):
         root = make_project("adaptive", 2)
@@ -791,39 +475,6 @@ class CoreTests(unittest.TestCase):
         self.assertIsNone(restored.current_thread_id)
         self.assertIn("verified-m1-thread", restored.previous_thread_ids)
 
-    def test_adaptive_escalates_in_fresh_thread(self):
-        root = make_project("adaptive", 1)
-        FakeClient.root = root
-        FakeClient.statuses = ["ESCALATE", "DONE"]
-        code = DesktopOrchestrator(load_config(root), client_factory=FakeClient).run()
-        client = FakeClient.instances[-1]
-        self.assertEqual(code, 0)
-        self.assertEqual(client.efforts, ["medium", "high"])
-        self.assertEqual(client.models, [MODEL_IDS["sol"], MODEL_IDS["sol"]])
-        self.assertEqual(StateStore(root / ".codex-autopilot").load().previous_thread_ids, ["thread-1", "thread-2"])
-
-    def test_escalate_at_max_blocks(self):
-        root = make_project("adaptive", 1)
-        plan_data = json.loads((root / ".codex-autopilot/plan.json").read_text())
-        plan_data["tasks"][0]["reasoning"] = "max"
-        (root / ".codex-autopilot/plan.json").write_text(json.dumps(plan_data), encoding="utf-8")
-        FakeClient.root = root
-        FakeClient.statuses = ["ESCALATE"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=FakeClient).run(), 78)
-        self.assertIn("at max", StateStore(root / ".codex-autopilot").load().last_error)
-
-    def test_host_omits_effort_and_prompt_escalation(self):
-        root = make_project("host-settings", 1)
-        cfg = load_config(root)
-        state = StateStore(cfg.state_dir).load()
-        prompt = build_worker_prompt(cfg, state, load_plan(cfg.state_dir, cfg.profile))
-        self.assertNotIn("AUTOPILOT_STATUS: ESCALATE", prompt)
-        FakeClient.root = root
-        FakeClient.statuses = ["DONE"]
-        self.assertEqual(DesktopOrchestrator(cfg, client_factory=FakeClient).run(), 0)
-        self.assertEqual(FakeClient.instances[-1].efforts, [None])
-        self.assertEqual(FakeClient.instances[-1].models, [None])
-        self.assertEqual(FakeClient.instances[-1].models_requested, 0)
 
     def test_rate_limit_detection_and_reset(self):
         self.assertTrue(is_rate_limit_error({"nested": {"codexErrorInfo": "usageLimitExceeded"}}))
@@ -880,24 +531,6 @@ class CoreTests(unittest.TestCase):
         spawn.assert_called_once_with(root.resolve(), initiator_thread_id="outside-session", initiator_turn_id="outside-turn")
         self.assertIn("dispatcher started", output["systemMessage"])
 
-    def test_completion_marker_without_memory_evidence_blocks(self):
-        root = make_project("adaptive", 1)
-        NoEvidenceClient.root = root
-        NoEvidenceClient.statuses = ["DONE"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=NoEvidenceClient).run(), 78)
-        state = StateStore(root / ".codex-autopilot").load()
-        self.assertEqual(state.status, "BLOCKED")
-        self.assertIn("without new Project Memory evidence", state.last_error)
-        self.assertIn("- [ ] M1", (root / "ROADMAP.md").read_text())
-
-    def test_memory_mcp_failure_blocks_before_model_turn(self):
-        root = make_project("adaptive", 1)
-        DisconnectedMemoryClient.root = root
-        DisconnectedMemoryClient.statuses = ["DONE"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=DisconnectedMemoryClient).run(), 78)
-        client = DisconnectedMemoryClient.instances[-1]
-        self.assertEqual(client.efforts, [])
-        self.assertEqual(StateStore(root / ".codex-autopilot").load().status, "BLOCKED")
 
     def test_exact_control_prompt_does_not_use_model(self):
         root = make_project()
@@ -934,13 +567,6 @@ class CoreTests(unittest.TestCase):
         root = Path("/tmp/product/module")
         projects = [{"id": "broad", "roots": [{"path": "/tmp"}]}, {"id": "exact", "roots": [{"path": "/tmp/product"}]}]
         self.assertEqual(match_saved_project(root, projects)["id"], "exact")
-
-    def test_blocked_worker_is_terminal(self):
-        root = make_project("adaptive", 1)
-        FakeClient.root = root
-        FakeClient.statuses = ["BLOCKED"]
-        self.assertEqual(DesktopOrchestrator(load_config(root), client_factory=FakeClient).run(), 78)
-        self.assertEqual(StateStore(root / ".codex-autopilot").load().status, "BLOCKED")
 
 
 if __name__ == "__main__":

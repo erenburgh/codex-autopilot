@@ -59,7 +59,6 @@ from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.pipeline_engineer import (
     PipelineIncidentStore,
 )
-from codex_autopilot.orchestrator import HeadlessAppServerOrchestrator, OrchestrationError
 from codex_autopilot.run_state import StateStore
 from codex_autopilot.task_state import TaskState
 
@@ -1522,8 +1521,6 @@ class DesktopLifecycleTests(unittest.TestCase):
             reserve_ready_frontier(self.cfg)
         with self.assertRaisesRegex(RuntimeError, "cannot start through"):
             spawn_dispatcher(self.root)
-        with self.assertRaisesRegex(OrchestrationError, "forbidden"):
-            HeadlessAppServerOrchestrator(self.cfg).run()
 
     def test_stop_hook_reserves_and_requests_same_task_relay(self) -> None:
         self.enterContext(self.bypass_launch_gate())

@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from typing import Any, Callable
 
+from . import __version__
 from .config import STATE_DIR_NAME
 from .memory import CATEGORIES, MAX_PAGE_SIZE, MemoryError, MemoryValidationError, ProjectMemory
 
@@ -557,7 +558,10 @@ class MemoryMcpServer:
                 result = {
                     "protocolVersion": "2025-03-26",
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "codex-autopilot-project-memory", "version": "0.8.0-beta"},
+                    "serverInfo": {
+                        "name": "codex-autopilot-project-memory",
+                        "version": __version__,
+                    },
                 }
             elif method == "ping":
                 result = {}

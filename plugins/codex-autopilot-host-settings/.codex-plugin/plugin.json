@@ -1,10 +1,16 @@
 {
   "name": "codex-autopilot-host-settings",
-  "version": "0.8.0-beta",
+  "version": "0.8.1-beta",
   "description": "Run long Codex projects as serial visible fresh workers with evidence-backed Project Memory and host defaults.",
-  "author": {"name": "Codex Autopilot contributors"},
+  "author": {
+    "name": "Codex Autopilot contributors"
+  },
   "license": "MIT",
-  "keywords": ["codex", "automation", "orchestration"],
+  "keywords": [
+    "codex",
+    "automation",
+    "orchestration"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
@@ -13,8 +19,14 @@
     "longDescription": "A local non-AI dispatcher runs one visible Codex worker per milestone, omits model and effort fields, and provides built-in evidence-backed Project Memory.",
     "developerName": "Codex Autopilot contributors",
     "category": "Developer Tools",
-    "capabilities": ["Interactive", "Read", "Write"],
-    "defaultPrompt": ["Use Codex Autopilot for this project."],
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use Codex Autopilot for this project."
+    ],
     "screenshots": []
   }
 }

@@ -16,7 +16,7 @@ from codex_autopilot.hook_trust import (
 PLUGIN_ID = "codex-autopilot-adaptive@codex-autopilot-local"
 ROOT = Path("/project").resolve()
 COMMAND = runtime_hook_command(
-    Path("/opt/CodexAutopilot/0.8.0-beta/bin/codex-autopilot")
+    Path("/opt/CodexAutopilot/0.8.1-beta/bin/codex-autopilot")
 )
 
 

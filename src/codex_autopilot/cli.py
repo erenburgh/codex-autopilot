@@ -29,11 +29,9 @@ from .lifecycle import (
 )
 from .language import DEFAULT_LANGUAGE, normalize_language
 from .models import MODEL_IDS, PUBLIC_REASONING
-from .orchestrator import HeadlessAppServerOrchestrator
 from .plan import validate_plan
 from .preflight import PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, run_preflight
 from .run_state import StateStore
-from .smoke import run_desktop_smoke
 
 
 def parser() -> argparse.ArgumentParser:
@@ -90,18 +88,11 @@ def parser() -> argparse.ArgumentParser:
     add_slot.add_argument("--thread-id", required=True)
     armed = sub.add_parser("arm", help=argparse.SUPPRESS)
     armed.add_argument("--project", type=Path, default=Path.cwd())
-    run = sub.add_parser("run", help="advanced foreground headless App Server dispatcher")
-    run.add_argument("--project", type=Path, default=Path.cwd())
-    run.add_argument("--detach", action="store_true")
     restore = sub.add_parser(
         "restore-app-server",
         help="restore an uncreated Desktop reservation to controller-owned App Server dispatch",
     )
     restore.add_argument("--project", type=Path, default=Path.cwd())
-    dispatch = sub.add_parser("_dispatch", help=argparse.SUPPRESS)
-    dispatch.add_argument("--project", type=Path, required=True)
-    dispatch.add_argument("--initiator-thread")
-    dispatch.add_argument("--initiator-turn")
     automatic_relay = sub.add_parser("_relay_dispatch", help=argparse.SUPPRESS)
     automatic_relay.add_argument("--project", type=Path, required=True)
     automatic_relay.add_argument("--token", required=True)
@@ -154,12 +145,6 @@ def parser() -> argparse.ArgumentParser:
     uninstall.add_argument("--yes", action="store_true")
     uninstall.add_argument("--project", type=Path)
     uninstall.add_argument("--purge-project-state", action="store_true")
-    test = sub.add_parser("test")
-    test_sub = test.add_subparsers(dest="test_command", required=True)
-    desktop = test_sub.add_parser("desktop")
-    desktop.add_argument("--profile", choices=["adaptive", "host-settings"], default="adaptive")
-    desktop.add_argument("--skill-path", type=Path)
-    desktop.add_argument("--keep", action="store_true")
     sub.add_parser("memory-mcp", help=argparse.SUPPRESS)
     return top
 
@@ -450,51 +435,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"pid {pid}, phase {phase}"
             )
             return 0
-        if args.command in {"run", "resume"}:
-            root = args.project.resolve()
-            store = StateStore(root / STATE_DIR_NAME)
-            cfg = load_config(root)
-            if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
-                raise RuntimeError(
-                    "desktop_owned run/resume is hook-owned; use the exact Codex "
-                    "Autopilot start/resume prompt so its trusted Stop hook launches "
-                    "the automatic App Server dispatcher"
-                )
-            if args.command == "resume":
-                state = store.load()
-                if state.status == "DONE":
-                    print("Already DONE.")
-                    return 0
-                if state.status == "BLOCKED":
-                    if (
-                        state.current_turn_id is None
-                        and "already has an active writer" in str(state.last_error or "").lower()
-                    ):
-                        state.worker_slot_cursor = max(0, state.worker_slot_cursor - 1)
-                        state.worker_sequence = max(0, state.worker_sequence - 1)
-                        state.attempt = max(0, state.attempt - 1)
-                        state.current_thread_id = None
-                        state.status = "WAITING"
-                        state.phase = "WAITING_PROJECT_SLOT_RELEASE"
-                        state.completed_at = None
-                        store.save(state)
-                    else:
-                        print(f"BLOCKED: {state.last_error}", file=sys.stderr)
-                        return 78
-                if pid_alive(state.dispatcher_pid):
-                    print(f"Already running: pid {state.dispatcher_pid}")
-                    return 0
-                store.clear_pause()
-                pid = spawn_dispatcher(root)
-                phase = wait_for_dispatcher(root, pid)
-                print(f"Resumed: pid {pid}, phase {phase}")
-                return 0
-            if args.detach:
-                pid = spawn_dispatcher(root)
-                phase = wait_for_dispatcher(root, pid)
-                print(f"Started: pid {pid}, phase {phase}")
-                return 0
-            return HeadlessAppServerOrchestrator(load_config(root)).run()
+        if args.command == "resume":
+            # Единственная поверхность - desktop_owned, и запуск в ней
+            # принадлежит доверенному Stop-хуку. Команда оставлена как
+            # указатель: молча отсутствующая resume заставляла бы искать.
+            raise RuntimeError(
+                "resume is hook-owned: send the exact phrase "
+                "'Resume Codex Autopilot.' in a Codex task opened on this "
+                "project, so its trusted Stop hook launches the dispatcher"
+            )
         if args.command == "add-worker-slot":
             root = args.project.resolve()
             cfg = load_config(root)
@@ -626,11 +575,6 @@ def main(argv: list[str] | None = None) -> int:
             result = handle_stop_hook(payload) if event == "Stop" else handle_post_tool_hook(payload) if event == "PostToolUse" else handle_prompt_hook(payload) if event == "UserPromptSubmit" else handle_interrupt_hook(payload) if event == "Interrupt" else {}
             print(json.dumps(result, ensure_ascii=False))
             return 0
-        if args.command == "test":
-            profile, skill = _profile_and_skill(args)
-            code, directory = run_desktop_smoke(skill, profile, args.keep)
-            print(f"Desktop smoke {'PASS' if code == 0 else 'FAIL'}; workspace={directory}")
-            return code
         if args.command == "memory-mcp":
             from .memory_mcp import main as memory_mcp_main
             return memory_mcp_main([])

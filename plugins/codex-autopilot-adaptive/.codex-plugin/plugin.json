@@ -1,6 +1,6 @@
 {
   "name": "codex-autopilot-adaptive",
-  "version": "0.8.0-beta+codex.20260911012326",
+  "version": "0.8.1-beta+codex.20260911012326",
   "description": "Run long Codex projects as serial visible fresh workers with evidence-backed Project Memory.",
   "author": {
     "name": "Codex Autopilot contributors"
@@ -15,7 +15,7 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "Codex Autopilot \u2014 Adaptive",
+    "displayName": "Codex Autopilot — Adaptive",
     "shortDescription": "Fresh workers with smart model routing",
     "longDescription": "A local non-AI dispatcher routes code milestones to Sol and Computer Use milestones to Astra. Built-in Project Memory keeps verified facts separate from agent observations.",
     "developerName": "Codex Autopilot contributors",
