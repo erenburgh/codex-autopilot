@@ -124,13 +124,12 @@ scripts/codex-autopilot start-skill --project <target-root> --plan-file <target-
 
 This command performs preflight before it creates run-state. It checks the target, Git, installed runtime, official Codex App Server, `:workspace`, target cwd, reserved task readiness, App Server project metadata, the exact selected-plugin Stop hook through `hooks/list`, built-in Project Memory MCP, SQLite FTS5, a real model-to-MCP trust probe, and model metadata. The Stop hook must be unique, enabled, error-free, `trusted` or `managed`, and use the stable installed-runtime command. If it is `modified` or `untrusted`, stop before worker creation and ask for exactly one action: open `/hooks` and trust the current Autopilot Stop hook. Missing, disabled, duplicated, erroneous, unknown-status, or mismatched definitions fail closed. Never bypass or edit hook trust. Desktop project membership was already verified through the Codex app task listing; App Server cannot validate that external-ID namespace. App Server exposes no read-only API for the persistent per-tool choice. If the command reports `Project Memory MCP: APPROVAL REQUIRED`, show the user the exact diagnostic task title and thread ID and ask one explicit question: whether they approve `codex_autopilot_memory.memory` with Always. Explain that the bundled project-scoped tool has no shell or network access and covers all memory operations. Only after an explicit yes, repeat the same command with `--approve-project-memory-always`; this answers only the verified installed-plugin request that advertises `always` through App Server, then requires a second fresh task to call memory without another approval. Never infer approval from a general request, use the flag before confirmation, initialize or launch a worker after a decline, or edit trust state. If the approval instead names `CODEX_HOME`, request only normal read/write access to that exact App Server state directory. Never request global/full access.
 
-Show the user the short task list and selected routes, then finish the initiating
-turn. The trusted Stop hook claims the explicit target, atomically reserves only
-the READY frontier, and launches the automatic App Server dispatcher under the
-already granted run authorization. When Pipeline Engineer recovery is needed,
-DevOps fixes the fault, records a passing healthcheck, and re-arms the same
-causal owner's dispatcher; it must not perform destination `thread/start` or
-`turn/start` itself.
+Show the user the short task list and selected routes, tell them the status
+phrase, then finish the initiating turn. The trusted Stop hook claims the
+explicit target, atomically reserves only the READY frontier, and launches the
+automatic App Server dispatcher under the already granted run authorization.
+When an incident reaches `PIPELINE_ENGINEER`, follow the procedure in
+"Pipeline Engineer: the actual procedure" below.
 
 If the target is not Git, state that this beta requires a Git repository and suggest `git init`; do not initialize it or make a commit without explicit user authorization.
 
@@ -147,21 +146,30 @@ not one. On a resume prompt, arm the resume and end the turn; see below.
 
 Finish the initiating turn as soon as the plan is shown. The dispatcher waits
 for that turn to reach `completed` before it creates the worker task: it polls
-the owner thread four times a second and creates nothing until the turn ends.
-Holding the turn open to watch the launch therefore prevents the very launch
-being watched. Measured: the turn streamed the ladder, the dispatcher read the
-owner thread 554 times in two minutes, and no branch was ever created.
+the owner thread and creates nothing until the turn ends. Holding the turn open
+to watch the launch therefore prevents the very launch being watched. Measured:
+the turn streamed the ladder, the dispatcher read the owner thread 554 times in
+two minutes, and no task was ever created.
 
-The ladder reaches the user without this turn. The Stop hook returns the launch
-report itself, and Codex shows it as hook feedback - the `[✓]` lines the user
-already sees come from there, not from this session.
+**The launch report is not visible, and that is the accepted cost.** The Stop
+hook must answer `continue`; a blocking answer leaves the initiating turn
+`interrupted` forever and the dispatcher never starts. Only a blocking answer is
+displayed, so the report it carries reaches no one. Do not claim the user can
+see it.
 
-So: print the short task list and selected routes, end the turn, and let the
-hook report. Do not poll `timeline` inside the initiating turn.
+Therefore the last visible line of the initiating turn must tell the user how to
+look. Name the phrase:
+
+> Запуск взведён. Чтобы увидеть ход дела, спроси `статус`.
+
+The status phrase runs on `UserPromptSubmit`, which is outside the causal chain
+and may block safely - that is why its output is visible when the Stop hook's is
+not.
 
 `scripts/codex-autopilot timeline --project <target-root>` stays available for a
 *later* turn, when the user asks what happened. Resolve it relative to this
-`SKILL.md` exactly as the start command does; never search the filesystem for it.
+`SKILL.md` exactly as the start command does; never search the filesystem for it
+and never run it inside the initiating turn.
 
 Rules for any such report:
 
@@ -172,8 +180,45 @@ Rules for any such report:
   collapsed reasoning. "10 of 11 verified, M11 active" is not a verdict when the
   launch did not start; "остановилось на проверке видимости" is.
 - A `[✗]` line is not yours to fix. Repairing the pipeline is Pipeline Engineer
-  work on a ticket, never an improvisation from this session.
+  work, by the procedure below, never an improvisation from this session.
 - Never create or message a task to work around a stalled launch.
+
+## Pipeline Engineer: the actual procedure
+
+An incident in phase `PIPELINE_ENGINEER` stops the run and waits for a person.
+Nothing creates an engineer worker; saying "DevOps will fix it" without doing
+this is a promise the runtime does not keep.
+
+Recovery runs from a Codex task opened on the target project, because every
+mutating command below refuses a caller without the owning `CODEX_THREAD_ID`.
+That refusal is a protection, not an obstacle: never work around it.
+
+1. **Read the ticket.** `.codex-autopilot/pipeline-incidents.json` names the
+   code, the affected task, and the phase.
+2. **Read the reservation.**
+   `scripts/codex-autopilot relay-status --project <root> --token <reservation>`
+3. **Ask the server what actually happened to the worker task.** The run state
+   says what Autopilot recorded; the server says what occurred. They differ
+   exactly when a dispatcher died mid-flight.
+4. **Then choose one, and only from evidence:**
+   - the worker turn completed and reported a status → record it:
+     `relay-complete --project <root> --thread-id <thread> --turn-id <turn> --status <ROTATE|DONE|BLOCKED|ESCALATE>`.
+     This runs the full completion gate, including Project Memory evidence; it
+     cannot mark unverified work as done.
+   - the create definitively failed before any side effect → `relay-fail
+     --project <root> --token <reservation> --reason <text> --definitive`.
+   - the outcome is unknown → leave the task `AMBIGUOUS`. Never create a
+     replacement and never guess. An ambiguous side effect is the one case
+     where stopping is correct.
+5. **Close the ticket only with a passing healthcheck**, then re-arm the same
+   causal owner where the incident code allows it:
+   `devops-rearm-relay-owner --project <root> --incident-id <id>`.
+   It accepts only `transport_policy_rejected` and
+   `app_server_thread_start_failed`; other codes are recovered through step 4
+   and a fresh user resume.
+
+DevOps never performs destination `thread/start` or `turn/start` itself, never
+reassigns causal ownership, and never edits trust state.
 
 ## Status protocol
 
