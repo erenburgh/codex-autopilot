@@ -82,10 +82,6 @@ class Config:
     def adaptive(self) -> bool:
         return self.profile == "adaptive"
 
-    @property
-    def memory_database(self) -> Path:
-        return self.state_dir / "memory.sqlite3"
-
 
 def config_path(root: Path) -> Path:
     return root.resolve() / STATE_DIR_NAME / CONFIG_NAME
@@ -204,17 +200,6 @@ def _positive_int(value: object, name: str) -> int:
     result = int(value)
     if result <= 0:
         raise ValueError(f"{name} must be positive")
-    return result
-
-
-def _string_tuple(value: object, name: str) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
-        raise ValueError(f"{name} must be an array of non-empty strings")
-    result = tuple(value)
-    if len(set(result)) != len(result):
-        raise ValueError(f"{name} must not contain duplicates")
     return result
 
 

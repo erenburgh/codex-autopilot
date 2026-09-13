@@ -73,19 +73,14 @@ class RunState:
     selected_reasoning: str | None = None
     model_selection_reason: str | None = None
     reasoning_adjustment: str | None = None
-    capability_escalated: bool = False
-    capability_escalation_reason: str | None = None
     last_worker_status: str | None = None
     worker_history: list[dict[str, object]] = field(default_factory=list)
     client_user_message_id: str | None = None
     prompt_sha256: str | None = None
-    expected_thread_name: str | None = None
-    creation_not_before: int | None = None
     checkpoint_before: dict[str, str] | None = None
     memory_audit_before: int | None = None
     prompt_chars: int | None = None
     prompt_approx_tokens: int | None = None
-    memory_records_at_start: int | None = None
     relevant_memory_count: int | None = None
     preflight_completed_at: str | None = None
     prep_app_server_exited_at: str | None = None

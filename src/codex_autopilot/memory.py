@@ -1199,10 +1199,6 @@ class ProjectMemory:
         with self._connect() as db:
             return int(db.execute("SELECT coalesce(max(id),0) FROM audit_log").fetchone()[0])
 
-    def record_count(self) -> int:
-        self.initialize()
-        with self._connect() as db:
-            return int(db.execute("SELECT count(*) FROM records").fetchone()[0])
 
     def mark_milestone_complete(self, *, milestone_id: str, run_id: str, worker_sequence: int, source: str = "worker") -> dict[str, Any]:
         self.initialize()

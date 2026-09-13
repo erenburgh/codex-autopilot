@@ -421,16 +421,6 @@ def _desktop_visibility(
     )
 
 
-def _created_at(events: Sequence[Mapping[str, Any]]):
-    for item in events:
-        if str(item.get("event") or "") in CREATED_EVENTS:
-            try:
-                return datetime.fromisoformat(str(item.get("at") or ""))
-            except ValueError:
-                return None
-    return None
-
-
 def _latest_session(state: RunState, task_id: str) -> Mapping[str, Any] | None:
     matches = [
         item for item in state.worker_sessions if str(item.get("task_id") or "") == task_id
