@@ -41,6 +41,26 @@ Infer one BCP-47 response language from the initiating user's request (for examp
 
 Do not rely on the initiating task to expose or probe Project Memory. The `start-skill` command below creates a dedicated, visible preflight task and performs one harmless real model-to-MCP call with `operation=current` before it creates run-state or Worker 1. Autopilot never answers approval for the user, changes MCP approval configuration, or bypasses trust.
 
+When a task's result talks to something outside the repository - another
+application's API, a network service, a database, a CLI that speaks a protocol -
+its Definition of Done must carry at least one item verified against that real
+system, not only against a double. A fake answers whatever the test author
+expected: the handshake, the capabilities a method requires, the exact field
+names, and the shape of an error are proved only by the real thing.
+
+Measured: `codex-thread-tools` shipped with 28 green tests on a fake transport
+and a passing independent verifier, and its `projects` command failed on the
+first live call - `project/list requires experimentalApi capability`. The
+capability was never declared in the handshake. No fake could have caught it,
+and the verifier could not either, because the contract did not ask for it.
+
+Keep that live item as small and as safe as it can be: read-only whenever
+reading proves the point, the narrowest scope that exercises the protocol, never
+a destructive call, and never a write to the user's real data unless the user's
+request is itself about writing. If the real system cannot be reached from the
+task's environment, say so in the Definition of Done as an explicit gap instead
+of replacing it with another double.
+
 Classify each milestone as `code` or `computer_use` based only on whether its Definition of Done requires real GUI interaction that files, code, shell tools, or programmatic interfaces cannot replace. Include a concrete `execution_mode_reason`.
 
 Write `<target-root>/.codex-autopilot/bootstrap-plan.json`; preserve the initiating

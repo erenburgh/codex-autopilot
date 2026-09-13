@@ -82,6 +82,26 @@ foundation task the job of making it extensible, so the later tasks add their
 own files instead of editing a common one.
 
 `execution_mode_reason` must state the concrete capability boundary. For `computer_use`, name the GUI application or browser interaction required.
+When a task's result talks to something outside the repository - another
+application's API, a network service, a database, a CLI that speaks a protocol -
+its Definition of Done must carry at least one item verified against that real
+system, not only against a double. A fake answers whatever the test author
+expected: the handshake, the capabilities a method requires, the exact field
+names, and the shape of an error are proved only by the real thing.
+
+Measured: `codex-thread-tools` shipped with 28 green tests on a fake transport
+and a passing independent verifier, and its `projects` command failed on the
+first live call - `project/list requires experimentalApi capability`. The
+capability was never declared in the handshake. No fake could have caught it,
+and the verifier could not either, because the contract did not ask for it.
+
+Keep that live item as small and as safe as it can be: read-only whenever
+reading proves the point, the narrowest scope that exercises the protocol, never
+a destructive call, and never a write to the user's real data unless the user's
+request is itself about writing. If the real system cannot be reached from the
+task's environment, say so in the Definition of Done as an explicit gap instead
+of replacing it with another double.
+
 The verifier must compare the result independently with `user_request`, the run
 goal, the structured task contract, and every Definition of Done item. Tests
 written by the implementation worker are evidence, not the source of acceptance

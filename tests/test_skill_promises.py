@@ -193,3 +193,60 @@ class RoleNameLanguageTests(unittest.TestCase):
         title = verifier_thread_title("M1", "Create the foundation", role_name="Foundation Engineer")
         self.assertIn("Verifier", title)
         self.assertIn("Verify", title)
+
+
+def _flat(path: Path) -> str:
+    """Текст без переносов: правило проверяется по смыслу, а не по вёрстке."""
+
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+class LiveVerificationRuleTests(unittest.TestCase):
+    """DoD обязан требовать хотя бы одной настоящей проверки.
+
+    Замерено на codex-thread-tools: 28 зелёных тестов на поддельном
+    транспорте, независимый проверяющий принял работу, а команда
+    projects упала на первом живом вызове -
+    "project/list requires experimentalApi capability". Возможность не
+    объявлялась в рукопожатии. Подделка этого поймать не могла, и
+    проверяющий тоже - контракт этого не требовал.
+    """
+
+    SKILLS = (
+        Path(__file__).resolve().parents[1]
+        / "plugins/codex-autopilot-adaptive/skills/codex-autopilot-adaptive/SKILL.md",
+        Path(__file__).resolve().parents[1]
+        / "plugins/codex-autopilot-host-settings/skills/codex-autopilot-host-settings/SKILL.md",
+    )
+
+    def test_both_skills_require_a_live_item(self) -> None:
+        for skill in self.SKILLS:
+            with self.subTest(skill=skill.name):
+                text = _flat(skill)
+                self.assertIn("verified against that real", text)
+                self.assertIn("not only against a double", text)
+
+    def test_both_skills_keep_the_measured_reason(self) -> None:
+        """Правило без случая, который его породил, переиначат первым же."""
+
+        for skill in self.SKILLS:
+            with self.subTest(skill=skill.name):
+                text = _flat(skill)
+                self.assertIn("requires experimentalApi capability", text)
+
+    def test_both_skills_bound_the_live_item(self) -> None:
+        """«Проверяй вживую» без границ - это разрешение ломать чужое."""
+
+        for skill in self.SKILLS:
+            with self.subTest(skill=skill.name):
+                text = _flat(skill)
+                self.assertIn("read-only whenever", text)
+                self.assertIn("never a destructive call", text)
+
+    def test_both_skills_name_the_honest_way_out(self) -> None:
+        """Недостижимая система - названный пробел, а не вторая подделка."""
+
+        for skill in self.SKILLS:
+            with self.subTest(skill=skill.name):
+                text = _flat(skill)
+                self.assertIn("explicit gap", text)
