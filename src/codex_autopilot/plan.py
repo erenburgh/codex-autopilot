@@ -197,6 +197,22 @@ def validate_plan(data: dict[str, Any], profile: str) -> Plan:
 def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> Plan:
     """Validate a complete replacement graph before any durable write."""
 
+    # user_request переносится из текущего плана, а не берётся из ответа
+    # реплэннера. Прежде требовалось дословное эхо, и промпт честно просил
+    # "Дословно сохрани user_request" - но в живом прогоне это 35 234
+    # символа. Модель, переписывающая граф, такую строку не воспроизводит,
+    # и законная смена плана отклонялась целиком.
+    #
+    # Замерено на M11: ход реплэннера завершился успешно, результат отвергли
+    # с "plan changes must not replace the original user request", прогон
+    # встал, тикет открылся.
+    #
+    # Перенос строже прежней проверки: эхо можно было подделать, а поле,
+    # которое не берётся из ответа, изменить нельзя вовсе. goal (542
+    # символа) и model_strategy остаются строгими - их модель повторяет
+    # надёжно, и расхождение там означает намерение, а не ошибку копии.
+    data = dict(data)
+    data["user_request"] = current.user_request
     candidate = validate_plan(data, profile)
     # Migration provenance can remain schema 2 inside a canonical schema-3
     # graph. Check the submitted format, preserving its serial compatibility.
@@ -209,8 +225,6 @@ def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> P
         )
     if candidate.goal != current.goal:
         raise ValueError("plan changes must not replace the run goal")
-    if candidate.user_request != current.user_request:
-        raise ValueError("plan changes must not replace the original user request")
     if candidate.model_strategy != current.model_strategy:
         raise ValueError("plan changes must not replace model_strategy")
     # validate_plan already performs all role, output, dependency, and cycle

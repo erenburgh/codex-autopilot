@@ -273,11 +273,25 @@ class TaskGraphSchemaTests(unittest.TestCase):
         self.assertEqual(changed.graph_version, 2)
         self.assertEqual(load_plan(state_dir, "adaptive").graph_version, 2)
 
+        # user_request не берётся из ответа реплэннера, а переносится из
+        # текущего плана. Прежде требовалось дословное эхо - и в живом
+        # прогоне это 35 234 символа, которые модель не воспроизводит:
+        # законная смена плана отклонялась целиком. Перенос строже: эхо
+        # можно было подделать, а поле, которого не спрашивают, изменить
+        # нельзя вовсе.
         changed_request = graph()
         changed_request["graph_version"] = 2
         changed_request["user_request"] = "A replacement request"
-        with self.assertRaisesRegex(ValueError, "original user request"):
-            validate_plan_change(current, changed_request, "adaptive")
+        carried = validate_plan_change(current, changed_request, "adaptive")
+        self.assertEqual(carried.user_request, current.user_request)
+
+        # goal короткий, модель повторяет его надёжно, и расхождение там
+        # означает намерение, а не ошибку копирования.
+        changed_goal = graph()
+        changed_goal["graph_version"] = 2
+        changed_goal["goal"] = "A replacement goal"
+        with self.assertRaisesRegex(ValueError, "replace the run goal"):
+            validate_plan_change(current, changed_goal, "adaptive")
 
     def test_generic_role_is_rejected_when_a_concrete_role_contract_is_required(self):
         raw = graph()
