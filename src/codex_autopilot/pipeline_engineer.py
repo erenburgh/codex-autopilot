@@ -135,10 +135,6 @@ class SideEffectOutcome(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-
-
-
-
 class PipelineIncidentError(RuntimeError):
     pass
 
@@ -168,15 +164,6 @@ class HealthcheckResult:
     observed_at: str
 
 
-
-
-
-
-
-
-
-
-
 READ_ONLY_DIAGNOSTIC_ACTIONS = (
     "inspect_bounded_system_state",
     "inspect_recent_events",
@@ -196,14 +183,6 @@ FORBIDDEN_ACTIONS = (
 )
 
 
-
-
-
-
-
-
-
-
 def classify_incident(signal: IncidentSignal) -> IncidentClass:
     """Classify only structured fields; free-form prose never changes routing."""
 
@@ -221,7 +200,6 @@ SIGNATURE_VERSION = "v1"
 # Сколько одинаковых успешных решений одной подписи нужно, чтобы способ
 # перестал требовать инженера и стал детерминированным раннбуком.
 PROMOTION_THRESHOLD = 2
-
 
 
 def incident_signature(signal: IncidentSignal) -> str:
@@ -399,10 +377,6 @@ class PipelineIncidentStore:
                 )
                 return IncidentPhase.AUTO_RECOVERY_FAILED
             return IncidentPhase.DEGRADED
-
-
-
-
 
 
     def begin_auto_recovery(
@@ -741,10 +715,6 @@ class PipelineIncidentStore:
         return self._incident_package(state, incident)
 
 
-
-
-
-
     def _incident_package(
         self,
         state: Mapping[str, Any],
@@ -1072,33 +1042,8 @@ def _incident(
     raise PipelineIncidentError("unknown or non-unique incident id")
 
 
-def _transport(
-    state: Mapping[str, Any], reservation_id: str, *, required: bool = True
-) -> dict[str, Any] | None:
-    matches = [
-        item for item in state["transport_reservations"]
-        if item.get("reservation_id") == reservation_id
-    ]
-    if len(matches) == 1:
-        return matches[0]
-    if not matches and not required:
-        return None
-    raise AuthorizationTopologyError("unknown or non-unique transport reservation")
-
-
 def _runbook(runbook_id: str) -> RecoveryRunbook | None:
     return next((item for item in RUNBOOKS if item.id == runbook_id), None)
-
-
-def _require_transport_claim(
-    reservation: Mapping[str, Any], token: str, actor_thread_id: str
-) -> None:
-    if (
-        reservation.get("claim_token") != token
-        or reservation.get("actor_thread_id") != actor_thread_id
-        or reservation.get("authority_kind") not in {item.value for item in AuthorityKind}
-    ):
-        raise AuthorizationTopologyError("transport claim ownership does not match")
 
 
 def _require_passing_healthcheck(
@@ -1121,11 +1066,6 @@ def _require_passing_healthcheck(
 def _healthcheck_dict(result: HealthcheckResult | None) -> dict[str, Any]:
     assert result is not None
     return asdict(result)
-
-
-def _healthcheck_passed(incident: Mapping[str, Any]) -> bool:
-    check = incident.get("healthcheck")
-    return isinstance(check, Mapping) and check.get("passed") is True and bool(check.get("checks"))
 
 
 def _bounded_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -1203,7 +1143,3 @@ def _positive(value: int, name: str) -> int:
     return value
 
 
-def _sha256(value: str) -> str:
-    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-        raise ValueError("payload_sha256 must be a lowercase SHA-256 digest")
-    return value

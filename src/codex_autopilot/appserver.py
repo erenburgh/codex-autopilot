@@ -273,7 +273,6 @@ class AppServerClient:
         plugin_root: Path | None = None,
         ephemeral: bool = False,
         project_memory: bool = True,
-        thread_source: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {"cwd": str(cwd), "permissions": permission_profile, "ephemeral": ephemeral}
         if project_memory:
@@ -295,8 +294,9 @@ class AppServerClient:
             params["runtimeWorkspaceRoots"] = [str(cwd)]
         if project_id is not None:
             params["projectId"] = project_id
-        if thread_source is not None:
-            params["threadSource"] = thread_source
+        # threadSource намеренно не передаётся и не принимается. Значение
+        # agent_created_thread помечало задачу созданной другим приложением
+        # и требовало ручного перехвата; v0.7 не передавала его вовсе.
         if model is not None:
             params["model"] = model
         result = self.request("thread/start", params)

@@ -253,7 +253,6 @@ TIMELINE_STEPS = {
     "create_requested": "запрошено создание ветки",
     "app_server_create_claimed": "создание начато",
     "app_server_thread_created": "ветка создана",
-    "app_server_project_assigned": "привязана к проекту (App Server)",
     "app_server_project_scoped_create": "создана в пространстве проекта",
     "prep_completed": "рабочий каталог подготовлен",
     "automatic_turn_claimed": "ход взят",

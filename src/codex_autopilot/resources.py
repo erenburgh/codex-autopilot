@@ -774,22 +774,6 @@ class ResourceLockCoordinator:
                 unresolved_lock_ids=tuple(unresolved),
             )
 
-    def _validate_owner_against_state(
-        self,
-        plan: Plan,
-        state: RunState,
-        owner: LockOwner,
-    ) -> None:
-        LockOwner.from_dict(owner.to_dict())
-        if state.run_id != owner.run_id:
-            raise ValueError("lock owner run id does not match durable run state")
-        if state.graph_version != plan.graph_version:
-            raise ValueError("resource coordinator graph version mismatch")
-        if state.task_states and owner.task_id not in state.task_states:
-            raise ValueError("lock owner task does not exist in durable task state")
-        expected_attempt = state.task_attempts.get(owner.task_id)
-        if expected_attempt is not None and owner.attempt != expected_attempt:
-            raise ValueError("lock owner attempt does not match durable task attempt")
 
     @staticmethod
     def _append_event(

@@ -78,20 +78,6 @@ class AppServerTests(unittest.TestCase):
         self.assertEqual(params["cwd"], "/target")
         self.assertEqual(params["projectId"], "project-1")
 
-    def test_desktop_created_thread_source_is_explicit(self):
-        client = CaptureClient()
-        client.start_thread(
-            cwd=Path("/target"),
-            permission_profile=":workspace",
-            project_id=None,
-            model=None,
-            plugin_root=PLUGIN_ROOT,
-            thread_source="agent_created_thread",
-        )
-        self.assertEqual(
-            client.calls[-1][1]["threadSource"],
-            "agent_created_thread",
-        )
 
     def test_archive_thread_uses_supported_app_server_method(self):
         client = CaptureClient()

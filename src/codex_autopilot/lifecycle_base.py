@@ -120,8 +120,6 @@ SESSION_KINDS = IMPLEMENTATION_SESSION_KINDS | frozenset(
 )
 
 
-
-
 class DesktopLifecycleError(RuntimeError):
     pass
 
@@ -187,18 +185,6 @@ class LaunchDescriptor:
             "predecessor, but never creates, starts, forks, or messages the next task itself."
         )
 
-    def send_message_payload(self, *, thread_id: str, host_id: str | None) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "threadId": thread_id,
-            "prompt": self.prompt,
-        }
-        if host_id:
-            payload["hostId"] = host_id
-        if self.model:
-            payload["model"] = self.model
-        if self.thinking:
-            payload["thinking"] = self.thinking
-        return payload
 
 @dataclass(frozen=True, slots=True)
 class CompletionOutcome:
