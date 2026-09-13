@@ -213,21 +213,6 @@ def schedule(
 schedule_tasks = schedule
 
 
-def waiting_reasons(
-    plan: Plan,
-    states: Mapping[str, TaskState | str],
-) -> dict[str, tuple[str, ...]]:
-    """Explain dependency waits without changing scheduler state."""
-
-    normalized = validate_task_states(plan, states)
-    return {
-        task.id: tuple(f"dependency:{item}" for item in unmet_dependencies(plan, task.id, normalized))
-        for task in plan.tasks
-        if normalized[task.id] == TaskState.WAITING.value
-        and unmet_dependencies(plan, task.id, normalized)
-    }
-
-
 def _priority_key(score: PriorityScore) -> tuple[int, int, int, int, int, int, str]:
     # Resource-admissible tasks form the first tier. Within a tier: explicit
     # priority, remaining critical-path length, transitive fan-out, oldest READY

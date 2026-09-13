@@ -627,6 +627,89 @@ class PipelineIncidentStore:
                 )
             return IncidentPhase(str(incident["phase"]))
 
+    def escalate_incident_to_user(
+        self,
+        incident_id: str,
+        *,
+        reason_code: str,
+        at: str,
+        detail: str = "",
+    ) -> IncidentPhase:
+        """Перевести тикет в ESCALATE_TO_USER с кодом, который назвал инженер.
+
+        Прогон помечался BLOCKED/PIPELINE_ENGINEER_ESCALATED, а сам
+        тикет оставался в PIPELINE_ENGINEER: хранилище считало, что
+        инженер всё ещё работает. Из-за этого задача оставалась
+        приостановленной навсегда, а закрыть тикет было нечем - ни
+        инженеру, ни пользователю.
+        """
+
+        with self._transaction() as state:
+            incident = _incident(state, incident_id)
+            phase = IncidentPhase(str(incident["phase"]))
+            if phase is IncidentPhase.ESCALATE_TO_USER:
+                return phase
+            if phase is not IncidentPhase.PIPELINE_ENGINEER:
+                raise PipelineIncidentError(
+                    "escalation requires an incident held by Pipeline Engineer"
+                )
+            escalate_to_user(incident, reason_code, at=at, detail=detail)
+            incident["updated_at"] = at
+            _append_event(
+                state,
+                "pipeline_engineer_escalated_to_user",
+                at,
+                incident=incident,
+                detail=_bounded(f"{reason_code}: {detail}", MAX_EVENT_CHARS),
+            )
+            return IncidentPhase(str(incident["phase"]))
+
+    def resolve_escalation_by_user(
+        self,
+        incident_id: str,
+        *,
+        at: str,
+        note: str = "",
+    ) -> IncidentPhase:
+        """Закрыть эскалацию тем, что пользователь на неё ответил.
+
+        R13 допускает обращение к пользователю как исключение - но
+        обращение без обратного пути это не исключение, а тупик.
+        Инженер объявлял ESCALATE_TO_USER, прогон уходил в BLOCKED, и
+        возобновление отказывало именно потому, что прогон в BLOCKED.
+        Человеку, который уже всё починил, сказать об этом было нечем.
+
+        Раннбук здесь не повышается: починка произошла снаружи, и
+        повторять её автоматически нечем. Если причина осталась, тот же
+        сбой вернётся под той же подписью, и повтор опознается.
+        """
+
+        with self._transaction() as state:
+            incident = _incident(state, incident_id)
+            if IncidentPhase(str(incident["phase"])) is not IncidentPhase.ESCALATE_TO_USER:
+                raise PipelineIncidentError(
+                    "only an escalated incident is closed by the user"
+                )
+            incident["phase"] = IncidentPhase.RESOLVED.value
+            incident["resolved_at"] = at
+            incident["updated_at"] = at
+            _append_event(
+                state,
+                "escalation_resolved_by_user",
+                at,
+                incident=incident,
+                detail=_bounded(note or "user answered the escalation", MAX_EVENT_CHARS),
+            )
+            return IncidentPhase(str(incident["phase"]))
+
+    def escalated_incident_ids(self) -> tuple[str, ...]:
+        state = self.load()
+        return tuple(
+            str(item["incident_id"])
+            for item in state.get("incidents") or []
+            if IncidentPhase(str(item["phase"])) is IncidentPhase.ESCALATE_TO_USER
+        )
+
     def invalidate_pipeline_engineer_resolution(
         self,
         incident_id: str,
@@ -661,15 +744,6 @@ class PipelineIncidentStore:
                 detail=_bounded(reason, MAX_EVENT_CHARS),
             )
             return self._incident_package(state, incident)
-
-
-    def paused_task_ids(self) -> frozenset[str]:
-        paused: set[str] = set()
-        for incident in self.load()["incidents"]:
-            phase = IncidentPhase(str(incident["phase"]))
-            if phase not in {IncidentPhase.RECOVERED, IncidentPhase.RESOLVED}:
-                paused.update(str(item) for item in incident["affected_task_ids"])
-        return frozenset(paused)
 
 
     def status_snapshot(self) -> dict[str, Any]:

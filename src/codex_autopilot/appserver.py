@@ -477,11 +477,6 @@ class AppServerClient:
     def read_thread(self, thread_id: str) -> dict[str, Any]:
         return self.request("thread/read", {"threadId": thread_id, "includeTurns": True})["thread"]
 
-    def list_threads(self, cwd: Path, search_term: str | None = None) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"cwd": str(cwd), "limit": 100}
-        if search_term:
-            params["searchTerm"] = search_term
-        return self.request("thread/list", params).get("data", [])
 
     def list_projects(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []

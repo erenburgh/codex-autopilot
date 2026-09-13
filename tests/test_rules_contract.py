@@ -20,7 +20,6 @@ from codex_autopilot.rules import (
     RULES,
     record_violation,
     rule,
-    rules_by_mode,
     rules_for_prompt,
 )
 
@@ -86,7 +85,8 @@ class RuleRegistryTests(unittest.TestCase):
         self.assertEqual(rule("R8").mode, ENFORCED)
         self.assertEqual(rule("R29").mode, ENFORCED)
         self.assertEqual(rule("R30").mode, ENFORCED)
-        self.assertGreaterEqual(len(rules_by_mode(ENFORCED)), 17)
+        enforced = [item for item in RULES if item.mode == ENFORCED]
+        self.assertGreaterEqual(len(enforced), 17)
 
 
 class EnforcedRuleTests(unittest.TestCase):

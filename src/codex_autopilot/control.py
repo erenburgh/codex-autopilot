@@ -107,19 +107,6 @@ def arm(root: Path) -> None:
     store.save(state)
 
 
-def spawn_dispatcher(root: Path, *, initiator_thread_id: str | None = None, initiator_turn_id: str | None = None) -> int:
-    """Отдельный диспетчер запрещён: поверхность одна, и запуск в ней хуковый.
-
-    Функция оставлена отказом, а не удалена: она называет запрет, который
-    иначе пришлось бы выводить из отсутствия имени. Тело вело в команду
-    `_dispatch`, снятую вместе с headless-путём.
-    """
-
-    raise RuntimeError(
-        "desktop_owned production cannot start through a separate App Server dispatcher"
-    )
-
-
 def spawn_automatic_app_server_relay(
     root: Path,
     *,
@@ -1178,6 +1165,59 @@ def _retired_task_fence(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _reconcile_before_resume(cfg) -> tuple[str, ...]:
+    """Вернуть в работу задачи, чьи воркеры уже не живут.
+
+    reconcile_desktop_runtime написан ровно для этого и вызывался
+    только из тестов - наблюдений, без которых он ничего не делает,
+    в продакшене не производил никто. Поэтому сессия, чей ход
+    закончился без разбираемого ответа, оставалась ACTIVE навсегда, а
+    задача - в VERIFYING, и возобновление её не подхватывало.
+
+    Наблюдение спрашивается у сервера. Молчание и обрыв связи дают
+    "unknown", и такая сессия удерживается: "не знаю" не читается как
+    "закончилось".
+    """
+
+    from .lifecycle import observe_worker_states, reconcile_desktop_runtime
+
+    observations = observe_worker_states(cfg)
+    if not observations:
+        return ()
+    result = reconcile_desktop_runtime(cfg, authoritative_states=observations)
+    return tuple(result.retried_task_ids)
+
+
+def _answer_escalation(cfg, state) -> tuple[str, ...]:
+    """Возобновление - это и есть ответ пользователя на эскалацию.
+
+    R13 разрешает обращение к пользователю как исключение, но обращение
+    без обратного пути - тупик, а не исключение. Инженер объявлял
+    ESCALATE_TO_USER, прогон уходил в BLOCKED, и возобновление
+    отказывало ровно потому, что прогон в BLOCKED. Человеку, который
+    уже всё починил, сказать об этом было нечем.
+
+    Закрываются только эскалированные тикеты. BLOCKED по любой другой
+    причине остаётся отказом: "продолжи" не должно быть кнопкой,
+    стирающей неразобранную поломку.
+    """
+
+    from .pipeline_engineer import PipelineIncidentStore
+
+    if state.phase != "PIPELINE_ENGINEER_ESCALATED":
+        return ()
+    store = PipelineIncidentStore(cfg.state_dir)
+    closed: list[str] = []
+    for incident_id in store.escalated_incident_ids():
+        store.resolve_escalation_by_user(
+            incident_id,
+            at=utc_now(),
+            note="пользователь возобновил прогон, ответив на эскалацию",
+        )
+        closed.append(incident_id)
+    return tuple(closed)
+
+
 def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
     prompt = _normalized_prompt(str(payload.get("prompt") or ""))
     if prompt not in PAUSE_PROMPTS | RESUME_PROMPTS | STATUS_PROMPTS | UNINSTALL_PROMPTS:
@@ -1201,10 +1241,22 @@ def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if prompt in RESUME_PROMPTS:
         if state.status == "DONE":
             return {"decision": "block", "reason": "Codex Autopilot is already DONE."}
-        if state.status == "BLOCKED":
-            return {"decision": "block", "reason": f"Codex Autopilot is BLOCKED: {state.last_error or 'review BLOCKED.json'}"}
         cfg = load_config(root)
+        answered_ids: tuple[str, ...] = ()
+        if state.status == "BLOCKED":
+            answered_ids = _answer_escalation(cfg, state)
+            if not answered_ids:
+                return {
+                    "decision": "block",
+                    "reason": (
+                        f"Codex Autopilot is BLOCKED: "
+                        f"{state.last_error or 'review BLOCKED.json'}"
+                    ),
+                }
+            state.last_error = None
         store.clear_pause()
+        recovered = _reconcile_before_resume(cfg)
+        state = store.load()
         request = {
             "project_root": str(cfg.root),
             "armed_at": utc_now(),
@@ -1218,11 +1270,12 @@ def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
         store.save(state)
         # Do not block this user-authorized turn. Its exact Stop event binds
         # the causal owner and launches the automatic dispatcher.
-        return {
-            "systemMessage": (
-                "Codex Autopilot resume is armed for this turn's Stop hook."
-            )
-        }
+        note = "Codex Autopilot resume is armed for this turn's Stop hook."
+        if answered_ids:
+            note += f" Escalation closed by the user: {', '.join(answered_ids)}."
+        if recovered:
+            note += f" Returned to retry after a dead worker: {', '.join(recovered)}."
+        return {"systemMessage": note}
     # Короткий ответ по умолчанию: текст хука приходит пользователю одним
     # куском, и полный отчёт в переписке читается как стена.
     return {

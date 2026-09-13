@@ -14,7 +14,6 @@ from codex_autopilot.scheduler import (
     SchedulerAvailability,
     compute_ready_task_ids,
     schedule,
-    waiting_reasons,
 )
 from codex_autopilot.task_state import TaskState, initial_task_states, transition_task
 
@@ -126,13 +125,17 @@ class DependencySchedulerTests(unittest.TestCase):
         implement(self.state, self.plan, "A")
         decision = schedule(self.plan, self.state)
         self.assertEqual(decision.ready_task_ids, ("B",))
+        # Причину ожидания показывает status._waiting_reason: он
+        # называет и незакрытые зависимости, и держателя ресурса.
+        # Второй реализации в планировщике не осталось.
+        from codex_autopilot.task_state import unmet_dependencies
+
         self.assertEqual(
-            waiting_reasons(self.plan, self.state.task_states),
             {
-                "C": ("dependency:A",),
-                "D": ("dependency:A", "dependency:B"),
-                "E": ("dependency:C", "dependency:D"),
+                task: unmet_dependencies(self.plan, task, self.state.task_states)
+                for task in ("C", "D", "E")
             },
+            {"C": ("A",), "D": ("A", "B"), "E": ("C", "D")},
         )
 
         verify(self.state, self.plan, "A")

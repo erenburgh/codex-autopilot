@@ -708,6 +708,17 @@ def _complete_pipeline_engineer(
             detail=f"{incident_id}: {status}",
         )
         if status == "ESCALATE_TO_USER":
+            # Тикет обязан узнать об эскалации вместе с прогоном. Прежде
+            # прогон уходил в BLOCKED, а тикет оставался в
+            # PIPELINE_ENGINEER: хранилище считало инженера работающим,
+            # задача висела приостановленной, и закрыть тикет было
+            # нечем ни ему, ни пользователю.
+            PipelineIncidentStore(cfg.state_dir).escalate_incident_to_user(
+                incident_id,
+                reason_code=escalation_code,
+                at=timestamp,
+                detail="Pipeline Engineer handed the incident to the user",
+            )
             state.status = "BLOCKED"
             state.phase = "PIPELINE_ENGINEER_ESCALATED"
             state.last_error = (

@@ -12,8 +12,3 @@ def normalize(value: str) -> str:
     return normalized
 
 
-def next_level(value: str) -> str | None:
-    value = normalize(value)
-    index = LEVELS.index(value)
-    return None if index == len(LEVELS) - 1 else LEVELS[index + 1]
-

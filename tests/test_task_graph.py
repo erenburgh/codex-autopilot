@@ -13,7 +13,6 @@ from codex_autopilot.plan import (
     load_plan,
     plan_to_dict,
     save_plan,
-    save_plan_change,
     topological_order,
     validate_plan,
     validate_plan_change,
@@ -264,12 +263,13 @@ class TaskGraphSchemaTests(unittest.TestCase):
         cyclic["tasks"][0]["depends_on"] = ["C"]
         cyclic["tasks"][0]["context"]["dependency_outputs"] = ["C"]
         with self.assertRaisesRegex(ValueError, "cycle"):
-            save_plan_change(state_dir, current, cyclic, "adaptive")
+            validate_plan_change(current, cyclic, "adaptive")
         self.assertEqual((state_dir / "plan.json").read_bytes(), before)
 
         valid = graph()
         valid["graph_version"] = 2
-        changed = save_plan_change(state_dir, current, valid, "adaptive")
+        changed = validate_plan_change(current, valid, "adaptive")
+        save_plan(state_dir, changed)
         self.assertEqual(changed.graph_version, 2)
         self.assertEqual(load_plan(state_dir, "adaptive").graph_version, 2)
 

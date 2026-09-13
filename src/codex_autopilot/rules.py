@@ -448,12 +448,6 @@ def rule(rule_id: str) -> Rule:
         raise KeyError(f"unknown rule id: {rule_id!r}") from None
 
 
-def rules_by_mode(mode: str) -> tuple[Rule, ...]:
-    if mode not in MODES:
-        raise ValueError(f"mode must be one of {sorted(MODES)}")
-    return tuple(item for item in RULES if item.mode == mode)
-
-
 # --- история нарушений и порядок загрузки ---------------------------------
 
 VIOLATIONS_FILE = "rule-violations.json"

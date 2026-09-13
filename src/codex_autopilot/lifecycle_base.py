@@ -1158,6 +1158,85 @@ def reconcile_desktop_runtime(
     return result
 
 
+def observe_worker_states(
+    cfg: Config,
+    *,
+    client_factory: Callable[..., Any] | None = None,
+) -> dict[str, str]:
+    """Спросить сервер, живы ли ходы незакрытых сессий.
+
+    Наблюдения, которых не хватало ``reconcile_desktop_runtime``, чтобы
+    работать вне тестов. Функция восстановления существовала, была
+    экспортирована и вызывалась только из тестов - поэтому мёртвая
+    сессия не возвращалась в работу никогда, и задача оставалась в
+    VERIFYING навсегда.
+
+    Словарь: токен владения -> одно из "active", "terminal", "absent",
+    "unknown". Молчание и ошибка связи дают "unknown", и такая сессия
+    удерживается, а не ретраится: "не знаю" не должно читаться как
+    "закончилось".
+    """
+
+    from .appserver import AppServerClient
+
+    store = StateStore(cfg.state_dir)
+    state = store.load()
+    pending = [
+        item
+        for item in state.worker_sessions
+        if item.get("status") in PENDING_SESSION_STATUSES
+    ]
+    if not pending:
+        return {}
+    factory = client_factory or AppServerClient
+    log_path = cfg.state_dir / "logs" / "observe-workers.jsonl"
+    observations: dict[str, str] = {}
+    try:
+        with factory(cfg.desktop.binary, log_path) as client:
+            for session in pending:
+                token = str(
+                    session.get("resource_ownership_token")
+                    or session.get("reservation_token")
+                    or ""
+                )
+                if not token:
+                    continue
+                observations[token] = _observe_one(client, session)
+    except Exception:
+        # Связи нет - наблюдений нет. Пустой словарь удерживает всё.
+        return {}
+    return observations
+
+
+def _observe_one(client: Any, session: Mapping[str, Any]) -> str:
+    thread_id = str(session.get("thread_id") or "")
+    if not thread_id:
+        # Ветки не было: создание не состоялось. Это не "исчезла", это
+        # "ещё не появлялась", и трогать её реконсиляцией нельзя.
+        return "unknown"
+    try:
+        thread = client.read_thread(thread_id)
+    except Exception:
+        return "unknown"
+    if not thread:
+        return "absent"
+    status = thread.get("status")
+    kind = str(status.get("type") or "") if isinstance(status, Mapping) else ""
+    if kind in _LIVE_THREAD_STATUS:
+        return "active"
+    if kind in _FINISHED_THREAD_STATUS:
+        return "terminal"
+    return "unknown"
+
+
+# Что сервер отвечает про ход ветки. Замерено на живых ветках прогона:
+# завершённая незагруженная отдаёт "notLoaded", завершённая загруженная -
+# "idle". Незнакомое значение остаётся "unknown": список расширяется
+# осознанно, а не догадкой на ходу.
+_LIVE_THREAD_STATUS = frozenset({"running", "busy", "streaming", "active"})
+_FINISHED_THREAD_STATUS = frozenset({"idle", "notLoaded", "completed", "failed"})
+
+
 def pending_descriptors(cfg: Config) -> tuple[LaunchDescriptor, ...]:
     state = StateStore(cfg.state_dir).load()
     return tuple(

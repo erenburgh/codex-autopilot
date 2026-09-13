@@ -858,6 +858,7 @@ def run_automatic_app_server_turn(
         current = _session_by_token(state, reservation_token)
         if current.get("status") in {"SEND_RELAYING", "ACTIVE"}:
             rpc_method = exc.method if isinstance(exc, AppServerRpcError) else None
+            limited = is_rate_limit_error(getattr(exc, "error", None))
             record_desktop_failure(
                 cfg,
                 reservation_token,
@@ -865,7 +866,8 @@ def run_automatic_app_server_turn(
                 definitive=(rpc_method == "turn/start" or bool(turn_id)),
                 thread_id=thread_id,
                 turn_id=turn_id or None,
-                rate_limited=is_rate_limit_error(getattr(exc, "error", None)),
+                rate_limited=limited,
+                reset_at=_rate_limit_reset(client) if limited else None,
                 now_epoch=now_epoch,
                 reserve_other_ready=False,
                 relay_executor_thread_id=owner,
@@ -879,6 +881,7 @@ def run_automatic_app_server_turn(
             ensure_ascii=False,
             sort_keys=True,
         )
+        limited = is_rate_limit_error(completed_turn.get("error"))
         record_desktop_failure(
             cfg,
             reservation_token,
@@ -886,7 +889,8 @@ def run_automatic_app_server_turn(
             definitive=True,
             thread_id=thread_id,
             turn_id=turn_id,
-            rate_limited=is_rate_limit_error(completed_turn.get("error")),
+            rate_limited=limited,
+            reset_at=_rate_limit_reset(client) if limited else None,
             now_epoch=now_epoch,
             reserve_other_ready=False,
             relay_executor_thread_id=owner,
@@ -904,6 +908,25 @@ def run_automatic_app_server_turn(
         dispatcher_reservation_token=reservation_token,
         dispatcher_pid=(os.getpid() if dispatcher_authorized else None),
     )
+
+def _rate_limit_reset(client: Any) -> int | None:
+    """Когда сервер сам говорит, что лимит отпустит.
+
+    Без этого пауза после лимита была догадкой: общий retry-интервал,
+    не связанный с настоящим окном. Функции, которые спрашивают сервер,
+    были написаны и не вызывались ни разу - барьер существовал, а
+    данных для него никто не добывал.
+
+    Отказ спросить - не отказ работы: остаётся прежняя оценка.
+    """
+
+    from .appserver import rate_limit_reset_at
+
+    try:
+        return rate_limit_reset_at(client.rate_limits())
+    except Exception:
+        return None
+
 
 def record_automatic_app_server_exit(
     cfg: Config,

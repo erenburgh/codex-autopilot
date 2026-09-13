@@ -22,7 +22,7 @@ from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.project_association import match_saved_project
 from codex_autopilot.plan import load_plan, validate_plan
 from codex_autopilot.preflight import REQUIRED_MEMORY_TOOLS
-from codex_autopilot.reasoning import next_level, normalize
+from codex_autopilot.reasoning import normalize
 from codex_autopilot.resources import LockOwner, acquire_resources_in_state
 from codex_autopilot.run_state import RunState, StateStore, utc_now
 from codex_autopilot.task_state import TaskState, transition_task
@@ -321,8 +321,6 @@ class CoreTests(unittest.TestCase):
 
     def test_reasoning_contract(self):
         self.assertEqual(normalize("ultra"), "max")
-        self.assertEqual(next_level("medium"), "high")
-        self.assertEqual(next_level("max"), None)
         with self.assertRaises(ValueError): normalize("low")
 
     def test_model_registry_routes_code_to_sol_and_computer_use_to_astra(self):
@@ -464,10 +462,11 @@ class CoreTests(unittest.TestCase):
             state.phase = "RUNNING_TURN"
             state.dispatcher_pid = 123
             store.save(state)
-            with mock.patch("codex_autopilot.control.spawn_dispatcher") as spawn:
-                output = handle_stop_hook({"cwd": str(root), "session_id": "session", "turn_id": "turn"})
+            output = handle_stop_hook({"cwd": str(root), "session_id": "session", "turn_id": "turn"})
         self.assertEqual(output, {})
-        spawn.assert_not_called()
+        import codex_autopilot.control as control
+
+        self.assertFalse(hasattr(control, "spawn_dispatcher"))
         self.assertFalse((root / ".codex-autopilot/launch-request.json").exists())
 
     def test_stop_hook_claims_target_outside_initiating_cwd(self):

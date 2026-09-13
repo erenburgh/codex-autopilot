@@ -233,17 +233,6 @@ def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> P
     return candidate
 
 
-def save_plan_change(
-    state_dir: Path,
-    current: Plan,
-    data: dict[str, Any],
-    profile: str,
-) -> Plan:
-    candidate = validate_plan_change(current, data, profile)
-    save_plan(state_dir, candidate)
-    return candidate
-
-
 def load_plan(state_dir: Path, profile: str) -> Plan:
     data = json.loads((state_dir / PLAN_FILE).read_text(encoding="utf-8"))
     return validate_plan(data, profile)

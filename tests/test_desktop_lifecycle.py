@@ -28,7 +28,6 @@ from codex_autopilot.control import (
     handle_stop_hook,
     reactivate_desktop_relay_owner,
     spawn_automatic_app_server_relay,
-    spawn_dispatcher,
 )
 from codex_autopilot.hook_trust import HookTrustApprovalRequired
 from _handoff import bump_task_checkpoint
@@ -681,42 +680,6 @@ class DesktopLifecycleTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     cli_parser().parse_args([command])
 
-    def test_automatic_dispatch_spawn_is_idempotent_for_one_reservation(self) -> None:
-        descriptor = reserve_ready_frontier(
-            self.cfg,
-            relay_owner_thread_id="M8-thread",
-        )[0]
-        process = mock.Mock(pid=4321)
-        with mock.patch(
-            "codex_autopilot.control.subprocess.Popen",
-            return_value=process,
-        ) as popen, mock.patch(
-            "codex_autopilot.control.pid_alive",
-            return_value=True,
-        ):
-            first = spawn_automatic_app_server_relay(
-                self.root,
-                reservation_token=descriptor.reservation_token,
-                initiator_thread_id="M8-thread",
-                initiator_turn_id="M8-turn",
-            )
-            second = spawn_automatic_app_server_relay(
-                self.root,
-                reservation_token=descriptor.reservation_token,
-                initiator_thread_id="M8-thread",
-                initiator_turn_id="M8-turn",
-            )
-
-        self.assertEqual((first, second), (4321, 4321))
-        popen.assert_called_once()
-        command = popen.call_args.args[0]
-        self.assertIn("_relay_dispatch", command)
-        self.assertIn(descriptor.reservation_token, command)
-        self.assertNotIn("relay-send-payload", command)
-        self.assertIn(
-            str(Path(__file__).resolve().parents[1] / "src"),
-            popen.call_args.kwargs["env"]["PYTHONPATH"].split(os.pathsep),
-        )
 
     def test_one_dispatcher_uses_a_fresh_app_server_for_each_successor(self) -> None:
         clients = []
@@ -1672,13 +1635,17 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.store.save(state)
         with self.assertRaisesRegex(DesktopLifecycleError, "full process exit"):
             reserve_ready_frontier(self.cfg)
-        with self.assertRaisesRegex(RuntimeError, "cannot start through"):
-            spawn_dispatcher(self.root)
+        # Отдельного диспетчера больше нет как функции: заглушка,
+        # которая только отказывала, никем не вызывалась. Инвариант стал
+        # структурным, и это сильнее проверки "не вызвали".
+        import codex_autopilot.control as control
+
+        self.assertFalse(hasattr(control, "spawn_dispatcher"))
 
     def test_stop_hook_reserves_and_requests_same_task_relay(self) -> None:
         self.enterContext(self.bypass_launch_gate())
         arm(self.root)
-        with mock.patch("codex_autopilot.control.spawn_dispatcher") as spawn, mock.patch(
+        with mock.patch(
             "codex_autopilot.appserver.AppServerClient.resume_thread"
         ) as resume, mock.patch(
             "codex_autopilot.control.spawn_automatic_app_server_relay",
@@ -1694,7 +1661,6 @@ class DesktopLifecycleTests(unittest.TestCase):
                     "stop_hook_active": False,
                 }
             )
-        spawn.assert_not_called()
         resume.assert_not_called()
         self.assertTrue(result.get("continue"))
         self.assertIn("automatic dispatcher started", result.get("systemMessage", ""))
