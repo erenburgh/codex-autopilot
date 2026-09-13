@@ -542,7 +542,15 @@ class ProjectMemory:
         self.initialize()
         kind = self._required(kind, "kind", 64)
         if kind not in EVIDENCE_KINDS:
-            raise MemoryValidationError(f"unsupported evidence kind: {kind}")
+            # Отказ обязан называть допустимое. Замерено: воркер перебрал
+            # filesystem_verification, command_output, test_result и
+            # verification, каждый раз получая только "unsupported", потом
+            # ушёл читать исходники плагина. Шесть минут вместо сорока
+            # секунд.
+            raise MemoryValidationError(
+                f"unsupported evidence kind: {kind}. "
+                f"allowed kinds: {', '.join(sorted(EVIDENCE_KINDS))}"
+            )
         summary = self._required(summary, "summary")
         actor = self._required(created_by, "created_by", 256)
         if line_start is not None and (not isinstance(line_start, int) or line_start < 1):
@@ -562,7 +570,10 @@ class ProjectMemory:
             elif kind == "file":
                 raise MemoryValidationError("file evidence path must reference a regular file")
         if kind in {"file", "artifact", "screenshot"} and relative_path is None and artifact_path is None:
-            raise MemoryValidationError(f"{kind} evidence requires a project path")
+            raise MemoryValidationError(
+                f"{kind} evidence requires a project path: pass path="
+                "<repository-relative file> (or artifact_path for a produced artifact)"
+            )
         normalized_artifact = None
         if artifact_path is not None:
             normalized_artifact, artifact_resolved = self._resolve_project_path(artifact_path)

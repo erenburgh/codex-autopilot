@@ -121,3 +121,61 @@ class FailureNamesTheFailingTaskTests(unittest.TestCase):
         head = source[source.index("def _automatic_relay_loop") :]
         body = head[: head.index("\ndef ", 1)]
         self.assertIn("cursor.token = token", body)
+
+
+class RefusalNamesWhatIsAcceptedTests(unittest.TestCase):
+    """R31: отказа должно хватать, чтобы исправиться без чтения исходников.
+
+    Замерено на живом прогоне M1: девять отказов подряд. Воркер перебирал
+    имена видов свидетельств - filesystem_verification, command_output,
+    test_result, verification, - каждый раз получая только "unsupported
+    evidence kind", затем угадывал параметр пути, затем ушёл читать
+    исходники плагина командой rg. Шесть минут против двадцати трёх секунд
+    у v0.7, где памяти не было вовсе.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        (self.root / ".git").mkdir()
+        state = self.root / ".codex-autopilot"
+        state.mkdir()
+        (state / "config.toml").write_text("", encoding="utf-8")
+        (state / "run-state.json").write_text(
+            json.dumps({"active_task_ids": []}), encoding="utf-8"
+        )
+        self.server = MemoryMcpServer(self.root)
+
+    def test_an_unsupported_kind_lists_the_supported_ones(self) -> None:
+        from codex_autopilot.memory import EVIDENCE_KINDS
+
+        with self.assertRaises(MemoryValidationError) as caught:
+            self.server._record_evidence(
+                {"kind": "command_output", "summary": "s", "created_by": "w"}
+            )
+        text = str(caught.exception)
+        for kind in sorted(EVIDENCE_KINDS):
+            self.assertIn(kind, text)
+
+    def test_a_missing_path_names_the_parameter(self) -> None:
+        with self.assertRaises(MemoryValidationError) as caught:
+            self.server._record_evidence(
+                {"kind": "file", "summary": "s", "created_by": "w"}
+            )
+        self.assertIn("path=", str(caught.exception))
+
+    def test_an_unknown_argument_lists_the_accepted_ones(self) -> None:
+        with self.assertRaises(MemoryValidationError) as caught:
+            self.server._record_evidence(
+                {
+                    "kind": "file",
+                    "summary": "s",
+                    "created_by": "w",
+                    "project_path": "x",
+                }
+            )
+        text = str(caught.exception)
+        self.assertIn("project_path", text)
+        self.assertIn("milestone_id", text)
+        self.assertIn("artifact_path", text)

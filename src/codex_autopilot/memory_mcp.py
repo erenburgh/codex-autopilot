@@ -355,7 +355,10 @@ class MemoryMcpServer:
             raise MemoryValidationError("tool arguments must be an object")
         unknown = set(args) - allowed
         if unknown:
-            raise MemoryValidationError(f"unknown argument(s): {', '.join(sorted(unknown))}")
+            raise MemoryValidationError(
+                f"unknown argument(s): {', '.join(sorted(unknown))}. "
+                f"accepted here: {', '.join(sorted(allowed))}"
+            )
         return args
 
     def _current(self, args: dict[str, Any]) -> dict[str, Any]:
