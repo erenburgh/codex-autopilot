@@ -1286,6 +1286,14 @@ def _causality_schema_start(journal: list[dict[str, Any]]) -> int:
     return len(journal)
 
 
+def _run_own_thread_ids(state: RunState) -> set[str]:
+    return {
+        str(item.get("thread_id") or "")
+        for item in state.worker_sessions
+        if item.get("thread_id")
+    }
+
+
 def audit_creation_causality(state: RunState) -> list[str]:
     """Правило R1: задача создаётся пайплайном, а не по команде в чат.
 
@@ -1307,6 +1315,12 @@ def audit_creation_causality(state: RunState) -> list[str]:
 
     journal = _causal_journal(state)
     schema_start = _causality_schema_start(journal)
+    # Ход пользователя authoritative-завершения не получает: его никто не
+    # ждёт, turn_completed для него не пишется в принципе. Поэтому
+    # владелец, не принадлежащий ни одной сессии прогона, - это ветка
+    # человека, то есть штатный путь arm/resume, а не нарушение. Иначе
+    # аудит объявлял бы разрыв на каждом возобновлении.
+    own_threads = _run_own_thread_ids(state)
     completed_owners: set[str] = set()
     violations: list[str] = []
     first_seen = False
@@ -1339,6 +1353,11 @@ def audit_creation_causality(state: RunState) -> list[str]:
                 f"R1: create_requested #{event.get('sequence')} for "
                 f"{event.get('task_id')} has no relay owner"
             )
+        elif owner not in own_threads:
+            # Ветка человека: arm/resume создаёт резервацию из хода, за
+            # которым автопилот не следит и завершения которого не
+            # записывает. Это документированный путь, а не обход.
+            continue
         elif owner not in completed_owners:
             violations.append(
                 f"R1: create_requested #{event.get('sequence')} for "

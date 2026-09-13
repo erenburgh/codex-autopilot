@@ -318,17 +318,35 @@ class ProjectPlacementTests(unittest.TestCase):
 class CausalCreationTests(unittest.TestCase):
     """R1 на журнале: создание обязано следовать за завершением владельца."""
 
-    def _state(self, journal: list[dict]):
+    def _state(self, journal: list[dict], *, own_threads: tuple[str, ...] = ()):
+        """Ветки прогона объявляются явно.
+
+        Владелец, не принадлежащий ни одной сессии, - это ветка
+        человека: arm/resume создаёт резервацию из хода, за которым
+        автопилот не следит и завершения которого не записывает. Без
+        этого разделения аудит объявлял разрыв на каждом возобновлении.
+        """
+
         from codex_autopilot.run_state import RunState
 
         state = RunState(run_id="r1")
         state.lifecycle_journal = journal
+        state.worker_sessions = [
+            {"thread_id": thread_id} for thread_id in own_threads
+        ]
         return state
 
-    def _audit(self, journal: list[dict]) -> list[str]:
+    def _audit(
+        self, journal: list[dict], *, own_threads: tuple[str, ...] = ()
+    ) -> list[str]:
         from codex_autopilot.lifecycle import audit_creation_causality
 
-        return audit_creation_causality(self._state(journal))
+        threads = own_threads or tuple(
+            str(item.get("relay_owner_thread_id") or "")
+            for item in journal
+            if item.get("relay_owner_thread_id")
+        )
+        return audit_creation_causality(self._state(journal, own_threads=threads))
 
     def test_r1_chain_with_a_completed_owner_is_clean(self) -> None:
         journal = [
@@ -382,6 +400,20 @@ class CausalCreationTests(unittest.TestCase):
         self.assertEqual(self._audit(journal), [])
         assessed, total = creation_causality_coverage(self._state(journal))
         self.assertEqual((assessed, total), (1, 3))
+
+    def test_r1_a_user_thread_owner_is_the_documented_path(self) -> None:
+        """arm/resume создаёт резервацию из хода человека.
+
+        За таким ходом автопилот не следит и turn_completed для него не
+        пишет в принципе. Прежде аудит называл это разрывом, и живой
+        прогон получал ложную отметку на каждом возобновлении.
+        """
+
+        journal = [
+            {"sequence": 1, "event": "create_requested", "task_id": "A", "relay_owner_thread_id": None},
+            {"sequence": 2, "event": "create_requested", "task_id": "B", "relay_owner_thread_id": "человек"},
+        ]
+        self.assertEqual(self._audit(journal, own_threads=("воркер",)), [])
 
     def test_r1_audit_is_reachable_from_the_production_status(self) -> None:
         """M11-R1-REACHABILITY: аудит вызывался только отсюда, из тестов.
