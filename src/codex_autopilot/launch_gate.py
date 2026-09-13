@@ -21,6 +21,7 @@ App Server: резервирование, привязанная ветка, с�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 import json
 from pathlib import Path
@@ -55,6 +56,12 @@ FAILURE_EVENTS = frozenset(
         "slot_history_rejected",
     }
 )
+
+# M11-R5: сколько ждать измерения размещения, прежде чем считать его
+# несостоявшимся. Размещение меряется сразу после создания, в том же
+# проходе диспетчера, поэтому запас здесь велик намеренно: срок нужен не
+# для нормального хода, а для случая, когда мерить стало некому.
+PLACEMENT_MEASUREMENT_DEADLINE_SECONDS = 180.0
 
 ACTIVE_STATUS = "ACTIVE"
 
@@ -92,6 +99,15 @@ class LaunchVerdict(str, Enum):
 # Пункты, недостижимость которых означает поломку, а не незавершённость.
 DECISIVE_CHECKS = frozenset({"reserved", "dispatcher_alive", "no_failure_after_launch"})
 
+# M11-R5. Пункты, которые роняют вердикт только на явном False, но не на
+# "проверить было нечем". Размещение именно таково: между созданием ветки
+# и записью измерения есть окно, и отказ по неизмеренности плодил бы
+# ложные тикеты - ровно поэтому пункт и был сделан нерешающим целиком.
+# Но измеренное OUTSIDE или ABSENT - это не окно, а результат, и прежде
+# он не менял ничего: вердикт держался в IN_PROGRESS, тикет не заводился.
+# Просроченная неизмеренность превращается в False отдельно, по сроку.
+DECISIVE_ON_FAILURE = frozenset({"visible_in_desktop"})
+
 
 @dataclass(frozen=True, slots=True)
 class LaunchCheck:
@@ -120,8 +136,14 @@ def launch_checklist(
     *,
     task_ids: Sequence[str],
     pid_alive: Callable[[Any], bool] | None = None,
+    now: Callable[[], float] | None = None,
 ) -> tuple[LaunchCheck, ...]:
-    """Проверить по записям прогона, что названные задачи действительно подняты."""
+    """Проверить по записям прогона, что названные задачи действительно подняты.
+
+    ``now`` отдаёт время эпохи и нужен только сроку измерения размещения;
+    он отделён от монотонных часов ожидания, потому что сравнивается с
+    отметкой создания ветки, а она записана стенными часами.
+    """
 
     alive = pid_alive or _pid_alive
     checks: list[LaunchCheck] = []
@@ -174,7 +196,15 @@ def launch_checklist(
                 bad="рантайм до отчёта о запуске не дошёл",
             )
         )
-        checks.append(_desktop_visibility(task_id, thread_id, session))
+        checks.append(
+            _desktop_visibility(
+                task_id,
+                thread_id,
+                session,
+                now=now,
+                required=cfg.runtime.required_thread_placement,
+            )
+        )
 
         pid = session.get("automatic_dispatch_pid")
         if pid is None:
@@ -213,7 +243,8 @@ def launch_verdict(checks: Iterable[LaunchCheck]) -> LaunchVerdict:
     broken = [
         item
         for item in items
-        if item.id in DECISIVE_CHECKS and item.passed is not True
+        if (item.id in DECISIVE_CHECKS and item.passed is not True)
+        or (item.id in DECISIVE_ON_FAILURE and item.passed is False)
     ]
     return LaunchVerdict.FAILED if broken else LaunchVerdict.IN_PROGRESS
 
@@ -386,7 +417,12 @@ def await_launch(
 
 
 def _desktop_visibility(
-    task_id: str, thread_id: str, session: Mapping[str, Any]
+    task_id: str,
+    thread_id: str,
+    session: Mapping[str, Any],
+    *,
+    now: Callable[[], float] | None = None,
+    required: str = "in_project",
 ) -> LaunchCheck:
     """Видна ли ветка, по измерению, сделанному при размещении.
 
@@ -395,14 +431,26 @@ def _desktop_visibility(
     бы поднимать app-server по разу в секунду. Здесь читается записанный
     результат.
 
-    Пункт намеренно не решающий: между созданием ветки и записью
-    размещения есть окно, и объявлять отказ по нему значило бы снова
-    плодить ложные тикеты.
+    Пункт не решающий, пока измерения ещё может не быть: между созданием
+    ветки и записью размещения есть окно, и отказ по нему плодил бы
+    ложные тикеты.
+
+    M11-R5. Но неизмеренность не вечна. Если ветка создана давно, а
+    размещение так и не записано, мерить стало некому - диспетчер умер
+    между созданием и гейтом. Прежде этот случай оставался
+    неопределённым навсегда: вердикт держался в IN_PROGRESS, тикет не
+    заводился, и задача просто не двигалась. Теперь истёкший срок - это
+    отрицательный результат, а он уже уходит в один нормализованный
+    тикет наравне с OUTSIDE и ABSENT.
     """
 
     if not thread_id:
         return LaunchCheck(
             "visible_in_desktop", task_id, None, "нечего искать: ветка не привязана"
+        )
+    if required == "any":
+        return LaunchCheck(
+            "visible_in_desktop", task_id, None, "размещение не требуется конфигом"
         )
     placement = str(session.get("desktop_placement") or "")
     if placement == INSIDE:
@@ -410,6 +458,16 @@ def _desktop_visibility(
             "visible_in_desktop", task_id, True, "ветка в проекте и видна в сайдбаре"
         )
     if placement == OUTSIDE:
+        # При required="visible" вне проекта - всё ещё видимая ветка, и
+        # гейт размещения её пропускает. Объявлять её отказом здесь
+        # значило бы заводить тикет на то, что конфиг разрешил.
+        if required == "visible":
+            return LaunchCheck(
+                "visible_in_desktop",
+                task_id,
+                True,
+                "ветка видна; вне проекта, что конфиг допускает",
+            )
         return LaunchCheck(
             "visible_in_desktop", task_id, False, "сервер знает ветку, но она вне проекта"
         )
@@ -417,9 +475,46 @@ def _desktop_visibility(
         return LaunchCheck(
             "visible_in_desktop", task_id, False, "сервер ветку не знает: она не сохранилась"
         )
+    waited = _seconds_since_create(session, now=now)
+    if waited is not None and waited > PLACEMENT_MEASUREMENT_DEADLINE_SECONDS:
+        return LaunchCheck(
+            "visible_in_desktop",
+            task_id,
+            False,
+            f"размещение не измерено спустя {int(waited)} с после создания ветки: "
+            "мерить стало некому",
+        )
     return LaunchCheck(
         "visible_in_desktop", task_id, None, "размещение ещё не измерено"
     )
+
+
+def _seconds_since_create(
+    session: Mapping[str, Any], *, now: Callable[[], float] | None = None
+) -> float | None:
+    """Сколько прошло с подтверждения создания ветки, или None.
+
+    None означает "срок считать не от чего", а не "срок не истёк": без
+    отметки времени нельзя объявить просрочку, и подменять одно другим
+    здесь нельзя - это ровно та подмена, ради которой написан весь
+    модуль.
+    """
+
+    raw = session.get("create_acknowledged_at")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        created = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    current = (
+        datetime.fromtimestamp(now(), tz=timezone.utc)
+        if now is not None
+        else datetime.now(timezone.utc)
+    )
+    return (current - created).total_seconds()
 
 
 def _latest_session(state: RunState, task_id: str) -> Mapping[str, Any] | None:
@@ -527,6 +622,38 @@ def desktop_placement(
             return _placement_via(fresh, thread_id, project_id)
     except Exception:
         return ABSENT
+
+
+def placement_observation(client: Any, thread_id: str) -> dict[str, Any]:
+    """Что сервер сообщает о пригодности ветки к правке человеком.
+
+    M11-R5 требовал проверять не только принадлежность проекту, но и
+    редактируемость. Замерено на живом сервере: ``canAcceptDirectInput``
+    приходит null и в ``thread/read`` незагруженной ветки, и во всех
+    тридцати строках ``thread/list``. Поле живое, а не долговечное:
+    строить на нём гейт нельзя, потому что "нельзя править" и "никто не
+    держит" оно не различает.
+
+    Поэтому здесь наблюдение, а не решение. Оно пишется рядом с
+    размещением, чтобы вопрос о передаче владения решался по записям, а
+    не по памяти. ``status.type == "notLoaded"`` - то состояние, в
+    котором ветку никто не держит.
+    """
+
+    try:
+        thread = client.read_thread(thread_id) or {}
+    except Exception as exc:
+        return {"observed": False, "reason": str(exc)}
+    status = thread.get("status")
+    return {
+        "observed": True,
+        "can_accept_direct_input": thread.get("canAcceptDirectInput"),
+        "status_type": (
+            str(status.get("type")) if isinstance(status, Mapping) else None
+        ),
+        "originator": thread.get("originator"),
+        "thread_source": thread.get("threadSource"),
+    }
 
 
 def _placement_via(client: Any, thread_id: str, project_id: str | None) -> str:

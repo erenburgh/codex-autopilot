@@ -13,6 +13,7 @@ milestone_id принималась молча, и отказ наступал �
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
@@ -179,3 +180,104 @@ class RefusalNamesWhatIsAcceptedTests(unittest.TestCase):
         self.assertIn("project_path", text)
         self.assertIn("milestone_id", text)
         self.assertIn("artifact_path", text)
+
+
+class PlacementDeadlineTests(unittest.TestCase):
+    """M11-R5: неизмеренное размещение не остаётся неопределённым вечно.
+
+    OUTSIDE и ABSENT уже были решающими и уходили в один нормализованный
+    тикет. А вот случай "мерить стало некому" - диспетчер умер между
+    созданием ветки и гейтом размещения - держал вердикт в IN_PROGRESS
+    навсегда: тикет не заводился, задача не двигалась, и снаружи это
+    выглядело как будто запуск всё ещё идёт.
+    """
+
+    def _check(self, session, *, now):
+        from codex_autopilot.launch_gate import _desktop_visibility
+
+        return _desktop_visibility("T1", "thread-1", session, now=lambda: now)
+
+    def test_a_fresh_unmeasured_placement_stays_undecided(self) -> None:
+        """Окно между созданием и записью размещения - не отказ."""
+
+        check = self._check(
+            {"create_acknowledged_at": "2026-09-13T12:00:00+00:00"},
+            now=datetime(2026, 9, 13, 12, 0, 30, tzinfo=timezone.utc).timestamp(),
+        )
+        self.assertIsNone(check.passed)
+
+    def test_a_stale_unmeasured_placement_fails(self) -> None:
+        from codex_autopilot.launch_gate import (
+            PLACEMENT_MEASUREMENT_DEADLINE_SECONDS,
+        )
+
+        check = self._check(
+            {"create_acknowledged_at": "2026-09-13T12:00:00+00:00"},
+            now=(
+                datetime(2026, 9, 13, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+                + PLACEMENT_MEASUREMENT_DEADLINE_SECONDS
+                + 1
+            ),
+        )
+        self.assertIs(check.passed, False)
+        self.assertIn("мерить стало некому", check.detail)
+
+    def test_without_a_creation_stamp_nothing_is_declared_overdue(self) -> None:
+        """Нет отметки - нет срока. Подменять одно другим здесь нельзя."""
+
+        check = self._check({}, now=datetime(2030, 1, 1, tzinfo=timezone.utc).timestamp())
+        self.assertIsNone(check.passed)
+
+    def test_a_failed_placement_reaches_the_normalized_ticket(self) -> None:
+        """Отрицательный пункт обязан ронять вердикт, иначе тикета нет."""
+
+        from codex_autopilot.launch_gate import (
+            LaunchCheck,
+            LaunchVerdict,
+            launch_verdict,
+        )
+
+        checks = (
+            LaunchCheck("reserved", "T1", True, ""),
+            LaunchCheck("visible_in_desktop", "T1", False, "мерить стало некому"),
+        )
+        self.assertIs(launch_verdict(checks), LaunchVerdict.FAILED)
+
+
+class HandoffObservationTests(unittest.TestCase):
+    """M11-R5, вторая половина: редактируемость наблюдается, а не гейтится.
+
+    Замерено на живом сервере: canAcceptDirectInput приходит null и в
+    thread/read незагруженной ветки, и во всех тридцати строках
+    thread/list. На таком поле гейт не строится - оно не различает
+    "нельзя править" и "никто не держит".
+    """
+
+    def test_the_observation_carries_what_the_server_said(self) -> None:
+        from codex_autopilot.launch_gate import placement_observation
+
+        class Fake:
+            def read_thread(self, thread_id):
+                return {
+                    "canAcceptDirectInput": None,
+                    "status": {"type": "notLoaded"},
+                    "originator": "Codex Desktop",
+                    "threadSource": None,
+                }
+
+        observed = placement_observation(Fake(), "t-1")
+        self.assertTrue(observed["observed"])
+        self.assertIsNone(observed["can_accept_direct_input"])
+        self.assertEqual(observed["status_type"], "notLoaded")
+        self.assertEqual(observed["originator"], "Codex Desktop")
+
+    def test_a_failed_read_is_recorded_as_not_observed(self) -> None:
+        from codex_autopilot.launch_gate import placement_observation
+
+        class Broken:
+            def read_thread(self, thread_id):
+                raise RuntimeError("thread not found")
+
+        observed = placement_observation(Broken(), "t-1")
+        self.assertFalse(observed["observed"])
+        self.assertIn("thread not found", observed["reason"])

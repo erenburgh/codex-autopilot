@@ -19,11 +19,19 @@ from codex_autopilot.launch_gate import (
 from codex_autopilot.run_state import RunState
 
 
-class Cfg:
-    """Минимальная подстановка: гейт читает только каталог состояния."""
+class Runtime:
+    def __init__(self, required_thread_placement: str = "in_project") -> None:
+        self.required_thread_placement = required_thread_placement
 
-    def __init__(self, state_dir: Path) -> None:
+
+class Cfg:
+    """Минимальная подстановка: каталог состояния и требование размещения."""
+
+    def __init__(
+        self, state_dir: Path, required_thread_placement: str = "in_project"
+    ) -> None:
         self.state_dir = state_dir
+        self.runtime = Runtime(required_thread_placement)
 
 
 def session(**overrides) -> dict:
@@ -213,11 +221,40 @@ class DesktopVisibilityTests(ChecklistTests):
     def test_an_unmeasured_placement_is_unassessable_not_invisible(self) -> None:
         self.assertIsNone(self.visibility(self.checks_now("")).passed)
 
-    def test_invisibility_is_reported_but_never_becomes_a_ticket(self) -> None:
+    def test_an_unmeasured_placement_never_becomes_a_ticket(self) -> None:
         """Между созданием ветки и записью размещения есть окно: отказ по
         нему снова плодил бы ложные тикеты."""
 
-        self.assertIs(launch_verdict(self.checks_now("OUTSIDE")), LaunchVerdict.IN_PROGRESS)
+        self.assertIs(launch_verdict(self.checks_now("")), LaunchVerdict.IN_PROGRESS)
+
+    def test_a_config_that_allows_outside_does_not_get_a_ticket(self) -> None:
+        """Тикет на то, что конфиг разрешил, - ложный тикет."""
+
+        relaxed = Cfg(self.cfg.state_dir, required_thread_placement="visible")
+        checks = launch_checklist(
+            relaxed,
+            self.state(
+                sessions=[session(desktop_placement="OUTSIDE")],
+                events=journal(*LAUNCHED),
+            ),
+            task_ids=["A"],
+            pid_alive=lambda pid: True,
+        )
+        visible = next(item for item in checks if item.id == "visible_in_desktop")
+        self.assertIs(visible.passed, True)
+        self.assertIsNot(launch_verdict(checks), LaunchVerdict.FAILED)
+
+    def test_a_measured_mismatch_does_become_a_ticket(self) -> None:
+        """M11-R5: измеренное расхождение - результат, а не окно.
+
+        Прежде OUTSIDE и ABSENT не меняли вердикта вовсе: он держался в
+        IN_PROGRESS, тикет не заводился, и задача, созданная мимо
+        проекта, просто стояла. Окно защищено отдельно - неизмеренностью,
+        а не слепотой к измерению.
+        """
+
+        self.assertIs(launch_verdict(self.checks_now("OUTSIDE")), LaunchVerdict.FAILED)
+        self.assertIs(launch_verdict(self.checks_now("ABSENT")), LaunchVerdict.FAILED)
 
 
 class VerdictTests(ChecklistTests):

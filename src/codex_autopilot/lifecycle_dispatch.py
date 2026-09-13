@@ -457,7 +457,12 @@ def _require_thread_placement(
     в нужный проект уже из thread/start.
     """
 
-    from .launch_gate import INSIDE, OUTSIDE, desktop_placement
+    from .launch_gate import (
+        INSIDE,
+        OUTSIDE,
+        desktop_placement,
+        placement_observation,
+    )
 
     required = cfg.runtime.required_thread_placement
     if required == "any":
@@ -483,10 +488,16 @@ def _require_thread_placement(
         after = desktop_placement(
             thread_id, project_id=cfg.desktop.project_id, client=client
         )
+        observation = placement_observation(client, thread_id)
     before = str(session.get("desktop_placement") or "")
 
     _record_placement_outcome(
-        cfg, reservation_token, before=before, after=after, at=timestamp
+        cfg,
+        reservation_token,
+        before=before,
+        after=after,
+        at=timestamp,
+        observation=observation,
     )
     satisfied = after == INSIDE or (required == "visible" and after in {INSIDE, OUTSIDE})
     if not satisfied:
@@ -505,6 +516,7 @@ def _record_placement_outcome(
     before: str,
     after: str,
     at: str,
+    observation: Mapping[str, Any] | None = None,
 ) -> None:
     store = StateStore(cfg.state_dir)
     coordinator = ResourceLockCoordinator(store, cfg.root)
@@ -512,6 +524,8 @@ def _record_placement_outcome(
         state = store.load()
         session = _session_by_token(state, reservation_token)
         session["desktop_placement"] = after
+        if observation is not None:
+            session["desktop_handoff_observation"] = dict(observation)
         _append_event(
             state,
             "desktop_placement_verified",
