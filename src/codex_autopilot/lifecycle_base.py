@@ -949,8 +949,13 @@ def _materialize(descriptors: tuple[LaunchDescriptor, ...]) -> None:
 
 def _require_desktop_owned(cfg: Config) -> None:
     if cfg.runtime.worker_surface != DESKTOP_OWNED_SURFACE:
+        # Через load_config сюда не попасть: поверхность одна и проверяется
+        # при разборе конфига. Отказ оставлен для Config, собранного в
+        # обход разбора, и потому называет значение, а не снятую поверхность.
         raise DesktopLifecycleError(
-            "Desktop lifecycle is disabled; this run is explicitly headless_app_server"
+            "Desktop lifecycle requires worker_surface="
+            f"{DESKTOP_OWNED_SURFACE}; this run declares "
+            f"{cfg.runtime.worker_surface!r}"
         )
     if not cfg.desktop.desktop_project_id:
         raise DesktopLifecycleError("desktop_owned requires desktop.desktop_project_id")

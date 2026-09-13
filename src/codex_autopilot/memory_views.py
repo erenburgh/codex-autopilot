@@ -8,23 +8,9 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
-from datetime import datetime, timezone
-import base64
-import errno
-import fcntl
-import hashlib
-import json
-import os
-from pathlib import Path
-import re
-import shutil
 import sqlite3
-import tempfile
 import threading
-import time
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any
 
 
 SCHEMA_VERSION = 2
@@ -63,22 +49,7 @@ _PROCESS_LOCKS: dict[str, threading.RLock] = {}
 
 
 
-from .memory import (  # noqa: F401
-    ProjectMemory,
-    CATEGORIES,
-    EVIDENCE_KINDS,
-    MAX_FIELD_CHARS,
-    MAX_PAGE_SIZE,
-    MAX_STATEMENT_CHARS,
-    MEMORY_BUSY_TIMEOUT_MS,
-    MEMORY_LOCK_POLL_SECONDS,
-    ORIGINS,
-    PREFIXES,
-    SCHEMA_VERSION,
-    TRUTH_EVIDENCE_KINDS,
-    _PROCESS_LOCKS_GUARD,
-    _atomic_write_text,
-)
+from .memory import ProjectMemory, CATEGORIES, EVIDENCE_KINDS, SCHEMA_VERSION, _atomic_write_text
 
 
 def render_views(memory) -> None:

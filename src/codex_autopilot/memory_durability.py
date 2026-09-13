@@ -7,14 +7,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
 from datetime import datetime, timezone
-import base64
-import errno
-import fcntl
-import hashlib
-import json
 import os
 from pathlib import Path
 import re
@@ -23,7 +16,6 @@ import sqlite3
 import tempfile
 import threading
 import time
-from typing import Any, Iterator, Mapping, Sequence
 
 
 SCHEMA_VERSION = 2
@@ -62,25 +54,7 @@ _PROCESS_LOCKS: dict[str, threading.RLock] = {}
 
 
 
-from .memory import (  # noqa: F401
-    ProjectMemory,
-    CATEGORIES,
-    EVIDENCE_KINDS,
-    MAX_FIELD_CHARS,
-    MAX_PAGE_SIZE,
-    MAX_STATEMENT_CHARS,
-    MEMORY_BUSY_TIMEOUT_MS,
-    MEMORY_LOCK_POLL_SECONDS,
-    MemoryBusyError,
-    MemoryError,
-    MemoryValidationError,
-    ORIGINS,
-    PREFIXES,
-    SCHEMA_VERSION,
-    TRUTH_EVIDENCE_KINDS,
-    _PROCESS_LOCKS_GUARD,
-    _fsync_directory,
-)
+from .memory import ProjectMemory, EVIDENCE_KINDS, MemoryBusyError, MemoryError, MemoryValidationError, SCHEMA_VERSION, _fsync_directory
 
 
 def backup(memory, destination: Path | None = None) -> Path:
