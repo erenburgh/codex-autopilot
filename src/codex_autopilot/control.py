@@ -48,7 +48,7 @@ from .launch_registry import LaunchRegistry
 from .hook_trust import HookPreflightError
 from .pipeline_engineer import HealthcheckResult, IncidentPhase, PipelineIncidentStore
 from .plan import load_plan
-from .resources import ResourceLockCoordinator, release_resources_in_state
+from .resources import ResourceLockCoordinator
 from .run_state import StateStore, utc_now
 from .thread_titles import SEPARATOR as TITLE_SEPARATOR
 from .task_state import TaskState, transition_task
@@ -107,20 +107,16 @@ def arm(root: Path) -> None:
 
 
 def spawn_dispatcher(root: Path, *, initiator_thread_id: str | None = None, initiator_turn_id: str | None = None) -> int:
-    cfg = load_config(root)
-    if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
-        raise RuntimeError(
-            "desktop_owned production cannot start through a separate App Server dispatcher"
-        )
-    log_dir = cfg.state_dir / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log = (log_dir / "dispatcher.log").open("a", encoding="utf-8")
-    command = [sys.executable, "-m", "codex_autopilot.cli", "_dispatch", "--project", str(cfg.root)]
-    if initiator_thread_id and initiator_turn_id:
-        command.extend(["--initiator-thread", initiator_thread_id, "--initiator-turn", initiator_turn_id])
-    proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
-    log.close()
-    return proc.pid
+    """Отдельный диспетчер запрещён: поверхность одна, и запуск в ней хуковый.
+
+    Функция оставлена отказом, а не удалена: она называет запрет, который
+    иначе пришлось бы выводить из отсутствия имени. Тело вело в команду
+    `_dispatch`, снятую вместе с headless-путём.
+    """
+
+    raise RuntimeError(
+        "desktop_owned production cannot start through a separate App Server dispatcher"
+    )
 
 
 def spawn_automatic_app_server_relay(
@@ -283,22 +279,6 @@ def _spawn_automatic_descriptors(
             )
         )
     return tuple(pids)
-
-
-def wait_for_dispatcher(root: Path, pid: int, timeout: float = 20) -> str:
-    cfg = load_config(root)
-    store = StateStore(cfg.state_dir)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not pid_alive(pid):
-            break
-        state = store.load()
-        if state.status == "BLOCKED":
-            raise RuntimeError(f"dispatcher blocked during startup: {state.last_error or 'see BLOCKED.json'}")
-        if state.dispatcher_pid == pid and state.phase in {"WAITING_INITIATOR", "PREPARING", "WAITING_RATE_LIMIT", "CREATING_THREAD", "THREAD_CREATED", "VERIFYING_MEMORY_MCP", "STARTING_TURN", "RUNNING_TURN"}:
-            return state.phase
-        time.sleep(0.1)
-    raise RuntimeError(f"dispatcher {pid} did not become ready; see {cfg.state_dir / 'logs' / 'dispatcher.log'}")
 
 
 def reactivate_desktop_relay_owner(root: Path, *, incident_id: str | None = None) -> dict[str, Any]:
@@ -752,8 +732,6 @@ def handle_post_tool_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if not root:
         return {}
     cfg = load_config(root)
-    if cfg.runtime.worker_surface != DESKTOP_OWNED_SURFACE:
-        return {}
     package = record_policy_rejected_create_transport(
         cfg,
         relay_owner_thread_id=str(payload.get("session_id") or ""),
@@ -908,91 +886,90 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     root = find_project_root(Path(str(payload.get("cwd") or ".")))
     if root:
         cfg = load_config(root)
-        if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
-            if _is_workspace_handoff_stop(cfg, payload):
-                return {}
-            # A live automatic dispatcher owns the authoritative
-            # turn/completed event and the complete-to-successor transition.
-            # The worker Stop hook is only an observer in the v0.7 transport;
-            # consuming the same result here races the dispatcher and can
-            # launch a duplicate successor.
-            state = StateStore(cfg.state_dir).load()
-            thread_id = str(payload.get("session_id") or "")
-            automatic_owner = next(
-                (
-                    item
-                    for item in state.worker_sessions
-                    if item.get("thread_id") == thread_id
-                    and item.get("status") == "ACTIVE"
-                    and item.get("automatic_dispatch_state") == "RUNNING"
-                    and isinstance(item.get("automatic_dispatch_pid"), int)
-                    and pid_alive(item.get("automatic_dispatch_pid"))
-                ),
-                None,
-            )
-            if automatic_owner is not None:
-                return {}
-            try:
-                outcome = complete_desktop_worker(
-                    cfg,
-                    thread_id=str(payload.get("session_id") or ""),
-                    turn_id=str(payload.get("turn_id") or ""),
-                    final_message=str(payload.get("last_assistant_message") or ""),
-                    source_thread_id=(
-                        str(payload.get("source_thread_id") or "").strip() or None
-                    ),
-                )
-            except (DesktopLifecycleError, HookPreflightError) as exc:
-                return {"decision": "block", "reason": str(exc)}
-            if outcome.matched:
-                if outcome.descriptors:
-                    pids = _spawn_automatic_descriptors(
-                        cfg,
-                        outcome.descriptors,
-                        triggering_thread_id=str(payload.get("session_id") or ""),
-                        triggering_turn_id=str(payload.get("turn_id") or ""),
-                    )
-                    return _launch_report(
-                        cfg,
-                        [item.task_id for item in outcome.descriptors],
-                        started=(
-                            "Codex Autopilot automatic dispatcher started: "
-                            + ", ".join(str(pid) for pid in pids)
-                        ),
-                        timeout=15.0,
-                    )
-                return {}
-            continuation = _desktop_relay_continuation(
+        if _is_workspace_handoff_stop(cfg, payload):
+            return {}
+        # A live automatic dispatcher owns the authoritative
+        # turn/completed event and the complete-to-successor transition.
+        # The worker Stop hook is only an observer in the v0.7 transport;
+        # consuming the same result here races the dispatcher and can
+        # launch a duplicate successor.
+        state = StateStore(cfg.state_dir).load()
+        thread_id = str(payload.get("session_id") or "")
+        automatic_owner = next(
+            (
+                item
+                for item in state.worker_sessions
+                if item.get("thread_id") == thread_id
+                and item.get("status") == "ACTIVE"
+                and item.get("automatic_dispatch_state") == "RUNNING"
+                and isinstance(item.get("automatic_dispatch_pid"), int)
+                and pid_alive(item.get("automatic_dispatch_pid"))
+            ),
+            None,
+        )
+        if automatic_owner is not None:
+            return {}
+        try:
+            outcome = complete_desktop_worker(
                 cfg,
-                relay_owner_thread_id=str(payload.get("session_id") or ""),
-                relay_owner_turn_id=str(payload.get("turn_id") or ""),
+                thread_id=str(payload.get("session_id") or ""),
+                turn_id=str(payload.get("turn_id") or ""),
+                final_message=str(payload.get("last_assistant_message") or ""),
+                source_thread_id=(
+                    str(payload.get("source_thread_id") or "").strip() or None
+                ),
             )
-            if continuation:
-                return continuation
-            try:
-                recovered = recover_desktop_frontier_from_predecessor_stop(
-                    cfg,
-                    predecessor_thread_id=str(payload.get("session_id") or ""),
-                    stop_turn_id=str(payload.get("turn_id") or ""),
-                )
-            except (DesktopLifecycleError, HookPreflightError) as exc:
-                return {"decision": "block", "reason": str(exc)}
-            if recovered:
+        except (DesktopLifecycleError, HookPreflightError) as exc:
+            return {"decision": "block", "reason": str(exc)}
+        if outcome.matched:
+            if outcome.descriptors:
                 pids = _spawn_automatic_descriptors(
                     cfg,
-                    recovered,
+                    outcome.descriptors,
                     triggering_thread_id=str(payload.get("session_id") or ""),
                     triggering_turn_id=str(payload.get("turn_id") or ""),
                 )
                 return _launch_report(
                     cfg,
-                    [item.task_id for item in recovered],
+                    [item.task_id for item in outcome.descriptors],
                     started=(
-                        "Codex Autopilot automatic retry dispatcher started: "
+                        "Codex Autopilot automatic dispatcher started: "
                         + ", ".join(str(pid) for pid in pids)
                     ),
                     timeout=15.0,
                 )
+            return {}
+        continuation = _desktop_relay_continuation(
+            cfg,
+            relay_owner_thread_id=str(payload.get("session_id") or ""),
+            relay_owner_turn_id=str(payload.get("turn_id") or ""),
+        )
+        if continuation:
+            return continuation
+        try:
+            recovered = recover_desktop_frontier_from_predecessor_stop(
+                cfg,
+                predecessor_thread_id=str(payload.get("session_id") or ""),
+                stop_turn_id=str(payload.get("turn_id") or ""),
+            )
+        except (DesktopLifecycleError, HookPreflightError) as exc:
+            return {"decision": "block", "reason": str(exc)}
+        if recovered:
+            pids = _spawn_automatic_descriptors(
+                cfg,
+                recovered,
+                triggering_thread_id=str(payload.get("session_id") or ""),
+                triggering_turn_id=str(payload.get("turn_id") or ""),
+            )
+            return _launch_report(
+                cfg,
+                [item.task_id for item in recovered],
+                started=(
+                    "Codex Autopilot automatic retry dispatcher started: "
+                    + ", ".join(str(pid) for pid in pids)
+                ),
+                timeout=15.0,
+            )
     store = StateStore(root / STATE_DIR_NAME) if root else None
     request = store.claim_launch() if store else None
     if request:
@@ -1041,48 +1018,37 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
             ),
             timeout=15.0,
         )
-    if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
-        try:
-            descriptors = reserve_ready_frontier(
-                cfg,
-                relay_owner_thread_id=str(payload.get("session_id") or ""),
-            )
-        except Exception:
-            store.arm(request)
-            registry.add(request)
-            raise
-        if not descriptors:
-            # Резерв уже сделан раньше, а ветку под него никто не создал:
-            # прежний диспетчер умер, не подхватив преемника. Тихий возврат
-            # здесь и оставлял прогон стоять без единой записи в журнале.
-            descriptors = _orphaned_pending_descriptors(cfg)
-            if not descriptors:
-                return {}
-        pids = _spawn_automatic_descriptors(
-            cfg,
-            descriptors,
-            triggering_thread_id=str(payload.get("session_id") or ""),
-            triggering_turn_id=str(payload.get("turn_id") or ""),
-        )
-        return _launch_report(
-            cfg,
-            [item.task_id for item in descriptors],
-            started=(
-                "Codex Autopilot automatic dispatcher started: "
-                + ", ".join(str(pid) for pid in pids)
-            ),
-            timeout=15.0,
-        )
     try:
-        thread_id = str(payload["session_id"])
-        turn_id = str(payload["turn_id"])
-        pid = spawn_dispatcher(root, initiator_thread_id=thread_id, initiator_turn_id=turn_id)
-        phase = wait_for_dispatcher(root, pid)
+        descriptors = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id=str(payload.get("session_id") or ""),
+        )
     except Exception:
-        store.launch_path.write_text(json.dumps(request, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        store.arm(request)
         registry.add(request)
         raise
-    return {"continue": True, "systemMessage": f"Codex Autopilot dispatcher started (pid {pid}, {phase}). Worker 1 waits for this turn to complete."}
+    if not descriptors:
+        # Резерв уже сделан раньше, а ветку под него никто не создал:
+        # прежний диспетчер умер, не подхватив преемника. Тихий возврат
+        # здесь и оставлял прогон стоять без единой записи в журнале.
+        descriptors = _orphaned_pending_descriptors(cfg)
+        if not descriptors:
+            return {}
+    pids = _spawn_automatic_descriptors(
+        cfg,
+        descriptors,
+        triggering_thread_id=str(payload.get("session_id") or ""),
+        triggering_turn_id=str(payload.get("turn_id") or ""),
+    )
+    return _launch_report(
+        cfg,
+        [item.task_id for item in descriptors],
+        started=(
+            "Codex Autopilot automatic dispatcher started: "
+            + ", ".join(str(pid) for pid in pids)
+        ),
+        timeout=15.0,
+    )
 
 
 # Название продукта, записанное так, как его реально произносят. Диктовка
@@ -1162,43 +1128,33 @@ def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
     store = StateStore(root / STATE_DIR_NAME)
     state = store.load()
     if prompt in PAUSE_PROMPTS:
-        if load_config(root).runtime.worker_surface == DESKTOP_OWNED_SURFACE:
-            pause_desktop_run(load_config(root))
-            return {"decision": "block", "reason": "Pause requested. No new Desktop task will launch. Active tasks use deterministic drain semantics and retain their locks until authoritative Stop or Interrupt."}
-        store.request_pause()
-        return {"decision": "block", "reason": "Pause requested. An active worker is interrupted and resume will use a fresh worker for the same milestone."}
+        pause_desktop_run(load_config(root))
+        return {"decision": "block", "reason": "Pause requested. No new Desktop task will launch. Active tasks use deterministic drain semantics and retain their locks until authoritative Stop or Interrupt."}
     if prompt in RESUME_PROMPTS:
         if state.status == "DONE":
             return {"decision": "block", "reason": "Codex Autopilot is already DONE."}
         if state.status == "BLOCKED":
             return {"decision": "block", "reason": f"Codex Autopilot is BLOCKED: {state.last_error or 'review BLOCKED.json'}"}
         cfg = load_config(root)
-        if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
-            store.clear_pause()
-            request = {
-                "project_root": str(cfg.root),
-                "armed_at": utc_now(),
-                "run_id": state.run_id,
-            }
-            request_id = LaunchRegistry().add(request)
-            request["request_id"] = request_id
-            store.arm(request)
-            state.status = "READY"
-            state.phase = "ARMED"
-            store.save(state)
-            # Do not block this user-authorized turn. Its exact Stop event binds
-            # the causal owner and launches the automatic dispatcher.
-            return {
-                "systemMessage": (
-                    "Codex Autopilot resume is armed for this turn's Stop hook."
-                )
-            }
-        if pid_alive(state.dispatcher_pid):
-            return {"decision": "block", "reason": f"Codex Autopilot is already running (pid {state.dispatcher_pid})."}
         store.clear_pause()
-        pid = spawn_dispatcher(root)
-        phase = wait_for_dispatcher(root, pid)
-        return {"decision": "block", "reason": f"Codex Autopilot resumed (pid {pid}, {phase})."}
+        request = {
+            "project_root": str(cfg.root),
+            "armed_at": utc_now(),
+            "run_id": state.run_id,
+        }
+        request_id = LaunchRegistry().add(request)
+        request["request_id"] = request_id
+        store.arm(request)
+        state.status = "READY"
+        state.phase = "ARMED"
+        store.save(state)
+        # Do not block this user-authorized turn. Its exact Stop event binds
+        # the causal owner and launches the automatic dispatcher.
+        return {
+            "systemMessage": (
+                "Codex Autopilot resume is armed for this turn's Stop hook."
+            )
+        }
     return {"decision": "block", "reason": status_text(root)}
 
 
@@ -1207,8 +1163,6 @@ def handle_interrupt_hook(payload: dict[str, Any]) -> dict[str, Any]:
     if not root:
         return {}
     cfg = load_config(root)
-    if cfg.runtime.worker_surface != DESKTOP_OWNED_SURFACE:
-        return {}
     record_desktop_interrupt(
         cfg,
         thread_id=str(payload.get("session_id") or ""),

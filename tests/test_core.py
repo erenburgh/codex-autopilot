@@ -13,7 +13,7 @@ from unittest import mock
 from codex_autopilot.appserver import AppServerRpcError, ApprovalRequired, PauseRequested, TurnResult, is_rate_limit_error, rate_limit_reset_at
 from _gates import patch_hook_trust_gates
 from codex_autopilot.bootstrap import initialize_project
-from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config, set_worker_surface
+from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from codex_autopilot.control import arm, handle_prompt_hook, handle_stop_hook
 from codex_autopilot.control import status_text
 from codex_autopilot.cli import uninstall

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
-import os
 from pathlib import Path
-import tempfile
 import tomllib
 
 from .language import DEFAULT_LANGUAGE, normalize_language
@@ -12,8 +9,6 @@ from .plan import (
     DEFAULT_COMPUTER_USE_SLOTS,
     COMPAT_EXECUTION_STRATEGY,
     COMPAT_MAX_PARALLEL_WORKERS,
-    DEFAULT_EXECUTION_STRATEGY,
-    DEFAULT_MAX_PARALLEL_WORKERS,
     EXECUTION_STRATEGIES,
 )
 
@@ -85,39 +80,6 @@ class Config:
 
 def config_path(root: Path) -> Path:
     return root.resolve() / STATE_DIR_NAME / CONFIG_NAME
-
-
-def set_worker_surface(root: Path, worker_surface: str) -> bool:
-    """Atomically select the worker transport without changing project metadata."""
-
-    if worker_surface not in WORKER_SURFACES:
-        raise ValueError(f"worker_surface must be one of {sorted(WORKER_SURFACES)}")
-    path = config_path(root)
-    if not path.is_file():
-        raise FileNotFoundError(f"Codex Autopilot is not initialized: {path}")
-    lines = path.read_text(encoding="utf-8").splitlines()
-    replacement = f"worker_surface = {json.dumps(worker_surface)}"
-    changed = False
-    for index, line in enumerate(lines):
-        if line.startswith("worker_surface ="):
-            changed = line != replacement
-            lines[index] = replacement
-            break
-    else:
-        raise ValueError("config is missing runtime.worker_surface")
-    if not changed:
-        return False
-    fd, raw = tempfile.mkstemp(prefix=".config-", dir=path.parent)
-    temp = Path(raw)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
-    return True
 
 
 def load_config(root_or_path: Path) -> Config:

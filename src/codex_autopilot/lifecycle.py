@@ -85,16 +85,6 @@ from .lifecycle_base import (  # noqa: F401
     task_checkpoint_path,
 )
 from .lifecycle_reservations import (  # noqa: F401
-    ALLOWED_STATUSES,
-    DESCRIPTOR_SCHEMA_VERSION,
-    DESKTOP_SLOT_READY,
-    IMPLEMENTATION_SESSION_KINDS,
-    PENDING_SESSION_STATUSES,
-    RELAYABLE_SESSION_STATUSES,
-    SESSION_KINDS,
-    SUCCESS_STATUSES,
-    WORKSPACE_HANDOFF_OK,
-    WORKSPACE_HANDOFF_PROMPT,
     _build_descriptor,
     _legacy_retry_recovery_context,
     _legacy_retry_requires_bound_owner,
@@ -107,16 +97,6 @@ from .lifecycle_reservations import (  # noqa: F401
     reserve_ready_frontier,
 )
 from .lifecycle_failures import (  # noqa: F401
-    ALLOWED_STATUSES,
-    DESCRIPTOR_SCHEMA_VERSION,
-    DESKTOP_SLOT_READY,
-    IMPLEMENTATION_SESSION_KINDS,
-    PENDING_SESSION_STATUSES,
-    RELAYABLE_SESSION_STATUSES,
-    SESSION_KINDS,
-    SUCCESS_STATUSES,
-    WORKSPACE_HANDOFF_OK,
-    WORKSPACE_HANDOFF_PROMPT,
     _record_app_server_create_failure,
     _record_created_app_server_ambiguity,
     reconcile_desktop_thread_identity,
@@ -125,16 +105,6 @@ from .lifecycle_failures import (  # noqa: F401
     record_policy_rejected_create_transport,
 )
 from .lifecycle_dispatch import (  # noqa: F401
-    ALLOWED_STATUSES,
-    DESCRIPTOR_SCHEMA_VERSION,
-    DESKTOP_SLOT_READY,
-    IMPLEMENTATION_SESSION_KINDS,
-    PENDING_SESSION_STATUSES,
-    RELAYABLE_SESSION_STATUSES,
-    SESSION_KINDS,
-    SUCCESS_STATUSES,
-    WORKSPACE_HANDOFF_OK,
-    WORKSPACE_HANDOFF_PROMPT,
     adopt_automatic_dispatcher_successor,
     app_server_creation_contract,
     claim_automatic_app_server_turn,
@@ -143,16 +113,6 @@ from .lifecycle_dispatch import (  # noqa: F401
     run_automatic_app_server_turn,
 )
 from .lifecycle_completion import (  # noqa: F401
-    ALLOWED_STATUSES,
-    DESCRIPTOR_SCHEMA_VERSION,
-    DESKTOP_SLOT_READY,
-    IMPLEMENTATION_SESSION_KINDS,
-    PENDING_SESSION_STATUSES,
-    RELAYABLE_SESSION_STATUSES,
-    SESSION_KINDS,
-    SUCCESS_STATUSES,
-    WORKSPACE_HANDOFF_OK,
-    WORKSPACE_HANDOFF_PROMPT,
     _complete_replanner,
     complete_desktop_worker,
 )

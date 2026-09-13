@@ -14,7 +14,7 @@ from . import __version__
 from .appserver import AppServerClient
 from .bootstrap import initialize_project, purge_project_state
 from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, load_config
-from .control import arm, find_project_root, handle_interrupt_hook, handle_post_tool_hook, handle_prompt_hook, handle_stop_hook, pid_alive, reactivate_desktop_relay_owner, recreate_archived_desktop_retry, spawn_automatic_app_server_relay, spawn_dispatcher, status_text, wait_for_dispatcher
+from .control import arm, find_project_root, handle_interrupt_hook, handle_post_tool_hook, handle_prompt_hook, handle_stop_hook, pid_alive, reactivate_desktop_relay_owner, recreate_archived_desktop_retry, spawn_automatic_app_server_relay, status_text
 from .hook_trust import HookPreflightError, HookTrustApprovalRequired
 from .lifecycle import (
     adopt_automatic_dispatcher_successor,
@@ -348,7 +348,6 @@ def main(argv: list[str] | None = None) -> int:
             language = normalize_language(args.language)
             raw = json.loads(args.plan_file.read_text(encoding="utf-8"))
             checked_plan = validate_plan(raw, profile)
-            worker_surface = DESKTOP_OWNED_SURFACE
             preflight_result = run_preflight(
                 args.project,
                 plan=checked_plan,
@@ -358,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
                 approve_project_memory_always=getattr(args, "approve_project_memory_always", False),
                 app_server_project_id=getattr(args, "app_server_project_id", None),
                 desktop_project_id=getattr(args, "desktop_project_id", None),
-                worker_surface=worker_surface,
+                worker_surface=DESKTOP_OWNED_SURFACE,
             )
             if args.command == "preflight":
                 return 0
@@ -372,17 +371,15 @@ def main(argv: list[str] | None = None) -> int:
                 language=language,
                 project_id=preflight_result.project_id,
                 desktop_project_id=getattr(args, "desktop_project_id", None),
-                worker_surface=worker_surface,
+                worker_surface=DESKTOP_OWNED_SURFACE,
             )
             if args.command == "start-skill":
                 state = StateStore(args.project.resolve() / STATE_DIR_NAME).load()
                 if state.status != "DONE":
                     arm(args.project)
             state = StateStore(args.project.resolve() / STATE_DIR_NAME).load()
-            surface = load_config(args.project).runtime.worker_surface
-            launch_name = "Desktop reservation" if surface == DESKTOP_OWNED_SURFACE else "Headless dispatcher"
             armed_text = (
-                f" {launch_name} launch armed for this turn's Stop hook; the complete "
+                " Desktop reservation launch armed for this turn's Stop hook; the complete "
                 "scheduler-selected task chain inherits the run authorization."
                 if args.command == "start-skill" and state.status != "DONE"
                 else ""
@@ -392,19 +389,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "arm":
             arm(args.project)
-            surface = load_config(args.project).runtime.worker_surface
-            name = "Desktop reservation" if surface == DESKTOP_OWNED_SURFACE else "Headless dispatcher"
-            print(f"{name} armed for this turn's Stop hook; the causal task performs the fixed relay.")
+            print("Desktop reservation armed for this turn's Stop hook; the causal task performs the fixed relay.")
             return 0
-        if args.command == "resume":
-            # Единственная поверхность - desktop_owned, и запуск в ней
-            # принадлежит доверенному Stop-хуку. Команда оставлена как
-            # указатель: молча отсутствующая resume заставляла бы искать.
-            raise RuntimeError(
-                "resume is hook-owned: send the exact phrase "
-                "'Resume Codex Autopilot.' in a Codex task opened on this "
-                "project, so its trusted Stop hook launches the dispatcher"
-            )
         if args.command == "resume":
             # Единственная поверхность - desktop_owned, и запуск в ней
             # принадлежит доверенному Stop-хуку. Команда оставлена как
@@ -503,11 +489,7 @@ def main(argv: list[str] | None = None) -> int:
             print(status_text(args.project))
             return 0
         if args.command == "stop":
-            cfg = load_config(args.project)
-            if cfg.runtime.worker_surface == DESKTOP_OWNED_SURFACE:
-                pause_desktop_run(cfg)
-            else:
-                StateStore(cfg.state_dir).request_pause()
+            pause_desktop_run(load_config(args.project))
             print("Pause requested.")
             return 0
         if args.command == "logs":

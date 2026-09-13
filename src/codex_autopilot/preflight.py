@@ -10,6 +10,7 @@ from typing import Any, Callable
 import uuid
 
 from .appserver import AppServerClient, AppServerError, ApprovalRequired, final_agent_message
+from .config import DESKTOP_OWNED_SURFACE
 from .hook_trust import (
     HookPreflightError,
     HookTrustApprovalRequired,
@@ -200,7 +201,7 @@ def run_preflight(
 
         plugin_root = installed_plugin_root(skill_path)
         expected_plugin_id = installed_plugin_id(plugin_root)
-        if desktop_project_id or worker_surface == "desktop_owned":
+        if desktop_project_id or worker_surface == DESKTOP_OWNED_SURFACE:
             try:
                 stop_hook = require_trusted_stop_hook(
                     client,

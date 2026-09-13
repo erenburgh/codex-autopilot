@@ -14,7 +14,6 @@ from .ai_studio import AIStudioRuntime
 from .config import Config
 from .language import is_russian
 from .memory import ProjectMemory
-from .models import ModelRoutingError
 from .plan import Plan, Task, plan_to_dict
 from .resilience import PLAN_CHANGE_RESULT_PREFIX
 from .run_state import RunState

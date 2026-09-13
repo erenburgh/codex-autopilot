@@ -9,12 +9,6 @@ from typing import Any, Mapping, Sequence
 from .language import is_russian
 from .memory import MemoryValidationError, ProjectMemory
 from .models import MODEL_IDS, MODEL_LABELS, logical_model
-from .pipeline_engineer import (
-    FORBIDDEN_ACTIONS,
-    INFRASTRUCTURE_INCIDENT_CLASSES,
-    IncidentClass,
-    IncidentPhase,
-)
 from .rules import rules_for_prompt
 from .plan import Plan, RoleProfile, Task
 from .task_state import dependency_state_satisfies
