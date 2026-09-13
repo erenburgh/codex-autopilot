@@ -383,6 +383,35 @@ class CausalCreationTests(unittest.TestCase):
         assessed, total = creation_causality_coverage(self._state(journal))
         self.assertEqual((assessed, total), (1, 3))
 
+    def test_r1_audit_is_reachable_from_the_production_status(self) -> None:
+        """M11-R1-REACHABILITY: аудит вызывался только отсюда, из тестов.
+
+        Он существовал, был экспортирован из lifecycle и нигде в
+        продакшене не вызывался - то есть утверждение "цепочка
+        причинности проверяется" не подкреплялось ничем. Теперь его
+        вызывает отчёт о статусе, и слепая зона названа числом.
+        """
+
+        source = (SRC / "status.py").read_text(encoding="utf-8")
+        self.assertIn("audit_creation_causality(", source)
+        self.assertIn("creation_causality_coverage(", source)
+
+    def test_r1_status_names_both_the_result_and_the_blind_zone(self) -> None:
+        from codex_autopilot.status import _render_creation_causality
+
+        clean = _render_creation_causality(
+            {"assessed": 3, "total": 3, "violations": []}
+        )
+        self.assertIn("3/3", clean)
+        self.assertIn("no break found", clean)
+
+        broken = _render_creation_causality(
+            {"assessed": 2, "total": 5, "violations": ["R1: create_requested #7 ..."]}
+        )
+        self.assertIn("2/5", broken)
+        self.assertIn("1 break(s)", broken)
+        self.assertIn("#7", broken)
+
     def test_r1_dropping_the_field_after_it_appeared_is_a_violation(self) -> None:
         """Иначе правило обходится тем, что поле перестают писать."""
 

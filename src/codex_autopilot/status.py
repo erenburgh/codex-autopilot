@@ -5,6 +5,7 @@ from typing import Any
 
 from .config import Config
 from .plan import Plan
+from .lifecycle_base import audit_creation_causality, creation_causality_coverage
 from .pipeline_engineer import PipelineIncidentStore, render_pipeline_status
 from .run_state import RunState
 from .task_state import TaskState, unmet_dependencies
@@ -125,7 +126,27 @@ def project_status_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[st
         "plan_change": _plan_change_status(state),
         "rate_limit_until": state.rate_limit_until,
         "pipeline_engineer": pipeline,
+        "creation_causality": _creation_causality(state),
     }
+
+
+def _creation_causality(state: RunState) -> dict[str, Any]:
+    """Правило R1, проверенное по журналу, а не обещанное.
+
+    M11-R1-REACHABILITY: аудит существовал и вызывался только из
+    тестов, то есть утверждение "цепочка причинности проверяется"
+    ничем в продакшене не подкреплялось. Это отчёт, а не запрет:
+    барьер причинности стоит в момент создания, а здесь он
+    перепроверяется постфактум по всему журналу прогона.
+
+    Слепая зона названа числом: события, записанные до появления
+    relay_owner_thread_id в схеме, оценить нечем, и "нарушений нет"
+    не должно читаться как "проверено всё".
+    """
+
+    assessed, total = creation_causality_coverage(state)
+    violations = audit_creation_causality(state)
+    return {"assessed": assessed, "total": total, "violations": violations}
 
 
 def render_project_status(
@@ -160,6 +181,7 @@ def render_project_status(
             else "Rate-limit barrier: none"
         ),
         render_pipeline_status(snapshot["pipeline_engineer"]),
+        _render_creation_causality(snapshot["creation_causality"]),
     ]
     for heading, key in (
         ("Running", "running"),
@@ -359,3 +381,15 @@ def _association_status(
             "App Server projectId is a separate namespace and is unavailable"
         )
     return "no saved-project association; task appears in Tasks/Recents"
+
+
+def _render_creation_causality(audit: dict[str, Any]) -> str:
+    assessed = audit["assessed"]
+    total = audit["total"]
+    violations = audit["violations"]
+    head = f"Creation causality (R1): {assessed}/{total} creations audited"
+    if not violations:
+        return f"{head}, no break found"
+    lines = [f"{head}, {len(violations)} break(s):"]
+    lines.extend(f"- {item}" for item in violations)
+    return "\n".join(lines)
