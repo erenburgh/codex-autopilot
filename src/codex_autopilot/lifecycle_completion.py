@@ -110,6 +110,108 @@ def _audit_rule_declaration(
     _append_event(state, "rule_declaration_missing", session, at, detail=detail)
 
 
+def _record_rule_conflicts(
+    cfg: Config,
+    state: RunState,
+    session: dict[str, Any],
+    final_message: str,
+    at: str,
+    memory,
+) -> None:
+    """Правило R16: расхождение с формулировкой уходит в Conflict.
+
+    Воркер не разрешает его сам. Конфликт открывается между записанной
+    формулировкой правила и тем, как её прочитал исполнитель, и остаётся
+    открытым: разрешает его человек или отдельная задача, но не тот, кто
+    его заявил.
+
+    Формулировка правила заводится наблюдением один раз на проект -
+    конфликту нужна существующая запись, а правило живёт в коде, не в
+    памяти. Дальше все расхождения по этому правилу спорят с той же
+    записью, и историю по правилу видно целиком.
+    """
+
+    from .lifecycle_base import parse_rule_conflicts
+    from .rules import rule as rule_by_id
+
+    conflicts = parse_rule_conflicts(final_message)
+    if not conflicts:
+        return
+    task_id = str(session.get("task_id") or "")
+    for rule_id, detail in conflicts:
+        try:
+            canonical = rule_by_id(rule_id)
+        except KeyError:
+            record_violation(
+                cfg.state_dir,
+                "R16",
+                detail=f"R16: {task_id} оспорил несуществующее правило {rule_id}",
+            )
+            continue
+        try:
+            recorded = _rule_statement_record(memory, rule_id, canonical.statement)
+            reading = memory.add_observation(
+                statement=f"{rule_id}: исполнитель {task_id} прочитал правило иначе — {detail}",
+                created_by=f"task:{task_id}",
+                confidence="medium",
+            )
+            conflict = memory.open_conflict(
+                existing_record_id=str(recorded["id"]),
+                incoming_record_id=str(reading["id"]),
+                statement=(
+                    f"{rule_id}: записанная формулировка и прочтение задачи "
+                    f"{task_id} расходятся; разрешает не исполнитель"
+                ),
+                created_by=f"task:{task_id}",
+            )
+        except Exception as exc:
+            _append_event(
+                state,
+                "rule_conflict_not_recorded",
+                session,
+                at,
+                detail=f"{rule_id}: {exc}",
+            )
+            continue
+        _append_event(
+            state,
+            "rule_conflict_opened",
+            session,
+            at,
+            detail=f"{rule_id}: {conflict.get('id')}",
+        )
+
+
+def _rule_statement_record(memory, rule_id: str, statement: str) -> dict[str, Any]:
+    """Каноническая формулировка правила как Truth, одна на проект.
+
+    Конфликт открывается только против Truth - и это правильно: спорить
+    можно с установленным, а не с чьим-то мнением. Формулировка правила
+    установлена: она прочитана из работающего рантайма, и это
+    доказательство вида environment_probe. Файлом её не подтвердить -
+    rules.py лежит в автопилоте, а не в проекте пользователя.
+    """
+
+    marker = f"{rule_id} (записанная формулировка)"
+    page = memory.search(query=rule_id, categories=["truth"], limit=20)
+    for record in page.records:
+        if str(record.get("statement", "")).startswith(marker):
+            return record
+    evidence = memory.record_evidence(
+        kind="environment_probe",
+        summary=f"Формулировка {rule_id}, прочитанная из установленного рантайма.",
+        created_by="codex-autopilot",
+        environment_probe=statement,
+        role="rule_statement",
+    )
+    return memory.record_verified_fact(
+        statement=f"{marker}: {statement}",
+        created_by="codex-autopilot",
+        verification_method="прочитано из блока правил установленного рантайма",
+        evidence_ids=[str(evidence["id"])],
+    )
+
+
 def _audit_task_scope(
     cfg: Config,
     plan: Plan,
@@ -354,6 +456,7 @@ def complete_desktop_worker(
         _append_event(state, "turn_completed", current, timestamp, detail=worker_status)
         _audit_task_scope(cfg, plan, state, current, timestamp)
         _audit_rule_declaration(cfg, state, current, final_message, timestamp)
+        _record_rule_conflicts(cfg, state, current, final_message, timestamp, memory)
 
         release_resources_in_state(
             state,
@@ -706,6 +809,12 @@ def _complete_pipeline_engineer(
             current,
             timestamp,
             detail=f"{incident_id}: {status}",
+        )
+        # Контракт фаз одинаков для всех: инженер отчитывается о
+        # применённых правилах и о расхождениях так же, как воркер.
+        _audit_rule_declaration(cfg, state, current, final_message, timestamp)
+        _record_rule_conflicts(
+            cfg, state, current, final_message, timestamp, ProjectMemory(cfg.root)
         )
         if status == "ESCALATE_TO_USER":
             # Тикет обязан узнать об эскалации вместе с прогоном. Прежде

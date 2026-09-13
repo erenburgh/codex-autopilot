@@ -19,7 +19,6 @@ from .hook_trust import HookPreflightError, HookTrustApprovalRequired
 from .lifecycle import (
     adopt_automatic_dispatcher_successor,
     complete_desktop_worker,
-    confirm_prep_app_server_exit,
     pause_desktop_run,
     record_automatic_app_server_exit,
     record_desktop_failure,
@@ -119,8 +118,6 @@ def parser() -> argparse.ArgumentParser:
     authorize_root.add_argument("--project", type=Path, default=Path.cwd())
     authorize_root.add_argument("--yes", action="store_true")
     authorize_root.add_argument("--revoke", action="store_true")
-    prep_exit = sub.add_parser("confirm-prep-exit", help=argparse.SUPPRESS)
-    prep_exit.add_argument("--project", type=Path, default=Path.cwd())
     for name in ("status", "stop", "resume", "logs"):
         item = sub.add_parser(name)
         item.add_argument("--project", type=Path, default=Path.cwd())
@@ -570,10 +567,6 @@ def main(argv: list[str] | None = None) -> int:
                     ensure_ascii=False,
                 )
             )
-            return 0
-        if args.command == "confirm-prep-exit":
-            confirm_prep_app_server_exit(load_config(args.project))
-            print("Bounded App Server preparation exit recorded.")
             return 0
         if args.command == "status":
             print(status_text(args.project))

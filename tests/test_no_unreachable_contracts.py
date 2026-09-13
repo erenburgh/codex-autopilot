@@ -94,3 +94,53 @@ class NoUnreachableContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EveryCommandHasAConsumerTests(unittest.TestCase):
+    """Шестой пункт аудита 0.8.0: команды CLI, которые никому не нужны.
+
+    Команда без названного потребителя - это либо инструмент, о котором
+    никто не знает, либо остаток снятого пути. Оба случая одинаково
+    вредны: первый не используют, второй продолжают поддерживать.
+    """
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    # Машинные входы: их зовёт Codex или сам рантайм, а не человек.
+    MACHINE = {"hook", "memory-mcp", "_relay_dispatch", "_dispatch"}
+    # Пользовательские команды: описаны в README и GETTING_STARTED.
+    USER = {"status", "stop", "resume", "logs", "doctor", "uninstall"}
+    # Внутренние шаги start-skill, у каждой своя справка в --help.
+    SETUP = {"bootstrap", "preflight", "start-skill", "arm"}
+
+    def _commands(self) -> set[str]:
+        import argparse
+        import codex_autopilot.cli as cli
+
+        for action in cli.parser()._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                return set(action.choices)
+        self.fail("подкоманды не найдены")
+
+    def test_every_command_is_named_somewhere_a_reader_can_find(self) -> None:
+        documented = " ".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                self.ROOT / "README.md",
+                self.ROOT / "GETTING_STARTED.md",
+                self.ROOT / "src/codex_autopilot/ai_studio.py",
+                *(self.ROOT / "plugins").rglob("SKILL.md"),
+            )
+        )
+        orphans = []
+        for command in sorted(self._commands()):
+            if command in self.MACHINE | self.USER | self.SETUP:
+                continue
+            if f"codex-autopilot {command}" not in documented:
+                orphans.append(command)
+        self.assertEqual(
+            orphans,
+            [],
+            "команда есть, а потребителя нет — описать там, где её вызывают, "
+            "или снять: " + ", ".join(orphans),
+        )

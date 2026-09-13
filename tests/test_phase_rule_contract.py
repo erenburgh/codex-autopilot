@@ -1,0 +1,123 @@
+"""M11-R16-R17-PHASE-CONTRACT: контракт правил одинаков для всех фаз.
+
+Блок правил уходил всем, а требование отчитаться о применённых id
+стояло только в промптах исполнителя и доработки. Проверяющий и
+реплэннер получали правила и обязаны были отчитаться - при том, что их
+об этом не просили: аудит на завершении общий. Дежурный инженер не
+получал ни блока правил, ни аудита вовсе.
+
+И вторая половина R16, которой не было нигде: расхождение с записанной
+формулировкой оформляется Conflict и не разрешается тем, кто его
+заявил.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+import tempfile
+import unittest
+
+SRC = Path(__file__).resolve().parents[1] / "src" / "codex_autopilot"
+
+
+class RuleConflictProtocolTests(unittest.TestCase):
+    def _parse(self, message: str):
+        from codex_autopilot.lifecycle_base import parse_rule_conflicts
+
+        return parse_rule_conflicts(message)
+
+    def test_a_disagreement_is_parsed_with_its_reason(self) -> None:
+        parsed = self._parse(
+            "итог\n"
+            "AUTOPILOT_RULE_CONFLICT: R7 — область не покрывает сгенерированные файлы\n"
+            "AUTOPILOT_RULES: R7\n"
+            "AUTOPILOT_STATUS: ROTATE"
+        )
+        self.assertEqual(parsed, (("R7", "область не покрывает сгенерированные файлы"),))
+
+    def test_a_disagreement_without_a_reason_is_not_a_disagreement(self) -> None:
+        self.assertEqual(self._parse("AUTOPILOT_RULE_CONFLICT: R7 —"), ())
+
+    def test_one_rule_is_reported_once(self) -> None:
+        parsed = self._parse(
+            "AUTOPILOT_RULE_CONFLICT: R7 - первая формулировка\n"
+            "AUTOPILOT_RULE_CONFLICT: r7 - вторая формулировка"
+        )
+        self.assertEqual(len(parsed), 1)
+
+    def test_silence_is_not_a_disagreement(self) -> None:
+        self.assertEqual(self._parse("обычный отчёт без расхождений"), ())
+
+
+class ConflictIsNotResolvedByTheWorkerTests(unittest.TestCase):
+    """Заявивший расхождение его не закрывает - иначе правило необязательно."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        (self.root / ".git").mkdir()
+
+    def test_the_conflict_opens_against_the_recorded_statement(self) -> None:
+        from codex_autopilot.lifecycle_completion import _rule_statement_record
+        from codex_autopilot.memory import ProjectMemory
+        from codex_autopilot.rules import rule
+
+        memory = ProjectMemory(self.root)
+        memory.initialize()
+        canonical = rule("R7")
+        first = _rule_statement_record(memory, "R7", canonical.statement)
+        self.assertEqual(first["category"], "truth")
+        again = _rule_statement_record(memory, "R7", canonical.statement)
+        # Формулировка правила заводится один раз на проект: иначе
+        # история расхождений по правилу рассыпается на копии.
+        self.assertEqual(first["id"], again["id"])
+
+        reading = memory.add_observation(
+            statement="R7: исполнитель T1 прочитал правило иначе — тест",
+            created_by="task:T1",
+        )
+        conflict = memory.open_conflict(
+            existing_record_id=str(first["id"]),
+            incoming_record_id=str(reading["id"]),
+            statement="R7: расхождение",
+            created_by="task:T1",
+        )
+        # Память открывает конфликт в needs_review: он ждёт разбора, и
+        # заявивший его воркер разбирать не вправе.
+        self.assertEqual(
+            memory.get_conflict(str(conflict["id"]))["status"], "needs_review"
+        )
+
+
+class EveryPhaseCarriesTheContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.studio = (SRC / "ai_studio.py").read_text(encoding="utf-8")
+        self.completion = (SRC / "lifecycle_completion.py").read_text(encoding="utf-8")
+
+    def test_the_verifier_is_asked_for_applied_rules(self) -> None:
+        verifier_ru = self.studio[self.studio.index("AUTOPILOT_VERIFICATION"):]
+        self.assertIn("AUTOPILOT_RULES", verifier_ru[:2000])
+
+    def test_the_replanner_is_asked_for_applied_rules(self) -> None:
+        for anchor in (
+            "Верни только требуемый структурированный результат планирования.",
+            "Return only the required structured planning result.",
+        ):
+            with self.subTest(anchor=anchor[:30]):
+                tail = self.studio[self.studio.index(anchor):][:800]
+                self.assertIn("AUTOPILOT_RULES", tail)
+
+    def test_the_engineer_receives_the_rules_block_not_just_a_promise(self) -> None:
+        """Обещание «те же правила» без блока правил - обещание без исполнения."""
+
+        self.assertIn('package["rules"] = rules_for_prompt(self.state_dir)', self.studio)
+
+    def test_the_engineer_is_audited_like_a_worker(self) -> None:
+        engineer = self.completion[self.completion.index("def _complete_pipeline_engineer"):]
+        self.assertIn("_audit_rule_declaration(", engineer)
+        self.assertIn("_record_rule_conflicts(", engineer)
+
+
+if __name__ == "__main__":
+    unittest.main()

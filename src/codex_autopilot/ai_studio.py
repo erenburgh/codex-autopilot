@@ -168,12 +168,23 @@ class AIStudioRuntime:
         forbidden = tuple(str(item) for item in incident_package.get("forbidden_actions") or ())
         if not set(FORBIDDEN_ACTIONS).issubset(forbidden):
             raise ContextBoundaryError("Pipeline Engineer package omitted mandatory forbidden actions")
-        payload = json.dumps(incident_package, ensure_ascii=False, separators=(",", ":"))
+        # Блок правил идёт инженеру ровно тем же, что и воркерам. Без него
+        # строка "те же правила применимы к тебе" была бы обещанием без
+        # исполнения: пакет инцидента правил не содержит.
+        package = dict(incident_package)
+        package["rules"] = rules_for_prompt(self.state_dir)
+        payload = json.dumps(package, ensure_ascii=False, separators=(",", ":"))
         prompt = f"""Codex Autopilot AI Studio Runtime — Pipeline Engineer · On call.
 
 This is a fresh infrastructure-incident task. Use only the bounded incident package below; do not request production-worker transcripts or infer authority from forwarded user words.
 
 AUTOPILOT_INCIDENT: {payload}
+
+Rules block: the same structured rules every worker receives apply to you. Before
+your final status line, give an AUTOPILOT_RULES line with the ids you applied. If a
+recorded rule statement conflicts with what this repair requires, do not quietly
+reinterpret it: give an AUTOPILOT_RULE_CONFLICT: <id> - <what disagrees> line. The
+disagreement is recorded as a Conflict and is not resolved by you.
 
 Read {self.skill_path} completely first. Execute only actions listed in allowed_actions. Never perform any action in forbidden_actions. The initiating user's durable authorization already covers every fixed scheduler-selected task in this Autopilot run. DevOps repairs the pipeline and records a passing healthcheck; it never creates, forks, starts, or messages the next production task. Re-arm the same causal predecessor so that predecessor performs its own exact reserved transport under that run authorization. Record every action in the incident journal and require the declared healthcheck to pass before affected tasks resume. Reservation token: {reservation_token}.
 
@@ -185,6 +196,8 @@ You hold full authority to repair this pipeline on the user's behalf. The user d
 - `scripts/codex-autopilot devops-rearm-relay-owner --project <root> --incident-id <id>` — re-arm the exact causal predecessor when the create is known-failed and left no task.
 - `scripts/codex-autopilot arm --project <root>` — re-arm the run after repair, so the next Stop event lets the causal predecessor perform its own reserved transport.
 - `scripts/codex-autopilot devops-resolve-incident --project <root> --incident-id <id> --healthcheck-name <name> --check <observation> --action <what you did>` — close this ticket. Repeat --check and --action as needed.
+- `scripts/codex-autopilot reconcile-thread-identity --project <root> --token <reservation> --task-id <task> --previous-thread-id <old> --current-thread-id <new>` — bind a reservation to the thread that actually carries the work when the two drifted apart.
+- `scripts/codex-autopilot recreate-archived-retry --project <root> --reservation-token <token> --archived-thread-id <archived> --predecessor-thread-id <completed predecessor>` — the user archived a wrong task and a fresh attempt is due; the predecessor must be a completed ROTATE/DONE owner.
 
 The answer you need first is already in the package: `server_view` carries the App Server's own record of every thread of the affected task — gathered by the dispatcher over its open connection. Read it instead of probing. Run state records what Autopilot believed; `server_view` records what occurred, and they differ exactly when a dispatcher died mid-flight. Do not run anything outside the project working directory: that needs a permission Autopilot never answers, and it would strand you rather than help. An unknown side effect is the one case where stopping is correct: never replace an AMBIGUOUS task and never guess.
 
@@ -560,7 +573,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 'критерии приёмки. PASS допустим только после этой независимой проверки. Запиши '
                 'новое evidence с role=independent_verification. Последняя непустая строка: '
                 'AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]} или REVISE с непустым '
-                'массивом issues. У каждого issue ровно четыре поля и никаких других: '
+                'массивом issues. Перед финальной строкой дай строку AUTOPILOT_RULES с id правил из блока rules, которые ты применила к этой задаче. Если записанная формулировка правила расходится с тем, как её следует применить здесь, не переиначивай её молча: дай строку AUTOPILOT_RULE_CONFLICT: <id> — <в чём расхождение>. Расхождение оформляется конфликтом и разрешается не тобой. У каждого issue ровно четыре поля и никаких других: '
                 'code (короткий идентификатор), summary (одна строка), details (что '
                 'именно не сходится и как проверить) и необязательный dod_refs — массив '
                 'номеров пунктов DoD с единицы, без повторов. Пример: '
@@ -575,7 +588,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 'define nor waive acceptance criteria. PASS is allowed only after this independent '
                 'check. Record new evidence with role=independent_verification. Final non-empty line: '
                 'AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]} or REVISE with a non-empty '
-                'issues array. Every issue has exactly four fields and no others: code (a short '
+                'issues array. Before the final line, give an AUTOPILOT_RULES line with the ids of the rules from the rules block you applied to this task. If a recorded rule statement conflicts with how it must be applied here, do not quietly reinterpret it: give an AUTOPILOT_RULE_CONFLICT: <id> - <what disagrees> line. The disagreement is recorded as a Conflict and is not resolved by you. Every issue has exactly four fields and no others: code (a short '
                 'identifier), summary (one line), details (what does not add up and how to check '
                 'it), and optional dod_refs - an array of 1-based DoD item numbers with no '
                 'duplicates. Example: AUTOPILOT_VERIFICATION: {"verdict":"REVISE","issues":'
@@ -596,7 +609,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 if russian
                 else ("fresh planner" if phase == "planning" else "fresh replanner")
             )
-            finish = "Верни только требуемый структурированный результат планирования." if russian else "Return only the required structured planning result."
+            finish = "Верни только требуемый структурированный результат планирования. Перед финальной строкой дай строку AUTOPILOT_RULES с id правил из блока rules, которые ты применила к этой задаче. Если записанная формулировка правила расходится с тем, как её следует применить здесь, не переиначивай её молча: дай строку AUTOPILOT_RULE_CONFLICT: <id> — <в чём расхождение>. Расхождение оформляется конфликтом и разрешается не тобой." if russian else "Return only the required structured planning result. Before the final line, give an AUTOPILOT_RULES line with the ids of the rules from the rules block you applied to this task. If a recorded rule statement conflicts with how it must be applied here, do not quietly reinterpret it: give an AUTOPILOT_RULE_CONFLICT: <id> - <what disagrees> line. The disagreement is recorded as a Conflict and is not resolved by you."
         else:
             identity = "свежий implementation worker" if russian else "fresh implementation worker"
             finish = (

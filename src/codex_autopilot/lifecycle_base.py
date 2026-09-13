@@ -221,6 +221,34 @@ def parse_desktop_worker_status(message: str) -> tuple[str, str]:
         )
     return status, code
 
+RULE_CONFLICT_PATTERN = re.compile(
+    r"(?mi)^AUTOPILOT_RULE_CONFLICT:\s*(R\d+)\s*[-—:]\s*(.+?)\s*$"
+)
+
+
+def parse_rule_conflicts(message: str) -> tuple[tuple[str, str], ...]:
+    """Правило R16: несогласие с формулировкой правила - это Conflict.
+
+    Воркер не вправе разрешать расхождение сам: он либо применяет
+    правило как записано, либо называет расхождение, и оно уходит в
+    Project Memory конфликтом. Молчаливое переиначивание - тот самый
+    способ, которым правило перестаёт быть правилом.
+
+    Возвращает пары (id правила, формулировка несогласия) в порядке
+    появления, без повторов по id.
+    """
+
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for rule_id, detail in RULE_CONFLICT_PATTERN.findall(message):
+        key = rule_id.upper()
+        if key in seen or not detail.strip():
+            continue
+        seen.add(key)
+        found.append((key, detail.strip()))
+    return tuple(found)
+
+
 APPLIED_RULES_PATTERN = re.compile(r"(?mi)^AUTOPILOT_RULES:\s*(.+?)\s*$")
 
 
@@ -242,28 +270,6 @@ def parse_applied_rules(message: str) -> tuple[str, ...]:
                 found.append(token)
     return tuple(found)
 
-
-def confirm_prep_app_server_exit(cfg: Config, *, at: str | None = None) -> None:
-    """Persist the one-way boundary after a bounded preflight client exits."""
-
-    store = StateStore(cfg.state_dir)
-    coordinator = ResourceLockCoordinator(store, cfg.root)
-    with coordinator.transaction():
-        state = store.load()
-        if _pid_alive(state.dispatcher_pid):
-            raise DesktopLifecycleError(
-                "the external App Server dispatcher is still active; Desktop launch is forbidden"
-            )
-        state.dispatcher_pid = None
-        state.prep_app_server_exited_at = at or utc_now()
-        _append_event(
-            state,
-            "prep_app_server_exited",
-            _synthetic_session(state),
-            state.prep_app_server_exited_at,
-            detail="bounded metadata/preflight client fully exited",
-        )
-        store.save(state)
 
 def pause_desktop_run(cfg: Config, *, at: str | None = None) -> None:
     """Persist a drain pause before returning control to the user.

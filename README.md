@@ -67,7 +67,7 @@ Explicit strategies are `Sol only` and `Astra only`. The Host Settings profile s
 Exact no-model controls are:
 
 - `status` - a few lines: progress, what is running, what blocks it.
-- `status detail` - the full report, including the R1 creation-causality audit.
+- `status detail` - the full report: every task, its state, and the reason it is waiting.
 - `Pause Codex Autopilot.`
 - `Resume Codex Autopilot.` It is also the user's answer to an escalation: it
   closes an incident the Pipeline Engineer handed over and returns a task whose

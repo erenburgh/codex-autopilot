@@ -170,6 +170,21 @@ When an incident reaches `PIPELINE_ENGINEER`, follow the procedure in
 
 If the target is not Git, state that this beta requires a Git repository and suggest `git init`; do not initialize it or make a commit without explicit user authorization.
 
+## Saved-project root drift
+
+Autopilot never changes a saved Codex project on its own. When the canonical
+directory is not inside any root of the configured project, the create fails
+closed and names the exact authorization it needs. The user, and only the user,
+grants it:
+
+```text
+scripts/codex-autopilot authorize-project-root --project <target-root> --yes
+```
+
+`--revoke` withdraws it later. The authorization names that one project and that
+one root; it does not carry to another. Never run it on the user's behalf and
+never infer it from a general request to continue.
+
 ## Controls
 
 Exact pause, resume, status, and uninstall prompts are handled by the plugin hook without a model request. If control reaches this skill, run the bundled helper with `stop`, `status`, or `uninstall --yes`. Project state is removed only with explicit `--purge-project-state --project <root>`.
