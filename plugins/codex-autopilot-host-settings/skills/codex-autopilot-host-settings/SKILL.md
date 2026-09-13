@@ -47,8 +47,24 @@ Write `<target-root>/.codex-autopilot/bootstrap-plan.json`; preserve the initiat
 request verbatim and require a fresh independent verifier for every milestone:
 
 ```json
-{"schema_version":3,"graph_version":1,"goal":"...","user_request":"<verbatim initiating user request>","model_strategy":"host-settings","execution_strategy":"serial","max_parallel_workers":1,"computer_use_slots":1,"roles":[{"id":"implementer","name":"Implementation Specialist","responsibilities":["Implement the milestone contract."]},{"id":"acceptance-reviewer","name":"Independent Acceptance Reviewer","responsibilities":["Judge the result against the original request, specification, and every DoD item."]}],"tasks":[{"id":"M1","title":"...","objective":"...","definition_of_done":["..."],"execution_mode":"code","execution_mode_reason":"Repository files and tests are sufficient.","role":"implementer","depends_on":[],"priority":0,"verification":{"policy":"independent","required":true,"verifier_role":"acceptance-reviewer","max_revision_attempts":2},"resources":[],"required_capabilities":[],"context":{},"outputs":[],"tags":[]}]}
+{"schema_version":3,"graph_version":1,"goal":"...","user_request":"<verbatim initiating user request>","model_strategy":"host-settings","execution_strategy":"auto","max_parallel_workers":2,"computer_use_slots":1,"roles":[{"id":"implementer","name":"Implementation Specialist","responsibilities":["Implement the milestone contract."]},{"id":"acceptance-reviewer","name":"Independent Acceptance Reviewer","responsibilities":["Judge the result against the original request, specification, and every DoD item."]}],"tasks":[{"id":"M1","title":"...","objective":"...","definition_of_done":["..."],"execution_mode":"code","execution_mode_reason":"Repository files and tests are sufficient.","role":"implementer","depends_on":[],"priority":0,"verification":{"policy":"independent","required":true,"verifier_role":"acceptance-reviewer","max_revision_attempts":2},"resources":[],"required_capabilities":[],"context":{},"outputs":[],"tags":[]}]}
 ```
+
+`depends_on` is the real dependency, not the order in which the tasks were
+written down. Two tasks that can be done without each other's result are
+declared as siblings on the same predecessor, and the scheduler then runs them
+side by side. Chaining independent work into one line hides parallelism that the
+run was authorized to use. `execution_strategy` stays `auto` and
+`max_parallel_workers` stays at least `2` unless the user asked for serial
+execution or the plan was migrated from v0.8; a migrated plan carries
+`legacy_serial` and remains serial with one worker.
+
+Sibling tasks that write to the same files are not parallel: the resource lock
+serializes them. Declare `resources` honestly - `write` for what the task
+changes, `read` for what it only consults - and split the work so that siblings
+own disjoint files. When a shared entry point is unavoidable, give the
+foundation task the job of making it extensible, so the later tasks add their
+own files instead of editing a common one.
 
 Resolve `scripts/codex-autopilot` relative to this `SKILL.md`, then run:
 

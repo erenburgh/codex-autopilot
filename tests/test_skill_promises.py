@@ -98,3 +98,54 @@ class CommandsInTheSkillExistTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EntrypointDefaultsTests(unittest.TestCase):
+    """M11-ENTRYPOINT-DEFAULTS: шаблон скилла - фактический дефолт прогона.
+
+    plan.py объявляет schema-3 умолчанием auto и двух воркеров, но план
+    пишет не plan.py, а планировщик по образцу из SKILL.md. Образец нёс
+    execution_strategy="serial" и max_parallel_workers=1, то есть каждый
+    новый прогон входил в serial явно и никогда не достигал дефолта. Это
+    сильнее умолчания: явное значение в файле нельзя переопределить.
+    """
+
+    SKILLS = (
+        Path(__file__).resolve().parents[1]
+        / "plugins/codex-autopilot-adaptive/skills/codex-autopilot-adaptive/SKILL.md",
+        Path(__file__).resolve().parents[1]
+        / "plugins/codex-autopilot-host-settings/skills/codex-autopilot-host-settings/SKILL.md",
+    )
+
+    def test_both_templates_emit_the_declared_v09_defaults(self) -> None:
+        from codex_autopilot.plan import (
+            DEFAULT_EXECUTION_STRATEGY,
+            DEFAULT_MAX_PARALLEL_WORKERS,
+        )
+
+        expected = (
+            f'"execution_strategy":"{DEFAULT_EXECUTION_STRATEGY}",'
+            f'"max_parallel_workers":{DEFAULT_MAX_PARALLEL_WORKERS}'
+        )
+        for skill in self.SKILLS:
+            with self.subTest(skill=skill.name):
+                text = skill.read_text(encoding="utf-8")
+                self.assertIn(expected, text)
+                self.assertNotIn('"execution_strategy":"serial"', text)
+
+    def test_both_templates_explain_that_siblings_are_the_parallelism(self) -> None:
+        """Дефолт auto ничего не даёт графу, выстроенному в цепочку."""
+
+        for skill in self.SKILLS:
+            with self.subTest(skill=skill.name):
+                text = skill.read_text(encoding="utf-8")
+                self.assertIn("declared as siblings", text)
+                self.assertIn("legacy_serial", text)
+
+    def test_both_templates_warn_that_a_shared_write_serializes_siblings(self) -> None:
+        for skill in self.SKILLS:
+            with self.subTest(skill=skill.name):
+                self.assertIn(
+                    "the resource lock",
+                    skill.read_text(encoding="utf-8"),
+                )
