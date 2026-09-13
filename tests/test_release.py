@@ -97,6 +97,28 @@ class ReleaseTests(unittest.TestCase):
                 self.assertNotIn("gpt-5.6-sol", text, str(path))
                 self.assertNotIn("gpt-6-astra", text, str(path))
 
+
+    def test_internal_docs_do_not_ship_to_users(self):
+        """Целевая спецификация следующей версии - рабочий план, не документация.
+
+        Она живёт в репозитории ради воркеров прогона и содержит
+        коммерческое позиционирование. В пользовательский архив ей
+        нельзя, и защита релиза это уже поймала однажды - по имени
+        частного проекта внутри.
+        """
+
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_release", ROOT / "scripts/build_release.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertIn("docs/V1_TARGET.md", module.INTERNAL_DOCS)
+        for internal in module.INTERNAL_DOCS:
+            with self.subTest(internal=internal):
+                self.assertTrue((ROOT / internal).is_file(), internal)
+                self.assertNotIn(internal.split("/")[-1], module.USER_ITEMS)
     def test_no_separate_model_quota_or_silent_fallback_claim(self):
         text = "\n".join(path.read_text(encoding="utf-8", errors="replace") for base in (ROOT / "src", ROOT / "plugins", ROOT / "docs", ROOT / "README.md") for path in ([base] if base.is_file() else base.rglob("*")) if path.is_file())
         for phrase in ("Astra quota", "Sol quota", "fallback to Sol", "fallback to Astra"):

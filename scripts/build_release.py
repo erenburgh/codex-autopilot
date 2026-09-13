@@ -30,6 +30,10 @@ def _package_version() -> str:
 
 VERSION = _package_version()
 USER_ITEMS = [".agents", "plugins", "src", "docs", "install.sh", "README.md", "GETTING_STARTED.md", "CHANGELOG.md", "LICENSE"]
+# Внутренние документы, которые живут в репозитории ради воркеров, но не
+# уезжают пользователю: целевая спецификация следующей версии - это
+# рабочий план и коммерческое позиционирование, а не документация продукта.
+INTERNAL_DOCS = {"docs/V1_TARGET.md"}
 SOURCE_EXCLUDES = {"__pycache__", ".git", ".DS_Store", ".venv", "dist", "build"}
 BANNED_PARTS = {"__pycache__", ".git", ".venv", "venv", "logs"}
 BANNED_SUFFIXES = {".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".wal", ".shm"}
@@ -76,6 +80,8 @@ def main() -> int:
     if release_tree.exists(): shutil.rmtree(release_tree)
     release_tree.mkdir(parents=True)
     for item in USER_ITEMS: copy_clean(ROOT / item, release_tree / item)
+    for internal in INTERNAL_DOCS:
+        (release_tree / internal).unlink(missing_ok=True)
     validate(release_tree)
     user_zip = output / f"codex-autopilot-{VERSION}-macos.zip"
     source_stage = output / f".codex-autopilot-{VERSION}-source-stage"

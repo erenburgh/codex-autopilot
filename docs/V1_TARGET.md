@@ -384,7 +384,7 @@ Craft     Hard Surface Modeling
 Tool      Blender
 Pipeline  Unreal Asset Export
 Quality   Realtime Asset Optimization
-Project   Beyondness Art Direction
+Project   проект пользователя Art Direction
 Project   Weapon Technical Constraints
 
 Autopilot перед задачей собирает нужный Skill Stack: для мелкой задачи
