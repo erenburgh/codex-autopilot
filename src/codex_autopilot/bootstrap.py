@@ -172,6 +172,10 @@ def _write_config(
         "",
         "[runtime]",
         f"execution_strategy = {_toml_string(plan.execution_strategy)}",
+        # Системный банер, когда задача проверена, встала или прогон
+        # завершён. Выключено: включать побочный эффект на чужой машине
+        # без спроса нельзя. См. docs/DESKTOP_RUNTIME.md.
+        "desktop_notifications = false",
         f"max_parallel_workers = {plan.max_parallel_workers}",
         f"computer_use_slots = {plan.computer_use_slots}",
         # Поверхность одна. Поле пишется явно, чтобы конфиг читался

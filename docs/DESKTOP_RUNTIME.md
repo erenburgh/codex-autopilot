@@ -211,3 +211,35 @@ alias. It is intentionally named and documented as headless: production turns
 are owned by the external App Server connection, and no Desktop follow-up,
 steering, or immediate ownership-return promise is made. Desktop-owned hooks
 reject attempts to spawn that dispatcher.
+
+## Уведомление о готовности
+
+Состояние «непрочитано» в Desktop снаружи недоступно. Замерено на живом
+App Server, а не предположено:
+
+- `initialize` не возвращает списка возможностей вовсе — ни одного
+  объявленного API про непрочитанное, бейджи или уведомления;
+- `thread/metadata/update` принимает только `projectId`. Контрольный
+  опыт: то же поле с прежним значением проходит, а `name`, `title`,
+  `threadName`, `section`, `sectionEnteredAt`, `agentNickname` и
+  `agentRole` отвергаются одинаковым `must include at least one field`;
+- методов `thread/rename`, `thread/setName`, `thread/title/update`,
+  `thread/markUnread`, `thread/setUnread`, `thread/unread/update`,
+  `thread/notify`, `notification/create` не существует.
+
+Значит ни отметить ветку непрочитанной, ни переименовать её после
+создания нельзя: заголовок задаётся один раз, при создании.
+
+Остаётся то, что целиком наше. Диспетчер — обычный локальный процесс, и
+системный банер ему доступен без чьего-либо API:
+
+```toml
+[runtime]
+desktop_notifications = true
+```
+
+По умолчанию выключено. Банер приходит на три события: задача проверена,
+задача встала, прогон завершён — один на переход, а не на каждое
+событие. Реализация в `notify.py` ничего не автоматизирует: текст
+уходит аргументами `osascript`, а не склейкой строк, и запрет на
+управление приложениями через AppleScript проверяется отдельным тестом.

@@ -57,6 +57,12 @@ class RuntimeConfig:
     # Desktop о ней знает; "any" - не проверять. Невидимая задача обесценивает
     # автопилот: её нельзя открыть и прочитать, поэтому по умолчанию строго.
     required_thread_placement: str = "in_project"
+    # Системный банер, когда задача проверена, встала или прогон завершён.
+    # Выключено по умолчанию: это побочный эффект на машине человека.
+    # Замерено, что другого пути нет - App Server не объявляет ни одного
+    # API про непрочитанное, а thread/metadata/update принимает только
+    # projectId. См. notify.py.
+    desktop_notifications: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +153,10 @@ def load_config(root_or_path: Path) -> Config:
             required_thread_placement=_thread_placement(
                 runtime.get("required_thread_placement", "in_project")
             ),
+            desktop_notifications=_bool(
+                runtime.get("desktop_notifications", False),
+                "runtime.desktop_notifications",
+            ),
         ),
         auto_commit=auto_commit,
     )
@@ -175,6 +185,12 @@ def _execution_strategy(value: object) -> str:
 
 
 THREAD_PLACEMENT_LEVELS = ("in_project", "visible", "any")
+
+
+def _bool(value: object, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{name} must be true or false")
 
 
 def _thread_placement(value: object) -> str:

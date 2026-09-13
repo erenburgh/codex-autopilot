@@ -566,13 +566,39 @@ def complete_desktop_worker(
         )
         store.save(state)
         done = state.status == "DONE"
+        task_state_after = state.task_states.get(task_id, "")
         completed = _verified_prefix(plan, state)
         next_index = state.milestone_index
     mark_roadmap(cfg.root, plan, completed, language=cfg.language)
     if plan.legacy_serial and not done:
         select_milestone(cfg.state_dir, plan, next_index, language=cfg.language)
     _materialize(descriptors)
+    _notify_completion(cfg, plan, task_id, state_after=task_state_after, done=done)
     return CompletionOutcome(True, worker_status, descriptors, done)
+
+
+def _notify_completion(cfg, plan, task_id: str, *, state_after: str, done: bool) -> None:
+    """Сказать человеку, что работа закончилась.
+
+    Единственный доступный способ: состояние "непрочитано" принадлежит
+    интерфейсу Desktop, и снаружи оно не наше - замерено, см. notify.py.
+    Здесь один банер на переход, а не на каждое событие: поток
+    уведомлений человек выключит на второй задаче.
+
+    Вызов не вправе ничего сломать: он стоит после сохранения состояния
+    и не бросает.
+    """
+
+    from .notify import notify
+
+    if done:
+        notify(cfg, "Codex Autopilot", cfg.root.name, "Прогон завершён.")
+        return
+    if state_after not in {TaskState.VERIFIED.value, TaskState.BLOCKED.value}:
+        return
+    title = next((item.title for item in plan.tasks if item.id == task_id), task_id)
+    word = "проверена" if state_after == TaskState.VERIFIED.value else "встала"
+    notify(cfg, "Codex Autopilot", cfg.root.name, f"{task_id} {word}: {title}")
 
 # R13: DevOps решает инфраструктурные баги от имени пользователя, и
 # пользователь не участвует в выборе способа фикса. Поэтому эскалация -
