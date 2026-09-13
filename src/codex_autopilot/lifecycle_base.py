@@ -141,18 +141,85 @@ class CompletionOutcome:
     descriptors: tuple[LaunchDescriptor, ...]
     run_done: bool
 
-def parse_desktop_worker_status(message: str) -> str:
-    pattern = re.compile(
-        r"(?m)^AUTOPILOT_STATUS:\s*(ROTATE|DONE|BLOCKED|ESCALATE)\s*$"
+# R13: остановка работы всегда названа кодом из закрытого списка.
+# Свободная строка не годится: по ней нельзя ни маршрутизировать, ни
+# посчитать, ни отличить "нужно решение пользователя" от "сломалось
+# окружение". ROTATE и DONE кода не несут - успеху причина не нужна.
+WORKER_REASON_CODES = frozenset(
+    {
+        # Требуется разрешение или доступ, который воркер брать не вправе.
+        "DANGEROUS_PERMISSION",
+        # Нужного ресурса, инструмента или учётных данных нет.
+        "MISSING_RESOURCE",
+        # Выход проверенной зависимости непригоден для этой задачи.
+        "DEPENDENCY_DEFECT",
+        # Контракт задачи противоречит сам себе или плану.
+        "CONTRADICTORY_CONTRACT",
+        # Окружение сломано за пределами полномочий задачи.
+        "ENVIRONMENT_FAILURE",
+        # Решение принадлежит пользователю: продуктовое.
+        "PRODUCT_DECISION",
+        # Решение принадлежит пользователю: архитектурное.
+        "ARCHITECTURE_DECISION",
+        # Способы починки исчерпаны.
+        "RECOVERY_EXHAUSTED",
+        # Кода не было. Это тоже факт, и он записывается как факт.
+        "UNSPECIFIED",
+    }
+)
+
+_WORKER_STATUS_PATTERN = re.compile(
+    r"(?m)^AUTOPILOT_STATUS:\s*(ROTATE|DONE|BLOCKED|ESCALATE)(?:\s+([A-Z_]+))?\s*$"
+)
+
+
+def parse_desktop_worker_status(message: str) -> tuple[str, str]:
+    """Вернуть (статус, код причины) из финального ответа воркера.
+
+    R13. Прежде функция возвращала только статус, а причина остановки
+    уходила в ``last_error`` свободной строкой вида "M9 worker returned
+    BLOCKED" - то есть не уходила никуда. Теперь BLOCKED и ESCALATE
+    несут код из закрытого списка.
+
+    Отсутствие кода не роняет завершение: ход воркера уже закончился,
+    и жёсткий отказ здесь означал бы, что пайплайн клинит ровно в тот
+    момент, когда что-то уже пошло не так. Такой случай записывается
+    как ``UNSPECIFIED`` - это честная запись, а не тихое прощение.
+    Неизвестный код - другое дело: закрытый список, в который можно
+    дописать что угодно, не закрытый.
+    """
+
+    matches = _WORKER_STATUS_PATTERN.findall(message)
+    last = next(
+        (line.strip() for line in reversed(message.splitlines()) if line.strip()), ""
     )
-    matches = pattern.findall(message)
-    last = next((line.strip() for line in reversed(message.splitlines()) if line.strip()), "")
-    if len(matches) != 1 or last != f"AUTOPILOT_STATUS: {matches[0]}":
+    if len(matches) != 1:
         raise DesktopLifecycleError(
             "Desktop worker final response must end with exactly one allowed "
             "AUTOPILOT_STATUS line"
         )
-    return matches[0]
+    status, raw_code = matches[0]
+    expected = f"AUTOPILOT_STATUS: {status}"
+    if raw_code:
+        expected = f"{expected} {raw_code}"
+    if last != expected:
+        raise DesktopLifecycleError(
+            "Desktop worker final response must end with exactly one allowed "
+            "AUTOPILOT_STATUS line"
+        )
+    if status in SUCCESS_STATUSES:
+        if raw_code:
+            raise DesktopLifecycleError(
+                "AUTOPILOT_STATUS ROTATE and DONE carry no reason code"
+            )
+        return status, ""
+    code = raw_code or "UNSPECIFIED"
+    if code not in WORKER_REASON_CODES:
+        raise DesktopLifecycleError(
+            f"unknown AUTOPILOT_STATUS reason code {code!r}; allowed: "
+            + ", ".join(sorted(WORKER_REASON_CODES))
+        )
+    return status, code
 
 APPLIED_RULES_PATTERN = re.compile(r"(?mi)^AUTOPILOT_RULES:\s*(.+?)\s*$")
 

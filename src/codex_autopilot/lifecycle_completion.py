@@ -216,6 +216,7 @@ def complete_desktop_worker(
         plan_change_request = parse_plan_change_request(final_message)
     except PlanChangeProtocolError as exc:
         raise DesktopLifecycleError(str(exc)) from exc
+    reason_code = ""
     if plan_change_request is not None:
         worker_status = "PLAN_CHANGE_REQUEST"
     elif kind == "verifier":
@@ -225,7 +226,7 @@ def complete_desktop_worker(
             raise DesktopLifecycleError(str(exc)) from exc
         worker_status = verdict.verdict
     else:
-        worker_status = parse_desktop_worker_status(final_message)
+        worker_status, reason_code = parse_desktop_worker_status(final_message)
     task_id = str(session["task_id"])
     checkpoint_before = str(session.get("checkpoint_before") or "")
     checkpoint_path = task_checkpoint_path(cfg.state_dir, task_id)
@@ -506,7 +507,17 @@ def complete_desktop_worker(
             state.task_states = transition_task(
                 plan, state.task_states, task_id, TaskState.BLOCKED
             )
-            state.last_error = f"{task_id} {kind} returned {worker_status}"
+            # R13: причина остановки - код из закрытого списка, а не
+            # пересказ статуса. Прежняя строка "M9 worker returned
+            # BLOCKED" не сообщала ничего сверх самого статуса.
+            state.last_error = f"{task_id} {kind} {worker_status} {reason_code}".strip()
+            current["reason_code"] = reason_code
+            if reason_code == "UNSPECIFIED":
+                record_violation(
+                    cfg.state_dir,
+                    "R13",
+                    detail=f"{task_id} {kind} reported {worker_status} without a reason code",
+                )
 
         if state.task_states[task_id] == TaskState.VERIFIED.value:
             memory.mark_milestone_complete(

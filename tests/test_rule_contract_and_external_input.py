@@ -34,7 +34,7 @@ class AppliedRulesReportTests(unittest.TestCase):
         from codex_autopilot.lifecycle import parse_desktop_worker_status
 
         message = "AUTOPILOT_RULES: R7\nAUTOPILOT_STATUS: ROTATE"
-        self.assertEqual(parse_desktop_worker_status(message), "ROTATE")
+        self.assertEqual(parse_desktop_worker_status(message), ("ROTATE", ""))
         self.assertEqual(parse_applied_rules(message), ("R7",))
 
     def test_prompt_asks_for_the_list_in_both_languages(self) -> None:
@@ -150,3 +150,88 @@ class RegistryCoverageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkerReasonCodeTests(unittest.TestCase):
+    """R13: остановка работы называется кодом, а не пересказом статуса.
+
+    Прежде причина уходила в last_error строкой "M9 worker returned
+    BLOCKED" - в ней нет ничего, чего нет в самом статусе. По такой
+    записи нельзя ни маршрутизировать эскалацию, ни посчитать, ни
+    отличить "нужно решение пользователя" от "сломалось окружение".
+    """
+
+    def _parse(self, message: str):
+        from codex_autopilot.lifecycle import parse_desktop_worker_status
+
+        return parse_desktop_worker_status(message)
+
+    def test_a_code_is_carried_through(self) -> None:
+        self.assertEqual(
+            self._parse("итог\nAUTOPILOT_STATUS: BLOCKED MISSING_RESOURCE"),
+            ("BLOCKED", "MISSING_RESOURCE"),
+        )
+        self.assertEqual(
+            self._parse("итог\nAUTOPILOT_STATUS: ESCALATE PRODUCT_DECISION"),
+            ("ESCALATE", "PRODUCT_DECISION"),
+        )
+
+    def test_an_unknown_code_is_refused(self) -> None:
+        """Список, в который можно дописать что угодно, не закрытый."""
+
+        from codex_autopilot.lifecycle_base import DesktopLifecycleError
+
+        with self.assertRaises(DesktopLifecycleError):
+            self._parse("итог\nAUTOPILOT_STATUS: BLOCKED BECAUSE_I_SAID_SO")
+
+    def test_a_missing_code_is_recorded_not_forgiven(self) -> None:
+        """Жёсткий отказ здесь клинил бы пайплайн ровно на поломке.
+
+        Ход воркера уже завершён, второго ответа не будет. Поэтому
+        отсутствие кода - это UNSPECIFIED, и он отдельно засчитывается
+        как нарушение R13 в lifecycle_completion.
+        """
+
+        self.assertEqual(
+            self._parse("итог\nAUTOPILOT_STATUS: BLOCKED"),
+            ("BLOCKED", "UNSPECIFIED"),
+        )
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src/codex_autopilot/lifecycle_completion.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('reason_code == "UNSPECIFIED"', source)
+        self.assertIn('"R13"', source)
+
+    def test_success_carries_no_reason(self) -> None:
+        from codex_autopilot.lifecycle_base import DesktopLifecycleError
+
+        self.assertEqual(self._parse("итог\nAUTOPILOT_STATUS: DONE"), ("DONE", ""))
+        with self.assertRaises(DesktopLifecycleError):
+            self._parse("итог\nAUTOPILOT_STATUS: DONE MISSING_RESOURCE")
+
+    def test_the_prompt_names_every_code_a_worker_may_use(self) -> None:
+        """Закрытый список бесполезен, если воркеру его не показали."""
+
+        from codex_autopilot.lifecycle_base import WORKER_REASON_CODES
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src/codex_autopilot/ai_studio.py"
+        ).read_text(encoding="utf-8")
+        for code in WORKER_REASON_CODES - {"UNSPECIFIED"}:
+            with self.subTest(code=code):
+                self.assertIn(code, source)
+        # UNSPECIFIED - запись о том, что кода не было, а не код,
+        # который воркеру предлагают выбрать.
+        self.assertNotIn("UNSPECIFIED", source)
+
+    def test_the_failure_record_names_the_code(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src/codex_autopilot/lifecycle_completion.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'state.last_error = f"{task_id} {kind} {worker_status} {reason_code}"',
+            source,
+        )
