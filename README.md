@@ -96,7 +96,7 @@ The v0.8 beta supports macOS. It is developed against Codex CLI/App Server 0.154
 
 Verified live, not only by tests: parallel workers on one dependency frontier, dependency unlock, independent verification, the Pipeline Engineer incident path including a closed-code escalation and the user's answer to it, and canonical project placement for every created task.
 
-Not verified live and openly outstanding: a real multi-hour rate-limit wake-up, Host Settings inheritance across all Desktop configurations, an external clean-Mac install from the release ZIP, and Computer Use scheduling alongside code work.
+Not verified live and openly outstanding: a real multi-hour rate-limit wake-up, Host Settings inheritance across all Desktop configurations, an external clean-Mac install (the release ZIP itself installs and passes `doctor` on a machine that already has Codex; a machine with neither Python nor Codex CLI is untested), and Computer Use scheduling alongside code work.
 
 Desktop cannot be told that a task started. Its App Server is a separate process from the one Autopilot drives, and the two share only the filesystem, so the sidebar refreshes on the app's own schedule. A created task becomes listable about a second after its turn starts; until the app re-reads, `runtime.desktop_notifications = true` is the only way to learn that work began or finished.
 
