@@ -73,8 +73,6 @@ SESSION_KINDS = IMPLEMENTATION_SESSION_KINDS | frozenset(
 class DesktopLifecycleError(RuntimeError):
     pass
 
-class DesktopSlotHistoryError(DesktopLifecycleError):
-    """The Desktop task is not the pristine no-op slot claimed by the relay."""
 
 @dataclass(frozen=True, slots=True)
 class LaunchDescriptor:
@@ -929,14 +927,6 @@ def _client_process_exited(client: Any) -> bool:
     proc = getattr(client, "proc", None)
     return proc is not None and proc.poll() is not None
 
-def _client_process_pid(client: Any) -> int | None:
-    proc = getattr(client, "proc", None)
-    pid = getattr(proc, "pid", None)
-    return pid if isinstance(pid, int) and pid > 0 else None
-
-
-def _stable_text_id(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 def _stable_id(state: RunState, value: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"codex-autopilot:{state.run_id}:{value}"))
