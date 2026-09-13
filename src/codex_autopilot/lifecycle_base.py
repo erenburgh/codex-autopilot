@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable, Mapping
 
 from .config import Config, DESKTOP_OWNED_SURFACE
 from .language import is_russian

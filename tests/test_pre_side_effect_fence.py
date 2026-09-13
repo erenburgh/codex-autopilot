@@ -172,3 +172,97 @@ class RetiredTaskFenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EscalationReturnPathTests(unittest.TestCase):
+    """Обращение к пользователю без обратного пути - тупик, а не исключение.
+
+    Инженер объявлял ESCALATE_TO_USER, прогон уходил в BLOCKED, и
+    возобновление отказывало ровно потому, что прогон в BLOCKED.
+    Человеку, который уже всё починил, сказать об этом было нечем.
+
+    Отдельно проверяется состояние, созданное прежней версией: прогон
+    помечен эскалированным, а тикет остался в PIPELINE_ENGINEER. Починка,
+    которая лечит только будущие случаи и оставляет запертым уже
+    сломанное, - это половина починки.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name) / ".codex-autopilot"
+        self.dir.mkdir(parents=True)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _store(self):
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        return PipelineIncidentStore(self.dir)
+
+    def _open(self, phase: str) -> str:
+        from codex_autopilot.pipeline_engineer import (
+            IncidentClass,
+            IncidentSignal,
+            SideEffectOutcome,
+        )
+
+        store = self._store()
+        incident = store.open_incident(
+            IncidentSignal(
+                signal_id="sig-1",
+                code="detached_dispatch_failed",
+                surface=IncidentClass.PIPELINE,
+                operation="create_thread",
+                summary="вердикт не разобран",
+                affected_task_ids=("M4",),
+                system_state={},
+                side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+            ),
+            at="2026-09-13T17:00:00+00:00",
+        )
+        incident_id = str(incident["incident_id"])
+        state = store.load()
+        for item in state["incidents"]:
+            if item["incident_id"] == incident_id:
+                item["phase"] = phase
+        from codex_autopilot.pipeline_engineer import _atomic_json
+
+        _atomic_json(store.path, state)
+        return incident_id
+
+    def test_an_escalated_incident_is_closed_by_the_user(self) -> None:
+        incident_id = self._open("ESCALATE_TO_USER")
+        self.assertIn(incident_id, self._store().incident_ids_awaiting_the_user())
+        phase = self._store().resolve_escalation_by_user(
+            incident_id, at="2026-09-13T18:00:00+00:00", note="починено вручную"
+        )
+        self.assertEqual(phase.value, "RESOLVED")
+
+    def test_an_incident_left_in_the_old_phase_is_closed_too(self) -> None:
+        """Ровно то состояние, в котором застрял живой прогон."""
+
+        incident_id = self._open("PIPELINE_ENGINEER")
+        self.assertIn(incident_id, self._store().incident_ids_awaiting_the_user())
+        phase = self._store().resolve_escalation_by_user(
+            incident_id, at="2026-09-13T18:00:00+00:00"
+        )
+        self.assertEqual(phase.value, "RESOLVED")
+
+    def test_a_resolved_incident_is_not_reopened_by_the_user(self) -> None:
+        from codex_autopilot.pipeline_engineer import PipelineIncidentError
+
+        incident_id = self._open("RESOLVED")
+        self.assertNotIn(incident_id, self._store().incident_ids_awaiting_the_user())
+        with self.assertRaises(PipelineIncidentError):
+            self._store().resolve_escalation_by_user(
+                incident_id, at="2026-09-13T18:00:00+00:00"
+            )
+
+    def test_closing_unpauses_the_affected_task(self) -> None:
+        """Закрытие тикета обязано снимать паузу, иначе задача стоит дальше."""
+
+        incident_id = self._open("PIPELINE_ENGINEER")
+        self.assertIn("M4", self._store().status_snapshot()["paused_task_ids"])
+        self._store().resolve_escalation_by_user(
+            incident_id, at="2026-09-13T18:00:00+00:00"
+        )
+        self.assertNotIn("M4", self._store().status_snapshot()["paused_task_ids"])

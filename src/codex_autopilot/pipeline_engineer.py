@@ -686,9 +686,19 @@ class PipelineIncidentStore:
 
         with self._transaction() as state:
             incident = _incident(state, incident_id)
-            if IncidentPhase(str(incident["phase"])) is not IncidentPhase.ESCALATE_TO_USER:
+            phase = IncidentPhase(str(incident["phase"]))
+            # PIPELINE_ENGINEER принимается наравне с ESCALATE_TO_USER.
+            # Прогоны, эскалированные прежней версией, оставляли тикет в
+            # фазе инженера: прогон уходил в BLOCKED, а хранилище об
+            # эскалации не узнавало. Отказывать такому тикету значило бы
+            # починить только будущие случаи и оставить запертым то
+            # состояние, ради которого починка и делалась.
+            if phase not in {
+                IncidentPhase.ESCALATE_TO_USER,
+                IncidentPhase.PIPELINE_ENGINEER,
+            }:
                 raise PipelineIncidentError(
-                    "only an escalated incident is closed by the user"
+                    "only an incident handed to the user is closed by the user"
                 )
             incident["phase"] = IncidentPhase.RESOLVED.value
             incident["resolved_at"] = at
@@ -702,12 +712,20 @@ class PipelineIncidentStore:
             )
             return IncidentPhase(str(incident["phase"]))
 
-    def escalated_incident_ids(self) -> tuple[str, ...]:
+    def incident_ids_awaiting_the_user(self) -> tuple[str, ...]:
+        """Тикеты, которые ждут ответа пользователя.
+
+        Сюда же попадают застрявшие в PIPELINE_ENGINEER: прежняя версия
+        помечала эскалацию только на прогоне, и такой тикет не мог
+        закрыть никто - ни инженер, ни человек.
+        """
+
         state = self.load()
         return tuple(
             str(item["incident_id"])
             for item in state.get("incidents") or []
-            if IncidentPhase(str(item["phase"])) is IncidentPhase.ESCALATE_TO_USER
+            if IncidentPhase(str(item["phase"]))
+            in {IncidentPhase.ESCALATE_TO_USER, IncidentPhase.PIPELINE_ENGINEER}
         )
 
     def invalidate_pipeline_engineer_resolution(

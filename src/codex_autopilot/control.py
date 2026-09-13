@@ -1208,7 +1208,7 @@ def _answer_escalation(cfg, state) -> tuple[str, ...]:
         return ()
     store = PipelineIncidentStore(cfg.state_dir)
     closed: list[str] = []
-    for incident_id in store.escalated_incident_ids():
+    for incident_id in store.incident_ids_awaiting_the_user():
         store.resolve_escalation_by_user(
             incident_id,
             at=utc_now(),
