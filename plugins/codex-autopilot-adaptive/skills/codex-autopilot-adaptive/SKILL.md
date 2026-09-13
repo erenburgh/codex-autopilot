@@ -34,7 +34,9 @@ In AUTO, a Sol code worker may discover that completion truly requires GUI inter
 
 ## Start a run
 
-Resolve the user's target Git repository explicitly, even when it is outside this task's current directory. Inspect it and the user's goal or `ROADMAP.md`. Select one model strategy for the run:
+The target is the Codex project you are working in. Resolve it as that project's own root, and take the Desktop project id from the same place: the two always belong together, because every created task is placed in that project and verified there.
+
+A different directory is accepted only when it lies inside some Codex project's roots, and then that project's id is the one to pass. A path that belongs to no Codex project cannot be a target: the run would have no project to place its tasks in, and the user would see nothing. Say so immediately, in one sentence, naming the path and the fix - create a Codex project for that directory, or work in the project you already have. Never start a run that will fail later for this reason, and never ask the user to add the project by hand mid-run. Inspect it and the user's goal or `ROADMAP.md`. Select one model strategy for the run:
 
 - `auto` for `Use Codex Autopilot for this project` and requests without an override.
 - `sol-only` for `Use Codex Autopilot with Sol only for this project`.

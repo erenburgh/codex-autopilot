@@ -97,3 +97,37 @@ class MeasuredClaimsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OneSentenceInstallTests(unittest.TestCase):
+    """Установка — одна фраза пользователя, а не список шагов.
+
+    Человек открывает свой проект в Codex и говорит: скачай и установи
+    этот скилл, потом начни работу по проекту. Всё остальное делает
+    Codex. Каталог не выбирается: цель — тот проект, в котором человек
+    находится, потому что каждая созданная задача размещается в нём.
+    """
+
+    def test_both_docs_lead_with_the_sentence(self) -> None:
+        for path in USER_DOCS:
+            with self.subTest(doc=path.name):
+                text = _flat(path)
+                self.assertIn("Download and install this skill", text)
+                self.assertIn("start working on this project with it", text)
+
+    def test_the_docs_do_not_ask_the_user_to_pick_a_directory(self) -> None:
+        for path in USER_DOCS:
+            with self.subTest(doc=path.name):
+                text = _flat(path)
+                self.assertIn("the project you are in", text)
+
+    def test_the_trust_steps_are_named_as_codex_own(self) -> None:
+        """Их нельзя убрать, но можно не прятать и спросить заранее."""
+
+        text = _flat(README) + " " + _flat(GETTING_STARTED)
+        self.assertIn("Autopilot never answers them for you", text)
+        self.assertIn("never in the middle", text)
+
+    def test_a_projectless_directory_is_refused_up_front(self) -> None:
+        source = (ROOT / "src/codex_autopilot/preflight.py").read_text(encoding="utf-8")
+        self.assertIn("не принадлежит ни одному проекту Codex", source)

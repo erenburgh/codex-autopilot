@@ -36,6 +36,26 @@ Open `/hooks` in Codex and trust the current Autopilot **Stop** hook once. Hook 
 
 Start a fresh Codex task after installation. On the first Autopilot request, `start-skill` creates a dedicated preflight task and makes a harmless real model-to-MCP call with `operation=current`. If Codex requires approval, the command stops before run-state or Worker 1 and the initiating task asks whether you approve **Always** for the single bundled memory tool. Only after an explicit yes may it repeat the command with `--approve-project-memory-always`; that flag answers the exact pending App Server request and cannot bypass a different approval. Project initialization and Worker 1 begin only after a subsequent fresh-task probe completes without interruption.
 
+## Install by asking
+
+Open the Codex project you want to work on and say:
+
+```text
+Download and install this skill, then start working on this project with it:
+https://github.com/erenburgh/codex-autopilot
+```
+
+Codex clones the repository and runs `./install.sh` itself. You do not choose a
+directory: the project you are in is the target, because every task Autopilot
+creates is placed in that project and verified there. A directory that belongs
+to no Codex project is refused before anything is created, in one sentence that
+names what to do.
+
+Two Codex trust decisions remain, and they are Codex's, not Autopilot's: trust
+the Stop hook once in `/hooks`, and approve the bundled `memory` tool with
+`Always` when the preflight task asks. Both are requested before the first
+milestone starts, never in the middle of one.
+
 ## Start
 
 In any Codex task, name the target repository explicitly:

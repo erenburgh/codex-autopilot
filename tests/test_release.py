@@ -115,6 +115,16 @@ class ReleaseTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         self.assertIn("docs/V1_TARGET.md", module.INTERNAL_DOCS)
+        # Спецификация лежит В git: иначе её нет в клоне, а на неё
+        # ссылается каждый промпт прогона. Из архивов она исключена -
+        # это разные вещи, и однажды я их спутала.
+        import subprocess
+
+        tracked = subprocess.run(
+            ["git", "ls-files", "docs/V1_TARGET.md"],
+            cwd=ROOT, capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(tracked, "docs/V1_TARGET.md")
         # Записи о разработке самого скилла: аудиты наших прогонов и
         # отчёты о починке вех. Тысяча строк внутренней истории, которую
         # пользователь скачивал вместе со скиллом.

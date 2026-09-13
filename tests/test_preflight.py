@@ -15,6 +15,7 @@ from codex_autopilot.project_association import ProjectAssociationError, require
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DESKTOP_PROJECT = "desktop-project-for-tests"
 SKILL = ROOT / "plugins/codex-autopilot-adaptive/skills/codex-autopilot-adaptive/SKILL.md"
 HOST_SKILL = ROOT / "plugins/codex-autopilot-host-settings/skills/codex-autopilot-host-settings/SKILL.md"
 
@@ -331,7 +332,7 @@ class PreflightTests(unittest.TestCase):
 
     def test_clean_first_run_checks_target_without_creating_state(self):
         root = project()
-        result = run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=PreflightClient, emit=None)
+        result = run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=PreflightClient, desktop_project_id=DESKTOP_PROJECT, emit=None)
         self.assertEqual(result.project, root.resolve())
         self.assertEqual(result.next_model, "GPT-5.6 Sol")
         client = PreflightClient.instances[-1]
@@ -354,7 +355,7 @@ class PreflightTests(unittest.TestCase):
             skill_path=SKILL,
             binary="/bin/echo",
             client_factory=AuthorizedMemoryClient,
-            emit=None,
+            desktop_project_id=DESKTOP_PROJECT, emit=None,
             approve_project_memory_always=True,
         )
         client = PreflightClient.instances[-1]
@@ -388,7 +389,7 @@ class PreflightTests(unittest.TestCase):
             skill_path=SKILL,
             binary="/bin/echo",
             client_factory=AuthorizedSparseCompletionClient,
-            emit=None,
+            desktop_project_id=DESKTOP_PROJECT, emit=None,
             approve_project_memory_always=True,
         )
         client = PreflightClient.instances[-1]
@@ -398,7 +399,7 @@ class PreflightTests(unittest.TestCase):
     def test_fresh_untrusted_mcp_stops_before_real_worker_or_run_state(self):
         root = project()
         with self.assertRaises(ProjectMemoryApprovalRequired) as caught:
-            run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=UntrustedMemoryClient, emit=None)
+            run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=UntrustedMemoryClient, desktop_project_id=DESKTOP_PROJECT, emit=None)
         client = PreflightClient.instances[-1]
         self.assertEqual(caught.exception.thread_id, "preflight-thread")
         self.assertEqual(client.archived, ["preflight-thread"])
@@ -408,7 +409,7 @@ class PreflightTests(unittest.TestCase):
     def test_untrusted_raw_mcp_without_advertised_always_is_rejected(self):
         root = project()
         with self.assertRaisesRegex(PreflightError, "did not offer supported persistent approval"):
-            run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=NonPersistentMemoryClient, emit=None)
+            run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=NonPersistentMemoryClient, desktop_project_id=DESKTOP_PROJECT, emit=None)
         client = PreflightClient.instances[-1]
         self.assertEqual(client.approval_responses, [])
         self.assertEqual(client.archived, ["preflight-thread"])
@@ -417,7 +418,7 @@ class PreflightTests(unittest.TestCase):
     def test_missing_codex_home_access_is_explicit_and_leaves_no_idle_state(self):
         root = project()
         with self.assertRaises(PreflightApprovalRequired) as caught:
-            run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=DeniedClient, emit=None)
+            run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=DeniedClient, desktop_project_id=DESKTOP_PROJECT, emit=None)
         self.assertIn("APPROVAL REQUIRED", str(caught.exception))
         self.assertIn("Codex App Server state directory", str(caught.exception))
         self.assertFalse((root / ".codex-autopilot").exists())
@@ -425,7 +426,7 @@ class PreflightTests(unittest.TestCase):
     def test_missing_memory_mcp_blocks_before_initialization(self):
         root = project()
         with self.assertRaisesRegex(PreflightError, "Project Memory MCP"):
-            run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=MissingMemoryClient, emit=None)
+            run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=MissingMemoryClient, desktop_project_id=DESKTOP_PROJECT, emit=None)
         self.assertEqual(PreflightClient.instances[-1].archived, ["preflight-thread"])
         self.assertFalse((root / ".codex-autopilot").exists())
 
@@ -462,7 +463,7 @@ class PreflightTests(unittest.TestCase):
             skill_path=SKILL,
             binary="/bin/echo",
             client_factory=ProjectPlacementClient,
-            emit=None,
+            desktop_project_id=DESKTOP_PROJECT, emit=None,
         )
         client = PreflightClient.instances[-1]
         self.assertIsNone(result.project_id)
@@ -482,7 +483,7 @@ class PreflightTests(unittest.TestCase):
             skill_path=SKILL,
             binary="/bin/echo",
             client_factory=TargetProjectPlacementClient,
-            emit=None,
+            desktop_project_id=DESKTOP_PROJECT, emit=None,
         )
         client = PreflightClient.instances[-1]
         self.assertEqual(result.project_id, "target")
@@ -500,7 +501,7 @@ class PreflightTests(unittest.TestCase):
             skill_path=SKILL,
             binary="/bin/echo",
             client_factory=TargetProjectPlacementClient,
-            emit=None,
+            desktop_project_id=DESKTOP_PROJECT, emit=None,
             app_server_project_id="outer",
         )
         client = PreflightClient.instances[-1]
@@ -519,7 +520,7 @@ class PreflightTests(unittest.TestCase):
                 skill_path=SKILL,
                 binary="/bin/echo",
                 client_factory=WrongProjectPlacementClient,
-                emit=None,
+                desktop_project_id=DESKTOP_PROJECT, emit=None,
             )
 
 
@@ -560,7 +561,7 @@ class PreflightTests(unittest.TestCase):
             '{"current_thread_id":"old-m1","previous_thread_ids":["old-m1"],"worker_history":[{"thread_id":"old-m1"}]}',
             encoding="utf-8",
         )
-        run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=PreflightClient, emit=None, replace=True)
+        run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=PreflightClient, desktop_project_id=DESKTOP_PROJECT, emit=None, replace=True)
         client = PreflightClient.instances[-1]
         self.assertEqual(client.archived.count("old-m1"), 1)
         self.assertEqual(client.archived.count("preflight-thread"), 1)
@@ -580,22 +581,54 @@ class PreflightTests(unittest.TestCase):
             skill_path=SKILL,
             binary="/bin/echo",
             client_factory=AlreadyDesktopArchivedClient,
-            emit=None,
+            desktop_project_id=DESKTOP_PROJECT, emit=None,
             replace=True,
         )
         self.assertIn(("Previous run", "RETIRED", "archived 1 worker task(s): old-m1"), result.checks)
 
     def test_host_settings_preflight_does_not_read_model_catalog(self):
         root = project()
-        run_preflight(root, plan=plan("host-settings"), profile="host-settings", skill_path=HOST_SKILL, binary="/bin/echo", client_factory=PreflightClient, emit=None)
+        run_preflight(root, plan=plan("host-settings"), profile="host-settings", skill_path=HOST_SKILL, binary="/bin/echo", client_factory=PreflightClient, desktop_project_id=DESKTOP_PROJECT, emit=None)
         self.assertEqual(PreflightClient.instances[-1].model_calls, 0)
 
     def test_non_git_fails_before_app_server(self):
         root = Path(tempfile.mkdtemp(prefix="codex-autopilot-not-git-"))
         with self.assertRaisesRegex(PreflightError, "Git"):
-            run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=PreflightClient, emit=None)
+            run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=PreflightClient, desktop_project_id=DESKTOP_PROJECT, emit=None)
         self.assertFalse(PreflightClient.instances)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TargetMustBelongToAProjectTests(unittest.TestCase):
+    """Прогон без проекта Codex отказывает до создания состояния.
+
+    Прежде отсутствие проекта всплывало посреди прогона -
+    "desktop_owned requires desktop.desktop_project_id" - уже после
+    планирования, и человека просили добавить проект руками в
+    середине работы. Весь жизненный цикл требует проект: в нём
+    создаётся каждая задача и в нём же проверяется размещение.
+    Значит отказ обязан наступать на входе и называть действие.
+    """
+
+    def test_missing_project_fails_before_any_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / ".git").mkdir()
+            with self.assertRaises(PreflightError) as caught:
+                run_preflight(
+                    root,
+                    plan=plan(),
+                    profile="adaptive",
+                    skill_path=SKILL,
+                    binary="/bin/echo",
+                    client_factory=PreflightClient,
+                    emit=None,
+                )
+            message = str(caught.exception)
+            self.assertIn("не принадлежит ни одному проекту Codex", message)
+            self.assertIn("Открой проект Codex", message)
+            # Состояния нет: отказ наступил до его создания.
+            self.assertFalse((root / ".codex-autopilot").exists())

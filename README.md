@@ -35,6 +35,22 @@ The initiating request also establishes one durable BCP-47 response language for
 
 Requirements: macOS, Codex Desktop, a signed-in official Codex CLI with App Server, Python 3.11 or newer, an eligible account, and an existing Git repository for the target project.
 
+Open the Codex project you want to work on and say:
+
+```text
+Download and install this skill, then start working on this project with it:
+https://github.com/erenburgh/codex-autopilot
+```
+
+Codex clones the repository and runs the installer itself. Nothing here needs a
+terminal, and nothing needs a directory to be chosen: the project you are in is
+the project Autopilot works on, because every task it creates is placed there.
+
+Codex will ask for its own two trust decisions once - see below. They are Codex
+security steps and Autopilot never answers them for you.
+
+To install by hand instead:
+
 ```bash
 git clone https://github.com/erenburgh/codex-autopilot.git
 cd codex-autopilot
@@ -47,7 +63,7 @@ After installation, start a fresh Codex task so the plugin loads. First use has 
 
 ## Use
 
-In Codex, ask Autopilot to work on an existing Git repository. The target can differ from the initiating task directory:
+Open a Codex project and ask Autopilot to work on it. The project's own directory is the target: every task Autopilot creates is placed in that project, so a directory that belongs to no Codex project cannot be a target. Autopilot says that before it starts, not in the middle.
 
 ```text
 Use Codex Autopilot for /absolute/path/to/my-project.

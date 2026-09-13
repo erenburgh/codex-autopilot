@@ -179,6 +179,14 @@ def run_preflight(
         result.codex_home = codex_home
         report("App Server", "OK", str(initialized.get("userAgent") or codex_home))
 
+        if not desktop_project_id:
+            detail = (
+                f"каталог {project} не принадлежит ни одному проекту Codex. "
+                "Открой проект Codex и запусти Autopilot в нём: каждая "
+                "задача создаётся внутри проекта, и без него её не видно."
+            )
+            report("Desktop project", "FAIL", detail)
+            raise PreflightError(detail)
         if desktop_project_id:
             try:
                 desktop_roots = require_desktop_project_root(
