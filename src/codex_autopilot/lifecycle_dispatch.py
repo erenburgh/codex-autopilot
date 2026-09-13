@@ -334,6 +334,12 @@ def create_desktop_thread_via_app_server(
         store.save(state)
         descriptor = LaunchDescriptor.from_dict(dict(session["descriptor"]))
     _materialize((descriptor,))
+    # Desktop о создании не узнаёт никак: его app-server - отдельный
+    # процесс (/Applications/ChatGPT.app/.../codex app-server), наш -
+    # свой, общего у них только диск. Канала, по которому можно было бы
+    # сообщить, не существует, поэтому «задача взята в работу» доходит
+    # до человека единственным доступным способом - системным банером.
+    _notify_start(cfg, descriptor)
     return {
         "reservation_token": reservation_token,
         "thread_id": thread_id,
@@ -908,6 +914,19 @@ def run_automatic_app_server_turn(
         dispatcher_reservation_token=reservation_token,
         dispatcher_pid=(os.getpid() if dispatcher_authorized else None),
     )
+
+def _notify_start(cfg: Config, descriptor: LaunchDescriptor) -> None:
+    """Сказать человеку, что задача взята в работу."""
+
+    from .notify import notify
+
+    notify(
+        cfg,
+        "Codex Autopilot",
+        cfg.root.name,
+        f"{descriptor.task_id} взята в работу: {descriptor.task_title}",
+    )
+
 
 def _rate_limit_reset(client: Any) -> int | None:
     """Когда сервер сам говорит, что лимит отпустит.
