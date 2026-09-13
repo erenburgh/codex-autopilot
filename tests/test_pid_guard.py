@@ -67,3 +67,49 @@ class CorruptPidTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OrphanedThreadIsLoadedBeforeTheTurnTests(unittest.TestCase):
+    """Ход стартует только на ветке, загруженной ЭТИМ соединением.
+
+    Условие прежде спрашивало "своё ли у нас соединение". Это другой
+    вопрос: реле всегда передаёт готовый клиент, и ветка, созданная
+    прежним - умершим - диспетчером, оставалась незагруженной.
+
+    Замерено на живом прогоне M11: ветка реплэннера 01a0970c читается и
+    резюмируется, а turn/start отвечает "thread not found". Воспроизведено
+    на одноразовой ветке: создать, закрыть процесс-создатель, стартовать
+    ход из нового соединения - тот же отказ. Ветка без единого хода вдобавок
+    не заводит rollout, и thread/resume отвечает "no rollout found".
+    """
+
+    def test_the_condition_asks_whether_the_thread_is_loaded(self) -> None:
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src/codex_autopilot/lifecycle_dispatch.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'if thread_id in getattr(production_client, "subscribed_thread_ids", ()):',
+            source,
+        )
+        self.assertNotIn("if connected_client is None:\n                resumed", source)
+
+    def test_a_thread_this_connection_created_is_not_resumed(self) -> None:
+        """Лишний resume на своей ветке - лишний вызов, а не починка."""
+
+        from codex_autopilot.appserver import AppServerClient
+
+        client = AppServerClient.__new__(AppServerClient)
+        client.subscribed_thread_ids = {"thread-a"}
+        self.assertIn("thread-a", client.subscribed_thread_ids)
+
+    def test_the_client_forgets_a_thread_it_unsubscribed(self) -> None:
+        """После unsubscribe ветка снова требует загрузки."""
+
+        from codex_autopilot.appserver import AppServerClient
+        import inspect
+
+        source = inspect.getsource(AppServerClient.unsubscribe_thread)
+        self.assertIn("subscribed_thread_ids.discard", source)

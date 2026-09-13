@@ -264,6 +264,16 @@ class FakeAppServerCreateClient:
         self.fail_create = fail_create
         self.process_exited = False
         self.name: str | None = None
+        # Настоящий клиент помнит, какие ветки он загрузил: ход стартует
+        # только на загруженной, и по этому множеству диспетчер решает,
+        # нужен ли resume. Подделка без него изображала соединение,
+        # которое якобы загрузило всё на свете.
+        self.subscribed_thread_ids: set[str] = set()
+
+    def resume_thread(self, thread_id):
+        self.events.append("thread-resumed")
+        self.subscribed_thread_ids.add(thread_id)
+        return {"thread": self.read_thread(thread_id)}
 
     def __enter__(self):
         self.events.append("app-server-connected")
@@ -297,6 +307,7 @@ class FakeAppServerCreateClient:
         if self.fail_create:
             raise AppServerRpcError("thread/start", {"message": "known failure"})
         self.project_id = kwargs["project_id"]
+        self.subscribed_thread_ids.add(self.thread_id)
         return {
             "thread": {
                 "id": self.thread_id,

@@ -625,11 +625,22 @@ def run_automatic_app_server_turn(
     try:
         with production_context as production_client:
             client = production_client
-            if connected_client is None:
+            # Ход стартует только на ветке, загруженной ЭТИМ соединением.
+            # Условие прежде спрашивало "своё ли у нас соединение", а это
+            # другой вопрос: реле всегда передаёт готовый клиент, и ветка,
+            # созданная прежним - умершим - диспетчером, оставалась
+            # незагруженной. thread/read при этом отдаёт метаданные, и
+            # отказ приходил только от turn/start.
+            #
+            # Замерено на M11: ветка реплэннера 01a0970c читается и
+            # резюмируется, а turn/start отвечает "thread not found".
+            # Воспроизведено на одноразовой ветке: создать, закрыть
+            # процесс-создатель, стартовать ход из нового - тот же отказ.
+            if thread_id in getattr(production_client, "subscribed_thread_ids", ()):
+                thread = production_client.read_thread(thread_id)
+            else:
                 resumed = production_client.resume_thread(thread_id)
                 thread = resumed.get("thread") or {}
-            else:
-                thread = production_client.read_thread(thread_id)
             if _thread_cwd(thread) != cfg.root:
                 raise DesktopLifecycleError(
                     "App Server production task is not bound to the canonical cwd"
