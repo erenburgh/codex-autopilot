@@ -261,9 +261,10 @@ def _reserve_in_state(
     )
     if engineer:
         return engineer
-    if open_pipeline_engineer_incident(cfg) is not None:
-        # Инженер уже заведён и работает - новых задач не берём.
-        return ()
+    # Незакрытый инцидент больше не останавливает прогон целиком. Он
+    # держит только свои задачи; всё остальное, что готово к работе,
+    # идёт как обычно. Дежурный инженер закроет тикет своим ходом.
+    paused = tasks_paused_by_incidents(cfg, plan)
     if state.active_plan_change_id is not None:
         return _reserve_replanner_in_state(
             cfg,
@@ -279,6 +280,7 @@ def _reserve_in_state(
             state,
             memory_audit_before=memory_audit_before,
             relay_owner_thread_id=relay_owner_thread_id,
+            paused_task_ids=paused,
         )
     )
     decision = schedule(
@@ -287,6 +289,9 @@ def _reserve_in_state(
         build_scheduler_availability(plan, state, cfg.root),
     )
     for task_id in decision.selected_task_ids:
+        if task_id in paused:
+            # Задача ждёт своего инцидента. Остальные - нет.
+            continue
         if any(
             item.get("task_id") == task_id
             and item.get("status") in PENDING_SESSION_STATUSES
@@ -368,6 +373,30 @@ def _reserve_in_state(
         state.phase = "AWAITING_DESKTOP_CREATE"
         state.milestone_id = descriptors[0].task_id
     return tuple(descriptors)
+
+def tasks_paused_by_incidents(cfg: Config, plan: Plan) -> set[str]:
+    """Задачи, названные незакрытыми инцидентами - и только они.
+
+    Прежде любой незакрытый инцидент останавливал ВЕСЬ прогон: пока
+    дежурный инженер разбирался с M0, не двигалось ничего, даже задачи,
+    к инциденту отношения не имеющие. Тикет о сорвавшемся транспорте на
+    одной ветке держал двадцать три чужие.
+
+    Инцидент называет свои задачи сам - `affected_task_ids`. Пауза
+    распространяется ровно на них.
+    """
+
+    from .pipeline_engineer import PipelineIncidentStore
+
+    paused: set[str] = set()
+    for item in PipelineIncidentStore(cfg.state_dir).load().get("incidents", []):
+        if item.get("resolved_at"):
+            continue
+        for task_id in item.get("affected_task_ids") or ():
+            if str(task_id) in plan.task_map:
+                paused.add(str(task_id))
+    return paused
+
 
 def open_pipeline_engineer_incident(cfg: Config) -> dict[str, Any] | None:
     """Незакрытый инцидент, доведённый до дежурного инженера."""
@@ -630,8 +659,11 @@ def _reserve_followup_sessions_in_state(
     *,
     memory_audit_before: int,
     relay_owner_thread_id: str | None = None,
+    paused_task_ids: set[str] | None = None,
 ) -> tuple[LaunchDescriptor, ...]:
     """Reserve verifier/revision work before admitting unrelated READY work."""
+
+    paused_task_ids = paused_task_ids or set()
 
     worker_limit = min(plan.max_parallel_workers, state.max_parallel_workers)
     if plan.legacy_serial or "serial" in {
@@ -644,6 +676,8 @@ def _reserve_followup_sessions_in_state(
     for task in plan.tasks:
         if len(state.active_task_ids) >= worker_limit:
             break
+        if task.id in paused_task_ids:
+            continue
         raw_state = state.task_states[task.id]
         if raw_state == TaskState.IMPLEMENTED.value:
             kind = "verifier"

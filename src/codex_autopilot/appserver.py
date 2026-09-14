@@ -57,6 +57,17 @@ class ProjectRootDrift(AppServerError):
         )
 
 
+# Как часто спрашивать сервер о состоянии собственного хода и сколько
+# ждать подтверждения, прежде чем считать его оборвавшимся.
+TURN_PROBE_SECONDS = 60.0
+TURN_CONFIRM_SECONDS = 5.0
+TERMINAL_UNFINISHED_TURN_STATUSES = frozenset({"interrupted", "failed"})
+
+
+class TurnAbandoned(AppServerError):
+    """Ход кончился, но не успехом: ждать его завершения больше нечего."""
+
+
 class TurnTimeout(AppServerError):
     """Ход модели не уложился в бюджет, хотя App Server отвечал исправно.
 
@@ -292,6 +303,19 @@ class AppServerClient:
         if self.event_sink and method:
             self.event_sink(method, params)
 
+    def _turn_status(self, thread_id: str, turn_id: str) -> str:
+        """Состояние конкретного хода по данным сервера, а не по событиям."""
+
+        try:
+            thread = self.read_thread(thread_id)
+        except Exception:
+            # Недоступность чтения - не приговор ходу: ждём дальше.
+            return ""
+        for turn in thread.get("turns") or []:
+            if turn.get("id") == turn_id:
+                return str(turn.get("status") or "")
+        return ""
+
     def wait_for_turn(
         self,
         thread_id: str,
@@ -303,8 +327,29 @@ class AppServerClient:
     ) -> TurnResult:
         deadline = time.monotonic() + timeout
         deferred: list[dict[str, Any]] = []
+        # Прерванный ход события `turn/completed` не пришлёт никогда. Без
+        # этой проверки диспетчер ждал его весь таймаут - четыре часа, -
+        # и прогон всё это время показывал "идёт". Замерено: дежурный
+        # инженер провёл ход в ожидании чужого окна повтора, ход
+        # оборвался, и никто этого не заметил.
+        #
+        # Раз в минуту, а не чаще: thread/read тянет всю ветку целиком.
+        next_probe = time.monotonic() + TURN_PROBE_SECONDS
         try:
             while True:
+                if time.monotonic() >= next_probe:
+                    next_probe = time.monotonic() + TURN_PROBE_SECONDS
+                    status = self._turn_status(thread_id, turn_id)
+                    if status in TERMINAL_UNFINISHED_TURN_STATUSES:
+                        # Подтверждение вторым чтением: мгновение перед
+                        # `completed` тот же ход виден прерванным.
+                        time.sleep(TURN_CONFIRM_SECONDS)
+                        if self._turn_status(thread_id, turn_id) in TERMINAL_UNFINISHED_TURN_STATUSES:
+                            raise TurnAbandoned(
+                                f"{what} on thread {thread_id} ended as {status!r} "
+                                "without completing; waiting for its completion would "
+                                "never return"
+                            )
                 if pause_requested and pause_requested():
                     try:
                         self.interrupt_turn(thread_id, turn_id)
