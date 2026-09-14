@@ -409,6 +409,12 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(client.archived, ["preflight-thread"])
         self.assertEqual(len(client.plain_turns), 1)
         self.assertFalse((root / ".codex-autopilot").exists())
+        # Проводка, а не помощник: мутационная проверка показала, что
+        # тесты на сам approval_command проходят и с оборванной связкой.
+        message = str(caught.exception)
+        self.assertIn("--approve-project-memory-always", message)
+        self.assertIn(str(root.resolve()), message)
+        self.assertIsNotNone(caught.exception.command)
 
     def test_untrusted_raw_mcp_without_advertised_always_is_rejected(self):
         root = project()
