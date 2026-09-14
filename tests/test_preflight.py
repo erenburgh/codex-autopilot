@@ -334,6 +334,34 @@ class PreflightTests(unittest.TestCase):
     def setUp(self):
         PreflightClient.instances.clear()
 
+    def test_the_printed_report_runs_end_to_end(self) -> None:
+        """Печать отчёта - тоже код, и он должен исполняться в тестах.
+
+        Все прочие проверки звали preflight с emit=None, и весь блок
+        отчёта не исполнялся ни разу. В нём уехал NameError: строка про
+        ёмкость обращалась к DEFAULT_MAX_PARALLEL_WORKERS, которого в
+        модуле не было. Падение случилось у пользователя, в самом конце
+        успешного preflight, после выданного разрешения.
+        """
+
+        root = project()
+        lines: list[str] = []
+        run_preflight(
+            root,
+            plan=plan(),
+            profile="adaptive",
+            skill_path=SKILL,
+            binary="/bin/echo",
+            client_factory=PreflightClient,
+            desktop_project_id=DESKTOP_PROJECT,
+            emit=lines.append,
+        )
+        report = "\n".join(lines)
+        self.assertIn("Routing:", report)
+        self.assertIn("Next worker:", report)
+        self.assertIn("Ёмкость:", report)
+        self.assertIn("Preflight: PASS", report)
+
     def test_clean_first_run_checks_target_without_creating_state(self):
         root = project()
         result = run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=PreflightClient, desktop_project_id=DESKTOP_PROJECT, emit=None)

@@ -24,7 +24,8 @@ from .hook_trust import (
 )
 from .memory import MemoryError, probe_sqlite_fts5
 from .models import resolve_selection
-from .plan import Plan
+from .plan import DEFAULT_MAX_PARALLEL_WORKERS, Plan
+from .usage import capacity_notice
 from .project_association import (
     ProjectAssociationError,
     require_desktop_project_root,

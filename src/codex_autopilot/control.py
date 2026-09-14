@@ -27,6 +27,7 @@ from .pipeline_engineer import (
 from .launch_gate import (
     LaunchVerdict,
     await_launch,
+    launch_confirmed,
     launch_verdict,
     render_launch_checklist,
     render_launch_timeline,
