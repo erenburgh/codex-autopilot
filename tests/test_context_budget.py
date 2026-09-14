@@ -232,3 +232,69 @@ class CurrentAddressingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApprovalIsNeverRequestedByAWorkerTests(unittest.TestCase):
+    """Воркер обязан знать, что диалог разрешения убивает прогон.
+
+    Трижды за один день прогон умирал с одной сигнатурой: «Worker
+    requested approval. The dispatcher never answers approvals». В
+    последний раз M1 честно выполняла пункт ТЗ о зелёном CI и пошла в
+    `gh run list` — диалог повис в задаче, на которую никто не смотрел.
+    В промпте воркера при этом не было ни слова approval, разрешение,
+    сеть или network: код DANGEROUS_PERMISSION упоминался один раз, в
+    списке кодов, без объяснения, когда его применять.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="codex-autopilot-approval-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / ".git").mkdir()
+        self.skill = self.root / "SKILL.md"
+        self.skill.write_text("# test skill\n", encoding="utf-8")
+        self.memory = ProjectMemory(self.root)
+        self.memory.initialize()
+
+    def prompt(self, language: str) -> str:
+        plan = validate_plan(
+            {
+                "schema_version": 3,
+                "goal": "Exercise the approval instruction.",
+                "user_request": "Проверь утверждение о зелёном CI.",
+                "model_strategy": "auto",
+                "execution_strategy": "serial",
+                "max_parallel_workers": 1,
+                "computer_use_slots": 1,
+                "roles": [role("integrator", "Release Integrator")],
+                "tasks": [task("code-a", "integrator")],
+            },
+            "adaptive",
+        )
+        runtime = AIStudioRuntime(
+            plan, self.root, language=language, skill_path=self.skill, memory=self.memory
+        )
+        return runtime.build_prompt(
+            "code-a",
+            phase="implementation",
+            task_states={"code-a": "READY"},
+            reservation_token="fresh-1",
+        )
+
+    def test_the_russian_worker_is_told_what_to_do_instead(self) -> None:
+        text = self.prompt("ru")
+        self.assertIn("диалог разрешения", text)
+        self.assertIn("BLOCKED DANGEROUS_PERMISSION", text)
+        self.assertIn("сети", text)
+
+    def test_the_english_worker_is_told_what_to_do_instead(self) -> None:
+        text = self.prompt("en")
+        self.assertIn("permission dialog", text)
+        self.assertIn("BLOCKED DANGEROUS_PERMISSION", text)
+        self.assertIn("network access", text)
+
+    def test_the_instruction_names_the_consequence_not_only_the_rule(self) -> None:
+        """Запрет без причины воркер переспорит: у него есть пункт ТЗ."""
+
+        text = self.prompt("ru")
+        self.assertIn("убивает весь прогон", text)
