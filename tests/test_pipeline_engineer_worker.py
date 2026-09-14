@@ -668,3 +668,48 @@ class ReplaceStartsWithoutInheritedTicketsTests(unittest.TestCase):
 
         kept = _json.loads(archived[0].read_text(encoding="utf-8"))
         self.assertEqual(len(kept["incidents"]), 1)
+
+
+class HookTimeoutsSurviveCodexLoadTests(unittest.TestCase):
+    """Codex не должен переписывать наши хуки при загрузке.
+
+    Пользователь весь день жаловался, что доверие хукам слетает перед
+    каждой новой задачей. Причина нашлась на её же экране: Codex писал
+    `clamping Interrupt hook timeout to 3s` и показывал все три хука в
+    состоянии Review. Мы объявляли Interrupt с таймаутом 30, Codex
+    зажимал его до своего предела - определение переставало совпадать с
+    доверенным, и весь файл уходил на повторный разбор при каждой
+    загрузке.
+    """
+
+    MAX_INTERRUPT_TIMEOUT = 3
+
+    def hook_files(self):
+        import json as _json
+
+        root = Path(__file__).resolve().parent.parent
+        files = sorted(root.glob("plugins/*/hooks/hooks.json"))
+        self.assertTrue(files, "файлы хуков не найдены")
+        return [(p, _json.loads(p.read_text(encoding="utf-8"))) for p in files]
+
+    def test_the_interrupt_timeout_is_never_above_what_codex_accepts(self) -> None:
+        for path, payload in self.hook_files():
+            for group in payload["hooks"].get("Interrupt", []):
+                for hook in group["hooks"]:
+                    self.assertLessEqual(
+                        hook["timeout"],
+                        self.MAX_INTERRUPT_TIMEOUT,
+                        f"{path.parts[-3]}: Codex зажмёт этот таймаут и потребует "
+                        "заново доверить все хуки файла",
+                    )
+
+    def test_both_profiles_declare_the_same_interrupt_timeout(self) -> None:
+        """Профили отличаются составом, а не поведением хуков."""
+
+        seen = {
+            hook["timeout"]
+            for _, payload in self.hook_files()
+            for group in payload["hooks"].get("Interrupt", [])
+            for hook in group["hooks"]
+        }
+        self.assertEqual(len(seen), 1, f"профили разошлись: {seen}")
