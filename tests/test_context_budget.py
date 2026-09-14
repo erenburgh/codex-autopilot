@@ -190,6 +190,21 @@ class CurrentAddressingTests(unittest.TestCase):
         self.assertEqual(answer["milestone"]["id"], "B")
         self.assertEqual(answer["user_request"], HUGE_REQUEST)
 
+    def test_the_preflight_probe_asks_before_any_task_is_active(self) -> None:
+        """Путь, который я сломала, требуя task_id там, где выбора нет.
+
+        Проба доверия в preflight зовёт `current` без task_id в момент,
+        когда активных задач ноль: своей задачи у пробы нет вовсе. Отказ
+        в этой точке валил запуск на ровном месте - "task_id is required
+        on a task graph: this run has 0 active task(s)". Прежние тесты
+        покрывали одну активную задачу и две, но не ноль.
+        """
+
+        answer = self.server._current({})
+        self.assertIsNone(answer["milestone"])
+        self.assertEqual(answer["user_request"], HUGE_REQUEST)
+        self.assertTrue(answer["initialized"])
+
     def test_a_single_active_task_needs_no_name(self) -> None:
         self.set_states({"A": TaskState.RUNNING.value})
         self.assertEqual(self.server._current({})["milestone"]["id"], "A")

@@ -422,15 +422,21 @@ class MemoryMcpServer:
             for task_id, value in (state.task_states or {}).items()
             if value in {item.value for item in ACTIVE_TASK_STATES}
         )
+        if not active:
+            # Выбирать не из чего - значит и догадки нет. Проба доверия в
+            # preflight зовёт `current` именно здесь: run-state ещё не имеет
+            # ни одной активной задачи, и своей задачи у пробы нет вовсе.
+            # Отказ в этой точке ломал запуск на ровном месте.
+            return None
         if len(active) == 1:
             return plan.task_map[active[0]]
-        # Неоднозначность не разрешается догадкой. Прежний код молча
-        # отвечал про M1; теперь он требует назвать задачу.
-        detail = ", ".join(active) if active else "none"
+        # Догадкой не разрешается только настоящая неоднозначность:
+        # несколько работающих задач. Прежний код молча отвечал про
+        # веху с индексом ноль, то есть про M1.
         raise MemoryValidationError(
             "task_id is required on a task graph: this run has "
-            f"{len(active)} active task(s) ({detail}) and the caller's task cannot be "
-            "inferred. Pass the task_id from your own prompt."
+            f"{len(active)} active tasks ({', '.join(active)}) and the caller's task "
+            "cannot be inferred. Pass the task_id from your own prompt."
         )
 
     def _current(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -449,18 +455,21 @@ class MemoryMcpServer:
         state = StateStore(state_dir).load()
         plan = load_plan(state_dir, cfg.profile)
         item = self._resolve_current_task(plan, state, args.get("task_id"))
-        query = " ".join([item.title, item.objective, *item.definition_of_done])
+        if item is None:
+            query = " ".join([plan.goal, *(t.title for t in plan.tasks[:3])])
+        else:
+            query = " ".join([item.title, item.objective, *item.definition_of_done])
         return {
             "project_root": str(self.root),
             "initialized": True,
             "goal": plan.goal,
             "user_request": plan.user_request,
-            "milestone": {
+            "milestone": None if item is None else {
                 "id": item.id,
                 "title": item.title,
                 "objective": item.objective,
                 "definition_of_done": item.definition_of_done,
-                "index": state.milestone_index + 1,
+                "index": plan.milestones.index(item) + 1,
                 "total": len(plan.milestones),
             },
             "critical_constraints": self.memory.critical_constraints(8),
