@@ -253,11 +253,22 @@ def _turn_is_completed(state: Any, thread_id: str, turn_id: str) -> bool:
     # это можно было только правкой журнала руками - то есть подделкой
     # записи о том, чего система не наблюдала. Закрытая сессия с тем же
     # ходом является таким же наблюдением, сделанным в своё время.
-    return any(
+    if any(
         str(item.get("thread_id") or "") == thread_id
         and str(item.get("turn_id") or "") == turn_id
         and item.get("status") == "COMPLETED"
         for item in state.worker_sessions
+    ):
+        return True
+    # Прерванный ход тоже кончился. Успехом он не кончился, и
+    # turn_completed по нему не будет никогда - значит ждать его значит
+    # ждать вечно. Замерено: реплэннер попросил разрешение, ход остался
+    # прерванным, и преемника было некому поднять.
+    return any(
+        str(item.get("event") or "") == "interrupt_observed"
+        and str(item.get("thread_id") or "") == thread_id
+        and str(item.get("turn_id") or "") == turn_id
+        for item in state.lifecycle_journal
     )
 
 

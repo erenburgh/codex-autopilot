@@ -631,6 +631,47 @@ def _pipeline_engineer_prompt_with_server_view(
     )
 
 
+def causal_gate_open(
+    turn: dict[str, Any] | None,
+    state: RunState,
+    *,
+    thread_id: str,
+    turn_id: str,
+) -> bool:
+    """Кончился ли ход предшественника на самом деле.
+
+    Устойчивое "completed" открывает ворота, как в v0.7. Одного лишь
+    "interrupted" мало: пока синхронный Stop-хук работает, второй App
+    Server видит тот же ход прерванным за мгновение до того, как он
+    станет completed - замерено в прогоне 0.7 на ходе 01a097aa-4832.
+    Принимать это значило бы открывать ворота ровно в тот момент, от
+    которого барьер и защищает.
+
+    Но прерывание, записанное в журнале для этого же хода, - наше
+    собственное и окончательное: ход не станет completed уже никогда.
+
+    Замерено: реплэннер попросил разрешение, диспетчер на approvals не
+    отвечает, ход остался 'interrupted' навсегда. Дежурный инженер,
+    посланный чинить именно это, сам не смог стартовать - его
+    предшественником был тот же мёртвый ход, - и открыл поверх первого
+    тикета второй. Прогон из 24 задач встал с нулём выполненных.
+    """
+
+    if not turn:
+        return False
+    status = str(turn.get("status") or "")
+    if status == "completed":
+        return True
+    if status != "interrupted":
+        return False
+    return any(
+        item.get("event") == "interrupt_observed"
+        and str(item.get("thread_id") or "") == thread_id
+        and str(item.get("turn_id") or "") == turn_id
+        for item in state.lifecycle_journal
+    )
+
+
 def run_automatic_app_server_turn(
     cfg: Config,
     reservation_token: str,
@@ -695,13 +736,12 @@ def run_automatic_app_server_turn(
                 ),
                 None,
             )
-            # Только устойчивое "completed" открывает ворота воркера, как в
-            # v0.7. Пока синхронный Stop-хук работает, второй App Server
-            # наблюдает этот же ход как "interrupted" - замерено в рабочем
-            # прогоне 0.7: ход 01a097aa-4832 виден сначала interrupted,
-            # затем completed. Принимать interrupted значило бы открывать
-            # ворота ровно в тот момент, от которого барьер и защищает.
-            if turn and turn.get("status") == "completed":
+            if causal_gate_open(
+                turn,
+                StateStore(cfg.state_dir).load(),
+                thread_id=owner,
+                turn_id=owner_turn,
+            ):
                 break
             if time.monotonic() >= deadline:
                 raise DesktopLifecycleError(
