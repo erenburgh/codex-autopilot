@@ -514,3 +514,65 @@ class ResolvedMustHandOverTests(unittest.TestCase):
             and item.get("status") not in {"COMPLETED", "FAILED", "RETRY_WAIT"}
         )
         self.assertEqual(successor["relay_owner_thread_id"], "engineer-thread")
+
+
+class FailureBeforeTheRequestIsNotAmbiguousTests(unittest.TestCase):
+    """Отказ до отправки запроса известен, а не неоднозначен.
+
+    В живом прогоне `installed_plugin_root` стоял среди аргументов
+    `client.start_thread`: он падал уже после `create_invoked = True`,
+    хотя ни одного `thread/start` в логе диспетчера не было. Отказ
+    записывался как UNKNOWN, порождал тикет AMBIGUOUS_SIDE_EFFECT, а
+    такой класс по устройству запрещает и автопочинку, и дежурного
+    инженера. Прогон вставал без выхода.
+    """
+
+    def test_the_plugin_root_is_resolved_before_the_flag_is_armed(self) -> None:
+        import inspect
+
+        from codex_autopilot import lifecycle_dispatch
+
+        # Только код: в комментарии рядом обе строки упомянуты нарочно,
+        # и текстовый поиск по ним ловил бы объяснение вместо реализации.
+        code = "\n".join(
+            line
+            for line in inspect.getsource(lifecycle_dispatch).splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        resolve = code.index("plugin_root = installed_plugin_root(cfg.skill_path)")
+        armed = code.index("create_invoked = True")
+        self.assertLess(
+            resolve,
+            armed,
+            "корень плагина обязан резолвиться до взведения create_invoked",
+        )
+
+    def test_the_flag_is_not_armed_from_inside_the_call_arguments(self) -> None:
+        """Вызов не должен считать отправленным то, что ещё собирается."""
+
+        import inspect
+
+        from codex_autopilot import lifecycle_dispatch
+
+        body = inspect.getsource(lifecycle_dispatch)
+        start = body.index("started = client.start_thread(")
+        args = body[start : body.index("\n            )", start)]
+        self.assertNotIn("installed_plugin_root(", args)
+
+
+class EscalationAlwaysHasAWayBackTests(unittest.TestCase):
+    """Ответ пользователя на эскалацию не должен зависеть от фазы прогона.
+
+    Фазу `PIPELINE_ENGINEER_ESCALATED` выставляет только завершение
+    инженера. Инцидент, эскалированный маршрутизацией, оставлял прогон в
+    прежней фазе - и возобновление молча ничего не закрывало.
+    """
+
+    def test_resume_does_not_gate_on_the_run_phase(self) -> None:
+        import inspect
+
+        from codex_autopilot import control
+
+        body = inspect.getsource(control._answer_escalation)
+        self.assertNotIn('state.phase != "PIPELINE_ENGINEER_ESCALATED"', body)
+        self.assertIn("incident_ids_awaiting_the_user", body)

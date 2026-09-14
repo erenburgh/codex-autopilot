@@ -194,6 +194,13 @@ def create_desktop_thread_via_app_server(
                     raise DesktopLifecycleError(
                         "configured App Server project could not be verified"
                     )
+            # Всё, что может отказать ДО отправки запроса, вычисляется до
+            # взведения флага. Прежде `installed_plugin_root` стоял среди
+            # аргументов вызова: он падал уже после `create_invoked = True`,
+            # хотя запрос не уходил. Отказ становился UNKNOWN и порождал
+            # тикет AMBIGUOUS_SIDE_EFFECT, из которого нет выхода - при
+            # том что в логе диспетчера нет ни одного `thread/start`.
+            plugin_root = installed_plugin_root(cfg.skill_path)
             create_invoked = True
             started = client.start_thread(
                 cwd=cfg.root,
@@ -202,7 +209,7 @@ def create_desktop_thread_via_app_server(
                 # cwd that is already one of that project's durable roots.
                 project_id=cfg.desktop.project_id,
                 model=descriptor.model,
-                plugin_root=installed_plugin_root(cfg.skill_path),
+                plugin_root=plugin_root,
                 ephemeral=False,
                 # v0.7 не передавала threadSource вовсе, и её задачи
                 # появлялись в сайдбаре проекта обычными ветками.

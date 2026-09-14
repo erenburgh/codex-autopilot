@@ -1204,8 +1204,12 @@ def _answer_escalation(cfg, state) -> tuple[str, ...]:
 
     from .pipeline_engineer import PipelineIncidentStore
 
-    if state.phase != "PIPELINE_ENGINEER_ESCALATED":
-        return ()
+    # Фаза прогона авторитетом здесь не является. Её выставляет только
+    # завершение инженера; инцидент, эскалированный маршрутизацией - как
+    # любой AMBIGUOUS_SIDE_EFFECT, - оставлял прогон в его прежней фазе, и
+    # возобновление молча ничего не закрывало. Тикет ждал человека,
+    # человек отвечал, и ответ пропадал. Авторитет - само хранилище
+    # инцидентов: закрываются ровно те тикеты, что ждут пользователя.
     store = PipelineIncidentStore(cfg.state_dir)
     closed: list[str] = []
     for incident_id in store.incident_ids_awaiting_the_user():
