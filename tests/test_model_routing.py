@@ -81,3 +81,78 @@ class NoSilentFallbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OnlyOneAstraAtATimeTests(unittest.TestCase):
+    """Две Астры одновременно недопустимы при любой стратегии.
+
+    Они делят одну поверхность Computer Use, перехватывают управление
+    друг у друга и жгут лимиты. При стратегии `auto` Астра выбирается
+    ровно для execution_mode="computer_use", и слот держал это сам. При
+    `astra-only` на Астру уходят ВСЕ задачи, включая code, - и слот их
+    не удерживал.
+    """
+
+    def capabilities(self, strategy: str, mode: str) -> tuple[str, ...]:
+        from types import SimpleNamespace
+
+        from codex_autopilot.scheduler import _task_capabilities
+
+        task = SimpleNamespace(
+            required_capabilities=(), execution_mode=mode, id="T1"
+        )
+        plan = SimpleNamespace(model_strategy=strategy)
+        return _task_capabilities(task, plan)
+
+    def test_computer_use_always_takes_the_surface(self) -> None:
+        self.assertIn("computer_use", self.capabilities("auto", "computer_use"))
+
+    def test_a_code_task_on_auto_does_not(self) -> None:
+        self.assertNotIn("computer_use", self.capabilities("auto", "code"))
+
+    def test_a_code_task_on_astra_only_takes_the_surface(self) -> None:
+        """Именно эта дыра и оставляла две Астры рядом."""
+
+        self.assertIn("computer_use", self.capabilities("astra-only", "code"))
+
+    def test_sol_only_never_takes_the_surface(self) -> None:
+        self.assertNotIn("computer_use", self.capabilities("sol-only", "code"))
+
+
+class TheWorkerCeilingIsNotTheTemplateDefaultTests(unittest.TestCase):
+    """Потолок воркеров - решение пользователя, а не число из шаблона.
+
+    Двойка стояла умолчанием и попадала в шаблон плана, откуда
+    планировщик копировал её не глядя: граф из 24 задач с четырьмя
+    независимыми ветками исполнялся по две.
+    """
+
+    def test_the_default_allows_real_parallelism(self) -> None:
+        from codex_autopilot.plan import DEFAULT_MAX_PARALLEL_WORKERS
+
+        self.assertGreaterEqual(DEFAULT_MAX_PARALLEL_WORKERS, 10)
+
+    def test_the_skill_template_matches_the_default(self) -> None:
+        """Иначе планировщик снова впишет старое число."""
+
+        import json
+        from pathlib import Path
+
+        from codex_autopilot.plan import DEFAULT_MAX_PARALLEL_WORKERS
+
+        root = Path(__file__).resolve().parent.parent
+        for skill in root.glob("plugins/*/skills/*/SKILL.md"):
+            text = skill.read_text(encoding="utf-8")
+            if '"max_parallel_workers"' not in text:
+                continue
+            with self.subTest(skill=skill.parts[-3]):
+                self.assertIn(
+                    f'"max_parallel_workers":{DEFAULT_MAX_PARALLEL_WORKERS}', text
+                )
+
+    def test_the_computer_use_slot_stays_at_one(self) -> None:
+        """Поднятый потолок не должен пускать вторую Астру."""
+
+        from codex_autopilot.plan import DEFAULT_COMPUTER_USE_SLOTS
+
+        self.assertEqual(DEFAULT_COMPUTER_USE_SLOTS, 1)

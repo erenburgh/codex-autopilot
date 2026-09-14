@@ -45,7 +45,12 @@ COMPAT_EXECUTION_STRATEGY = "serial"
 COMPAT_MAX_PARALLEL_WORKERS = 1
 # Консервативный, но реально параллельный предел: два воркера дают
 # настоящую параллельность при минимальном росте нагрузки и расхода.
-DEFAULT_MAX_PARALLEL_WORKERS = 2
+# Решение пользователя от 14 сентября 2026. Двойка стояла здесь как
+# умолчание и попала в шаблон плана, откуда планировщик копировал её не
+# глядя: граф из 24 задач с четырьмя независимыми ветками исполнялся по
+# две. Ограничение на Computer Use держится отдельным слотом и от этого
+# числа не зависит.
+DEFAULT_MAX_PARALLEL_WORKERS = 10
 DEFAULT_COMPUTER_USE_SLOTS = 1
 DEFAULT_MAX_MEMORY_RECORDS = 8
 DEFAULT_MAX_DEPENDENCY_OUTPUTS = 8

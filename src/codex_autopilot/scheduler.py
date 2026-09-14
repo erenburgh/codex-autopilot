@@ -184,6 +184,7 @@ def schedule(
             snapshot,
             capability_limits,
             usage,
+            plan,
         )
         reasons.extend(
             f"resource_conflict:{selected_task_id}"
@@ -196,7 +197,7 @@ def schedule(
             deferred.append(DeferredTask(task.id, tuple(reasons)))
             continue
         selected.append(task.id)
-        usage.update(_task_capabilities(task))
+        usage.update(_task_capabilities(task, plan))
 
     return SchedulerDecision(
         strategy=strategy,
@@ -280,9 +281,22 @@ def _effective_capability_limits(
     return limits
 
 
-def _task_capabilities(task: Task) -> tuple[str, ...]:
+def _task_capabilities(task: Task, plan: Plan | None = None) -> tuple[str, ...]:
     capabilities = list(task.required_capabilities)
-    if task.execution_mode == "computer_use" and COMPUTER_USE_CAPABILITY not in capabilities:
+    needs_surface = task.execution_mode == "computer_use"
+    if plan is not None and not needs_surface:
+        # Две Астры одновременно недопустимы: они делят одну поверхность
+        # Computer Use, перехватывают управление друг у друга и жгут
+        # лимиты. При стратегии auto Астра выбирается ровно для
+        # computer_use, и слот держал это сам. При astra-only на Астру
+        # уходят ВСЕ задачи, включая code, - и слот их не удерживал.
+        from .models import logical_model
+
+        try:
+            needs_surface = logical_model(plan.model_strategy, task.execution_mode) == "astra"
+        except Exception:
+            needs_surface = False
+    if needs_surface and COMPUTER_USE_CAPABILITY not in capabilities:
         capabilities.append(COMPUTER_USE_CAPABILITY)
     return tuple(capabilities)
 
@@ -290,7 +304,7 @@ def _task_capabilities(task: Task) -> tuple[str, ...]:
 def _active_capability_usage(plan: Plan, state: RunState) -> Counter[str]:
     usage: Counter[str] = Counter()
     for task_id in state.active_task_ids:
-        usage.update(_task_capabilities(plan.task_map[task_id]))
+        usage.update(_task_capabilities(plan.task_map[task_id], plan))
     return usage
 
 
@@ -300,6 +314,7 @@ def _availability_reasons(
     snapshot: SchedulerAvailability,
     limits: Mapping[str, int],
     usage: Mapping[str, int],
+    plan: Plan | None = None,
 ) -> list[str]:
     reasons: list[str] = []
     reasons.extend(snapshot.blocked_reasons.get(task.id, ()))
@@ -312,7 +327,7 @@ def _availability_reasons(
             f"capability_unavailable:{capability}"
             for capability in sorted(named_capabilities - available)
         )
-    for capability in sorted(_task_capabilities(task)):
+    for capability in sorted(_task_capabilities(task, plan)):
         limit = limits.get(capability)
         if limit is not None and usage.get(capability, 0) >= limit:
             reasons.append(f"capability_capacity:{capability}")
