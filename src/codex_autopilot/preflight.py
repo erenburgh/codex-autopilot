@@ -9,7 +9,13 @@ import tempfile
 from typing import Any, Callable
 import uuid
 
-from .appserver import AppServerClient, AppServerError, ApprovalRequired, final_agent_message
+from .appserver import (
+    AppServerClient,
+    AppServerError,
+    ApprovalRequired,
+    TurnTimeout,
+    final_agent_message,
+)
 from .config import DESKTOP_OWNED_SURFACE
 from .hook_trust import (
     HookPreflightError,
@@ -29,6 +35,17 @@ from .project_association import (
 MEMORY_SERVER_NAME = "codex_autopilot_memory"
 REQUIRED_MEMORY_TOOLS = {"memory"}
 MEMORY_PREFLIGHT_TITLE = "Codex Autopilot Preflight · Project Memory"
+# Проба доверия не рассуждает: она делает один вызов инструмента и
+# отвечает одной строкой. Прежде она шла на усилии рабочего воркера -
+# на прогоне v1.0 это был xhigh, и ход дважды не уложился в пять минут,
+# а на третий раз прошёл меньше чем за минуту. Autopilot ограничивает
+# ЛЕСТНИЦУ ВОРКЕРОВ значениями medium..max; App Server принимает и
+# minimal, и low, а проба воркером не является.
+PROBE_REASONING = "low"
+PROBE_TIMEOUT = 300.0
+# Один таймаут не повод валить весь запуск: третий заход показал, что
+# повтор решает. Прежде первый же валил.
+PROBE_ATTEMPTS = 3
 
 ANNOUNCEMENT = (
     "За весь запуск у вас могут спросить один раз, и только про одно: доверие "
@@ -384,15 +401,49 @@ def run_preflight(
             raise PreflightError("Project Memory MCP did not bind to the target project root")
         report("Project Memory transport", "OK", f"SQLite {memory_probe['sqlite']} + FTS5; local stdio MCP connected and target-bound")
 
-        try:
-            started_turn = client.start_plain_turn(
-                thread_id=probe_thread_id,
-                prompt=MEMORY_PREFLIGHT_PROMPT,
-                effort=selection.reasoning if selection else None,
-                client_user_message_id=str(uuid.uuid4()),
-                cwd=project,
+        if emit:
+            # Пять минут молчания без единого признака жизни - это то,
+            # что человек видит как "ветка думает" и не знает, чего ждать.
+            emit(
+                f"Project Memory MCP: проверяю доверие в задаче «{MEMORY_PREFLIGHT_TITLE}» "
+                f"(до {int(PROBE_TIMEOUT)} с на попытку, попыток {PROBE_ATTEMPTS})"
             )
-            completed = client.wait_for_turn(probe_thread_id, started_turn["turn"]["id"], timeout=300)
+        started_turn = None
+        completed = None
+        last_timeout: TurnTimeout | None = None
+        try:
+            for attempt in range(1, PROBE_ATTEMPTS + 1):
+                started_turn = client.start_plain_turn(
+                    thread_id=probe_thread_id,
+                    prompt=MEMORY_PREFLIGHT_PROMPT,
+                    effort=PROBE_REASONING,
+                    client_user_message_id=str(uuid.uuid4()),
+                    cwd=project,
+                )
+                try:
+                    completed = client.wait_for_turn(
+                        probe_thread_id,
+                        started_turn["turn"]["id"],
+                        timeout=PROBE_TIMEOUT,
+                        what=f"Project Memory trust probe (attempt {attempt}/{PROBE_ATTEMPTS})",
+                    )
+                    break
+                except TurnTimeout as exc:
+                    last_timeout = exc
+                    report(
+                        "Project Memory MCP",
+                        "RETRY",
+                        f"attempt {attempt} of {PROBE_ATTEMPTS} did not finish within {int(PROBE_TIMEOUT)}s",
+                    )
+                    try:
+                        client.interrupt_turn(probe_thread_id, started_turn["turn"]["id"])
+                    except Exception:
+                        # Прерывание - уборка, а не условие. Его отказ не
+                        # должен подменять собой причину таймаута.
+                        pass
+            if completed is None:
+                report("Project Memory MCP", "FAIL", str(last_timeout))
+                raise PreflightError(str(last_timeout)) from last_timeout
         except ApprovalRequired as exc:
             params = exc.payload.get("params") or {}
             meta = params.get("_meta") or {}

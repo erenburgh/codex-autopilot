@@ -57,6 +57,16 @@ class ProjectRootDrift(AppServerError):
         )
 
 
+class TurnTimeout(AppServerError):
+    """Ход модели не уложился в бюджет, хотя App Server отвечал исправно.
+
+    Прежде это место поднимало общий `Timed out waiting for App Server`.
+    На живом прогоне v1.0 оно дважды отправило и модель, и человека
+    чинить App Server и права, тогда как App Server был здоров: не
+    уложился ход модели, запущенный на усилии рабочего воркера.
+    """
+
+
 class ApprovalRequired(AppServerError):
     def __init__(self, payload: dict[str, Any]) -> None:
         self.payload = payload
@@ -289,6 +299,7 @@ class AppServerClient:
         *,
         timeout: float,
         pause_requested: Callable[[], bool] | None = None,
+        what: str = "model turn",
     ) -> TurnResult:
         deadline = time.monotonic() + timeout
         deferred: list[dict[str, Any]] = []
@@ -303,6 +314,14 @@ class AppServerClient:
                     message = self.pending_events.popleft() if self.pending_events else self._get(deadline, maximum_wait=1)
                 except TimeoutError:
                     continue
+                except AppServerError as exc:
+                    if "Timed out waiting for App Server" not in str(exc):
+                        raise
+                    raise TurnTimeout(
+                        f"{what} did not finish within {timeout:g}s on thread "
+                        f"{thread_id}. App Server answered throughout, so this is the "
+                        f"model turn and not the transport. Detail: {exc}"
+                    ) from exc
                 self._inspect_event(message)
                 params = message.get("params") or {}
                 if message.get("method") == "turn/completed" and params.get("threadId") == thread_id and (params.get("turn") or {}).get("id") == turn_id:

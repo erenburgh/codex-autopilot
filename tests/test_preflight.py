@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -9,6 +10,9 @@ import unittest
 from codex_autopilot.appserver import AppServerError, ApprovalRequired, TurnResult
 from codex_autopilot.hook_trust import HookTrustApprovalRequired, runtime_hook_command
 from codex_autopilot.models import MODEL_IDS
+from codex_autopilot.appserver import AppServerClient, TurnTimeout
+from codex_autopilot.models import PUBLIC_REASONING
+from codex_autopilot.preflight import PROBE_ATTEMPTS, PROBE_REASONING
 from codex_autopilot.preflight import MEMORY_PREFLIGHT_OK, MEMORY_PREFLIGHT_TITLE, PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, REQUIRED_MEMORY_TOOLS, run_preflight
 from codex_autopilot.plan import validate_plan
 from codex_autopilot.project_association import ProjectAssociationError, require_desktop_project_root
@@ -632,3 +636,100 @@ class TargetMustBelongToAProjectTests(unittest.TestCase):
             self.assertIn("Открой проект Codex", message)
             # Состояния нет: отказ наступил до его создания.
             self.assertFalse((root / ".codex-autopilot").exists())
+
+
+class TrustProbeTests(unittest.TestCase):
+    """Проба доверия — последний шаг preflight и единственный, где он падал.
+
+    На прогоне v1.0 preflight прошёл все десять проверок и дважды умер
+    здесь ровно по 302 секунды, а на третий заход прошёл меньше чем за
+    минуту. Причина — ход, которому нечего обдумывать, шёл на усилии
+    рабочего воркера.
+    """
+
+    def run_preflight(self, client_factory):
+        return run_preflight(
+            project(),
+            plan=plan(),
+            profile="adaptive",
+            skill_path=SKILL,
+            binary="/bin/echo",
+            client_factory=client_factory,
+            desktop_project_id=DESKTOP_PROJECT,
+            emit=None,
+        )
+
+    def test_the_probe_does_not_run_at_the_worker_effort(self):
+        self.run_preflight(PreflightClient)
+        turns = PreflightClient.instances[-1].plain_turns
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["effort"], PROBE_REASONING)
+        # Лестница воркеров начинается с medium. Проба воркером не
+        # является, и её усилие не должно в эту лестницу попадать:
+        # иначе правка маршрутизации молча вернёт xhigh.
+        self.assertNotIn(PROBE_REASONING, PUBLIC_REASONING)
+
+    def test_a_timed_out_probe_is_retried_instead_of_failing_the_launch(self):
+        class FlakyProbeClient(PreflightClient):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.attempts = 0
+                self.interrupted = []
+
+            def interrupt_turn(self, thread_id, turn_id):
+                self.interrupted.append((thread_id, turn_id))
+
+            def wait_for_turn(self, thread_id, turn_id, **kwargs):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise TurnTimeout("probe did not finish within 300s")
+                return super().wait_for_turn(thread_id, turn_id, **kwargs)
+
+        result = self.run_preflight(FlakyProbeClient)
+        self.assertEqual(result.next_model, "GPT-5.6 Sol")
+        client = FlakyProbeClient.instances[-1]
+        self.assertEqual(client.attempts, 2)
+        self.assertEqual(len(client.plain_turns), 2)
+        # Зависший ход прерывается, иначе он продолжает занимать тред.
+        self.assertEqual(len(client.interrupted), 1)
+
+    def test_exhausted_attempts_name_the_model_turn_and_not_the_transport(self):
+        class StuckProbeClient(PreflightClient):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.interrupted = []
+
+            def interrupt_turn(self, thread_id, turn_id):
+                self.interrupted.append((thread_id, turn_id))
+
+            def wait_for_turn(self, thread_id, turn_id, **kwargs):
+                raise TurnTimeout(
+                    "Project Memory trust probe did not finish within 300s on thread "
+                    f"{thread_id}. App Server answered throughout, so this is the "
+                    "model turn and not the transport."
+                )
+
+        with self.assertRaises(PreflightError) as caught:
+            self.run_preflight(StuckProbeClient)
+        message = str(caught.exception)
+        self.assertIn("model turn and not the transport", message)
+        client = StuckProbeClient.instances[-1]
+        self.assertEqual(len(client.plain_turns), PROBE_ATTEMPTS)
+        self.assertEqual(len(client.interrupted), PROBE_ATTEMPTS)
+
+    def test_the_real_timeout_message_blames_the_turn_not_the_server(self):
+        """Сообщение строится в appserver, а не в подделке теста.
+
+        Прежнее «Timed out waiting for App Server» отправляло чинить
+        транспорт и права, хотя App Server всё это время отвечал.
+        """
+
+        client = AppServerClient("/bin/true", Path(os.devnull))
+        with self.assertRaises(TurnTimeout) as caught:
+            client.wait_for_turn(
+                "thread-1", "turn-1", timeout=0.05, what="Project Memory trust probe"
+            )
+        message = str(caught.exception)
+        self.assertIn("Project Memory trust probe", message)
+        self.assertIn("did not finish within 0.05s", message)
+        self.assertIn("model turn and not the transport", message)
