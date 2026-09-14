@@ -300,6 +300,8 @@ def complete_desktop_worker(
             final_message=final_message,
             at=at,
             now_epoch=now_epoch,
+            dispatcher_authorized=dispatcher_authorized,
+            dispatcher_pid=dispatcher_pid,
         )
     if kind == "replanner":
         try:
@@ -775,6 +777,8 @@ def _complete_pipeline_engineer(
     final_message: str,
     at: str | None,
     now_epoch: int | None = None,
+    dispatcher_authorized: bool = False,
+    dispatcher_pid: int | None = None,
 ) -> CompletionOutcome:
     """Принять итог инженера, ничего не принимая на слово.
 
@@ -877,6 +881,20 @@ def _complete_pipeline_engineer(
                 relay_owner_thread_id=thread_id,
                 now_epoch=now_epoch,
             )
+            if dispatcher_authorized:
+                # Тот же учёт владения переходом, что и у обычного воркера.
+                # Прежде инженер назначал преемника и не отмечал его у себя:
+                # диспетчер отказывался вести цепочку дальше словами
+                # "current dispatcher does not own the completed-to-successor
+                # transition", резервация висела в CREATE_REQUESTED, и поверх
+                # закрытого инцидента открывался новый - о падении самого
+                # диспетчера.
+                current["automatic_successor_tokens"] = [
+                    item.reservation_token for item in descriptors
+                ]
+                current["automatic_dispatch_state"] = (
+                    "ADVANCING" if descriptors else "COMPLETED"
+                )
             if not descriptors and _would_idle_forever(state):
                 # Исключение здесь потеряло бы саму запись о завершении
                 # инженера, поэтому прогон останавливается громко, а не

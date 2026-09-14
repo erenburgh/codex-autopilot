@@ -429,7 +429,8 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         incidents.route_incident(self.incident_id, at=utc_now())
         incidents.ensure_pipeline_engineer(self.incident_id, at=utc_now())
 
-    def resolve_and_complete(self, final_message: str):
+    def resolve_and_complete(self, final_message: str, *, dispatcher_authorized: bool = False):
+        import os
         import time
 
         from _appserver_fakes import activate_via_app_server
@@ -480,12 +481,32 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         # К моменту, когда инженер закрывает инцидент, окно повтора
         # сорвавшейся задачи уже истекло - в живом прогоне M1 стояла
         # именно в READY, а не в RETRY_WAIT.
+        extra = {}
+        if dispatcher_authorized:
+            session = next(
+                item
+                for item in self.store.load().worker_sessions
+                if item.get("kind") == "pipeline_engineer"
+            )
+            session["automatic_dispatch_pid"] = os.getpid()
+            session["automatic_dispatch_state"] = "RUNNING"
+            state = self.store.load()
+            for item in state.worker_sessions:
+                if item.get("reservation_token") == session["reservation_token"]:
+                    item["automatic_dispatch_pid"] = os.getpid()
+                    item["automatic_dispatch_state"] = "RUNNING"
+            self.store.save(state)
+            extra = {
+                "dispatcher_reservation_token": session["reservation_token"],
+                "dispatcher_pid": os.getpid(),
+            }
         return complete_desktop_worker(
             self.cfg,
             thread_id="engineer-thread",
             turn_id="engineer-turn",
             final_message=final_message,
             now_epoch=self.future,
+            **extra,
         )
 
     def test_a_resolved_incident_hands_the_run_to_a_successor(self) -> None:
@@ -502,6 +523,31 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         self.assertEqual(state.status, "RUNNING")
         self.assertEqual(state.task_states[self.task_id], "RUNNING")
         self.assertNotEqual(state.phase, "PIPELINE_ENGINEER_NO_SUCCESSOR")
+
+    def test_the_engineer_marks_the_successor_as_its_own_transition(self) -> None:
+        """Без этого учёта диспетчер отказывается вести цепочку дальше.
+
+        В живом прогоне инженер закрыл инцидент и назначил преемника, но
+        не отметил его у себя: следующий шаг ответил `current dispatcher
+        does not own the completed-to-successor transition`, резервация
+        повисла в CREATE_REQUESTED, и поверх закрытого инцидента
+        открылся новый - уже о падении самого диспетчера.
+        """
+
+        outcome = self.resolve_and_complete(
+            "инцидент закрыт\nPIPELINE_ENGINEER_STATUS: RESOLVED",
+            dispatcher_authorized=True,
+        )
+        engineer = next(
+            item
+            for item in self.store.load().worker_sessions
+            if item.get("kind") == "pipeline_engineer"
+        )
+        self.assertEqual(engineer["automatic_dispatch_state"], "ADVANCING")
+        self.assertEqual(
+            engineer["automatic_successor_tokens"],
+            [item.reservation_token for item in outcome.descriptors],
+        )
 
     def test_the_engineer_thread_is_the_causal_link_for_the_successor(self) -> None:
         """Релей выполняет ход инженера: другого живого предшественника нет."""
