@@ -29,6 +29,13 @@ from .project_association import (
 MEMORY_SERVER_NAME = "codex_autopilot_memory"
 REQUIRED_MEMORY_TOOLS = {"memory"}
 MEMORY_PREFLIGHT_TITLE = "Codex Autopilot Preflight · Project Memory"
+
+ANNOUNCEMENT = (
+    "За весь запуск у вас могут спросить один раз, и только про одно: доверие "
+    f"инструменту памяти `codex_autopilot_memory.memory` в отдельной задаче "
+    f"«{MEMORY_PREFLIGHT_TITLE}». Ответ — кнопкой в этой задаче. Больше preflight "
+    "ничего не спрашивает и ничего не ждёт от вас молча."
+)
 MEMORY_PREFLIGHT_OK = "MEMORY_PREFLIGHT_OK"
 MEMORY_PREFLIGHT_PROMPT = f"""Codex Autopilot Project Memory trust preflight.
 
@@ -144,6 +151,12 @@ def run_preflight(
 
     if emit:
         emit("Codex Autopilot preflight")
+        emit("")
+        # Единственное место прогона, где может понадобиться человек, названо до
+        # первой длинной проверки. Без этой строки пользователь видит десять
+        # "OK", потом тишину, и не знает, что решение ждут от него и в другой
+        # задаче: замерено - полчаса "думаю" при том, что диалог висел рядом.
+        emit(ANNOUNCEMENT)
         emit("")
         emit(f"Project: {project}")
     if not project.is_dir():
@@ -388,7 +401,7 @@ def run_preflight(
                 and meta.get("codex_approval_kind") == "mcp_tool_call"
             )
             if not is_memory:
-                raise PreflightError(f"unexpected approval during Project Memory preflight: {exc}") from exc
+                raise PreflightError(_unexpected_approval_message(exc)) from exc
             advertised = _approval_persistence_options(exc.payload)
             if "always" not in advertised:
                 report(
@@ -510,6 +523,37 @@ def run_preflight(
         client.close()
         log_path.unlink(missing_ok=True)
 
+
+def _unexpected_approval_message(exc: BaseException) -> str:
+    """Назвать чужой approval человеческим языком, а не сырым JSON.
+
+    Диспетчер не отвечает на approvals ни при каких условиях. Значит любой
+    approval, кроме доверия инструменту памяти, здесь - тупик: он висит в
+    интерфейсе, preflight его не закроет, и прогон не начнётся. Единственный
+    замеренный источник такого тупика - модель, которая сама приложила запрос
+    прав к команде `start-skill` и запустила её повторно.
+    """
+    payload = getattr(exc, "payload", None) or {}
+    params = payload.get("params") or {}
+    kind = str(params.get("kind") or "unknown")
+    reason = str(params.get("reason") or "").strip()
+    lines = [
+        "preflight остановлен: во время проверки памяти пришёл approval, "
+        f"который диспетчер не имеет права закрывать (kind={kind}).",
+        "",
+        "Диспетчер не отвечает на approvals никогда. Этот запрос не будет "
+        "закрыт сам и прогон с ним не начнётся.",
+    ]
+    if reason:
+        lines += ["", f"Текст запроса: {reason}"]
+    lines += [
+        "",
+        "Что делать: не прикладывайте запрос прав к `start-skill` и не "
+        "запускайте её повторно ради доступа. Отмените висящий запрос в "
+        "интерфейсе и устраните причину, названную предыдущей строкой вывода "
+        "preflight.",
+    ]
+    return "\n".join(lines)
 
 def _validate_memory_preflight_result(client: Any, thread_id: str, turn: dict[str, Any]) -> None:
     # App Server 0.153.4 can emit a partial turn/completed snapshot after an

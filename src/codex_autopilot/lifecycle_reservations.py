@@ -55,7 +55,8 @@ from .lifecycle_base import (
     DesktopLifecycleError,
     LaunchDescriptor,
     _append_event,
-    _block_if_revision_limit_reached,
+    _rehire_or_block_on_revision_limit,
+    task_effort,
     _latest_completion_context,
     _latest_task_session,
     _latest_verification_issues,
@@ -671,7 +672,7 @@ def _reserve_followup_sessions_in_state(
                 )
                 continue
         elif raw_state == TaskState.REVISION_REQUIRED.value:
-            if _block_if_revision_limit_reached(
+            if _rehire_or_block_on_revision_limit(
                 plan,
                 state,
                 task.id,
@@ -1100,7 +1101,8 @@ def _build_descriptor(
         else:
             key = logical_model(plan.model_strategy, execution_mode)
             model = MODEL_IDS[key]
-            thinking = task.reasoning or "medium"
+            # Перенайм поднимает ступень усилия поверх записанной в плане.
+            thinking = task_effort(plan, state, task_id)
     if kind == "pipeline_engineer":
         package = pipeline_engineer_package(cfg, state)
         incident = package["incident"]

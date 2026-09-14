@@ -25,6 +25,25 @@ class ModelSelection:
     reasoning_adjustment: str | None = None
 
 
+def next_effort_step(current: str | None) -> str | None:
+    """Следующая ступень усилия, или None когда лестница кончилась.
+
+    Это и есть способ достижения результата в терминах найма: план и DoD
+    неприкосновенны, меняется исполнитель и то, сколько он думает. Модель
+    ступенью не является: в стратегии `auto` она жёстко связана с
+    execution_mode задачи, и подмена модели означала бы подмену заявленной
+    способности, а не усердия.
+    """
+    ladder = PUBLIC_REASONING
+    value = current or ladder[0]
+    if value not in ladder:
+        raise ModelRoutingError(f"reasoning must be one of {ladder}")
+    index = ladder.index(value)
+    if index + 1 >= len(ladder):
+        return None
+    return ladder[index + 1]
+
+
 def logical_model(strategy: str, execution_mode: str) -> str:
     if strategy not in STRATEGIES - {"host-settings"}:
         raise ModelRoutingError(f"unsupported model strategy: {strategy}")

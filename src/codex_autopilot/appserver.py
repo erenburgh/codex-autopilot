@@ -15,6 +15,9 @@ from typing import Any, Callable
 from . import __version__
 
 
+INITIALIZE_TIMEOUT = 180.0
+
+
 class AppServerError(RuntimeError):
     pass
 
@@ -135,7 +138,24 @@ class AppServerClient:
             raise AppServerError("App Server stdio pipes were not created")
         threading.Thread(target=self._read_stdout, daemon=True).start()
         threading.Thread(target=self._read_stderr, daemon=True).start()
-        result = self.request(
+        try:
+            result = self._initialize_request()
+        except AppServerError as exc:
+            if "Timed out waiting for App Server" not in str(exc):
+                raise
+            raise AppServerError(
+                f"App Server did not answer `initialize` within {INITIALIZE_TIMEOUT:.0f} s. "
+                "Это отказ рукопожатия, а не отказ в правах: запрашивать доступ к "
+                "CODEX_HOME и повторять команду бесполезно. Обычная причина - "
+                "установленный плагин или skill, который App Server не может "
+                "загрузить; его жалобы видны в stderr ниже. "
+                f"Исходный текст: {exc}"
+            ) from exc
+        self.notify("initialized")
+        return result
+
+    def _initialize_request(self) -> dict[str, Any]:
+        return self.request(
             "initialize",
             {
                 "clientInfo": {
@@ -153,9 +173,14 @@ class AppServerClient:
                     "mcpServerOpenaiFormElicitation": True,
                 },
             },
+            # Холодный старт App Server загружает каждый установленный плагин и
+            # каждый skill, включая чужие и сломанные. Замерено на живой машине:
+            # один плагин с невалидным YAML растянул рукопожатие за стандартные
+            # 60 секунд, preflight упал на "Timed out waiting for App Server", а
+            # модель приняла таймаут за отказ в правах. Бюджет рукопожатия
+            # отделён от обычного запроса именно поэтому.
+            timeout=INITIALIZE_TIMEOUT,
         )
-        self.notify("initialized")
-        return result
 
     def _record(self, direction: str, payload: Any) -> None:
         if self.log:

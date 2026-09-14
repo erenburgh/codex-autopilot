@@ -173,6 +173,17 @@ case "$profile" in
 esac
 "$codex_bin" plugin add "codex-autopilot-$profile@codex-autopilot-local" >/dev/null
 
+# Собственный скрипт Autopilot прописывается в execpolicy Codex, иначе его
+# запуск может упереться в нативный диалог, на который диспетчер не отвечает.
+# Подробности и замеры - в scripts/register_execpolicy.py.
+codex_home=${CODEX_HOME:-"$HOME/.codex"}
+installed_script=$(ls -d "$codex_home/plugins/cache/codex-autopilot-local/codex-autopilot-$profile"/*/skills/"codex-autopilot-$profile"/scripts/codex-autopilot 2>/dev/null | tail -1)
+if [ -n "$installed_script" ]; then
+  "$python_bin" "$source_dir/scripts/register_execpolicy.py" --script "$installed_script" --rules "$codex_home/rules/default.rules"
+else
+  echo "Execpolicy: installed script not found in the plugin cache; skipped. Codex will ask for approval on each start."
+fi
+
 echo "Codex Autopilot $version installed with the $profile profile."
 echo "Codex safety requires one trust review after install or a real hook-definition change: open /hooks in Codex and trust the current Codex Autopilot hooks."
 echo "Start a fresh Codex task, then say: Use Codex Autopilot for this project."

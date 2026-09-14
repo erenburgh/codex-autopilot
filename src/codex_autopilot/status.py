@@ -356,14 +356,52 @@ def _waiting_reason(
     if task_state is TaskState.IMPLEMENTED:
         return "implementation complete; verification not yet started"
     if task_state is TaskState.REVISION_REQUIRED:
-        return "verification requires a revision"
+        return "verification requires a revision" + _hiring_suffix(state, task_id)
     if task_state is TaskState.BLOCKED:
-        return f"blocked: {state.last_error or 'no reason recorded'}"
+        # Претензии приёмки лежали в состоянии и не показывались никому.
+        # Без них "blocked" не сообщает, что именно решать владельцу.
+        return (
+            # last_error уже называет номер найма и ступень - здесь
+            # добавляются только сами претензии приёмки.
+            f"blocked: {state.last_error or 'no reason recorded'}"
+            + _issue_suffix(state, task_id)
+        )
     if task_state is TaskState.FAILED:
         return f"failed: {state.last_error or 'no reason recorded'}"
     if task_state is TaskState.CANCELLED:
         return "cancelled"
     return f"state={task_state.value}"
+
+
+def _hiring_suffix(state: RunState, task_id: str) -> str:
+    """Какой по счёту исполнитель ведёт задачу и на какой ступени."""
+
+    hires = int(state.task_rehires.get(task_id, 0))
+    if not hires:
+        return ""
+    effort = state.task_effort.get(task_id)
+    tail = f", effort {effort}" if effort else ""
+    return f" (hire {hires + 1}{tail})"
+
+
+def _issue_suffix(state: RunState, task_id: str) -> str:
+    issues = _latest_issues(state, task_id)
+    if not issues:
+        return ""
+    lines = []
+    for item in issues:
+        refs = ", ".join(f"DoD {ref}" for ref in item.get("dod_refs") or [])
+        head = str(item.get("code") or "issue")
+        summary = str(item.get("summary") or "").strip()
+        lines.append(f"  - {head}: {summary}" + (f" [{refs}]" if refs else ""))
+    return "\n" + "\n".join(lines)
+
+
+def _latest_issues(state: RunState, task_id: str) -> list[dict[str, object]]:
+    for item in reversed(state.worker_sessions):
+        if item.get("task_id") == task_id and item.get("verification_issues"):
+            return list(item["verification_issues"])
+    return []
 
 
 def _resource_reason(

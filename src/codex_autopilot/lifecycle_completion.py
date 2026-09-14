@@ -55,7 +55,6 @@ from .lifecycle_base import (
     _active_session_by_thread,
     _append_event,
     _bind_resource_identity,
-    _block_if_revision_limit_reached,
     _dispatcher_owns_reservation,
     _finish_global_state,
     _latest_implementation_thread_id,
@@ -552,7 +551,10 @@ def complete_desktop_worker(
                     timestamp,
                     detail=json.dumps(verdict.to_dict(), ensure_ascii=False, sort_keys=True),
                 )
-                _block_if_revision_limit_reached(plan, state, task_id, current, timestamp)
+                # Решение о перенайме принимается один раз - на резервации,
+                # где бюджет ревизий реально тратится и известен номер
+                # следующей ревизии. Второй вызов здесь поднимал ступень
+                # дважды за один отказ приёмки.
         elif worker_status in SUCCESS_STATUSES:
             expected = (
                 TaskState.REVISING.value
@@ -597,9 +599,6 @@ def complete_desktop_worker(
                     current["verification_issues"] = [item.to_dict() for item in issues]
                     state.task_states = transition_task(
                         plan, state.task_states, task_id, TaskState.REVISION_REQUIRED
-                    )
-                    _block_if_revision_limit_reached(
-                        plan, state, task_id, current, timestamp
                     )
         else:
             source = TaskState.REVISING if kind == "revision" else TaskState.RUNNING

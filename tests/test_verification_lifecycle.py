@@ -209,9 +209,10 @@ class VerificationLifecycleTests(unittest.TestCase):
         first: dict[str, object],
         *,
         model_strategy: str = "auto",
+        payload: dict[str, object] | None = None,
     ) -> None:
         plan_file = self.root / "plan-input.json"
-        payload = graph(first)
+        payload = payload if payload is not None else graph(first)
         payload["model_strategy"] = model_strategy
         plan_file.write_text(json.dumps(payload), encoding="utf-8")
         initialize_project(
@@ -610,44 +611,177 @@ class VerificationLifecycleTests(unittest.TestCase):
             any(item["kind"] == "verifier" for item in self.store.load().worker_sessions)
         )
 
-    def test_revision_limit_blocks_without_unlocking_dependency(self) -> None:
-        self.initialize(
-            task(
-                "A",
-                policy="independent",
-                verifier_role="reviewer",
-                max_revisions=0,
-            )
-        )
-        implementation = reserve_ready_frontier(self.cfg)[0]
-        self.activate(implementation, "implementation-thread")
-        self.evidence("A", "implementation")
+    def _reject_once(self, descriptor, round_index: int):
+        """Один круг приёмки: работа -> свежий верификатор -> отказ."""
+        self.activate(descriptor, f"work-thread-{round_index}")
+        self.evidence("A", f"work {round_index}")
         verifier = complete_desktop_worker(
             self.cfg,
-            thread_id="implementation-thread",
-            turn_id="implementation-turn",
+            thread_id=f"work-thread-{round_index}",
+            turn_id=f"work-turn-{round_index}",
             final_message="AUTOPILOT_STATUS: ROTATE",
         ).descriptors[0]
-        self.activate(verifier, "verifier-thread")
-        self.evidence("A", "independent rejection", role="independent_verification")
-        outcome = complete_desktop_worker(
+        self.assertEqual(verifier.kind, "verifier")
+        self.activate(verifier, f"verifier-thread-{round_index}")
+        self.evidence("A", f"rejection {round_index}", role="independent_verification")
+        return complete_desktop_worker(
             self.cfg,
-            thread_id="verifier-thread",
-            turn_id="verifier-turn",
+            thread_id=f"verifier-thread-{round_index}",
+            turn_id=f"verifier-turn-{round_index}",
             final_message=(
                 VERIFICATION_PREFIX
                 + '{"verdict":"REVISE","issues":['
                 '{"code":"I-1","summary":"incorrect","details":"correct it","dod_refs":[1]}]}'
             ),
         )
-        self.assertEqual(outcome.descriptors, ())
+
+    def test_exhausted_revision_budget_rehires_instead_of_stalling(self) -> None:
+        """Отказ приёмки не имеет права убивать прогон.
+
+        Прежде исчерпание бюджета ревизий ставило задачу в BLOCKED, и на
+        этом всё кончалось: ни replanner, ни Pipeline Engineer не заводились,
+        а команды, снимающей BLOCKED, в CLI не было. Теперь задача получает
+        свежего исполнителя на следующей ступени усилия. План, граф и
+        Definition of Done при этом не трогаются.
+        """
+
+        self.initialize(
+            task("A", policy="independent", verifier_role="reviewer", max_revisions=0)
+        )
+        outcome = self._reject_once(reserve_ready_frontier(self.cfg)[0], 0)
+
+        self.assertEqual([item.kind for item in outcome.descriptors], ["revision"])
+        self.assertEqual(outcome.descriptors[0].thinking, "high")
+        state = self.store.load()
+        self.assertEqual(state.task_rehires["A"], 1)
+        self.assertEqual(state.task_effort["A"], "high")
+        self.assertNotEqual(state.task_states["A"], TaskState.BLOCKED.value)
+        self.assertEqual(state.task_states["B"], TaskState.WAITING.value)
+        rehired = [
+            json.loads(item["detail"])
+            for item in state.lifecycle_journal
+            if item["event"] == "task_rehired"
+        ]
+        self.assertEqual(rehired[-1]["effort_from"], "medium")
+        self.assertEqual(rehired[-1]["effort_to"], "high")
+
+    def test_definition_of_done_survives_every_rehire(self) -> None:
+        """Меняется исполнитель и способ, а не планка."""
+
+        self.initialize(
+            task("A", policy="independent", verifier_role="reviewer", max_revisions=0)
+        )
+        plan_file = self.cfg.state_dir / "plan.json"
+        before = plan_file.read_text(encoding="utf-8")
+        descriptor = reserve_ready_frontier(self.cfg)[0]
+        for index in range(2):
+            descriptor = self._reject_once(descriptor, index).descriptors[0]
+        self.assertEqual(plan_file.read_text(encoding="utf-8"), before)
+        self.assertEqual(self.store.load().graph_version, 1)
+
+    def test_hiring_ladder_ends_at_the_owner_without_unlocking_dependency(self) -> None:
+        """Лестница конечна: на её верху задача действительно встаёт.
+
+        Класс PRODUCTION по таксономии инцидентов принадлежит владельцу
+        продукта, и автоматический ремонт качества здесь запрещён. Но встать
+        она обязана наверху лестницы, а не на первом отказе.
+        """
+
+        self.initialize(
+            task("A", policy="independent", verifier_role="reviewer", max_revisions=0)
+        )
+        descriptor = reserve_ready_frontier(self.cfg)[0]
+        efforts = []
+        for index in range(4):
+            outcome = self._reject_once(descriptor, index)
+            if not outcome.descriptors:
+                break
+            descriptor = outcome.descriptors[0]
+            efforts.append(descriptor.thinking)
+        else:
+            self.fail("лестница найма не закончилась")
+
+        self.assertEqual(efforts, ["high", "xhigh", "max"])
         state = self.store.load()
         self.assertEqual(state.task_states["A"], TaskState.BLOCKED.value)
         self.assertEqual(state.task_states["B"], TaskState.WAITING.value)
-        self.assertEqual(state.task_revisions["A"], 0)
+        self.assertEqual(state.task_rehires["A"], 3)
         self.assertTrue(
-            any(item["event"] == "revision_limit_reached" for item in state.lifecycle_journal)
+            any(item["event"] == "hiring_ladder_exhausted" for item in state.lifecycle_journal)
         )
+        self.assertIn("hiring ladder", state.last_error)
+
+        # Владелец продукта должен увидеть, что именно отвергла приёмка и
+        # сколько исполнителей уже сменилось - иначе решать ему нечем.
+        from codex_autopilot.plan import load_plan
+        from codex_autopilot.status import _waiting_reason
+
+        reason = _waiting_reason(
+            load_plan(self.cfg.state_dir, "adaptive"),
+            state,
+            "A",
+            TaskState.BLOCKED,
+            self.root,
+        )
+        self.assertIn("4 hire(s)", reason)
+        self.assertIn("effort max", reason)
+        self.assertIn("I-1", reason)
+        self.assertIn("incorrect", reason)
+
+
+    def test_a_task_at_the_top_of_the_ladder_does_not_freeze_its_neighbours(self) -> None:
+        """Встала одна задача - соседние, от неё не зависящие, идут дальше.
+
+        Прежняя дыра была двойной: задача умирала на первом отказе приёмки
+        и вместе с собой останавливала прогон. Перенайм закрывает первую
+        половину, эта проверка закрывает вторую.
+        """
+
+        payload = graph(task("A", policy="independent", verifier_role="reviewer", max_revisions=0))
+        payload["execution_strategy"] = "parallel"
+        payload["max_parallel_workers"] = 2
+        payload["tasks"] = [
+            payload["tasks"][0],
+            task("C", policy="independent", verifier_role="reviewer"),
+        ]
+        self.initialize({}, payload=payload)
+
+        frontier = {item.task_id: item for item in reserve_ready_frontier(self.cfg)}
+        self.assertEqual(sorted(frontier), ["A", "C"])
+
+        descriptor = frontier["A"]
+        for index in range(4):
+            outcome = self._reject_once(descriptor, index)
+            if not outcome.descriptors:
+                break
+            descriptor = next(
+                (item for item in outcome.descriptors if item.task_id == "A"), None
+            )
+            if descriptor is None:
+                self.fail("A перестала получать исполнителей до вершины лестницы")
+        else:
+            self.fail("лестница найма не закончилась")
+
+        state = self.store.load()
+        self.assertEqual(state.task_states["A"], TaskState.BLOCKED.value)
+        # Прогон не объявляет себя BLOCKED, пока живая работа идёт: статус
+        # BLOCKED поднимается только когда активных задач не осталось.
+        self.assertEqual(state.status, "RUNNING")
+
+        # Главное: прогон со вставшей A продолжает двигать C.
+        self.activate(frontier["C"], "c-thread")
+        self.evidence("C", "c implementation")
+        outcome = complete_desktop_worker(
+            self.cfg,
+            thread_id="c-thread",
+            turn_id="c-turn",
+            final_message="AUTOPILOT_STATUS: ROTATE",
+        )
+        self.assertEqual(
+            [(item.task_id, item.kind) for item in outcome.descriptors],
+            [("C", "verifier")],
+        )
+        self.assertEqual(self.store.load().task_states["A"], TaskState.BLOCKED.value)
 
 
 class VerificationProtocolTests(unittest.TestCase):

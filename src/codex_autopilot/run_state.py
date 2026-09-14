@@ -51,6 +51,12 @@ class RunState:
     task_states: dict[str, str] = field(default_factory=dict)
     task_attempts: dict[str, int] = field(default_factory=dict)
     task_revisions: dict[str, int] = field(default_factory=dict)
+    # Сколько раз задача была перенанята: воркер сменён, а способ
+    # достижения поднят на ступень. План и DoD при этом не меняются.
+    task_rehires: dict[str, int] = field(default_factory=dict)
+    # Ступень усилия, назначенная перенаймом поверх того, что записано
+    # в плане. Пусто, пока перенайма не было.
+    task_effort: dict[str, str] = field(default_factory=dict)
     active_task_ids: list[str] = field(default_factory=list)
     scheduler_sequence: int = 0
     task_ready_since: dict[str, int] = field(default_factory=dict)
@@ -255,6 +261,8 @@ def _migrate_v08_payload(data: dict[str, object]) -> dict[str, object]:
             "task_states": task_states,
             "task_attempts": task_attempts,
             "task_revisions": {},
+            "task_rehires": {},
+            "task_effort": {},
             "active_task_ids": active,
             "scheduler_sequence": 1 if current_state is TaskState.READY else 0,
             "task_ready_since": (
@@ -361,6 +369,7 @@ def _validate_state(state: RunState) -> None:
     for name, values in (
         ("task_attempts", state.task_attempts),
         ("task_revisions", state.task_revisions),
+        ("task_rehires", state.task_rehires),
     ):
         if not isinstance(values, dict):
             raise ValueError(f"run-state {name} must be an object")
