@@ -6,6 +6,7 @@ from typing import Mapping
 
 from .plan import Plan, Task
 from .run_state import RunState
+from .usage import worker_budget
 from .task_state import (
     ACTIVE_TASK_STATES,
     TaskState,
@@ -146,7 +147,12 @@ def schedule(
     reconcile_ready_tasks(plan, state)
 
     strategy = _effective_strategy(plan, state)
-    worker_limit = min(plan.max_parallel_workers, state.max_parallel_workers)
+    # Заявленное число - потолок и решение пользователя. Адаптация может
+    # только понижать его, и только когда лимит действительно рядом:
+    # человеку с автосписанием урезать нечего, он платит по факту.
+    declared = min(plan.max_parallel_workers, state.max_parallel_workers)
+    budget = worker_budget(declared, getattr(state, "rate_limits", None))
+    worker_limit = budget.workers
     if strategy == "serial":
         worker_limit = 1
         if len(state.active_task_ids) > 1:

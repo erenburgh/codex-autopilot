@@ -68,6 +68,10 @@ class RunState:
     worker_sessions: list[dict[str, object]] = field(default_factory=list)
     task_retry_at: dict[str, int] = field(default_factory=dict)
     rate_limit_until: int | None = None
+    # Последний снимок лимитов от App Server. Нужен не для реакции на
+    # упор, а для планирования ёмкости: сколько воркеров имеет смысл
+    # держать параллельно прямо сейчас.
+    rate_limits: dict[str, Any] | None = None
     plan_change_sequence: int = 0
     active_plan_change_id: str | None = None
     plan_changes: list[dict[str, object]] = field(default_factory=list)
