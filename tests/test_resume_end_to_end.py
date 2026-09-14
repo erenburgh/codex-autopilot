@@ -278,3 +278,51 @@ class ACompletedSessionIsAlsoAWitnessTests(unittest.TestCase):
             sessions=[{"thread_id": "t", "turn_id": "u", "status": "ACTIVE"}],
         )
         self.assertFalse(_turn_is_completed(state, "t", "u"))
+
+
+class PlanChangePredecessorIsAcceptedTests(unittest.TestCase):
+    """Задача, запросившая смену плана, — законный предшественник.
+
+    Она завершила свой ход и записала turn_completed, но её сессия
+    остаётся в PLAN_CHANGE_REQUESTED. В control это учтено давно;
+    в lifecycle_dispatch лежала вторая копия проверки по статусу, и
+    зарезервированный такой задачей планировщик поднять было некому:
+    `automatic successor has no completed causal predecessor turn`.
+    """
+
+    def state(self, status: str, *, journal: bool):
+        from types import SimpleNamespace
+
+        session = {"thread_id": "owner", "turn_id": "turn-1", "status": status}
+        entries = (
+            [{"event": "turn_completed", "thread_id": "owner", "turn_id": "turn-1"}]
+            if journal
+            else []
+        )
+        return SimpleNamespace(worker_sessions=[session], lifecycle_journal=entries)
+
+    def accepts(self, state) -> bool:
+        # Настоящая функция из рантайма, а не её копия в тесте: первая
+        # версия этих проверок повторяла логику у себя и мутацию не ловила.
+        from codex_autopilot.lifecycle_dispatch import causal_predecessor
+
+        return causal_predecessor(state, "owner") is not None
+
+    def test_plan_change_requested_with_a_completed_turn_is_accepted(self) -> None:
+        self.assertTrue(self.accepts(self.state("PLAN_CHANGE_REQUESTED", journal=True)))
+
+    def test_a_completed_session_is_accepted_without_the_journal(self) -> None:
+        self.assertTrue(self.accepts(self.state("COMPLETED", journal=False)))
+
+    def test_an_unfinished_turn_is_still_refused(self) -> None:
+        self.assertFalse(self.accepts(self.state("ACTIVE", journal=False)))
+
+    def test_the_dispatcher_barrier_uses_the_shared_predicate(self) -> None:
+        """Две копии проверки - и чинить пришлось дважды."""
+
+        import inspect
+
+        from codex_autopilot import lifecycle_dispatch
+
+        body = inspect.getsource(lifecycle_dispatch.adopt_automatic_dispatcher_successor)
+        self.assertIn("causal_predecessor(state, owner)", body)

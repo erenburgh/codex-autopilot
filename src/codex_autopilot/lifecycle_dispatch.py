@@ -998,6 +998,34 @@ def record_automatic_app_server_exit(
         )
         store.save(state)
 
+def causal_predecessor(state: Any, owner: str) -> dict[str, Any] | None:
+    """Последняя сессия владельца, чей ход действительно завершён.
+
+    Проверка одного лишь статуса "COMPLETED" отсекала законного
+    предшественника: задача, вернувшая PLAN_CHANGE_REQUEST, свой ход
+    завершила и записала turn_completed, но её сессия остаётся в
+    PLAN_CHANGE_REQUESTED. В control это учтено давно, здесь лежала
+    вторая копия проверки - и планировщик, зарезервированный такой
+    задачей, поднять было некому.
+    """
+
+    from .control import _turn_is_completed
+
+    return next(
+        (
+            item
+            for item in reversed(state.worker_sessions)
+            if item.get("thread_id") == owner
+            and item.get("turn_id")
+            and (
+                item.get("status") == "COMPLETED"
+                or _turn_is_completed(state, owner, str(item["turn_id"]))
+            )
+        ),
+        None,
+    )
+
+
 def adopt_automatic_dispatcher_successor(
     cfg: Config,
     *,
@@ -1027,16 +1055,7 @@ def adopt_automatic_dispatcher_successor(
         owner = str(successor.get("relay_owner_thread_id") or "")
         if not owner:
             raise DesktopLifecycleError("automatic successor has no causal owner")
-        predecessor = next(
-            (
-                item
-                for item in reversed(state.worker_sessions)
-                if item.get("thread_id") == owner
-                and item.get("status") == "COMPLETED"
-                and item.get("turn_id")
-            ),
-            None,
-        )
+        predecessor = causal_predecessor(state, owner)
         if predecessor is None:
             raise DesktopLifecycleError(
                 "automatic successor has no completed causal predecessor turn"
