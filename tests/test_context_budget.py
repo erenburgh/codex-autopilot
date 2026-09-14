@@ -13,7 +13,9 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import tempfile
+from unittest import mock
 import unittest
 
 from codex_autopilot.ai_studio import (
@@ -351,3 +353,109 @@ class EveryCeilingHasOneSourceTests(unittest.TestCase):
                     hasattr(module, name),
                     f"{path.name} поднимает {name}, но не импортирует его",
                 )
+
+
+class SkillPathSurvivesTheNextInstallTests(unittest.TestCase):
+    """Прогон не должен зависеть от номера установленной версии.
+
+    Установщик кладёт плагин в каталог с версией и меткой времени и
+    удаляет прежний. Прогон хранил путь к SKILL.md целиком - вместе с
+    версией. Первая же установка оставляла ссылку в пустоте, и живой
+    прогон умирал на `could not resolve installed plugin root from
+    skill`; отказ при этом попадал в класс AMBIGUOUS_SIDE_EFFECT, из
+    которого нет автоматического выхода.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="codex-autopilot-skillpath-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def fake_install(self, version: str) -> Path:
+        """Слепок раскладки установщика: current -> версия с меткой."""
+
+        release = self.root / version
+        skill = release / "plugins/codex-autopilot-adaptive/skills/codex-autopilot-adaptive"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        current = self.root / "current"
+        if current.is_symlink() or current.exists():
+            current.unlink()
+        current.symlink_to(release)
+        return current
+
+    def cache_path(self, version: str) -> Path:
+        """Путь, который прежде попадал в конфиг: из кэша, с версией."""
+
+        cache = self.root / "cache/codex-autopilot-adaptive" / version / "skills/codex-autopilot-adaptive"
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / "SKILL.md").write_text("# skill\n", encoding="utf-8")
+        return cache / "SKILL.md"
+
+    def test_a_dead_versioned_path_heals_to_the_stable_one(self) -> None:
+        from codex_autopilot import config as config_module
+
+        current = self.fake_install("0.9.0-beta.local.A")
+        dead = self.cache_path("0.9.0-beta.local.OLD")
+        shutil.rmtree(dead.parents[2])  # установка удалила прежний каталог
+        self.assertFalse(dead.is_file())
+
+        with mock.patch.object(
+            config_module, "__file__", str(current / "runtime/src/codex_autopilot/config.py")
+        ):
+            healed = config_module.resolve_skill_path(str(dead))
+        self.assertTrue(healed.is_file())
+        self.assertIn("codex-autopilot-adaptive", str(healed))
+
+    def test_a_living_path_is_left_alone(self) -> None:
+        from codex_autopilot import config as config_module
+
+        alive = self.cache_path("0.9.0-beta.local.A")
+        self.assertEqual(config_module.resolve_skill_path(str(alive)), alive.resolve())
+
+    def test_the_written_path_carries_no_version(self) -> None:
+        """Иначе следующая установка снова оставит ссылку в пустоте."""
+
+        from codex_autopilot import config as config_module
+
+        current = self.fake_install("0.9.0-beta.local.A")
+        source = current / "plugins/codex-autopilot-adaptive/skills/codex-autopilot-adaptive/SKILL.md"
+        with mock.patch.object(
+            config_module, "__file__", str(current / "runtime/src/codex_autopilot/config.py")
+        ):
+            written = config_module.durable_skill_path(source)
+        self.assertNotIn("0.9.0-beta.local.A", str(written))
+        self.assertIn("current", str(written))
+
+    def test_load_config_heals_the_path_not_just_the_helper(self) -> None:
+        """Проводка важнее функции: без неё лечение не вызывается.
+
+        Мутационная проверка показала, что тесты на сам помощник
+        проходят и с отключённым лечением в load_config.
+        """
+
+        from codex_autopilot import config as config_module
+
+        current = self.fake_install("0.9.0-beta.local.A")
+        dead = self.cache_path("0.9.0-beta.local.OLD")
+        shutil.rmtree(dead.parents[2])
+
+        project = self.root / "project"
+        state_dir = project / ".codex-autopilot"
+        state_dir.mkdir(parents=True)
+        (project / ".git").mkdir()
+        (state_dir / "config.toml").write_text(
+            "profile = \"adaptive\"\n"
+            "language = \"ru\"\n"
+            "[desktop]\n"
+            f"skill_path = \"{dead}\"\n"
+            "surface = \"desktop_owned\"\n"
+            "permission_profile = \":workspace\"\n"
+            "project_id = \"p\"\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(
+            config_module, "__file__", str(current / "runtime/src/codex_autopilot/config.py")
+        ):
+            cfg = config_module.load_config(project)
+        self.assertTrue(cfg.skill_path.is_file(), "load_config обязан вылечить мёртвый путь")

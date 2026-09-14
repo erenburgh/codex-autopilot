@@ -88,6 +88,65 @@ def config_path(root: Path) -> Path:
     return root.resolve() / STATE_DIR_NAME / CONFIG_NAME
 
 
+def _install_root() -> Path:
+    """Корень установки по собственному расположению рантайма.
+
+    Рантайм лежит в <install_root>/current/runtime/src/codex_autopilot.
+    absolute(), а не resolve(): разрешение развернуло бы симлинк
+    `current` в каталог с номером версии - тот самый, который следующая
+    установка удалит.
+    """
+
+    return Path(__file__).absolute().parents[3]
+
+
+def stable_skill_path(recorded: Path) -> Path | None:
+    """Тот же скилл по пути, который переживает установку.
+
+    Установщик кладёт плагин в каталог с версией и меткой времени и
+    удаляет прежний, а прогон хранил путь целиком - вместе с версией.
+    Первая же установка оставляла ссылку в пустоте: живой прогон умирал
+    на `could not resolve installed plugin root from skill`, и отказ
+    попадал в класс AMBIGUOUS_SIDE_EFFECT, из которого нет выхода.
+
+    Раскладки двух хранилищ различаются - в кэше это
+    <плагин>/<версия>/skills/..., в установке plugins/<плагин>/skills/...
+    - поэтому имя плагина не вычисляется по позиции, а ищется.
+    """
+
+    parts = Path(recorded).parts
+    if "skills" not in parts:
+        return None
+    index = len(parts) - 1 - parts[::-1].index("skills")
+    tail = parts[index:]
+    pattern = str(Path("plugins", "*", *tail))
+    for candidate in sorted(_install_root().glob(pattern)):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def durable_skill_path(skill_path: Path) -> Path:
+    """Путь, который записывается в конфиг прогона."""
+
+    stable = stable_skill_path(Path(skill_path))
+    return stable if stable is not None else Path(skill_path).resolve()
+
+
+def resolve_skill_path(raw: str) -> Path:
+    """Записанный путь, а если он исчез - стабильный эквивалент."""
+
+    recorded = Path(str(raw)).expanduser()
+    if recorded.is_file():
+        return recorded.resolve()
+    stable = stable_skill_path(recorded)
+    if stable is not None:
+        return stable
+    # Ни того, ни другого: пусть отказ случится там же и с тем же текстом,
+    # что и прежде, а не превратится в загадку на уровне конфигурации.
+    return recorded.resolve()
+
+
 def load_config(root_or_path: Path) -> Config:
     candidate = root_or_path.expanduser().resolve()
     path = candidate if candidate.name == CONFIG_NAME and candidate.is_file() else config_path(candidate)
@@ -120,7 +179,7 @@ def load_config(root_or_path: Path) -> Config:
         profile=profile,
         language=normalize_language(data.get("language", DEFAULT_LANGUAGE)),
         skill_name=skill_name,
-        skill_path=Path(str(skill_path_raw)).expanduser().resolve(),
+        skill_path=resolve_skill_path(str(skill_path_raw)),
         desktop=DesktopConfig(
             binary=str(desktop.get("binary", "codex")),
             permission_profile=permission,

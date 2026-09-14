@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 from datetime import datetime, timezone
 
-from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME
+from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, durable_skill_path
 from .language import DEFAULT_LANGUAGE, is_russian, normalize_language
 from .memory import ProjectMemory
 from .migration import detect_v07, migrate_v07
@@ -163,7 +163,7 @@ def _write_config(
         "[desktop]",
         'binary = "codex"',
         'permission_profile = ":workspace"',
-        f"skill_path = {_toml_string(str(skill_path.resolve()))}",
+        f"skill_path = {_toml_string(str(durable_skill_path(skill_path)))}",
     ]
     if project_id:
         lines.append(f"project_id = {_toml_string(project_id)}")
