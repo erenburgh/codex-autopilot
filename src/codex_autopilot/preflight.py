@@ -270,6 +270,18 @@ def run_preflight(
         report("Runtime", "FAIL", f"installed worker skill missing: {skill_path}")
         raise PreflightError(f"installed worker skill is missing: {skill_path}")
     report("Runtime", "OK", f"{codex_binary}; {skill_path}")
+    try:
+        cache_status, cache_detail = plugin_cache_state(installed_plugin_root(skill_path))
+    except PreflightError as exc:
+        # Скилл не внутри установленного плагина - сверять нечего, и это
+        # не повод останавливать проверку: путь уже проверен выше.
+        cache_status, cache_detail = "WARN", str(exc)
+    report("Plugin cache", cache_status, cache_detail)
+    if cache_status == "FAIL":
+        raise PreflightError(
+            "Codex грузит не ту копию плагина: " + cache_detail
+            + ". Переустанови Autopilot - установщик чистит кэш и сверяет результат."
+        )
 
     log_path = Path(tempfile.gettempdir()) / f"codex-autopilot-preflight-{os.getpid()}.jsonl"
     client = client_factory(codex_binary, log_path)
@@ -782,6 +794,53 @@ def _archive_replaced_workers(project: Path, client: Any, *, exclude: set[str]) 
             raise PreflightError(f"could not retire previous worker {thread_id}; refusing duplicate restart: {exc}") from exc
         retired.append(thread_id)
     return retired
+
+
+def plugin_cache_dirs(plugin_name: str) -> list[Path]:
+    """Копии плагина, которые видит Codex - не то, что лежит в установке."""
+
+    home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    base = home / "plugins" / "cache" / "codex-autopilot-local" / plugin_name
+    return sorted(
+        manifest.parent.parent for manifest in base.glob("*/.codex-plugin/plugin.json")
+    )
+
+
+def plugin_cache_state(plugin_root: Path) -> tuple[str, str]:
+    """Совпадает ли то, что грузит Codex, с тем, что установлено.
+
+    Codex читает плагин из своего кэша, а рантайм - из каталога
+    установки. Пока в кэше оставалась прежняя копия, он грузил её: у
+    пользователя стоял 0.9.7, а работал 0.9.0 - с прежним объявлением
+    Interrupt на 30 секунд. Codex зажимает его до 3, переписывает файл,
+    хэш меняется, и доверие Stop-хука слетает на каждой загрузке. Со
+    стороны это выглядит как "хуки слетают сами", и починить это,
+    доверяя их заново, нельзя - через минуту слетят опять.
+    """
+
+    manifest = plugin_root / ".codex-plugin" / "plugin.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    name = str(payload.get("name") or "")
+    installed = str(payload.get("version") or "")
+    if ".local." not in installed:
+        # Метку ставит установщик. Без неё перед нами исходное дерево, а
+        # не установка: сверять его с чужим кэшем бессмысленно.
+        return "WARN", f"плагин {name} не из установки ({installed}) - сверять нечего"
+    cached = plugin_cache_dirs(name)
+    if not cached:
+        return "WARN", f"Codex ещё не забрал плагин {name} в свой кэш"
+    if len(cached) > 1:
+        versions = ", ".join(item.name for item in cached)
+        return "FAIL", f"в кэше Codex несколько копий {name}: {versions}"
+    cached_version = str(
+        json.loads(
+            (cached[0] / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        ).get("version")
+        or ""
+    )
+    if cached_version != installed:
+        return "FAIL", f"Codex грузит {cached_version}, установлено {installed}"
+    return "OK", f"{installed} - одна копия, та же, что установлена"
 
 
 def installed_plugin_root(skill_path: Path) -> Path:

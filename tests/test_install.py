@@ -80,7 +80,20 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("plugin marketplace add", command_text)
         self.assertIn("plugin add codex-autopilot-adaptive@codex-autopilot-local", command_text)
         self.assertNotIn("plugin marketplace remove", command_text)
-        self.assertNotIn("plugin remove codex-autopilot-adaptive@codex-autopilot-local", command_text)
+        # Активный профиль теперь именно снимается и ставится заново, а его
+        # кэш вычищается. Прежде плагин оставляли установленным, и Codex
+        # продолжал грузить прежнюю копию: у пользователя стоял 0.9.7, а
+        # работал 0.9.0 - с Interrupt на 30 секунд, который Codex зажимает
+        # до 3 и переписывает файл. Хэш менялся, доверие Stop-хука слетало
+        # на каждой загрузке, и выглядело это как "хуки слетают сами".
+        self.assertIn(
+            "plugin remove codex-autopilot-adaptive@codex-autopilot-local", command_text
+        )
+        self.assertLess(
+            command_text.index("plugin remove codex-autopilot-adaptive@codex-autopilot-local"),
+            command_text.index("plugin add codex-autopilot-adaptive@codex-autopilot-local"),
+            "снятие обязано идти до установки, иначе кэш не обновится",
+        )
         self.assertNotIn("config set", command_text)
         self.assertNotIn("danger", command_text)
         env["PATH"] = str(base) + os.pathsep + env.get("PATH", "")
