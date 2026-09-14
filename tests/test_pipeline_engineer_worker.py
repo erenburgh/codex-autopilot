@@ -576,3 +576,95 @@ class EscalationAlwaysHasAWayBackTests(unittest.TestCase):
         body = inspect.getsource(control._answer_escalation)
         self.assertNotIn('state.phase != "PIPELINE_ENGINEER_ESCALATED"', body)
         self.assertIn("incident_ids_awaiting_the_user", body)
+
+
+class ReplaceStartsWithoutInheritedTicketsTests(unittest.TestCase):
+    """Новый прогон не наследует тикеты прежнего.
+
+    В тикетах нет run_id, а дежурный инженер старше любой работы: два
+    открытых тикета прошлого прогона вставали поперёк нового ещё до
+    первой задачи. `--replace` чистил план, состояние и логи - и не
+    трогал хранилище инцидентов.
+    """
+
+    def setUp(self) -> None:
+        import json as _json
+        import tempfile
+
+        from _gates import patch_hook_trust_gates
+        from codex_autopilot.bootstrap import initialize_project
+        from codex_autopilot.pipeline_engineer import (
+            IncidentClass,
+            IncidentSignal,
+            PipelineIncidentStore,
+            SideEffectOutcome,
+        )
+        from codex_autopilot.run_state import utc_now
+        from test_verification_lifecycle import graph, task
+
+        patch_hook_trust_gates(self)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        (self.root / ".git").mkdir()
+        self.skill = self.root / "SKILL.md"
+        self.skill.write_text("# test skill\n", encoding="utf-8")
+        self.plan_file = self.root / "input-plan.json"
+        self.plan_file.write_text(_json.dumps(graph(task("A"))), encoding="utf-8")
+        self.initialize = initialize_project
+        self.initialize(
+            self.root,
+            self.plan_file,
+            profile="adaptive",
+            skill_path=self.skill,
+            desktop_project_id="desktop-project",
+        )
+        self.state_dir = self.root / ".codex-autopilot"
+        incidents = PipelineIncidentStore(self.state_dir)
+        incidents.open_incident(
+            IncidentSignal(
+                signal_id="probe:stale",
+                code="detached_dispatch_failed",
+                surface=IncidentClass.PIPELINE,
+                summary="Тикет прошлого прогона",
+                affected_task_ids=("A",),
+                operation="create_thread",
+                side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+                system_state={},
+            ),
+            at=utc_now(),
+        )
+        self.store_cls = PipelineIncidentStore
+
+    def replace_run(self) -> None:
+        # Первый запуск потребляет файл плана, поэтому повтор пишет его
+        # заново - ровно как это делает скилл на новом прогоне.
+        import json as _json
+
+        from test_verification_lifecycle import graph, task
+
+        self.plan_file.write_text(_json.dumps(graph(task("A"))), encoding="utf-8")
+        self.initialize(
+            self.root,
+            self.plan_file,
+            profile="adaptive",
+            skill_path=self.skill,
+            desktop_project_id="desktop-project",
+            replace=True,
+        )
+
+    def test_a_replaced_run_opens_with_an_empty_incident_store(self) -> None:
+        self.assertTrue(self.store_cls(self.state_dir).load()["incidents"])
+        self.replace_run()
+        self.assertEqual(self.store_cls(self.state_dir).load()["incidents"], [])
+
+    def test_the_previous_tickets_are_kept_beside_the_run(self) -> None:
+        """Это запись о поломке: откладывается, а не удаляется."""
+
+        self.replace_run()
+        archived = sorted(self.state_dir.glob("pipeline-incidents.*.json"))
+        self.assertEqual(len(archived), 1)
+        import json as _json
+
+        kept = _json.loads(archived[0].read_text(encoding="utf-8"))
+        self.assertEqual(len(kept["incidents"]), 1)

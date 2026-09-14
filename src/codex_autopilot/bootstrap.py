@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+from datetime import datetime, timezone
 
 from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME
 from .language import DEFAULT_LANGUAGE, is_russian, normalize_language
@@ -51,6 +52,18 @@ def initialize_project(
         (state_dir / stale).unlink(missing_ok=True)
     if replace and (state_dir / "logs").exists():
         shutil.rmtree(state_dir / "logs")
+    if replace:
+        # Тикеты принадлежат прогону, который их завёл: run_id в них не
+        # хранится, а дежурный инженер старше любой работы. Прежде новый
+        # прогон наследовал чужие открытые тикеты и вставал на них сразу,
+        # ещё до первой задачи. Файл не удаляется, а откладывается: это
+        # запись о поломке, и она может понадобиться.
+        incidents = state_dir / "pipeline-incidents.json"
+        if incidents.is_file():
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            incidents.replace(state_dir / f"pipeline-incidents.{stamp}.json")
+        for lock in ("pipeline-recovery.lock", "resource-coordinator.lock"):
+            (state_dir / lock).unlink(missing_ok=True)
     save_plan(state_dir, plan)
     _write_config(
         root,
