@@ -391,6 +391,100 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertIn("The previous attempt was rejected by the runtime", prompt)
         self.assertIn("plan has unknown fields: ['departments']", prompt)
 
+    def test_user_declared_worker_count_reaches_the_replanner(self) -> None:
+        """Потолок воркеров живёт в плане, а план переписывает реплэннер.
+
+        Пользователь меняет число в своём config.toml. Без передачи в
+        задание реплэннер копирует старое число из текущего графа, и
+        правка не доезжает никуда - прогон навсегда остаётся с тем
+        потолком, с каким был создан.
+        """
+
+        cfg, store = self.initialize(graph([task("A")], max_workers=2))
+        config_file = self.root / ".codex-autopilot" / "config.toml"
+        config_file.write_text(
+            config_file.read_text(encoding="utf-8").replace(
+                "max_parallel_workers = 2", "max_parallel_workers = 7"
+            ),
+            encoding="utf-8",
+        )
+        cfg = load_config(self.root)
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need a replan.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        prompt = replanner.prompt
+        self.assertIn("required_max_parallel_workers", prompt)
+        self.assertIn("Set max_parallel_workers=7", prompt)
+
+    def test_config_without_the_key_never_forces_one_worker(self) -> None:
+        """Умолчание - не выбор человека.
+
+        Совместимость с v0.8 держит здесь единицу. Принять её за
+        пожелание значило бы загнать любой прогон со старым конфигом в
+        один поток при первой же смене плана.
+        """
+
+        cfg, store = self.initialize(graph([task("A")], max_workers=2))
+        config_file = self.root / ".codex-autopilot" / "config.toml"
+        config_file.write_text(
+            "\n".join(
+                line
+                for line in config_file.read_text(encoding="utf-8").splitlines()
+                if not line.startswith("max_parallel_workers")
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(self.root)
+        self.assertFalse(cfg.runtime.max_parallel_workers_declared)
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need a replan.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.assertNotIn("required_max_parallel_workers", replanner.prompt)
+        self.assertNotIn("max_parallel_workers=1", replanner.prompt)
+
+    def test_matching_worker_count_adds_no_instruction(self) -> None:
+        """Совпадающее число - не правка, и говорить о ней нечего."""
+
+        cfg, store = self.initialize(graph([task("A")], max_workers=2))
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need a replan.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.assertNotIn("required_max_parallel_workers", replanner.prompt)
+
     def test_replanner_that_never_matches_the_schema_stops_the_run_loudly(self) -> None:
         cfg, store = self.initialize(graph([task("A")], max_workers=1))
         descriptor = reserve_ready_frontier(

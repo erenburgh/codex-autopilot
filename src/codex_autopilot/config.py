@@ -50,6 +50,10 @@ class RuntimeConfig:
 
     execution_strategy: str = COMPAT_EXECUTION_STRATEGY
     max_parallel_workers: int = COMPAT_MAX_PARALLEL_WORKERS
+    # Названо ли число человеком в этом файле. Умолчание здесь - единица
+    # ради совместимости с v0.8, и принять её за выбор пользователя
+    # значило бы загнать любой прогон со старым конфигом в один поток.
+    max_parallel_workers_declared: bool = False
     computer_use_slots: int = DEFAULT_COMPUTER_USE_SLOTS
     worker_surface: str = DESKTOP_OWNED_SURFACE
     # До какого размещения ветки в Desktop задача не вправе начинать работу.
@@ -202,6 +206,7 @@ def load_config(root_or_path: Path) -> Config:
                 runtime.get("max_parallel_workers", COMPAT_MAX_PARALLEL_WORKERS),
                 "runtime.max_parallel_workers",
             ),
+            max_parallel_workers_declared="max_parallel_workers" in runtime,
             computer_use_slots=_positive_int(
                 runtime.get("computer_use_slots", DEFAULT_COMPUTER_USE_SLOTS),
                 "runtime.computer_use_slots",

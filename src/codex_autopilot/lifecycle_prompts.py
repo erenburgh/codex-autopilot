@@ -76,6 +76,14 @@ def _replanner_prompt(
     }
     if rejections:
         envelope["rejected_attempts"] = rejections
+    declared_workers = (
+        cfg.runtime.max_parallel_workers
+        if getattr(cfg.runtime, "max_parallel_workers_declared", False)
+        and cfg.runtime.max_parallel_workers != plan.max_parallel_workers
+        else None
+    )
+    if declared_workers is not None:
+        envelope["constraints"]["required_max_parallel_workers"] = declared_workers
     payload = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
     finish = (
         f'{PLAN_CHANGE_RESULT_PREFIX} '
@@ -85,8 +93,26 @@ def _replanner_prompt(
         + str(plan.graph_version)
         + ',"plan":{...complete schema-3 plan...}}'
     )
+    # Число воркеров живёт в плане, а переписать план вправе только
+    # реплэннер. Пользователь меняет его в своём config.toml, и без этой
+    # передачи его правка не доезжала никуда: реплэннер копировал старое
+    # число из текущего графа, и потолок навсегда оставался тем, с каким
+    # прогон был создан.
     retry_ru = ""
     retry_en = ""
+    workers_ru = ""
+    workers_en = ""
+    if declared_workers is not None:
+        workers_ru = (
+            f"\n\nПользователь задал число параллельных воркеров: "
+            f"{declared_workers}. Установи max_parallel_workers={declared_workers} "
+            f"в возвращаемом графе; сейчас там {plan.max_parallel_workers}."
+        )
+        workers_en = (
+            f"\n\nThe user set the parallel worker count to {declared_workers}. "
+            f"Set max_parallel_workers={declared_workers} in the graph you return; "
+            f"it currently holds {plan.max_parallel_workers}."
+        )
     if rejections:
         last = rejections[-1]["reason"]
         allowed = ", ".join(sorted(GRAPH_PLAN_FIELDS))
@@ -109,7 +135,7 @@ def _replanner_prompt(
 
 AUTOPILOT_CONTEXT: {payload}
 
-Сначала полностью прочитай {cfg.skill_path}. При необходимости получи только перечисленные evidence ID через Project Memory. Не изменяй файлы, не запускай production и не становись manager: верни один полный schema-3 replacement graph. user_request переносит runtime - его возвращать не нужно. Дословно сохрани goal, model_strategy, контракты VERIFIED задач, структурированные RoleProfile и все существующие task ID; установи graph_version={plan.graph_version + 1}. Runtime заново проверит все ссылки, состояния и циклы и выполнит crash-safe commit. Reservation token: {token}.{retry_ru}
+Сначала полностью прочитай {cfg.skill_path}. При необходимости получи только перечисленные evidence ID через Project Memory. Не изменяй файлы, не запускай production и не становись manager: верни один полный schema-3 replacement graph. user_request переносит runtime - его возвращать не нужно. Дословно сохрани goal, model_strategy, контракты VERIFIED задач, структурированные RoleProfile и все существующие task ID; установи graph_version={plan.graph_version + 1}. Runtime заново проверит все ссылки, состояния и циклы и выполнит crash-safe commit. Reservation token: {token}.{workers_ru}{retry_ru}
 
 Последняя непустая строка должна быть единственной protocol line в точном формате:
 {finish}"""
@@ -120,7 +146,7 @@ Perform only the short {change['id']} replan for canonical directory {cfg.root}.
 
 AUTOPILOT_CONTEXT: {payload}
 
-Read {cfg.skill_path} completely first. Retrieve only listed evidence IDs from Project Memory if needed. Do not modify files, start production, or become a manager: return one complete schema-3 replacement graph. The runtime carries user_request over; do not return it. Preserve the goal, model_strategy, VERIFIED task contracts, structured RoleProfiles, and every existing task ID; set graph_version={plan.graph_version + 1}. The runtime will revalidate every reference, state, and cycle and perform the crash-safe commit. Reservation token: {token}.{retry_en}
+Read {cfg.skill_path} completely first. Retrieve only listed evidence IDs from Project Memory if needed. Do not modify files, start production, or become a manager: return one complete schema-3 replacement graph. The runtime carries user_request over; do not return it. Preserve the goal, model_strategy, VERIFIED task contracts, structured RoleProfiles, and every existing task ID; set graph_version={plan.graph_version + 1}. The runtime will revalidate every reference, state, and cycle and perform the crash-safe commit. Reservation token: {token}.{workers_en}{retry_en}
 
 The final non-empty line must be the only protocol line in this exact format:
 {finish}"""
