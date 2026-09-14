@@ -195,3 +195,43 @@ class ResumeChainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeadRelayWithoutAThreadIsNotADeadEndTests(unittest.TestCase):
+    """Релей, умерший до создания ветки, не должен запирать прогон.
+
+    В живом прогоне сессия осталась в RELAYING с пустым thread_id: процесс
+    умер между «начал» и «создал». Запуск отвечал
+    `automatic relay cannot spawn from 'RELAYING'`, а разобрать эту сессию
+    не мог никто - наблюдать со стороны App Server тоже нечего, ветки не
+    существует. Прогон становился неоживимым, хотя не было создано ничего.
+    """
+
+    def test_a_relaying_session_without_a_thread_can_respawn(self) -> None:
+        from codex_autopilot import control
+
+        session = {
+            "reservation_token": "t1",
+            "relay_owner_thread_id": "owner",
+            "status": "RELAYING",
+            "thread_id": None,
+            "automatic_dispatch_pid": 999_999_999,
+            "automatic_dispatch_state": "RUNNING",
+        }
+        control._revive_dead_relay_session(session)
+        self.assertEqual(session["status"], "CREATE_REQUESTED")
+        self.assertIsNone(session["automatic_dispatch_pid"])
+
+    def test_a_relaying_session_with_a_thread_is_left_alone(self) -> None:
+        """Ветка есть - побочный эффект был, догадываться нельзя."""
+
+        from codex_autopilot import control
+
+        session = {
+            "reservation_token": "t1",
+            "status": "RELAYING",
+            "thread_id": "01a0-real",
+            "automatic_dispatch_pid": 999_999_999,
+        }
+        self.assertFalse(control._revive_dead_relay_session(session))
+        self.assertEqual(session["status"], "RELAYING")

@@ -63,6 +63,25 @@ def find_project_root(start: Path) -> Path | None:
     return None
 
 
+def _revive_dead_relay_session(session: dict[str, Any]) -> bool:
+    """Вернуть к запуску релей, умерший до создания ветки.
+
+    Ветки нет - значит дублировать нечего. Прежде такая сессия запирала
+    прогон навсегда: запуск отвечал `cannot spawn from 'RELAYING'`, а
+    разобрать её не мог никто, потому что наблюдать со стороны App Server
+    тоже нечего. Это не догадка о побочном эффекте, а утверждение о его
+    отсутствии, проверенное по состоянию: есть thread_id - не трогаем.
+    """
+
+    if session.get("status") != "RELAYING" or str(session.get("thread_id") or ""):
+        return False
+    session["status"] = "CREATE_REQUESTED"
+    session["automatic_dispatch_state"] = None
+    session["automatic_dispatch_pid"] = None
+    session["automatic_dispatch_connection_pid"] = None
+    return True
+
+
 def pid_alive(pid: int | None) -> bool:
     if not pid:
         return False
@@ -137,9 +156,10 @@ def spawn_automatic_app_server_relay(
             existing_pid = session.get("automatic_dispatch_pid")
             if isinstance(existing_pid, int) and pid_alive(existing_pid):
                 return existing_pid
-            raise RuntimeError(
-                f"automatic relay cannot spawn from {session.get('status')!r}"
-            )
+            if not _revive_dead_relay_session(session):
+                raise RuntimeError(
+                    f"automatic relay cannot spawn from {session.get('status')!r}"
+                )
         existing_state = session.get("automatic_dispatch_state")
         existing_pid = session.get("automatic_dispatch_pid")
         if existing_state in {"SCHEDULED", "RUNNING"}:
