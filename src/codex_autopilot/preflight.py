@@ -90,7 +90,15 @@ def _plan_file_for(project: Path) -> Path:
     return existing if existing.is_file() else state_dir / "bootstrap-plan.json"
 
 
-def approval_command(project: Path, plan_file: Path, profile: str) -> str:
+def approval_command(
+    project: Path,
+    plan_file: Path,
+    profile: str,
+    *,
+    app_server_project_id: str | None = None,
+    desktop_project_id: str | None = None,
+    language: str | None = None,
+) -> str:
     """Готовая к запуску команда, а не описание того, как её собрать.
 
     Прежде здесь стояло "повторите ту же команду с флагом": собрать её
@@ -107,8 +115,18 @@ def approval_command(project: Path, plan_file: Path, profile: str) -> str:
         f'--project "{project}"',
         f'--plan-file "{plan_file}"',
         f"--profile {profile}",
-        "--approve-project-memory-always",
     ]
+    # Без идентификаторов проекта preflight отказывает на проверке
+    # размещения: "каталог не принадлежит ни одному проекту Codex".
+    # Первая выданная пользователю команда была именно такой - неполной,
+    # и упала не на разрешении, а раньше.
+    if app_server_project_id:
+        parts.append(f"--app-server-project-id {app_server_project_id}")
+    if desktop_project_id:
+        parts.append(f"--desktop-project-id {desktop_project_id}")
+    if language:
+        parts.append(f"--language {language}")
+    parts.append("--approve-project-memory-always")
     return " ".join(parts)
 
 
@@ -586,7 +604,13 @@ def run_preflight(
                 raise ProjectMemoryApprovalRequired(
                     probe_thread_id,
                     MEMORY_PREFLIGHT_TITLE,
-                    approval_command(project, _plan_file_for(project), profile),
+                    approval_command(
+                        project,
+                        _plan_file_for(project),
+                        profile,
+                        app_server_project_id=result.project_id or app_server_project_id,
+                        desktop_project_id=desktop_project_id,
+                    ),
                 ) from exc
         else:
             _validate_memory_preflight_result(client, probe_thread_id, completed.turn)

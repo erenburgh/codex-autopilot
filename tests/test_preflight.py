@@ -415,6 +415,10 @@ class PreflightTests(unittest.TestCase):
         self.assertIn("--approve-project-memory-always", message)
         self.assertIn(str(root.resolve()), message)
         self.assertIsNotNone(caught.exception.command)
+        # Команда без идентификаторов проекта падает раньше разрешения -
+        # на проверке размещения. Первая выданная пользователю команда
+        # была именно такой.
+        self.assertIn("--desktop-project-id", caught.exception.command)
 
     def test_untrusted_raw_mcp_without_advertised_always_is_rejected(self):
         root = project()
