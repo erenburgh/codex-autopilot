@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .ai_studio import AIStudioRuntime
+from .ai_studio import MAX_PROMPT_CHARS, AIStudioRuntime
 from .config import Config
+from .lifecycle_base import DesktopLifecycleError
 from .language import is_russian
 from .memory import ProjectMemory
 from .plan import Plan, Task, plan_to_dict
@@ -96,8 +97,17 @@ Read {cfg.skill_path} completely first. Retrieve only listed evidence IDs from P
 
 The final non-empty line must be the only protocol line in this exact format:
 {finish}"""
-    if len(prompt) > 64_000:
-        raise DesktopLifecycleError("replanner prompt exceeds 64000 characters")
+    # Второй экземпляр того же потолка. Утром число было выведено из окна
+    # модели в ai_studio, а эта копия осталась голой: промпт планировщика
+    # вкладывает весь граф из 23 задач, перевалил за 64 000 и уронил релей
+    # прямо посреди прогона - причём NameError вместо внятного отказа,
+    # потому что исключение здесь не импортировалось с самого разреза
+    # lifecycle.py.
+    if len(prompt) > MAX_PROMPT_CHARS:
+        raise DesktopLifecycleError(
+            f"replanner prompt is {len(prompt)} characters against a "
+            f"{MAX_PROMPT_CHARS} budget derived from the model context window"
+        )
     return prompt
 
 

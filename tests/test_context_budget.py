@@ -298,3 +298,56 @@ class ApprovalIsNeverRequestedByAWorkerTests(unittest.TestCase):
 
         text = self.prompt("ru")
         self.assertIn("убивает весь прогон", text)
+
+
+class EveryCeilingHasOneSourceTests(unittest.TestCase):
+    """Один потолок промпта, а не копия числа в каждом модуле.
+
+    Живой прогон умер посреди работы: исполнитель ревизии запросил смену
+    плана, промпт планировщика вложил весь граф из 23 задач и упёрся во
+    ВТОРОЙ экземпляр константы 64_000 - утреннюю правку получил только
+    ai_studio. А вместо внятного отказа релей получил NameError, потому
+    что само исключение в этом модуле не импортировалось с самого
+    разреза lifecycle.py.
+    """
+
+    SOURCES = ("ai_studio.py", "lifecycle_prompts.py", "lifecycle_reservations.py",
+               "lifecycle_completion.py", "lifecycle_base.py", "plan.py", "status.py")
+
+    def runtime_files(self):
+        root = Path(__file__).resolve().parent.parent / "src/codex_autopilot"
+        return [(name, (root / name).read_text(encoding="utf-8")) for name in self.SOURCES]
+
+    def test_no_module_hardcodes_the_old_ceiling(self) -> None:
+        import re
+
+        for name, text in self.runtime_files():
+            code = "\n".join(
+                line for line in text.splitlines() if not line.lstrip().startswith("#")
+            )
+            self.assertIsNone(
+                re.search(r"\b64[_ ]?000\b", code),
+                f"{name}: потолок должен браться из ai_studio.MAX_PROMPT_CHARS",
+            )
+
+    def test_the_replanner_uses_the_shared_budget(self) -> None:
+        from codex_autopilot import lifecycle_prompts
+
+        self.assertEqual(lifecycle_prompts.MAX_PROMPT_CHARS, MAX_PROMPT_CHARS)
+
+    def test_every_module_imports_the_error_it_raises(self) -> None:
+        """NameError вместо отказа стоил прогону часа."""
+
+        import builtins, importlib, re
+
+        root = Path(__file__).resolve().parent.parent / "src/codex_autopilot"
+        for path in sorted(root.glob("*.py")):
+            text = path.read_text(encoding="utf-8")
+            for name in re.findall(r"raise ([A-Z][A-Za-z]+Error)\(", text):
+                if hasattr(builtins, name):
+                    continue  # встроенные доступны всегда
+                module = importlib.import_module(f"codex_autopilot.{path.stem}")
+                self.assertTrue(
+                    hasattr(module, name),
+                    f"{path.name} поднимает {name}, но не импортирует его",
+                )
