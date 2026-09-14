@@ -733,3 +733,46 @@ class TrustProbeTests(unittest.TestCase):
         self.assertIn("Project Memory trust probe", message)
         self.assertIn("did not finish within 0.05s", message)
         self.assertIn("model turn and not the transport", message)
+
+
+class ApprovalArrivesAsACommandTests(unittest.TestCase):
+    """Человеку нужна строка, которую можно запустить, а не инструкция.
+
+    Всплывающего окна нет и быть не может: запрос инструмента памяти
+    уходит на соединение диспетчера, а тот на approvals не отвечает по
+    правилу. Прежде preflight писал "повторите ту же команду с флагом" -
+    собрать её предлагалось модели, и до человека она не доходила ни
+    разу за весь день.
+    """
+
+    def test_the_message_carries_a_runnable_command(self) -> None:
+        from codex_autopilot.preflight import ProjectMemoryApprovalRequired, approval_command
+
+        command = approval_command(
+            Path("/tmp/проект"), Path("/tmp/проект/.codex-autopilot/plan.json"), "adaptive"
+        )
+        message = str(ProjectMemoryApprovalRequired("thread-1", "Заголовок", command))
+        self.assertIn("preflight", message)
+        self.assertIn("--approve-project-memory-always", message)
+        self.assertIn("/tmp/проект", message)
+
+    def test_the_command_quotes_paths_with_spaces(self) -> None:
+        """Каталог проекта у пользователя называется через пробелы."""
+
+        from codex_autopilot.preflight import approval_command
+
+        command = approval_command(
+            Path("/Users/x/Autopilot Studio | Test"),
+            Path("/Users/x/Autopilot Studio | Test/.codex-autopilot/plan.json"),
+            "adaptive",
+        )
+        self.assertIn('--project "/Users/x/Autopilot Studio | Test"', command)
+        self.assertIn('"/Users/x/Autopilot Studio | Test/.codex-autopilot/plan.json"', command)
+
+    def test_the_message_says_no_dialog_is_coming(self) -> None:
+        """Иначе человек ждёт окна, которого не будет."""
+
+        from codex_autopilot.preflight import ProjectMemoryApprovalRequired
+
+        message = str(ProjectMemoryApprovalRequired("t", "T", "cmd"))
+        self.assertIn("окна не будет", message)

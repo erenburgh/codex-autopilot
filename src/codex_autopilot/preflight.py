@@ -16,7 +16,7 @@ from .appserver import (
     TurnTimeout,
     final_agent_message,
 )
-from .config import DESKTOP_OWNED_SURFACE
+from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME
 from .hook_trust import (
     HookPreflightError,
     HookTrustApprovalRequired,
@@ -82,19 +82,60 @@ class PreflightApprovalRequired(PreflightError):
         )
 
 
+def _plan_file_for(project: Path) -> Path:
+    """План, с которым команда разрешения запустится без вопросов."""
+
+    state_dir = project / STATE_DIR_NAME
+    existing = state_dir / "plan.json"
+    return existing if existing.is_file() else state_dir / "bootstrap-plan.json"
+
+
+def approval_command(project: Path, plan_file: Path, profile: str) -> str:
+    """Готовая к запуску команда, а не описание того, как её собрать.
+
+    Прежде здесь стояло "повторите ту же команду с флагом": собрать её
+    предлагалось модели, и до человека она не доходила ни разу. Диалога
+    же нет вовсе - запрос инструмента уходит на соединение диспетчера,
+    который на approvals не отвечает. Значит единственный путь к
+    человеку - текст, который можно скопировать и запустить.
+    """
+
+    runtime = Path.home() / "Library/Application Support/CodexAutopilot/current/bin/codex-autopilot"
+    parts = [
+        f'"{runtime}"',
+        "preflight",
+        f'--project "{project}"',
+        f'--plan-file "{plan_file}"',
+        f"--profile {profile}",
+        "--approve-project-memory-always",
+    ]
+    return " ".join(parts)
+
+
 class ProjectMemoryApprovalRequired(PreflightError):
     exit_code = 77
 
-    def __init__(self, thread_id: str, title: str) -> None:
+    def __init__(
+        self,
+        thread_id: str,
+        title: str,
+        command: str | None = None,
+    ) -> None:
         self.thread_id = thread_id
         self.title = title
+        self.command = command
+        ready = (
+            f"\n\nЗапусти эту команду в терминале - её запуск и есть твоё согласие:\n\n{command}\n"
+            if command
+            else ""
+        )
         super().__init__(
             "Project Memory MCP: APPROVAL REQUIRED\n\n"
-            f"No production worker or new run-state was created. Diagnostic preflight task: `{title}` (thread {thread_id}). "
-            "Ask the user whether to approve `codex_autopilot_memory.memory` with Always. "
-            "Only after explicit user confirmation, repeat the same command with "
-            "`--approve-project-memory-always`; it answers this one App Server request through the supported flow. "
-            "Autopilot never grants, infers, or bypasses approval on its own."
+            f"Никакой воркер и никакое состояние прогона не созданы. Диагностическая задача: `{title}` (тред {thread_id}).\n"
+            "Нужно одно разрешение - инструменту памяти `codex_autopilot_memory.memory`, с ответом Always. "
+            "Всплывающего окна не будет: запрос уходит на соединение диспетчера, а тот на approvals не отвечает."
+            f"{ready}"
+            "Autopilot не выдаёт, не выводит и не обходит это разрешение сам."
         )
 
 
@@ -542,7 +583,11 @@ def run_preflight(
                 )
             else:
                 report("Project Memory MCP", "APPROVAL REQUIRED", f"preflight task {probe_thread_id}; no production worker created")
-                raise ProjectMemoryApprovalRequired(probe_thread_id, MEMORY_PREFLIGHT_TITLE) from exc
+                raise ProjectMemoryApprovalRequired(
+                    probe_thread_id,
+                    MEMORY_PREFLIGHT_TITLE,
+                    approval_command(project, _plan_file_for(project), profile),
+                ) from exc
         else:
             _validate_memory_preflight_result(client, probe_thread_id, completed.turn)
         report("Project Memory MCP", "OK", "real model-to-MCP call completed without a trust interruption")
