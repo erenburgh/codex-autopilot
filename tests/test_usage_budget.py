@@ -25,13 +25,23 @@ class TheUserNumberIsTheCeilingTests(unittest.TestCase):
         self.assertEqual(budget.workers, 10)
         self.assertFalse(budget.limited)
 
-    def test_unlimited_is_never_throttled(self) -> None:
+    def test_unlimited_has_no_ceiling_at_all(self) -> None:
+        """Ограничивать того, кто платит по факту, нам не за что."""
+
         budget = worker_budget(
             10, {"credits": {"unlimited": True}, "primary": {"usedPercent": 99}}
         )
-        self.assertEqual(budget.workers, 10)
+        self.assertIsNone(budget.workers)
         self.assertFalse(budget.limited)
-        self.assertIn("безлимит", budget.reason)
+        self.assertIn("потолка нет", budget.reason)
+
+    def test_a_number_the_user_named_is_kept_even_on_unlimited(self) -> None:
+        """Попросил три - значит три, безлимит этого не отменяет."""
+
+        budget = worker_budget(
+            3, {"credits": {"unlimited": True}}, declared_by_user=True
+        )
+        self.assertEqual(budget.workers, 3)
 
     def test_the_budget_never_exceeds_what_was_asked(self) -> None:
         budget = worker_budget(3, {"primary": {"usedPercent": 0}, "credits": {}})
@@ -102,3 +112,53 @@ class TheSchedulerUsesTheBudgetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
+    """Число воркеров спрашивается, а не подставляется молча.
+
+    Десятка из шаблона простояла весь прогон на 24 задачи с четырьмя
+    независимыми ветками, и никто её не выбирал.
+    """
+
+    def notice(self, limits, declared=None):
+        from codex_autopilot.usage import capacity_notice
+
+        return capacity_notice(limits, declared)
+
+    def test_unlimited_is_told_it_has_no_ceiling(self) -> None:
+        text = self.notice({"credits": {"unlimited": True}})
+        self.assertIn("потолка", text)
+        self.assertIn("скажите число", text)
+
+    def test_credits_are_told_the_default_and_the_choice(self) -> None:
+        text = self.notice({"credits": {"hasCredits": True}})
+        self.assertIn("10", text)
+        self.assertIn("больше или меньше", text)
+
+    def test_a_plan_tier_is_named_back_to_the_user(self) -> None:
+        text = self.notice({"planType": "pro", "credits": {}})
+        self.assertIn("pro", text)
+        self.assertIn("10", text)
+
+    def test_a_number_the_user_named_is_confirmed_not_questioned(self) -> None:
+        text = self.notice({"planType": "pro", "credits": {}}, 4)
+        self.assertIn("4", text)
+        self.assertIn("как вы указали", text)
+
+    def test_preflight_prints_it(self) -> None:
+        """Иначе вопрос живёт в тестах, а не перед стартом прогона."""
+
+        import inspect
+
+        from codex_autopilot import preflight
+
+        self.assertIn("capacity_notice(", inspect.getsource(preflight))
+
+    def test_the_skill_tells_the_model_to_show_it(self) -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        for skill in root.glob("plugins/*/skills/*/SKILL.md"):
+            with self.subTest(skill=skill.parts[-3]):
+                self.assertIn("Ёмкость:", skill.read_text(encoding="utf-8"))

@@ -647,6 +647,26 @@ def run_preflight(
         if emit:
             emit(f"Routing: {result.routing}")
             emit(f"Next worker: {result.next_model} / {result.next_reasoning}")
+            # Человек не обязан знать ни своего тарифа, ни того, что число
+            # воркеров вообще задаётся. Сказать это один раз, назвав его
+            # собственное положение, честнее, чем молча поставить десятку
+            # из шаблона - именно так она и простояла весь прогон.
+            try:
+                limits = client.rate_limits()
+            except Exception:
+                limits = None
+            # Число считается заданным человеком, если оно отличается от
+            # умолчания: шаблон подставляет его сам, и молча выдать это за
+            # выбор пользователя было бы подменой.
+            declared_workers = (
+                plan.max_parallel_workers
+                if plan.max_parallel_workers != DEFAULT_MAX_PARALLEL_WORKERS
+                else None
+            )
+            emit(
+                "Ёмкость: "
+                + capacity_notice(limits, declared_workers)
+            )
             emit("")
             emit("Preflight: PASS")
         return result

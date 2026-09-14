@@ -152,7 +152,9 @@ def schedule(
     # человеку с автосписанием урезать нечего, он платит по факту.
     declared = min(plan.max_parallel_workers, state.max_parallel_workers)
     budget = worker_budget(declared, getattr(state, "rate_limits", None))
-    worker_limit = budget.workers
+    # None означает отсутствие потолка: на безлимитном аккаунте
+    # одновременность задаёт сам граф, а не выдуманное число.
+    worker_limit = len(plan.tasks) if budget.workers is None else budget.workers
     if strategy == "serial":
         worker_limit = 1
         if len(state.active_task_ids) > 1:
