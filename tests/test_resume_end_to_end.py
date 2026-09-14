@@ -235,3 +235,46 @@ class DeadRelayWithoutAThreadIsNotADeadEndTests(unittest.TestCase):
         }
         self.assertFalse(control._revive_dead_relay_session(session))
         self.assertEqual(session["status"], "RELAYING")
+
+
+class ACompletedSessionIsAlsoAWitnessTests(unittest.TestCase):
+    """Завершённый ход доказывается не только журнальной записью.
+
+    Дежурный инженер начал писать `turn_completed` только сейчас. Прогоны,
+    созданные до этого, имеют завершённый ход инженера и не имеют
+    события: цепочка вставала на `automatic relay has no completed causal
+    predecessor`, а починить это можно было лишь правкой журнала руками -
+    то есть подделкой записи о том, чего система не наблюдала.
+    """
+
+    def state(self, *, journal, sessions):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(lifecycle_journal=journal, worker_sessions=sessions)
+
+    def test_the_journal_entry_is_enough(self) -> None:
+        from codex_autopilot.control import _turn_is_completed
+
+        state = self.state(
+            journal=[{"event": "turn_completed", "thread_id": "t", "turn_id": "u"}],
+            sessions=[],
+        )
+        self.assertTrue(_turn_is_completed(state, "t", "u"))
+
+    def test_a_completed_session_is_enough(self) -> None:
+        from codex_autopilot.control import _turn_is_completed
+
+        state = self.state(
+            journal=[],
+            sessions=[{"thread_id": "t", "turn_id": "u", "status": "COMPLETED"}],
+        )
+        self.assertTrue(_turn_is_completed(state, "t", "u"))
+
+    def test_an_unfinished_session_is_not_a_witness(self) -> None:
+        from codex_autopilot.control import _turn_is_completed
+
+        state = self.state(
+            journal=[],
+            sessions=[{"thread_id": "t", "turn_id": "u", "status": "ACTIVE"}],
+        )
+        self.assertFalse(_turn_is_completed(state, "t", "u"))

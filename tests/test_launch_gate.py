@@ -578,6 +578,10 @@ class CausalPredecessorTests(unittest.TestCase):
         state.lifecycle_journal = [
             {"event": "turn_identity_bound", "thread_id": "owner", "turn_id": "turn-1"}
         ]
+        # Вторым свидетельством служит закрытая сессия с тем же ходом,
+        # поэтому заглушке нужен явно пустой список - иначе проверяется
+        # поведение Mock, а не правила.
+        state.worker_sessions = []
         self.assertFalse(_turn_is_completed(state, "owner", "turn-1"))
 
     def test_another_threads_completion_does_not_count(self) -> None:

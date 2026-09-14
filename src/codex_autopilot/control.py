@@ -238,11 +238,25 @@ def _turn_is_completed(state: Any, thread_id: str, turn_id: str) -> bool:
     вставал с ошибкой про отсутствующего причинного предшественника.
     """
 
-    return any(
+    if any(
         str(item.get("event") or "") == "turn_completed"
         and str(item.get("thread_id") or "") == thread_id
         and str(item.get("turn_id") or "") == turn_id
         for item in state.lifecycle_journal
+    ):
+        return True
+    # Журнальная запись - не единственное доказательство. Прогоны,
+    # созданные до того, как дежурный инженер начал её писать, имеют
+    # завершённый ход и не имеют события: цепочка вставала на
+    # "automatic relay has no completed causal predecessor", а починить
+    # это можно было только правкой журнала руками - то есть подделкой
+    # записи о том, чего система не наблюдала. Закрытая сессия с тем же
+    # ходом является таким же наблюдением, сделанным в своё время.
+    return any(
+        str(item.get("thread_id") or "") == thread_id
+        and str(item.get("turn_id") or "") == turn_id
+        and item.get("status") == "COMPLETED"
+        for item in state.worker_sessions
     )
 
 
