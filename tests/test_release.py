@@ -147,8 +147,27 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIn(record, module.INTERNAL_DOCS)
         for internal in module.INTERNAL_DOCS:
             with self.subTest(internal=internal):
-                self.assertTrue((ROOT / internal).is_file(), internal)
                 self.assertNotIn(internal.split("/")[-1], module.USER_ITEMS)
+        # Прежде здесь требовалось, чтобы каждый внутренний документ лежал
+        # в дереве: спецификация была в git ради воркеров прогона. Решение
+        # отменено - в публичный репозиторий она не уходит вовсе. Тест
+        # остался и падал в чистом клоне: пользователь, склонировавший тег,
+        # получал красный набор тестов на ровном месте. Проверяется теперь
+        # то, что решено: целевой спецификации в публичном дереве нет.
+        # Проверяется отслеживание, а не наличие: у разработчика файл
+        # лежит на диске под .gitignore, а в публичный репозиторий не
+        # уходит. Первая версия этой проверки смотрела на диск и потому
+        # падала у того, кто с ним и работает.
+        for secret in ("docs/V1_TARGET.md", "docs/V1_RUN.md"):
+            with self.subTest(secret=secret):
+                self.assertIn(secret, module.INTERNAL_DOCS)
+                tracked = subprocess.run(
+                    ["git", "ls-files", "--error-unmatch", secret],
+                    cwd=ROOT, capture_output=True, text=True,
+                ).returncode
+                self.assertNotEqual(
+                    tracked, 0, f"{secret} не должен отслеживаться публичным репозиторием"
+                )
 
     def test_run_state_never_reaches_the_source_archive(self):
         """Состояние прогона принадлежит тому, кто здесь работал.
