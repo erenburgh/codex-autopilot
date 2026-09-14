@@ -82,6 +82,25 @@ class PreflightApprovalRequired(PreflightError):
         )
 
 
+def runtime_command_path() -> Path:
+    """Тот же путь, по которому запускается сам скилл.
+
+    Прошитый `~/Library/Application Support/...` работал бы только у
+    того, у кого рантайм лежит по умолчанию. Запускатель плагина
+    уважает CODEX_AUTOPILOT_RUNTIME, и выданная человеку команда обязана
+    указывать туда же - иначе она верна ровно у меня на машине.
+    """
+
+    override = os.environ.get("CODEX_AUTOPILOT_RUNTIME")
+    if override:
+        return Path(override)
+    # Рантайм знает своё место: <install_root>/current/runtime/src/...
+    candidate = Path(__file__).absolute().parents[3] / "bin/codex-autopilot"
+    if candidate.is_file():
+        return candidate
+    return Path.home() / "Library/Application Support/CodexAutopilot/current/bin/codex-autopilot"
+
+
 def _plan_file_for(project: Path) -> Path:
     """План, с которым команда разрешения запустится без вопросов."""
 
@@ -108,7 +127,7 @@ def approval_command(
     человеку - текст, который можно скопировать и запустить.
     """
 
-    runtime = Path.home() / "Library/Application Support/CodexAutopilot/current/bin/codex-autopilot"
+    runtime = runtime_command_path()
     parts = [
         f'"{runtime}"',
         "preflight",

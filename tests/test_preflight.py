@@ -786,3 +786,37 @@ class ApprovalArrivesAsACommandTests(unittest.TestCase):
 
         message = str(ProjectMemoryApprovalRequired("t", "T", "cmd"))
         self.assertIn("окна не будет", message)
+
+
+class TheCommandPointsAtTheRealRuntimeTests(unittest.TestCase):
+    """Команда обязана указывать туда, откуда скилл запускается у ЭТОГО
+    пользователя, а не туда, где он лежит у меня.
+
+    Запускатель плагина уважает CODEX_AUTOPILOT_RUNTIME. Первая версия
+    генератора прошивала `~/Library/Application Support/...` наглухо:
+    у любого, кто поставил рантайм иначе, выданная строка указывала бы
+    в пустоту - и это ровно тот класс "работает только у автора".
+    """
+
+    def test_an_override_wins(self) -> None:
+        from unittest import mock
+
+        from codex_autopilot.preflight import runtime_command_path
+
+        with mock.patch.dict(
+            "os.environ", {"CODEX_AUTOPILOT_RUNTIME": "/opt/ap/bin/codex-autopilot"}
+        ):
+            self.assertEqual(
+                str(runtime_command_path()), "/opt/ap/bin/codex-autopilot"
+            )
+
+    def test_the_command_uses_it(self) -> None:
+        from unittest import mock
+
+        from codex_autopilot.preflight import approval_command
+
+        with mock.patch.dict(
+            "os.environ", {"CODEX_AUTOPILOT_RUNTIME": "/opt/ap/bin/codex-autopilot"}
+        ):
+            command = approval_command(Path("/p"), Path("/p/plan.json"), "adaptive")
+        self.assertIn('"/opt/ap/bin/codex-autopilot"', command)
