@@ -233,18 +233,22 @@ def _reserve_in_state(
         )
     state.dispatcher_pid = None
     epoch = int(time.time()) if now_epoch is None else now_epoch
-    if state.rate_limit_until is not None:
-        if epoch < state.rate_limit_until:
-            state.status = "WAITING"
-            state.phase = "WAITING_RATE_LIMIT"
-            return ()
-        append_resilience_event(
-            state,
-            "rate_limit_cleared",
-            detail={"rate_limit_until": state.rate_limit_until},
-        )
-        state.rate_limit_until = None
-        _prepare_state(plan, state, now_epoch=epoch)
+    if state.rate_limit_until is not None and epoch < state.rate_limit_until:
+        state.status = "WAITING"
+        state.phase = "WAITING_RATE_LIMIT"
+        return ()
+    # _prepare_state снимает истёкший барьер лимитов и поднимает задачи,
+    # чей срок повтора уже прошёл. Прежде он вызывался только внутри
+    # ветки барьера: прогон, у которого барьера нет вовсе, сроки повторов
+    # не пересматривал никогда.
+    #
+    # Замерено: дежурный инженер закрыл инцидент и вышел, у M0 срок
+    # повтора истёк двенадцатью минутами ранее, задача осталась в
+    # RETRY_WAIT, резервирование смены плана увидело RETRY_WAIT и
+    # припарковало прогон в WAITING_RATE_LIMIT - при том что никакого
+    # лимита не было. Диспетчер вышел, будить стало некому, прогон из
+    # 24 задач встал навсегда с нулём выполненных.
+    _prepare_state(plan, state, now_epoch=epoch)
     # Сломанный пайплайн старше любой работы: пока инцидент доведён до
     # дежурного инженера, новых задач не берём, а заводим инженера.
     # Прежде эта фаза была только ярлыком в JSON, и прогон вставал молча.

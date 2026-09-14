@@ -429,7 +429,13 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         incidents.route_incident(self.incident_id, at=utc_now())
         incidents.ensure_pipeline_engineer(self.incident_id, at=utc_now())
 
-    def resolve_and_complete(self, final_message: str, *, dispatcher_authorized: bool = False):
+    def resolve_and_complete(
+        self,
+        final_message: str,
+        *,
+        dispatcher_authorized: bool = False,
+        reserve_before_retry: bool = False,
+    ):
         import os
         import time
 
@@ -457,8 +463,11 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         )
 
         self.future = int(time.time()) + 3_600
+        # Инженер заводится в момент срыва, а не через час после него:
+        # окно повтора сорвавшейся задачи на этот момент ещё открыто.
+        reserve_epoch = int(time.time()) if reserve_before_retry else self.future
         descriptor = self.reserve(
-            self.cfg, relay_owner_thread_id="owner-2", now_epoch=self.future
+            self.cfg, relay_owner_thread_id="owner-2", now_epoch=reserve_epoch
         )[0]
         activate_via_app_server(self.cfg, self.root, descriptor, "engineer-thread")
         incidents = PipelineIncidentStore(self.cfg.state_dir)
@@ -508,6 +517,28 @@ class ResolvedMustHandOverTests(unittest.TestCase):
             now_epoch=self.future,
             **extra,
         )
+
+    def test_a_retry_due_while_the_engineer_worked_is_picked_up(self) -> None:
+        """Срок повтора истёк, пока инженер чинил - задачу обязаны поднять.
+
+        Замерено на живом прогоне: инженер закрыл инцидент и вышел, у
+        задачи срок повтора истёк двенадцатью минутами раньше, и она
+        осталась в RETRY_WAIT. Резервирование увидело RETRY_WAIT и
+        припарковало прогон в WAITING_RATE_LIMIT - при том что никакого
+        барьера лимитов не было вовсе. Диспетчер вышел, будить стало
+        некому, прогон встал навсегда.
+        """
+
+        outcome = self.resolve_and_complete(
+            "инцидент закрыт\nPIPELINE_ENGINEER_STATUS: RESOLVED",
+            reserve_before_retry=True,
+        )
+        self.assertEqual(outcome.worker_status, "RESOLVED")
+        self.assertTrue(outcome.descriptors)
+        state = self.store.load()
+        self.assertEqual(state.task_states[self.task_id], "RUNNING")
+        self.assertNotIn(self.task_id, state.task_retry_at)
+        self.assertNotEqual(state.phase, "WAITING_RATE_LIMIT")
 
     def test_a_resolved_incident_hands_the_run_to_a_successor(self) -> None:
         outcome = self.resolve_and_complete(
