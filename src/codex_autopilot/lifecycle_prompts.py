@@ -15,7 +15,7 @@ from .config import Config
 from .lifecycle_base import DesktopLifecycleError
 from .language import is_russian
 from .memory import ProjectMemory
-from .plan import Plan, Task, plan_to_dict
+from .plan import GRAPH_PLAN_FIELDS, Plan, Task, plan_to_dict
 from .resilience import PLAN_CHANGE_RESULT_PREFIX
 from .run_state import RunState
 from .task_state import TaskState
@@ -50,6 +50,13 @@ def _replanner_prompt(
                 ],
             }
         )
+    # Отказы прошлых попыток. Без них модель переделывает вслепую и
+    # возвращает ту же ошибку: замерено на поле departments, которого
+    # нет в схеме плана.
+    rejections = [
+        {"reason": str(item.get("reason") or "")}
+        for item in (change.get("rejections") or [])
+    ]
     envelope = {
         "phase": "replanning",
         "request_id": change["id"],
@@ -64,8 +71,11 @@ def _replanner_prompt(
             "verified_task_contracts_immutable": True,
             "existing_task_ids_must_remain": True,
             "next_graph_version": plan.graph_version + 1,
+            "allowed_plan_fields": sorted(GRAPH_PLAN_FIELDS),
         },
     }
+    if rejections:
+        envelope["rejected_attempts"] = rejections
     payload = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
     finish = (
         f'{PLAN_CHANGE_RESULT_PREFIX} '
@@ -75,6 +85,23 @@ def _replanner_prompt(
         + str(plan.graph_version)
         + ',"plan":{...complete schema-3 plan...}}'
     )
+    retry_ru = ""
+    retry_en = ""
+    if rejections:
+        last = rejections[-1]["reason"]
+        allowed = ", ".join(sorted(GRAPH_PLAN_FIELDS))
+        retry_ru = (
+            f"\n\nПредыдущая попытка отклонена runtime: {last}. "
+            f"Граф не изменён. Верхнеуровневые поля плана ограничены этим "
+            f"списком и расширять его нельзя: {allowed}. Всё, что не входит "
+            f"в него, выражается внутри tasks и roles."
+        )
+        retry_en = (
+            f"\n\nThe previous attempt was rejected by the runtime: {last}. "
+            f"The graph is unchanged. Top-level plan fields are limited to this "
+            f"list and it cannot be extended: {allowed}. Anything else belongs "
+            f"inside tasks and roles."
+        )
     if is_russian(cfg.language):
         prompt = f"""Codex Autopilot AI Studio Runtime — свежий replanner.
 
@@ -82,7 +109,7 @@ def _replanner_prompt(
 
 AUTOPILOT_CONTEXT: {payload}
 
-Сначала полностью прочитай {cfg.skill_path}. При необходимости получи только перечисленные evidence ID через Project Memory. Не изменяй файлы, не запускай production и не становись manager: верни один полный schema-3 replacement graph. user_request переносит runtime - его возвращать не нужно. Дословно сохрани goal, model_strategy, контракты VERIFIED задач, структурированные RoleProfile и все существующие task ID; установи graph_version={plan.graph_version + 1}. Runtime заново проверит все ссылки, состояния и циклы и выполнит crash-safe commit. Reservation token: {token}.
+Сначала полностью прочитай {cfg.skill_path}. При необходимости получи только перечисленные evidence ID через Project Memory. Не изменяй файлы, не запускай production и не становись manager: верни один полный schema-3 replacement graph. user_request переносит runtime - его возвращать не нужно. Дословно сохрани goal, model_strategy, контракты VERIFIED задач, структурированные RoleProfile и все существующие task ID; установи graph_version={plan.graph_version + 1}. Runtime заново проверит все ссылки, состояния и циклы и выполнит crash-safe commit. Reservation token: {token}.{retry_ru}
 
 Последняя непустая строка должна быть единственной protocol line в точном формате:
 {finish}"""
@@ -93,7 +120,7 @@ Perform only the short {change['id']} replan for canonical directory {cfg.root}.
 
 AUTOPILOT_CONTEXT: {payload}
 
-Read {cfg.skill_path} completely first. Retrieve only listed evidence IDs from Project Memory if needed. Do not modify files, start production, or become a manager: return one complete schema-3 replacement graph. The runtime carries user_request over; do not return it. Preserve the goal, model_strategy, VERIFIED task contracts, structured RoleProfiles, and every existing task ID; set graph_version={plan.graph_version + 1}. The runtime will revalidate every reference, state, and cycle and perform the crash-safe commit. Reservation token: {token}.
+Read {cfg.skill_path} completely first. Retrieve only listed evidence IDs from Project Memory if needed. Do not modify files, start production, or become a manager: return one complete schema-3 replacement graph. The runtime carries user_request over; do not return it. Preserve the goal, model_strategy, VERIFIED task contracts, structured RoleProfiles, and every existing task ID; set graph_version={plan.graph_version + 1}. The runtime will revalidate every reference, state, and cycle and perform the crash-safe commit. Reservation token: {token}.{retry_en}
 
 The final non-empty line must be the only protocol line in this exact format:
 {finish}"""

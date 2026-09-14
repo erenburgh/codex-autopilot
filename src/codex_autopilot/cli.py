@@ -243,6 +243,27 @@ def _run_automatic_relay_dispatch(
         raise
 
 
+def _record_rate_limits(cfg, method: str, params: dict) -> None:
+    """Запомнить снимок лимитов, чтобы ёмкость считалась по свежим данным.
+
+    Планировщик сужает число воркеров по расходу окна. Без этой записи
+    он видел бы только то, что было на старте прогона, и продолжал бы
+    держать десяток, когда окно уже кончается.
+    """
+
+    if method != "account/rateLimits/updated":
+        return
+    snapshot = (params or {}).get("rateLimits")
+    if not isinstance(snapshot, dict):
+        return
+    try:
+        StateStore(cfg.state_dir).record_rate_limits(snapshot)
+    except Exception:
+        # Ёмкость - оптимизация, а не контракт: её обновление никогда не
+        # должно валить ход, который в этот момент идёт.
+        return
+
+
 def _print_relay_timeline(cfg, token: str, headline: str) -> None:
     """Печатать лестницу шагов из самого диспетчера, а не по запросу.
 
@@ -297,6 +318,11 @@ def _automatic_relay_loop(
         client = AppServerClient(
             cfg.desktop.binary,
             dispatcher_log,
+            # Лимиты приходят сами, событием, по ходу работы. Прежде
+            # ёмкость считалась от того, что preflight прочитал на старте:
+            # прогон на двадцать четыре задачи мог выесть окно и не узнать
+            # об этом до следующего запуска.
+            event_sink=lambda method, params: _record_rate_limits(cfg, method, params),
         )
         with client:
             outcome = run_automatic_app_server_turn(

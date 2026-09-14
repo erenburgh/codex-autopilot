@@ -20,6 +20,7 @@ from .resilience import (
     PlanChangeConflictError,
     PlanChangeProtocolError,
     active_plan_change,
+    append_resilience_event,
     commit_plan_change,
     parse_plan_change_request,
     parse_plan_change_result,
@@ -951,6 +952,139 @@ def _complete_pipeline_engineer(
     return CompletionOutcome(True, status, descriptors, False)
 
 
+# Сколько раз реплэннеру возвращают его же граф с причиной отказа.
+# Три попытки всего: одна исходная и две с текстом ошибки на руках. Если
+# модель трижды не попала в схему, дело не в случайности, и следующий ход
+# будет жечь лимиты впустую - прогон должен остановиться громко и назвать
+# человеку причину, а не молча крутиться.
+MAX_PLAN_CHANGE_REJECTIONS = 2
+
+
+def _reject_replanner_result(
+    cfg: Config,
+    *,
+    session: dict[str, Any],
+    thread_id: str,
+    turn_id: str,
+    reason: str,
+    request_id: str,
+    current_plan: Plan,
+    at: str | None,
+    now_epoch: int | None,
+    dispatcher_authorized: bool = False,
+) -> CompletionOutcome:
+    """Вернуть реплэннеру его граф с причиной отказа и дать переделать.
+
+    План не меняется: отвергнутый граф не пишется никуда. Меняется
+    только запись смены плана - в ней копится список отказов, который
+    попадает в следующий промпт. Задача-заказчик уходит в BLOCKED, и
+    обычный путь резервирования поднимает из него свежего реплэннера:
+    он уже умеет BLOCKED -> READY для этого случая.
+    """
+
+    timestamp = at or utc_now()
+    store = StateStore(cfg.state_dir)
+    coordinator = ResourceLockCoordinator(store, cfg.root)
+    descriptors: tuple[Any, ...] = ()
+    with coordinator.transaction():
+        state = store.load()
+        current = _active_session_by_thread(state, thread_id)
+        if current is None or current.get("reservation_token") != session.get(
+            "reservation_token"
+        ):
+            return CompletionOutcome(False, None, (), state.status == "DONE")
+        if _session_kind(current) != "replanner":
+            raise DesktopLifecycleError("plan change result came from a non-replanner task")
+        change = active_plan_change(state, request_id=request_id)
+        rejections = list(change.get("rejections") or [])
+        rejections.append({"at": timestamp, "reason": reason})
+        change["rejections"] = rejections
+        exhausted = len(rejections) > MAX_PLAN_CHANGE_REJECTIONS
+
+        current["turn_id"] = turn_id
+        current["final_status"] = "PLAN_CHANGE_REJECTED"
+        current["completed_at"] = timestamp
+        current["status"] = "COMPLETED"
+        current["plan_change_rejection"] = reason
+        _bind_resource_identity(
+            state,
+            str(current["reservation_token"]),
+            thread_id=thread_id,
+            turn_id=turn_id,
+        )
+        _append_event(state, "turn_identity_bound", current, timestamp)
+        _append_event(
+            state,
+            "turn_completed",
+            current,
+            timestamp,
+            detail="PLAN_CHANGE_REJECTED",
+        )
+        release_resources_in_state(
+            state,
+            str(current["resource_ownership_token"]),
+            reason="replanner returned an invalid graph",
+            now=timestamp,
+        )
+        task_id = str(current["task_id"])
+        state.active_task_ids = [
+            item for item in state.active_task_ids if item != task_id
+        ]
+        state.task_states = transition_task(
+            current_plan,
+            state.task_states,
+            task_id,
+            TaskState.BLOCKED,
+        )
+        append_resilience_event(
+            state,
+            "plan_change_rejected",
+            at=timestamp,
+            task_id=task_id,
+            plan_change_id=request_id,
+            detail={"reason": reason, "attempt": len(rejections)},
+        )
+        if exhausted:
+            # Бюджет исчерпан. Молчаливое ожидание здесь и есть та дыра,
+            # из-за которой прогон стоит без объяснения: остановка должна
+            # называть причину в статусе.
+            change["status"] = "REJECTED"
+            state.active_plan_change_id = None
+            state.status = "BLOCKED"
+            state.phase = "PLAN_CHANGE_REJECTED"
+            if dispatcher_authorized:
+                current["automatic_successor_tokens"] = []
+                current["automatic_dispatch_state"] = "COMPLETED"
+            store.save(state)
+            return CompletionOutcome(True, "PLAN_CHANGE_REJECTED", (), False)
+
+        change["status"] = "DRAINING"
+        descriptors = _reserve_in_state(
+            cfg,
+            current_plan,
+            state,
+            memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
+            relay_owner_thread_id=thread_id,
+            now_epoch=now_epoch,
+        )
+        if dispatcher_authorized:
+            current["automatic_successor_tokens"] = [
+                item.reservation_token for item in descriptors
+            ]
+            current["automatic_dispatch_state"] = (
+                "ADVANCING" if descriptors else "COMPLETED"
+            )
+        _finish_global_state(
+            current_plan,
+            state,
+            descriptors,
+            paused=store.pause_requested(),
+        )
+        store.save(state)
+    _materialize(descriptors)
+    return CompletionOutcome(True, "PLAN_CHANGE_REJECTED", descriptors, False)
+
+
 def _complete_replanner(
     cfg: Config,
     *,
@@ -973,7 +1107,26 @@ def _complete_replanner(
             profile=cfg.profile,
         )
     except (PlanChangeProtocolError, PlanChangeConflictError, ValueError) as exc:
-        raise DesktopLifecycleError(str(exc)) from exc
+        # Негодный граф - ошибка модели, а не поломка инфраструктуры.
+        # Прежде она поднималась как DesktopLifecycleError: диспетчер
+        # падал, открывался PIPELINE-тикет, и прогон вставал навсегда -
+        # дежурному инженеру чинить нечего, сломан не рантайм, а ответ.
+        # Замерено: реплэннер вернул поле departments, которого нет в
+        # схеме, и прогон из 24 задач простоял с нулём выполненных.
+        # Верифаер в такой ситуации возвращает работу воркеру с
+        # причиной; у реплэннера этого пути не было.
+        return _reject_replanner_result(
+            cfg,
+            session=session,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            reason=str(exc),
+            request_id=request_id,
+            current_plan=current_plan,
+            at=at,
+            now_epoch=now_epoch,
+            dispatcher_authorized=dispatcher_authorized,
+        )
 
     timestamp = at or utc_now()
     store = StateStore(cfg.state_dir)

@@ -415,24 +415,28 @@ def _reject_self_acceptance(plan: "Plan") -> None:
         )
 
 
+# Единственный список допустимых полей плана. Он же называется модели в
+# промпте реплэннера: иначе отказ "plan has unknown fields" не говорит,
+# какие поля вообще существуют, и переделка идёт вслепую.
+GRAPH_PLAN_FIELDS = frozenset(
+    {
+        "schema_version",
+        "graph_version",
+        "goal",
+        "user_request",
+        "model_strategy",
+        "execution_strategy",
+        "max_parallel_workers",
+        "computer_use_slots",
+        "roles",
+        "tasks",
+        "compatibility",
+    }
+)
+
+
 def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
-    _reject_unknown(
-        data,
-        {
-            "schema_version",
-            "graph_version",
-            "goal",
-            "user_request",
-            "model_strategy",
-            "execution_strategy",
-            "max_parallel_workers",
-            "computer_use_slots",
-            "roles",
-            "tasks",
-            "compatibility",
-        },
-        "plan",
-    )
+    _reject_unknown(data, set(GRAPH_PLAN_FIELDS), "plan")
     goal, user_request, strategy = _plan_header(
         data,
         profile,

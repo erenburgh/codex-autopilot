@@ -228,6 +228,12 @@ def render_project_status(
         ),
         (
             f"Plan change: {snapshot['plan_change']['id']} / {snapshot['plan_change']['status']}"
+            + (
+                f" — отклонён runtime ({snapshot['plan_change']['rejection_count']}): "
+                f"{snapshot['plan_change']['rejection']}"
+                if snapshot["plan_change"].get("rejection")
+                else ""
+            )
             if snapshot["plan_change"]
             else "Plan change: none"
         ),
@@ -286,23 +292,33 @@ def _active_sessions(state: RunState) -> dict[str, dict[str, Any]]:
 
 
 def _plan_change_status(state: RunState) -> dict[str, Any] | None:
-    if state.active_plan_change_id is None:
-        return None
+    selected = state.active_plan_change_id
+    if selected is None:
+        # Исчерпанная смена плана перестаёт быть активной, но прогон на
+        # ней стоит. Не показать её здесь значит оставить человека перед
+        # остановкой без причины - ровно то, из-за чего прогон молчал.
+        if state.phase != "PLAN_CHANGE_REJECTED":
+            return None
+        rejected = [
+            item for item in state.plan_changes if item.get("status") == "REJECTED"
+        ]
+        if not rejected:
+            return None
+        selected = str(rejected[-1]["id"])
     record = next(
-        (
-            item
-            for item in state.plan_changes
-            if item.get("id") == state.active_plan_change_id
-        ),
+        (item for item in state.plan_changes if item.get("id") == selected),
         None,
     )
     if record is None:
         return {"id": state.active_plan_change_id, "status": "UNKNOWN"}
+    rejections = list(record.get("rejections") or [])
     return {
         "id": str(record["id"]),
         "status": str(record["status"]),
         "requester_task_id": str(record["requester_task_id"]),
         "summary": str((record.get("request") or {}).get("summary") or ""),
+        "rejection": str(rejections[-1].get("reason") or "") if rejections else "",
+        "rejection_count": len(rejections),
     }
 
 

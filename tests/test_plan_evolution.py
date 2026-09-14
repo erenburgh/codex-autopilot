@@ -24,6 +24,7 @@ from codex_autopilot.plan import (
     validate_plan_change,
 )
 from codex_autopilot.resilience import (
+    active_plan_change,
     PLAN_CHANGE_REQUEST_PREFIX,
     PLAN_CHANGE_RESULT_PREFIX,
     PlanChangeProtocolError,
@@ -309,26 +310,140 @@ class PlanEvolutionTests(unittest.TestCase):
         cyclic = self.candidate_with_prerequisite(current)
         cyclic["tasks"][0]["depends_on"] = ["A"]
         before_plan = (cfg.state_dir / "plan.json").read_bytes()
-        before_state = (cfg.state_dir / "run-state.json").read_bytes()
-        with self.assertRaisesRegex(DesktopLifecycleError, "cycle"):
-            complete_desktop_worker(
+        outcome = complete_desktop_worker(
+            cfg,
+            thread_id="replanner-PC1",
+            turn_id="turn-PC1",
+            final_message=PLAN_CHANGE_RESULT_PREFIX
+            + " "
+            + json.dumps(
+                {
+                    "request_id": "PC1",
+                    "base_graph_version": 1,
+                    "plan": cyclic,
+                },
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+        )
+        # Негодный граф не применяется никогда - это и было содержанием
+        # прежней проверки. Изменилось одно: отказ больше не валит
+        # диспетчер, а возвращается реплэннеру с причиной.
+        self.assertEqual((cfg.state_dir / "plan.json").read_bytes(), before_plan)
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        state = store.load()
+        self.assertEqual(state.graph_version, 1)
+        change = active_plan_change(state, request_id="PC1")
+        self.assertEqual(change["status"], "REPLANNER_RESERVED")
+        self.assertIn("cycle", change["rejections"][-1]["reason"])
+        self.assertEqual(len(outcome.descriptors), 1)
+        self.assertEqual(
+            self.session_kind(state, outcome.descriptors[0].reservation_token),
+            "replanner",
+        )
+
+    def session_kind(self, state, token: str) -> str:
+        return next(
+            str(item["kind"])
+            for item in state.worker_sessions
+            if item.get("reservation_token") == token
+        )
+
+    def test_rejected_graph_returns_its_reason_to_the_next_replanner(self) -> None:
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need cycle-safe replan.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.mark_active(store, replanner.reservation_token, "replanner-PC1")
+        current = load_plan(cfg.state_dir, cfg.profile)
+        unknown_field = self.candidate_with_prerequisite(current)
+        unknown_field["departments"] = [{"id": "core", "name": "Core"}]
+        outcome = complete_desktop_worker(
+            cfg,
+            thread_id="replanner-PC1",
+            turn_id="turn-PC1",
+            final_message=PLAN_CHANGE_RESULT_PREFIX
+            + " "
+            + json.dumps(
+                {"request_id": "PC1", "base_graph_version": 1, "plan": unknown_field},
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+        )
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        prompt = outcome.descriptors[0].prompt
+        # Причина отказа должна дойти до модели двумя путями: машинным -
+        # в конверте, и словами - в самой инструкции. Иначе переделка
+        # идёт вслепую и возвращает ту же ошибку.
+        self.assertIn("rejected_attempts", prompt)
+        self.assertIn("allowed_plan_fields", prompt)
+        self.assertIn("The previous attempt was rejected by the runtime", prompt)
+        self.assertIn("plan has unknown fields: ['departments']", prompt)
+
+    def test_replanner_that_never_matches_the_schema_stops_the_run_loudly(self) -> None:
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need cycle-safe replan.")
+        pending = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        current = load_plan(cfg.state_dir, cfg.profile)
+        bad = self.candidate_with_prerequisite(current)
+        bad["departments"] = [{"id": "core", "name": "Core"}]
+        outcome = None
+        for attempt in range(3):
+            self.mark_active(store, pending.reservation_token, f"replanner-{attempt}")
+            outcome = complete_desktop_worker(
                 cfg,
-                thread_id="replanner-PC1",
-                turn_id="turn-PC1",
+                thread_id=f"replanner-{attempt}",
+                turn_id=f"turn-{attempt}",
                 final_message=PLAN_CHANGE_RESULT_PREFIX
                 + " "
                 + json.dumps(
-                    {
-                        "request_id": "PC1",
-                        "base_graph_version": 1,
-                        "plan": cyclic,
-                    },
+                    {"request_id": "PC1", "base_graph_version": 1, "plan": bad},
                     separators=(",", ":"),
                 ),
                 hook_gate=lambda _cfg: None,
             )
-        self.assertEqual((cfg.state_dir / "plan.json").read_bytes(), before_plan)
-        self.assertEqual((cfg.state_dir / "run-state.json").read_bytes(), before_state)
+            if not outcome.descriptors:
+                break
+            pending = outcome.descriptors[0]
+        # Бесконечно возвращать одну и ту же ошибку значит жечь лимиты.
+        # Прогон обязан встать и назвать причину человеку.
+        self.assertEqual(outcome.descriptors, ())
+        state = store.load()
+        self.assertEqual(state.status, "BLOCKED")
+        self.assertEqual(state.phase, "PLAN_CHANGE_REJECTED")
+        self.assertIsNone(state.active_plan_change_id)
+        record = next(item for item in state.plan_changes if item["id"] == "PC1")
+        self.assertEqual(record["status"], "REJECTED")
+        self.assertEqual(len(record["rejections"]), 3)
+        # Остановка обязана называть причину там, куда человек смотрит.
+        from codex_autopilot.control import status_text
+
+        text = status_text(self.root)
+        self.assertIn("PC1 / REJECTED", text)
+        self.assertIn("departments", text)
 
     def test_interrupted_two_file_plan_commit_recovers_by_redo(self) -> None:
         cfg, store = self.initialize(graph([task("A")], max_workers=1))

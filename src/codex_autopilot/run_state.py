@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from typing import Any
 import uuid
 
 from .plan import (
@@ -128,6 +129,7 @@ class StateStore:
         self.lock_path = state_dir / "dispatcher.lock"
         self.pause_path = state_dir / "pause-requested"
         self.launch_path = state_dir / "launch-request.json"
+        self.rate_limits_path = state_dir / "rate-limits.json"
         self._lock_handle = None
 
     def acquire(self) -> None:
@@ -147,7 +149,9 @@ class StateStore:
 
     def load(self) -> RunState:
         if not self.path.exists():
-            return RunState()
+            # Снимок лимитов живёт отдельно от журнала и может появиться
+            # раньше него: событие приходит в первые же секунды хода.
+            return RunState(rate_limits=self.read_rate_limits())
         data = json.loads(self.path.read_text(encoding="utf-8"))
         schema = data.get("schema_version")
         if schema == LEGACY_RUN_STATE_SCHEMA_VERSION:
@@ -159,8 +163,48 @@ class StateStore:
             )
         known = RunState.__dataclass_fields__
         state = RunState(**{key: value for key, value in data.items() if key in known})
+        limits = self.read_rate_limits()
+        if limits is not None:
+            state.rate_limits = limits
         _validate_state(state)
         return state
+
+    def read_rate_limits(self) -> dict[str, Any] | None:
+        """Последний снимок лимитов, если он вообще был записан."""
+
+        try:
+            payload = json.loads(self.rate_limits_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def record_rate_limits(self, snapshot: dict[str, Any]) -> bool:
+        """Запомнить снимок лимитов, не трогая сам журнал прогона.
+
+        Событие приходит из читающего потока App Server, параллельно
+        диспетчеру. Если писать его в run-state.json, снимок пришлось бы
+        загружать и сохранять целиком - и запись, начатая до чужого
+        перехода сессии, затёрла бы этот переход. Отдельный файл имеет
+        ровно одного писателя и не может отменить ничего чужого.
+        """
+
+        if not isinstance(snapshot, dict) or not snapshot:
+            return False
+        if self.read_rate_limits() == snapshot:
+            return False
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        fd, raw = tempfile.mkstemp(prefix=".rate-limits-", dir=self.state_dir)
+        temp = Path(raw)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(snapshot, handle, ensure_ascii=False, allow_nan=False)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, self.rate_limits_path)
+        finally:
+            temp.unlink(missing_ok=True)
+        return True
 
     def save(self, state: RunState) -> None:
         _validate_state(state)
