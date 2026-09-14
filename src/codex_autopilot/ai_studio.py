@@ -26,7 +26,24 @@ HARD_MAX_MEMORY_RECORDS = 20
 HARD_MAX_DEPENDENCY_OUTPUTS = 20
 MAX_MEMORY_STATEMENT_CHARS = 800
 MAX_OUTPUT_EXCERPT_CHARS = 2_000
-MAX_PROMPT_CHARS = 64_000
+# Имя встроенного сервера Project Memory. Совпадение с preflight
+# закреплено тестом: разойдись они, воркер получил бы инструкцию
+# позвать сервер, которого нет.
+MEMORY_SERVER_NAME = "codex_autopilot_memory"
+# Окно контекста, снятое с живого события App Server `turn` (поле
+# model_context_window) 14.09.2026 на модели Sol. Прежде здесь стояло
+# голое 64_000 без единой строки обоснования - ни комментария, ни
+# упоминания в docs/.
+OBSERVED_CONTEXT_WINDOW_TOKENS = 258_400
+# Промпту отводится четверть окна. Остальное нужно воркеру на чтение
+# файлов, вывод инструментов и собственный ответ: на том же прогоне
+# один ход исполнителя израсходовал 144 368 входных токенов - вдевятеро
+# больше прежнего потолка целиком.
+PROMPT_BUDGET_SHARE = 0.25
+# Консервативно для смешанного русско-английского JSON, где токен
+# короче английского.
+CHARS_PER_TOKEN = 3.0
+MAX_PROMPT_CHARS = int(OBSERVED_CONTEXT_WINDOW_TOKENS * PROMPT_BUDGET_SHARE * CHARS_PER_TOKEN)
 
 PIPELINE_ENGINEER_SYSTEM_ROLE = RoleProfile(
     id="pipeline-engineer",
@@ -267,12 +284,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             "task": self._task_contract(task),
             "role": self._role_contract(role),
             "definition_of_done": list(task.definition_of_done),
-            "acceptance_gate": {
-                "original_user_request": self.plan.user_request,
-                "run_goal": self.plan.goal,
-                "task_definition_of_done": list(task.definition_of_done),
-                "implementation_tests_are_evidence_only": True,
-            },
+            "acceptance_gate": self._acceptance_gate(task),
             "resources": [
                 {
                     "id": item.id,
@@ -316,10 +328,23 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             revision_number=revision_number,
         )
         if len(prompt) > MAX_PROMPT_CHARS:
+            # Прежнее сообщение велело "сузить контекст задачи", не
+            # называя виновника. На прогоне v1.0 это отправляло чинить
+            # задачу в 395 символов, пока 51 475 занимал вложенный
+            # копией запрос пользователя.
+            largest = ", ".join(
+                f"{key}={len(json.dumps(value, ensure_ascii=False))}"
+                for key, value in sorted(
+                    envelope.items(),
+                    key=lambda item: len(json.dumps(item[1], ensure_ascii=False)),
+                    reverse=True,
+                )[:3]
+            )
             raise ContextBoundaryError(
-                f"{phase} prompt for {task_id} exceeds {MAX_PROMPT_CHARS} characters; "
-                "the rules block is not truncatable, so this is a context-planning "
-                "defect: narrow the task context instead"
+                f"{phase} prompt for {task_id} is {len(prompt)} characters against a "
+                f"{MAX_PROMPT_CHARS} budget derived from the model context window; "
+                f"the rules block is not truncatable, so narrow the task context. "
+                f"Largest blocks: {largest}"
             )
         return prompt
 
@@ -548,6 +573,35 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
     def _bounded_text(value: str, limit: int) -> str:
         return value if len(value) <= limit else value[: limit - 1] + "…"
 
+    def _acceptance_gate(self, task: Task) -> dict[str, Any]:
+        """Исходный запрос доступен по MCP, а не вложен копией.
+
+        Текст пользователя неизменен на весь прогон и сузить его нельзя.
+        Копия в конверте повторяла его по разу на каждую задачу: в
+        прогоне v1.0 это 51 475 символов из 62 635 при 395 символах самой
+        задачи, и любая задача с зависимостями пробивала потолок. Ссылка
+        с длиной и sha256 сохраняет контракт приёмки дословно и делает
+        подмену текста заметной.
+        """
+
+        request = self.plan.user_request
+        return {
+            "original_user_request": {
+                "verbatim_in_prompt": False,
+                "chars": len(request),
+                "sha256": hashlib.sha256(request.encode("utf-8")).hexdigest(),
+                "retrieval": {
+                    "server": MEMORY_SERVER_NAME,
+                    "tool": "memory",
+                    "arguments": {"operation": "current", "task_id": task.id},
+                    "field": "user_request",
+                },
+            },
+            "run_goal": self.plan.goal,
+            "task_definition_of_done": list(task.definition_of_done),
+            "implementation_tests_are_evidence_only": True,
+        }
+
     def _render_prompt(
         self,
         task: Task,
@@ -644,7 +698,7 @@ AUTOPILOT_BRIEF
 
 Брифинг берётся только из контракта задачи выше. Сроков в нём нет: время выполнения автопилоту неизвестно, и названное наугад - обещание, которого никто не давал. Дальше работай как обычно.
 
-Сначала полностью прочитай {self.skill_path}. Используй только структурированную задачу, роль, DoD, проверенное состояние, выбранные dependency outputs, issues и ресурсы выше. При необходимости получай перечисленные record/evidence ID напрямую через Project Memory. NO EVIDENCE -> NO TRUTH. Сохраняй чужие изменения; не создавай commit, tag, push, publish, reset или clean. Обнови свой задачный файл передачи .codex-autopilot/handoff/{task.id}.md — это обязательный чекпойнт завершения, и он твой: запись другой задачи его не заменяет. Общий HANDOFF.md остаётся необязательной запиской для человека. Этот task остаётся Desktop-owned; не создавай, не запускай и не отправляй сообщения другим задачам. После финальной protocol line уже работающий локальный dispatcher получает авторитетное App Server completion, полностью закрывает App Server-процесс этого task, детерминированно обновляет state и запускает точного successor. Stop hook автоматически управляемого turn служит только наблюдателем. Если Pipeline Engineer устранил сбой, DevOps только повторно активирует causal dispatcher и никогда не создаёт и не запускает destination task. Reservation token: {reservation_token}.
+Сначала полностью прочитай {self.skill_path}. Используй только структурированную задачу, роль, DoD, проверенное состояние, выбранные dependency outputs, issues и ресурсы выше. При необходимости получай перечисленные record/evidence ID напрямую через Project Memory. Исходный запрос пользователя в промпт не вложен: он один на весь прогон и берётся одним вызовом Project Memory — сервер codex_autopilot_memory, инструмент memory, аргументы {{"operation":"current","task_id":"{task.id}"}}, поле user_request. В acceptance_gate.original_user_request лежат его длина и sha256 — сверь их, прежде чем на него опираться; расхождение означает, что текст подменился, и это повод остановиться, а не продолжать. NO EVIDENCE -> NO TRUTH. Сохраняй чужие изменения; не создавай commit, tag, push, publish, reset или clean. Обнови свой задачный файл передачи .codex-autopilot/handoff/{task.id}.md — это обязательный чекпойнт завершения, и он твой: запись другой задачи его не заменяет. Общий HANDOFF.md остаётся необязательной запиской для человека. Этот task остаётся Desktop-owned; не создавай, не запускай и не отправляй сообщения другим задачам. После финальной protocol line уже работающий локальный dispatcher получает авторитетное App Server completion, полностью закрывает App Server-процесс этого task, детерминированно обновляет state и запускает точного successor. Stop hook автоматически управляемого turn служит только наблюдателем. Если Pipeline Engineer устранил сбой, DevOps только повторно активирует causal dispatcher и никогда не создаёт и не запускает destination task. Reservation token: {reservation_token}.
 
 {finish}"""
         return f"""{headline}
@@ -667,7 +721,7 @@ Resources: <what is held for writing, or "none">
 
 The brief comes only from the task contract above. It carries no time estimate: Autopilot does not know how long the work takes, and a number picked at random is a promise nobody made. Then work as usual.
 
-Read {self.skill_path} completely first. Use only the structured task, role, DoD, verified state, selected dependency outputs, issues, and resources above. Retrieve listed record/evidence IDs directly through Project Memory when needed. NO EVIDENCE -> NO TRUTH. Preserve unrelated changes; do not commit, tag, push, publish, reset, or clean. Update your own task handoff file .codex-autopilot/handoff/{task.id}.md - it is the required completion checkpoint and it is yours: another task's write does not satisfy it. The shared HANDOFF.md stays an optional human-facing note. This task remains Desktop-owned; never create, start, or message other tasks. After the final protocol line, the already-running local dispatcher consumes the authoritative App Server completion, closes this task's App Server process, advances deterministic state, and starts the exact successor. The Stop hook is only an observer for an automatically owned turn. If Pipeline Engineer repaired a fault, DevOps only re-arms the causal dispatcher and never creates or starts the destination task. Reservation token: {reservation_token}.
+Read {self.skill_path} completely first. Use only the structured task, role, DoD, verified state, selected dependency outputs, issues, and resources above. Retrieve listed record/evidence IDs directly through Project Memory when needed. The user's original request is not embedded in this prompt: it is a single text for the whole run and is fetched with one Project Memory call - server codex_autopilot_memory, tool memory, arguments {{"operation":"current","task_id":"{task.id}"}}, field user_request. acceptance_gate.original_user_request carries its length and sha256 - check them before relying on the text; a mismatch means the text changed underneath you and is a reason to stop, not to continue. NO EVIDENCE -> NO TRUTH. Preserve unrelated changes; do not commit, tag, push, publish, reset, or clean. Update your own task handoff file .codex-autopilot/handoff/{task.id}.md - it is the required completion checkpoint and it is yours: another task's write does not satisfy it. The shared HANDOFF.md stays an optional human-facing note. This task remains Desktop-owned; never create, start, or message other tasks. After the final protocol line, the already-running local dispatcher consumes the authoritative App Server completion, closes this task's App Server process, advances deterministic state, and starts the exact successor. The Stop hook is only an observer for an automatically owned turn. If Pipeline Engineer repaired a fault, DevOps only re-arms the causal dispatcher and never creates or starts the destination task. Reservation token: {reservation_token}.
 
 {finish}"""
 
