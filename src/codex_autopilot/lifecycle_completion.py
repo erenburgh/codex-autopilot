@@ -309,6 +309,13 @@ def complete_desktop_worker(
             replanner_result = parse_plan_change_result(final_message)
         except PlanChangeProtocolError as exc:
             raise DesktopLifecycleError(str(exc)) from exc
+        # Владение переходом передаётся и сюда. Инженеру и воркеру его
+        # чинили по отдельности, реплэннера пропустили: сторона
+        # вызываемого была готова, а вызывающий флаг не передавал. Из-за
+        # этого весь учёт преемника у реплэннера был недостижим из
+        # продакшена, и следующий шаг отвечал "current dispatcher does
+        # not own the completed-to-successor transition" - на первой же
+        # смене плана.
         return _complete_replanner(
             cfg,
             session=session,
@@ -317,6 +324,8 @@ def complete_desktop_worker(
             result=replanner_result,
             at=at,
             now_epoch=now_epoch,
+            dispatcher_authorized=dispatcher_authorized,
+            dispatcher_pid=dispatcher_pid,
         )
     try:
         plan_change_request = parse_plan_change_request(final_message)

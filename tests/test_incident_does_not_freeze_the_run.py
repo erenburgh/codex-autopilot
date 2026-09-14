@@ -168,3 +168,33 @@ class IncidentScopeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecoverySlotStatusTests(unittest.TestCase):
+    """Статус обязан читаться и когда слот восстановления занят.
+
+    Писатель клал в слот два ключа, читатель просил третий - и `status`
+    падал KeyError ровно тогда, когда человек приходил разбираться.
+    """
+
+    def test_a_busy_recovery_slot_still_renders(self) -> None:
+        from codex_autopilot.pipeline_engineer import render_pipeline_status
+
+        base = {
+            "phase": "PIPELINE_ENGINEER",
+            "incident_count": 1,
+            "paused_task_ids": ["A"],
+            "pending_transport": [],
+            "incidents": [],
+        }
+        full = render_pipeline_status(
+            base | {"recovery_slot": {"incident_id": "inc-1", "token": "t", "owner_id": "own-1"}}
+        )
+        self.assertIn("inc-1", full)
+        self.assertIn("own-1", full)
+        # Слот прежней записи владельца не несёт. Статус обязан читаться и
+        # на нём: иначе команда `status` перестаёт работать навсегда.
+        legacy = render_pipeline_status(
+            base | {"recovery_slot": {"incident_id": "inc-1", "token": "t"}}
+        )
+        self.assertIn("inc-1", legacy)

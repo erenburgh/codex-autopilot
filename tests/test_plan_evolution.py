@@ -349,6 +349,73 @@ class PlanEvolutionTests(unittest.TestCase):
             if item.get("reservation_token") == token
         )
 
+    def test_the_replanner_hands_its_successor_to_the_same_dispatcher(self) -> None:
+        """Владение переходом обязано дойти и до реплэннера.
+
+        Инженеру и воркеру это чинили по отдельности, реплэннера
+        пропустили: сторона вызываемого была готова, а вызывающий флаг не
+        передавал. Весь учёт преемника у реплэннера был недостижим из
+        продакшена, и следующий шаг отвечал "current dispatcher does not
+        own the completed-to-successor transition" - на первой же смене
+        плана, то есть почти сразу.
+        """
+
+        import os
+
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need a replan.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.mark_active(store, replanner.reservation_token, "replanner-PC1")
+
+        # Живая картина: ход реплэннера ведёт этот же процесс-диспетчер.
+        state = store.load()
+        for item in state.worker_sessions:
+            if item.get("reservation_token") == replanner.reservation_token:
+                item["automatic_dispatch_pid"] = os.getpid()
+                item["automatic_dispatch_state"] = "RUNNING"
+        store.save(state)
+
+        current = load_plan(cfg.state_dir, cfg.profile)
+        candidate = self.candidate_with_prerequisite(current)
+        outcome = complete_desktop_worker(
+            cfg,
+            thread_id="replanner-PC1",
+            turn_id="turn-PC1",
+            final_message=PLAN_CHANGE_RESULT_PREFIX
+            + " "
+            + json.dumps(
+                {"request_id": "PC1", "base_graph_version": 1, "plan": candidate},
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+            dispatcher_reservation_token=replanner.reservation_token,
+            dispatcher_pid=os.getpid(),
+        )
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_APPLIED")
+        self.assertTrue(outcome.descriptors)
+        session = next(
+            item
+            for item in store.load().worker_sessions
+            if item.get("reservation_token") == replanner.reservation_token
+        )
+        self.assertEqual(session.get("automatic_dispatch_state"), "ADVANCING")
+        self.assertEqual(
+            session.get("automatic_successor_tokens"),
+            [item.reservation_token for item in outcome.descriptors],
+        )
+
     def test_rejected_graph_returns_its_reason_to_the_next_replanner(self) -> None:
         cfg, store = self.initialize(graph([task("A")], max_workers=1))
         descriptor = reserve_ready_frontier(
