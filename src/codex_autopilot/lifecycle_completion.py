@@ -829,6 +829,12 @@ def _complete_pipeline_engineer(
         if escalation_code:
             current["escalation_code"] = escalation_code
         current["completed_at"] = timestamp
+        # Ход инженера завершился так же, как любой другой, и барьер
+        # причинности читает именно это событие. Прежде инженер писал
+        # только своё `pipeline_engineer_completed`: его завершённый ход
+        # оставался для барьера невидимым, и преемника некому было
+        # поднять - "automatic relay has no completed causal predecessor".
+        _append_event(state, "turn_completed", current, timestamp, detail=status)
         _append_event(
             state,
             "pipeline_engineer_completed",

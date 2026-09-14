@@ -524,6 +524,24 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         self.assertEqual(state.task_states[self.task_id], "RUNNING")
         self.assertNotEqual(state.phase, "PIPELINE_ENGINEER_NO_SUCCESSOR")
 
+    def test_the_engineer_turn_is_visible_to_the_causal_barrier(self) -> None:
+        """Барьер читает turn_completed, а не статус сессии.
+
+        Прежде инженер писал только `pipeline_engineer_completed`: его
+        завершённый ход оставался невидимым, и преемника некому было
+        поднять - `automatic relay has no completed causal predecessor`.
+        """
+
+        self.resolve_and_complete("готово\nPIPELINE_ENGINEER_STATUS: RESOLVED")
+        journal = self.store.load().lifecycle_journal
+        completed = [
+            item
+            for item in journal
+            if item.get("event") == "turn_completed"
+            and item.get("thread_id") == "engineer-thread"
+        ]
+        self.assertTrue(completed, "ход инженера не отмечен как завершённый")
+
     def test_the_engineer_marks_the_successor_as_its_own_transition(self) -> None:
         """Без этого учёта диспетчер отказывается вести цепочку дальше.
 
