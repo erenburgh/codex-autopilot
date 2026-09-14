@@ -66,11 +66,6 @@ class ItNarrowsOnlyWhenTheLimitIsNearTests(unittest.TestCase):
     def test_almost_gone_leaves_one(self) -> None:
         self.assertEqual(self.budget(95).workers, 1)
 
-    def test_credits_soften_the_narrowing(self) -> None:
-        """Списание продолжится за окном - запас считается щедрее."""
-
-        self.assertEqual(self.budget(85, hasCredits=True).workers, 5)
-
     def test_every_narrowing_names_its_reason(self) -> None:
         budget = self.budget(85)
         self.assertTrue(budget.limited)
@@ -131,15 +126,31 @@ class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
         self.assertIn("потолка", text)
         self.assertIn("скажите число", text)
 
-    def test_credits_are_told_the_default_and_the_choice(self) -> None:
-        text = self.notice({"credits": {"hasCredits": True}})
-        self.assertIn("10", text)
-        self.assertIn("больше или меньше", text)
+    def test_auto_topup_is_told_it_has_no_ceiling(self) -> None:
+        """Автосписание и есть безлимит - это одно положение, не два."""
 
-    def test_a_plan_tier_is_named_back_to_the_user(self) -> None:
-        text = self.notice({"planType": "pro", "credits": {}})
-        self.assertIn("pro", text)
+        text = self.notice({"credits": {"hasCredits": True}})
+        self.assertIn("потолка", text)
+        self.assertIn("скажите число", text)
+
+    def test_a_plan_tier_is_named_as_the_user_knows_it(self) -> None:
+        """App Server зовёт его prolite, человек читает свой план как Pro."""
+
+        text = self.notice({"planType": "prolite", "credits": {}})
+        self.assertIn("Pro", text)
+        self.assertNotIn("prolite", text)
         self.assertIn("10", text)
+
+    def test_an_unknown_tier_is_not_invented(self) -> None:
+        text = self.notice({"planType": "some-new-tier", "credits": {}})
+        self.assertNotIn("some-new-tier", text)
+        self.assertIn("10", text)
+
+    def test_plus_is_told_a_narrower_default_and_why(self) -> None:
+        text = self.notice({"planType": "plus", "credits": {}})
+        self.assertIn("Plus", text)
+        self.assertIn("3", text)
+        self.assertIn("узкое", text)
 
     def test_a_number_the_user_named_is_confirmed_not_questioned(self) -> None:
         text = self.notice({"planType": "pro", "credits": {}}, 4)
@@ -162,3 +173,46 @@ class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
         for skill in root.glob("plugins/*/skills/*/SKILL.md"):
             with self.subTest(skill=skill.parts[-3]):
                 self.assertIn("Ёмкость:", skill.read_text(encoding="utf-8"))
+
+
+class AStatedSpendCapOutranksCreditsTests(unittest.TestCase):
+    """Предел, поставленный человеком, сильнее автосписания.
+
+    Он его и ставил, чтобы списание остановилось. Проверка стояла ПОСЛЕ
+    кредитов и потому не срабатывала вовсе у тех, ради кого написана.
+    """
+
+    def test_a_reached_cap_stops_even_with_credits(self) -> None:
+        budget = worker_budget(
+            10, {"credits": {"hasCredits": True}, "spendControlReached": True}
+        )
+        self.assertEqual(budget.workers, 1)
+        self.assertIn("предел расходов", budget.reason)
+
+    def test_a_reached_rate_limit_stops_even_with_credits(self) -> None:
+        budget = worker_budget(
+            10, {"credits": {"unlimited": True}, "rateLimitReachedType": "primary"}
+        )
+        self.assertEqual(budget.workers, 1)
+
+    def test_credits_without_a_cap_stay_unbounded(self) -> None:
+        self.assertIsNone(worker_budget(10, {"credits": {"hasCredits": True}}).workers)
+
+
+class PlusGetsANarrowerDefaultTests(unittest.TestCase):
+    """Окно Plus узкое: десяток воркеров сжёг бы его за один прогон."""
+
+    def workers(self, plan_type: str) -> int:
+        from codex_autopilot.usage import default_workers
+
+        return default_workers({"planType": plan_type})
+
+    def test_plus_defaults_to_three(self) -> None:
+        self.assertEqual(self.workers("plus"), 3)
+
+    def test_pro_keeps_ten(self) -> None:
+        self.assertEqual(self.workers("prolite"), 10)
+        self.assertEqual(self.workers("pro"), 10)
+
+    def test_an_unknown_tier_keeps_ten(self) -> None:
+        self.assertEqual(self.workers("some-new-tier"), 10)

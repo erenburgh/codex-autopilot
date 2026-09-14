@@ -66,18 +66,22 @@ def worker_budget(
 
     credits = snapshot.get("credits")
     credits = credits if isinstance(credits, Mapping) else {}
-    if credits.get("unlimited") and not declared_by_user:
-        # Потолка нет: сколько задач граф откроет одновременно, столько и
-        # пойдёт. Навязывать здесь число значило бы ограничивать того,
-        # кто платит по факту.
-        return WorkerBudget(None, "безлимитный аккаунт: потолка нет", False)
-    if credits.get("unlimited"):
-        return WorkerBudget(declared, "безлимитный аккаунт, число задал пользователь", False)
-
+    # Предел, заданный самим человеком, сильнее любых кредитов: он его и
+    # ставил, чтобы списание остановилось. Прежде эта проверка стояла
+    # ПОСЛЕ кредитов и потому не срабатывала вовсе у тех, ради кого была
+    # написана - у аккаунтов с автосписанием.
     if snapshot.get("spendControlReached"):
         return WorkerBudget(1, "достигнут предел расходов, заданный пользователем", True)
     if snapshot.get("rateLimitReachedType"):
         return WorkerBudget(1, "лимит уже упёрт", True)
+
+    if _burns_without_a_wall(credits):
+        # Автосписание и есть безлимит: окно лимита такому аккаунту не
+        # стена, списание идёт дальше. Потолка нет - сколько задач граф
+        # откроет одновременно, столько и пойдёт.
+        if declared_by_user:
+            return WorkerBudget(declared, "списание без ограничений, число задал пользователь", False)
+        return WorkerBudget(None, "списание без ограничений: потолка нет", False)
 
     primary = snapshot.get("primary")
     primary = primary if isinstance(primary, Mapping) else {}
@@ -86,11 +90,6 @@ def worker_budget(
         return WorkerBudget(declared, "расход окна неизвестен", False)
 
     remaining = max(0.0, 100.0 - float(used))
-    # Кредиты смягчают: списание продолжится за окном, поэтому запас
-    # считается на одну ступень щедрее.
-    if credits.get("hasCredits"):
-        remaining = min(100.0, remaining + 25.0)
-
     if remaining >= 50:
         return WorkerBudget(declared, f"израсходовано {used:.0f}% окна", False)
     if remaining >= 25:
@@ -113,31 +112,90 @@ def capacity_notice(limits: Mapping[str, Any] | None, declared: int | None) -> s
     snapshot = _snapshot(limits)
     credits = snapshot.get("credits")
     credits = credits if isinstance(credits, Mapping) else {}
-    plan_type = str(snapshot.get("planType") or "").strip()
+    plan_type = _human_plan_name(snapshot.get("planType"))
 
     if declared is not None:
         return (
             f"Параллельных воркеров: {declared} - как вы указали. "
             "Изменить можно в любой момент, сказав другое число."
         )
-    if credits.get("unlimited"):
+    if _burns_without_a_wall(credits):
         return (
-            "У вас безлимитный аккаунт, поэтому потолка параллельных воркеров нет: "
+            "У вас списание без ограничений, поэтому потолка параллельных воркеров нет: "
             "одновременно пойдёт столько задач, сколько откроет план. "
             "Если хотите ограничить - скажите число."
         )
-    if credits.get("hasCredits"):
+    fallback = default_workers(limits)
+    if _is_plus(snapshot.get("planType")):
         return (
-            "У вас подключено списание кредитов, потолок параллельных воркеров - 10. "
-            "Можно больше или меньше: скажите число."
+            f"Тариф {plan_type}: по умолчанию {fallback} параллельных воркера - "
+            "окно лимита здесь узкое, и десяток сжёг бы его за один прогон. "
+            "Можно задать своё число."
         )
     if plan_type:
         return (
-            f"Тариф {plan_type}: по умолчанию 10 параллельных воркеров, "
+            f"Тариф {plan_type}: по умолчанию {fallback} параллельных воркеров, "
             "и они сами сузятся, когда окно лимита будет подходить к концу. "
             "Можно задать своё число."
         )
     return (
-        "По умолчанию 10 параллельных воркеров. Можно задать своё число; "
-        "при подходе к лимиту они сузятся сами."
+        f"По умолчанию {fallback} параллельных воркеров. Можно задать своё "
+        "число; при подходе к лимиту они сузятся сами."
     )
+
+
+# Тариф Plus заметно уже остальных: держать на нём десять воркеров
+# значит сжечь окно за один прогон. Решение пользователя от 14 сентября.
+PLUS_DEFAULT_WORKERS = 3
+STANDARD_DEFAULT_WORKERS = 10
+_PLUS_PLANS = frozenset({"plus", "chatgpt-plus", "plus-monthly"})
+
+
+def _burns_without_a_wall(credits: Mapping[str, Any]) -> bool:
+    """Аккаунт, которому окно лимита не стена.
+
+    Безлимит и подключённое автосписание - это одно и то же положение:
+    расход продолжается за окном, упереться не во что. Прежде кредиты
+    считались смягчающим обстоятельством и всё равно сужали ёмкость -
+    то есть ограничивали того, кто как раз и платит за отсутствие
+    ограничений.
+    """
+
+    return bool(credits.get("unlimited") or credits.get("hasCredits"))
+
+
+def default_workers(limits: Mapping[str, Any] | None) -> int:
+    """Сколько воркеров ставить, когда человек ничего не сказал."""
+
+    snapshot = _snapshot(limits)
+    plan_type = str(snapshot.get("planType") or "").strip().lower()
+    if plan_type in _PLUS_PLANS:
+        return PLUS_DEFAULT_WORKERS
+    return STANDARD_DEFAULT_WORKERS
+
+
+# Внутренние имена тарифов человеку не показываются: свой план он читает
+# как "Pro", а событие App Server называет его "prolite". Показать слаг
+# значило бы сообщить пользователю неправду о его же подписке, а
+# незнакомый слаг - ещё и выдумать тариф, которого он не знает.
+_PLAN_NAMES = {
+    "plus": "Plus",
+    "chatgpt-plus": "Plus",
+    "plus-monthly": "Plus",
+    "pro": "Pro",
+    "prolite": "Pro",
+    "chatgpt-pro": "Pro",
+    "team": "Team",
+    "business": "Business",
+    "enterprise": "Enterprise",
+}
+
+
+def _is_plus(raw: Any) -> bool:
+    return str(raw or "").strip().lower() in _PLUS_PLANS
+
+
+def _human_plan_name(raw: Any) -> str:
+    """Имя тарифа так, как его знает человек, или пусто."""
+
+    return _PLAN_NAMES.get(str(raw or "").strip().lower(), "")
