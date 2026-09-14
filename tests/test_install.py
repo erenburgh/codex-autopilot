@@ -25,6 +25,12 @@ class InstallerTests(unittest.TestCase):
         preserved_v07 = install_root / "0.7.0-beta" / "preserved-marker"
         preserved_v07.parent.mkdir(parents=True)
         preserved_v07.write_text("keep v0.7", encoding="utf-8")
+        # Посторонний каталог внутри дерева кэша Codex: именно из такого
+        # "отложенного в сторонку" Codex восстановил копию 0.9.0 и снова
+        # начал переписывать определение хуков.
+        stray = home / ".codex/plugins/cache/codex-autopilot-local/.stale-backup-20260101/0.9.0-beta"
+        stray.mkdir(parents=True)
+        (stray / "marker").write_text("stale", encoding="utf-8")
         legacy = home / ".codex/skills/astra-autopilot-adaptive"
         legacy.mkdir(parents=True)
         (legacy / "SKILL.md").write_text("old preview", encoding="utf-8")
@@ -101,8 +107,30 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((install_root / __version__).exists())
         self.assertFalse((install_root / "current").exists())
-        self.assertEqual(preserved_v06.read_text(encoding="utf-8"), "keep v0.6")
-        self.assertEqual(preserved_v07.read_text(encoding="utf-8"), "keep v0.7")
+        # Прежние установки больше не лежат рядом с текущей: пока их было
+        # тринадцать, любая могла стать источником чужой копии плагина, а
+        # разница между "установлено" и "работает" стоила пользователю
+        # целой ночи. Они не теряются - складываются в архив.
+        self.assertFalse(preserved_v06.exists())
+        self.assertFalse(preserved_v07.exists())
+        self.assertFalse(
+            stray.parent.exists(),
+            "постороннее в дереве кэша Codex обязано быть убрано: оттуда возвращается чужая копия",
+        )
+        archives = sorted((install_root / "legacy-backups").glob("previous-installs-*.zip"))
+        self.assertTrue(archives, "прежние установки обязаны сохраниться в архиве")
+        import zipfile
+
+        kept = {}
+        for archive in archives:
+            with zipfile.ZipFile(archive) as bundle:
+                for name in bundle.namelist():
+                    if name.endswith("preserved-marker"):
+                        kept[name] = bundle.read(name).decode("utf-8")
+        self.assertIn("0.6.0-beta/preserved-marker", kept)
+        self.assertIn("0.7.0-beta/preserved-marker", kept)
+        self.assertEqual(kept["0.6.0-beta/preserved-marker"], "keep v0.6")
+        self.assertEqual(kept["0.7.0-beta/preserved-marker"], "keep v0.7")
         self.assertTrue((install_root / "legacy-backups/astra-autopilot-adaptive/SKILL.md").is_file())
 
 

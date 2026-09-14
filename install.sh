@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="0.9.8-beta"
+version="0.9.9-beta"
 profile="adaptive"
 install_deps=0
 while [ "$#" -gt 0 ]; do
@@ -184,6 +184,20 @@ expected_version=$("$python_bin" -c 'import json,sys;print(json.load(open(sys.ar
 rm -rf "$plugin_cache/codex-autopilot-adaptive" "$plugin_cache/codex-autopilot-host-settings"
 "$codex_bin" plugin add "codex-autopilot-$profile@codex-autopilot-local" >/dev/null
 
+# В дереве кэша Codex не должно быть ничего, кроме каталогов профилей.
+# Любая посторонняя папка там - готовый источник чужой копии: Codex
+# пересканирует дерево и восстановит плагин из неё. Именно так вернулась
+# копия 0.9.0, отложенная "в сторонку" внутри того же кэша.
+if [ -d "$plugin_cache" ]; then
+  for stray in "$plugin_cache"/* "$plugin_cache"/.[!.]*; do
+    [ -e "$stray" ] || continue
+    case "$(basename "$stray")" in
+      codex-autopilot-adaptive|codex-autopilot-host-settings) ;;
+      *) echo "Убираю постороннее из кэша Codex: $(basename "$stray")"; rm -rf "$stray" ;;
+    esac
+  done
+fi
+
 cached_dirs=$(ls -d "$plugin_cache/codex-autopilot-$profile"/*/ 2>/dev/null | wc -l | tr -d ' ')
 cached_version=$("$python_bin" - "$plugin_cache/codex-autopilot-$profile" <<'PYCHECK'
 import json, sys
@@ -212,6 +226,31 @@ if [ -n "$installed_script" ]; then
   "$python_bin" "$source_dir/scripts/register_execpolicy.py" --script "$installed_script" --rules "$codex_home/rules/default.rules"
 else
   echo "Execpolicy: installed script not found in the plugin cache; skipped. Codex will ask for approval on each start."
+fi
+
+# Прежние установки больше не остаются лежать рядом. Пока их было
+# тринадцать, любая из них могла стать источником чужой копии, а разница
+# между "установлено" и "работает" стоила пользователю целой ночи. Они не
+# удаляются, а складываются в один архив рядом.
+legacy_zip="$install_root/legacy-backups/previous-installs-$(date +%Y%m%d-%H%M%S).zip"
+mkdir -p "$install_root/legacy-backups"
+pruned=0
+for previous in "$install_root"/*/; do
+  name=$(basename "$previous")
+  case "$name" in
+    "$version"|current|legacy-backups) continue ;;
+  esac
+  case "$name" in
+    [0-9]*) ;;
+    *) continue ;;
+  esac
+  if (cd "$install_root" && zip -rq "$legacy_zip" "$name") then
+    rm -rf "$previous"
+    pruned=$((pruned + 1))
+  fi
+done
+if [ "$pruned" -gt 0 ]; then
+  echo "Прежних установок убрано в архив: $pruned -> $legacy_zip"
 fi
 
 echo "Codex Autopilot $version installed with the $profile profile."
