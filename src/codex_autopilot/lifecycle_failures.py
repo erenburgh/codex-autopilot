@@ -237,9 +237,16 @@ def record_desktop_failure(
             session["automatic_dispatch_pid"] = None
             session["automatic_dispatch_connection_pid"] = None
         session["failure_reason"] = reason
-        state.task_states = transition_task(
-            plan, state.task_states, task_id, TaskState.RETRY_WAIT
-        )
+        # Повторный отказ уже ожидающей задачи - не новое состояние.
+        # Прежде вторая запись отказа для той же задачи поднимала
+        # IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT, релей умирал,
+        # и поверх настоящей поломки открывался тикет о падении самого
+        # диспетчера. Машина состояний права, что запрещает самопереход;
+        # идемпотентной обязана быть запись отказа.
+        if state.task_states.get(task_id) != TaskState.RETRY_WAIT.value:
+            state.task_states = transition_task(
+                plan, state.task_states, task_id, TaskState.RETRY_WAIT
+            )
         state.active_task_ids = [item for item in state.active_task_ids if item != task_id]
         release_resources_in_state(
             state,

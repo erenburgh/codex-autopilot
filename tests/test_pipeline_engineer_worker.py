@@ -713,3 +713,67 @@ class HookTimeoutsSurviveCodexLoadTests(unittest.TestCase):
             for hook in group["hooks"]
         }
         self.assertEqual(len(seen), 1, f"профили разошлись: {seen}")
+
+
+class RepeatedFailureIsNotACrashTests(unittest.TestCase):
+    """Второй отказ той же задачи не должен убивать диспетчер.
+
+    В живом прогоне это открыло тикет поверх тикета: настоящая поломка
+    уже ждала в RETRY_WAIT, пришла вторая запись отказа, машина
+    состояний отвергла переход RETRY_WAIT -> RETRY_WAIT, релей умер, и
+    появился второй инцидент - уже о падении самого диспетчера.
+    """
+
+    def setUp(self) -> None:
+        ResolvedMustHandOverTests.setUp(self)
+
+    def fail_once(self, token: str) -> None:
+        from codex_autopilot.lifecycle_failures import record_desktop_failure
+
+        record_desktop_failure(
+            self.cfg,
+            token,
+            reason="воркер сорвался",
+            definitive=True,
+            reserve_other_ready=False,
+        )
+
+    def park_in_retry_wait(self) -> None:
+        """Так это делает восстановление: прямым присваиванием.
+
+        `resilience.py` ставит RETRY_WAIT в обход машины состояний, когда
+        разбирает мёртвый диспетчер. Следом приходит запись отказа - и
+        встречает задачу уже в том состоянии, в которое собиралась её
+        перевести.
+        """
+
+        from codex_autopilot.task_state import TaskState
+
+        state = self.store.load()
+        state.task_states = {**state.task_states, self.task_id: TaskState.RETRY_WAIT.value}
+        state.active_task_ids = [t for t in state.active_task_ids if t != self.task_id]
+        self.store.save(state)
+
+    def test_a_failure_meeting_an_already_waiting_task_does_not_crash(self) -> None:
+        from codex_autopilot.task_state import TaskState
+
+        self.park_in_retry_wait()
+        # Прежде здесь падало IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT,
+        # релей умирал, и поверх настоящей поломки открывался второй тикет.
+        self.fail_once(self.failed_token)
+        self.assertEqual(
+            self.store.load().task_states[self.task_id], TaskState.RETRY_WAIT.value
+        )
+
+    def test_the_failure_is_still_recorded(self) -> None:
+        """Идемпотентность не должна превращаться в молчание."""
+
+        self.park_in_retry_wait()
+        self.fail_once(self.failed_token)
+        session = next(
+            item
+            for item in self.store.load().worker_sessions
+            if item.get("reservation_token") == self.failed_token
+        )
+        self.assertEqual(session["status"], "RETRY_WAIT")
+        self.assertIn("сорвался", str(session.get("failure_reason")))
