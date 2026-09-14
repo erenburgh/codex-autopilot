@@ -748,6 +748,27 @@ def parse_pipeline_engineer_status(message: str) -> tuple[str, str]:
     return "ESCALATE_TO_USER", parts[1]
 
 
+def _orphaned_pending_descriptors(state: RunState) -> tuple[Any, ...]:
+    """Зарезервированная работа, которую некому поднять.
+
+    После инцидента остаются сессии в состояниях, пригодных к релею:
+    ветка ещё не создавалась, дублировать нечего. Их владелец - задача,
+    завершившая свой ход до инцидента, - поднять их уже не может: его
+    процесс вышел. Возврат их дескрипторов и есть продолжение прогона
+    без оператора.
+    """
+
+    from .lifecycle_base import RELAYABLE_SESSION_STATUSES, LaunchDescriptor
+
+    return tuple(
+        LaunchDescriptor.from_dict(dict(item["descriptor"]))
+        for item in state.worker_sessions
+        if item.get("status") in RELAYABLE_SESSION_STATUSES
+        and isinstance(item.get("descriptor"), dict)
+        and not str(item.get("thread_id") or "")
+    )
+
+
 def _would_idle_forever(state: RunState) -> bool:
     """Прогон встал бы навсегда: работа готова, а делать её некому.
 
@@ -887,6 +908,14 @@ def _complete_pipeline_engineer(
                 relay_owner_thread_id=thread_id,
                 now_epoch=now_epoch,
             )
+            # Резервация, созданная ДО инцидента, новой не является, и
+            # `_reserve_in_state` её не вернёт. Прежде она так и оставалась
+            # висеть в CREATE_REQUESTED: инженер чинил причину, выходил, а
+            # прогон стоял до тех пор, пока человек не возобновит его
+            # руками. Именно это и делало пайплайн неавтоматическим -
+            # каждая починка требовала оператора.
+            if not descriptors:
+                descriptors = _orphaned_pending_descriptors(state)
             if dispatcher_authorized:
                 # Тот же учёт владения переходом, что и у обычного воркера.
                 # Прежде инженер назначал преемника и не отмечал его у себя:

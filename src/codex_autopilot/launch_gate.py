@@ -180,13 +180,19 @@ def launch_checklist(
                 bad="нет записи о создании ветки",
             )
         )
+        # Отправка подтверждается durable-записью, а не мгновенным
+        # статусом. Ход, успевший завершиться до проверки, уводит статус
+        # дальше ACTIVE - и быстрый воркер объявлялся незапущенным.
+        acknowledged = session.get("status") == ACTIVE_STATUS or any(
+            str(item.get("event") or "") in ACKNOWLEDGED_EVENTS for item in events
+        )
         checks.append(
             LaunchCheck(
                 "send_acknowledged",
                 task_id,
-                session.get("status") == ACTIVE_STATUS,
+                acknowledged,
                 f"статус сессии {session.get('status')!r}"
-                + ("" if session.get("status") == ACTIVE_STATUS else "; отправка не подтверждена"),
+                + ("" if acknowledged else "; отправка не подтверждена"),
             )
         )
         checks.append(
@@ -209,12 +215,19 @@ def launch_checklist(
         pid = session.get("automatic_dispatch_pid")
         if pid is None:
             pid = state.dispatcher_pid
+        # Завершённому ходу живой диспетчер не нужен: он выходит штатно,
+        # закончив работу. Прежде быстрый воркер получал здесь False и
+        # тикет launch_not_confirmed - при том что в том же чек-листе
+        # стояло "ход завершён".
+        finished = any(str(item.get("event") or "") == "turn_completed" for item in events)
         checks.append(
             LaunchCheck(
                 "dispatcher_alive",
                 task_id,
-                alive(pid) if pid is not None else None,
-                f"диспетчер pid {pid}" if pid is not None else "pid диспетчера не записан",
+                True if finished else (alive(pid) if pid is not None else None),
+                "ход завершён, диспетчер больше не нужен"
+                if finished
+                else (f"диспетчер pid {pid}" if pid is not None else "pid диспетчера не записан"),
             )
         )
 

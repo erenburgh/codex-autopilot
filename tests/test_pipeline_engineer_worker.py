@@ -841,3 +841,63 @@ class RepeatedFailureIsNotACrashTests(unittest.TestCase):
         )
         self.assertEqual(session["status"], "RETRY_WAIT")
         self.assertIn("сорвался", str(session.get("failure_reason")))
+
+
+class ResolvedIncidentResumesTheRunItselfTests(unittest.TestCase):
+    """После починки прогон продолжается сам, без оператора.
+
+    Это и есть разница между «пайплайн чинится» и «пайплайн
+    автоматический». Резервация, созданная ДО инцидента, новой не
+    является, и обычный резерватор её не вернёт: она так и висела в
+    CREATE_REQUESTED, пока человек не возобновит прогон руками. Каждая
+    починка требовала оператора.
+    """
+
+    def orphan(self, **extra):
+        session = {
+            "task_id": "M1",
+            "kind": "replanner",
+            "status": "CREATE_REQUESTED",
+            "thread_id": None,
+            "descriptor": {
+                "schema_version": 2, "surface": "desktop_owned", "run_id": "r",
+                "graph_version": 1, "task_id": "M1", "task_title": "T",
+                "kind": "replanner", "attempt": 1, "worker_sequence": 1,
+                "reservation_token": "tok", "operation_id": "op",
+                "client_user_message_id": "cid", "desktop_project_id": "p",
+                "cwd": "/tmp", "title": "T", "prompt": "p", "model": None,
+                "thinking": None, "execution_mode": "code",
+                "created_at": "2026-09-14T00:00:00+00:00",
+                "prep_app_server_exited_at": "2026-09-14T00:00:00+00:00",
+                "descriptor_path": "/tmp/tok.json",
+            },
+        }
+        session.update(extra)
+        return session
+
+    def state(self, sessions):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(worker_sessions=sessions)
+
+    def test_a_reservation_without_a_thread_is_picked_up(self) -> None:
+        from codex_autopilot.lifecycle_completion import _orphaned_pending_descriptors
+
+        found = _orphaned_pending_descriptors(self.state([self.orphan()]))
+        self.assertEqual([item.task_id for item in found], ["M1"])
+
+    def test_a_reservation_that_already_has_a_thread_is_left_alone(self) -> None:
+        """Ветка есть - побочный эффект был, поднимать заново нельзя."""
+
+        from codex_autopilot.lifecycle_completion import _orphaned_pending_descriptors
+
+        found = _orphaned_pending_descriptors(
+            self.state([self.orphan(thread_id="01a0-real")])
+        )
+        self.assertEqual(found, ())
+
+    def test_a_running_session_is_not_a_leftover(self) -> None:
+        from codex_autopilot.lifecycle_completion import _orphaned_pending_descriptors
+
+        found = _orphaned_pending_descriptors(self.state([self.orphan(status="ACTIVE")]))
+        self.assertEqual(found, ())
