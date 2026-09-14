@@ -960,6 +960,8 @@ def _complete_replanner(
     result: Any,
     at: str | None,
     now_epoch: int | None,
+    dispatcher_authorized: bool = False,
+    dispatcher_pid: int | None = None,
 ) -> CompletionOutcome:
     current_plan = load_plan(cfg.state_dir, cfg.profile)
     request_id = str(session.get("plan_change_id") or "")
@@ -1038,6 +1040,19 @@ def _complete_replanner(
             relay_owner_thread_id=thread_id,
             now_epoch=now_epoch,
         )
+        if dispatcher_authorized:
+            # Третий путь завершения, которому не передавали владение
+            # переходом. Планировщик менял план, резервировал преемника и
+            # не отмечал его у себя: следующий шаг отвечал "current
+            # dispatcher does not own the completed-to-successor
+            # transition". Тот же пробел уже был у дежурного инженера и
+            # чинился отдельно - путей три, а закрыт был один.
+            current["automatic_successor_tokens"] = [
+                item.reservation_token for item in descriptors
+            ]
+            current["automatic_dispatch_state"] = (
+                "ADVANCING" if descriptors else "COMPLETED"
+            )
         _finish_global_state(
             candidate,
             state,

@@ -901,3 +901,56 @@ class ResolvedIncidentResumesTheRunItselfTests(unittest.TestCase):
 
         found = _orphaned_pending_descriptors(self.state([self.orphan(status="ACTIVE")]))
         self.assertEqual(found, ())
+
+
+class EveryCompletionPathRecordsOwnershipTests(unittest.TestCase):
+    """Кто резервирует преемника - тот отмечает переход своим.
+
+    Барьер `adopt_automatic_dispatcher_successor` проверяет два поля у
+    завершившейся сессии: automatic_successor_tokens и ADVANCING. Без
+    них он отказывается вести цепочку словами "current dispatcher does
+    not own the completed-to-successor transition", резервация повисает,
+    и поверх неё открывается тикет о падении диспетчера.
+
+    Путей завершения три - воркер, дежурный инженер, планировщик. Я
+    чинила их по одному, каждый раз после того, как прогон вставал.
+    Этот тест закрывает класс: любая новая ветка, резервирующая
+    преемника, обязана вести тот же учёт.
+    """
+
+    def test_no_completion_path_reserves_without_recording(self) -> None:
+        import ast
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parent.parent
+            / "src/codex_autopilot/lifecycle_completion.py"
+        ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            body = ast.dump(node)
+            if "_reserve_in_state" not in body:
+                continue
+            if "automatic_successor_tokens" not in body:
+                offenders.append(node.name)
+        self.assertEqual(
+            offenders,
+            [],
+            "эти пути резервируют преемника и не отмечают владение переходом",
+        )
+
+    def test_the_barrier_still_checks_both_fields(self) -> None:
+        """Иначе тест выше охранял бы уже ненужное правило."""
+
+        import inspect
+
+        from codex_autopilot import lifecycle_dispatch
+
+        body = inspect.getsource(
+            lifecycle_dispatch.adopt_automatic_dispatcher_successor
+        )
+        self.assertIn("automatic_successor_tokens", body)
+        self.assertIn("ADVANCING", body)
