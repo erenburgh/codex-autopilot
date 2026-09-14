@@ -49,6 +49,7 @@ from .verification import (
 
 from .lifecycle_base import (
     IMPLEMENTATION_SESSION_KINDS,
+    PENDING_SESSION_STATUSES,
     SUCCESS_STATUSES,
     CompletionOutcome,
     DesktopLifecycleError,
@@ -298,6 +299,7 @@ def complete_desktop_worker(
             turn_id=turn_id,
             final_message=final_message,
             at=at,
+            now_epoch=now_epoch,
         )
     if kind == "replanner":
         try:
@@ -744,6 +746,26 @@ def parse_pipeline_engineer_status(message: str) -> tuple[str, str]:
     return "ESCALATE_TO_USER", parts[1]
 
 
+def _would_idle_forever(state: RunState) -> bool:
+    """Прогон встал бы навсегда: работа готова, а делать её некому.
+
+    Пустой список преемников законен сам по себе - например, когда всё
+    упёрлось в заблокированную задачу. Признак беды другой: есть задача
+    в READY и при этом ни одной живой сессии, то есть никто не придёт и
+    ничего не сдвинет.
+    """
+
+    active = any(
+        item.get("status") in PENDING_SESSION_STATUSES
+        for item in state.worker_sessions
+    )
+    if active:
+        return False
+    return any(
+        value == TaskState.READY.value for value in (state.task_states or {}).values()
+    )
+
+
 def _complete_pipeline_engineer(
     cfg: Config,
     *,
@@ -752,6 +774,7 @@ def _complete_pipeline_engineer(
     turn_id: str,
     final_message: str,
     at: str | None,
+    now_epoch: int | None = None,
 ) -> CompletionOutcome:
     """Принять итог инженера, ничего не принимая на слово.
 
@@ -815,6 +838,7 @@ def _complete_pipeline_engineer(
         _record_rule_conflicts(
             cfg, state, current, final_message, timestamp, ProjectMemory(cfg.root)
         )
+        descriptors: tuple[Any, ...] = ()
         if status == "ESCALATE_TO_USER":
             # Тикет обязан узнать об эскалации вместе с прогоном. Прежде
             # прогон уходил в BLOCKED, а тикет оставался в
@@ -837,8 +861,41 @@ def _complete_pipeline_engineer(
             state.status = "READY"
             state.phase = "PREPARING"
             state.last_error = None
+            # Починка без преемника завершением не является. Прежде здесь
+            # возвращался пустой список, прогон уходил в READY/PREPARING,
+            # и на этом всё кончалось: инженер закрывал инцидент, его
+            # процесс штатно выходил, а запускать M1 становилось некому.
+            # Причинный предшественник к этому моменту мёртв - именно его
+            # смерть и была инцидентом, - поэтому причинным звеном служит
+            # сам ход инженера: его Stop-хук выполняет релей, как у
+            # любого воркера.
+            descriptors = _reserve_in_state(
+                cfg,
+                load_plan(cfg.state_dir, cfg.profile),
+                state,
+                memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
+                relay_owner_thread_id=thread_id,
+                now_epoch=now_epoch,
+            )
+            if not descriptors and _would_idle_forever(state):
+                # Исключение здесь потеряло бы саму запись о завершении
+                # инженера, поэтому прогон останавливается громко, а не
+                # падает: задача готова к работе, но назначить её некому.
+                state.status = "BLOCKED"
+                state.phase = "PIPELINE_ENGINEER_NO_SUCCESSOR"
+                state.last_error = (
+                    f"инженер закрыл инцидент {incident_id}, но преемник не назначен: "
+                    "есть готовая задача и ни одной активной сессии"
+                )
+                _append_event(
+                    state,
+                    "pipeline_engineer_left_no_successor",
+                    current,
+                    timestamp,
+                    detail=incident_id,
+                )
         store.save(state)
-    return CompletionOutcome(True, status, (), False)
+    return CompletionOutcome(True, status, descriptors, False)
 
 
 def _complete_replanner(

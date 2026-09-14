@@ -356,3 +356,161 @@ class PlanChangeUserRequestTests(unittest.TestCase):
         self.assertIn("The runtime carries user_request over", source)
         self.assertNotIn("Дословно сохрани user_request", source)
         self.assertNotIn("Preserve user_request verbatim", source)
+
+
+class ResolvedMustHandOverTests(unittest.TestCase):
+    """Починка без преемника завершением не является.
+
+    В живом прогоне инженер закрыл инцидент, его процесс штатно вышел, а
+    запускать задачу стало некому: RESOLVED возвращал пустой список
+    преемников, прогон уходил в READY/PREPARING и молча стоял. Причинный
+    предшественник к этому моменту мёртв - именно его смерть и была
+    инцидентом, - поэтому причинным звеном служит сам ход инженера.
+    """
+
+    def setUp(self) -> None:
+        import json as _json
+        import tempfile
+
+        from _gates import patch_hook_trust_gates
+        from _relay import reserve_ready_frontier
+        from codex_autopilot.bootstrap import initialize_project
+        from codex_autopilot.config import load_config
+        from codex_autopilot.pipeline_engineer import (
+            IncidentClass,
+            IncidentSignal,
+            PipelineIncidentStore,
+            SideEffectOutcome,
+        )
+        from codex_autopilot.run_state import StateStore, utc_now
+        from test_verification_lifecycle import graph, task
+
+        patch_hook_trust_gates(self)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        (self.root / ".git").mkdir()
+        skill = self.root / "SKILL.md"
+        skill.write_text("# test skill\n", encoding="utf-8")
+        plan_file = self.root / "input-plan.json"
+        # Граф, где B зависит от A: готовой остаётся ровно одна задача,
+        # как в живом инциденте. На графе с двумя независимыми задачами
+        # вторая занимает слот планировщика, и проверка меряла бы не то.
+        plan_file.write_text(_json.dumps(graph(task("A"))), encoding="utf-8")
+        initialize_project(
+            self.root,
+            plan_file,
+            profile="adaptive",
+            skill_path=skill,
+            desktop_project_id="desktop-project",
+        )
+        self.cfg = load_config(self.root)
+        self.store = StateStore(self.cfg.state_dir)
+        self.reserve = reserve_ready_frontier
+        first = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")[0]
+        self.task_id = first.task_id
+        self.failed_token = first.reservation_token
+
+        incidents = PipelineIncidentStore(self.cfg.state_dir)
+        incident = incidents.open_incident(
+            IncidentSignal(
+                signal_id="probe:launch",
+                code="detached_dispatch_failed",
+                surface=IncidentClass.PIPELINE,
+                summary="Worker requested approval; the dispatcher never answers",
+                affected_task_ids=(self.task_id,),
+                operation="create_thread",
+                side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+                system_state={},
+            ),
+            at=utc_now(),
+        )
+        self.incident_id = str(incident["incident_id"])
+        incidents.route_incident(self.incident_id, at=utc_now())
+        incidents.ensure_pipeline_engineer(self.incident_id, at=utc_now())
+
+    def resolve_and_complete(self, final_message: str):
+        import time
+
+        from _appserver_fakes import activate_via_app_server
+        from codex_autopilot.lifecycle_completion import complete_desktop_worker
+        from codex_autopilot.lifecycle_failures import record_desktop_failure
+        from codex_autopilot.pipeline_engineer import (
+            HealthcheckResult,
+            PipelineIncidentStore,
+            _expected_healthcheck,
+        )
+        from codex_autopilot.run_state import utc_now
+
+        # Живая картина инцидента: сессия задачи мертва - именно её смерть
+        # и была инцидентом, - а задача вернулась в READY. Провал
+        # оформляется настоящим путём: он же снимает блокировки ресурсов
+        # и ведёт журнал. Правка состояния руками ломала сверку замков с
+        # журналом, и это правильно, что ломала.
+        record_desktop_failure(
+            self.cfg,
+            self.failed_token,
+            reason="Worker requested approval; the dispatcher never answers",
+            definitive=True,
+            reserve_other_ready=False,
+        )
+
+        self.future = int(time.time()) + 3_600
+        descriptor = self.reserve(
+            self.cfg, relay_owner_thread_id="owner-2", now_epoch=self.future
+        )[0]
+        activate_via_app_server(self.cfg, self.root, descriptor, "engineer-thread")
+        incidents = PipelineIncidentStore(self.cfg.state_dir)
+        record = next(
+            item
+            for item in incidents.load()["incidents"]
+            if item["incident_id"] == self.incident_id
+        )
+        incidents.complete_pipeline_engineer(
+            self.incident_id,
+            success=True,
+            at=utc_now(),
+            healthcheck=HealthcheckResult(
+                name=_expected_healthcheck(record) or "causal_predecessor_rearm_ready",
+                passed=True,
+                checks=("relay armed",),
+                observed_at=utc_now(),
+            ),
+        )
+        # К моменту, когда инженер закрывает инцидент, окно повтора
+        # сорвавшейся задачи уже истекло - в живом прогоне M1 стояла
+        # именно в READY, а не в RETRY_WAIT.
+        return complete_desktop_worker(
+            self.cfg,
+            thread_id="engineer-thread",
+            turn_id="engineer-turn",
+            final_message=final_message,
+            now_epoch=self.future,
+        )
+
+    def test_a_resolved_incident_hands_the_run_to_a_successor(self) -> None:
+        outcome = self.resolve_and_complete(
+            "инцидент закрыт\nPIPELINE_ENGINEER_STATUS: RESOLVED"
+        )
+        self.assertEqual(outcome.worker_status, "RESOLVED")
+        # Прежде здесь был пустой кортеж, и прогон вставал навсегда.
+        self.assertTrue(outcome.descriptors)
+        self.assertEqual(outcome.descriptors[0].task_id, self.task_id)
+        state = self.store.load()
+        # Прогон не просто "не встал" - он поехал: назначенный преемник
+        # переводит задачу в работу, а не оставляет её ждать.
+        self.assertEqual(state.status, "RUNNING")
+        self.assertEqual(state.task_states[self.task_id], "RUNNING")
+        self.assertNotEqual(state.phase, "PIPELINE_ENGINEER_NO_SUCCESSOR")
+
+    def test_the_engineer_thread_is_the_causal_link_for_the_successor(self) -> None:
+        """Релей выполняет ход инженера: другого живого предшественника нет."""
+
+        self.resolve_and_complete("готово\nPIPELINE_ENGINEER_STATUS: RESOLVED")
+        successor = next(
+            item
+            for item in self.store.load().worker_sessions
+            if item.get("kind") != "pipeline_engineer"
+            and item.get("status") not in {"COMPLETED", "FAILED", "RETRY_WAIT"}
+        )
+        self.assertEqual(successor["relay_owner_thread_id"], "engineer-thread")
