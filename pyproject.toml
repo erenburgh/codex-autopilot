@@ -1,6 +1,10 @@
+# Сборка не требует ничего извне: backend лежит в дереве и написан на
+# стандартной библиотеке. Иначе `pip install .` в пустом venv без сети
+# падал на загрузке setuptools - до того, как доходило до тестов.
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = []
+build-backend = "autopilot_build"
+backend-path = ["build_backend"]
 
 [project]
 name = "codex-autopilot"
