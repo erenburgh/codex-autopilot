@@ -1480,7 +1480,14 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertEqual(len(outcome.descriptors), 1)
         self.assertEqual(outcome.descriptors[0].kind, "verifier")
         verifier_prompt = outcome.descriptors[0].prompt
-        self.assertIn(independent_graph["user_request"], verifier_prompt)
+        # Дословный запрос в промпт больше не вкладывается; верификатор
+        # получает проверяемую ссылку и забирает текст из Project Memory.
+        self.assertNotIn(independent_graph["user_request"], verifier_prompt)
+        self.assertIn(
+            hashlib.sha256(independent_graph["user_request"].encode("utf-8")).hexdigest(),
+            verifier_prompt,
+        )
+        self.assertIn("codex_autopilot_memory", verifier_prompt)
         self.assertIn(independent_graph["goal"], verifier_prompt)
         self.assertIn(
             "Independently compare the result with acceptance_gate.original_user_request",

@@ -25,6 +25,7 @@ from codex_autopilot.plan import (
     validate_plan_change,
 )
 from codex_autopilot.resilience import (
+    active_plan_change,
     PLAN_CHANGE_REQUEST_PREFIX,
     PLAN_CHANGE_RESULT_PREFIX,
     PlanChangeProtocolError,
@@ -306,26 +307,301 @@ class PlanEvolutionTests(unittest.TestCase):
         cyclic = self.candidate_with_prerequisite(current)
         cyclic["tasks"][0]["depends_on"] = ["A"]
         before_plan = (cfg.state_dir / "plan.json").read_bytes()
-        before_state = (cfg.state_dir / "run-state.json").read_bytes()
-        with self.assertRaisesRegex(DesktopLifecycleError, "cycle"):
-            complete_desktop_worker(
+        outcome = complete_desktop_worker(
+            cfg,
+            thread_id="replanner-PC1",
+            turn_id="turn-PC1",
+            final_message=PLAN_CHANGE_RESULT_PREFIX
+            + " "
+            + json.dumps(
+                {
+                    "request_id": "PC1",
+                    "base_graph_version": 1,
+                    "plan": cyclic,
+                },
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+        )
+        # Негодный граф не применяется никогда - это и было содержанием
+        # прежней проверки. Изменилось одно: отказ больше не валит
+        # диспетчер, а возвращается реплэннеру с причиной.
+        self.assertEqual((cfg.state_dir / "plan.json").read_bytes(), before_plan)
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        state = store.load()
+        self.assertEqual(state.graph_version, 1)
+        change = active_plan_change(state, request_id="PC1")
+        self.assertEqual(change["status"], "REPLANNER_RESERVED")
+        self.assertIn("cycle", change["rejections"][-1]["reason"])
+        self.assertEqual(len(outcome.descriptors), 1)
+        self.assertEqual(
+            self.session_kind(state, outcome.descriptors[0].reservation_token),
+            "replanner",
+        )
+
+    def session_kind(self, state, token: str) -> str:
+        return next(
+            str(item["kind"])
+            for item in state.worker_sessions
+            if item.get("reservation_token") == token
+        )
+
+    def test_the_replanner_hands_its_successor_to_the_same_dispatcher(self) -> None:
+        """Владение переходом обязано дойти и до реплэннера.
+
+        Инженеру и воркеру это чинили по отдельности, реплэннера
+        пропустили: сторона вызываемого была готова, а вызывающий флаг не
+        передавал. Весь учёт преемника у реплэннера был недостижим из
+        продакшена, и следующий шаг отвечал "current dispatcher does not
+        own the completed-to-successor transition" - на первой же смене
+        плана, то есть почти сразу.
+        """
+
+        import os
+
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need a replan.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.mark_active(store, replanner.reservation_token, "replanner-PC1")
+
+        # Живая картина: ход реплэннера ведёт этот же процесс-диспетчер.
+        state = store.load()
+        for item in state.worker_sessions:
+            if item.get("reservation_token") == replanner.reservation_token:
+                item["automatic_dispatch_pid"] = os.getpid()
+                item["automatic_dispatch_state"] = "RUNNING"
+        store.save(state)
+
+        current = load_plan(cfg.state_dir, cfg.profile)
+        candidate = self.candidate_with_prerequisite(current)
+        outcome = complete_desktop_worker(
+            cfg,
+            thread_id="replanner-PC1",
+            turn_id="turn-PC1",
+            final_message=PLAN_CHANGE_RESULT_PREFIX
+            + " "
+            + json.dumps(
+                {"request_id": "PC1", "base_graph_version": 1, "plan": candidate},
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+            dispatcher_reservation_token=replanner.reservation_token,
+            dispatcher_pid=os.getpid(),
+        )
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_APPLIED")
+        self.assertTrue(outcome.descriptors)
+        session = next(
+            item
+            for item in store.load().worker_sessions
+            if item.get("reservation_token") == replanner.reservation_token
+        )
+        self.assertEqual(session.get("automatic_dispatch_state"), "ADVANCING")
+        self.assertEqual(
+            session.get("automatic_successor_tokens"),
+            [item.reservation_token for item in outcome.descriptors],
+        )
+
+    def test_rejected_graph_returns_its_reason_to_the_next_replanner(self) -> None:
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need cycle-safe replan.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.mark_active(store, replanner.reservation_token, "replanner-PC1")
+        current = load_plan(cfg.state_dir, cfg.profile)
+        unknown_field = self.candidate_with_prerequisite(current)
+        unknown_field["nonsense_field"] = {"whatever": 1}
+        outcome = complete_desktop_worker(
+            cfg,
+            thread_id="replanner-PC1",
+            turn_id="turn-PC1",
+            final_message=PLAN_CHANGE_RESULT_PREFIX
+            + " "
+            + json.dumps(
+                {"request_id": "PC1", "base_graph_version": 1, "plan": unknown_field},
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+        )
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        prompt = outcome.descriptors[0].prompt
+        # Причина отказа должна дойти до модели двумя путями: машинным -
+        # в конверте, и словами - в самой инструкции. Иначе переделка
+        # идёт вслепую и возвращает ту же ошибку.
+        self.assertIn("rejected_attempts", prompt)
+        self.assertIn("allowed_plan_fields", prompt)
+        self.assertIn("The previous attempt was rejected by the runtime", prompt)
+        self.assertIn("plan has unknown fields: ['nonsense_field']", prompt)
+
+    def test_user_declared_worker_count_reaches_the_replanner(self) -> None:
+        """Потолок воркеров живёт в плане, а план переписывает реплэннер.
+
+        Пользователь меняет число в своём config.toml. Без передачи в
+        задание реплэннер копирует старое число из текущего графа, и
+        правка не доезжает никуда - прогон навсегда остаётся с тем
+        потолком, с каким был создан.
+        """
+
+        cfg, store = self.initialize(graph([task("A")], max_workers=2))
+        config_file = self.root / ".codex-autopilot" / "config.toml"
+        config_file.write_text(
+            config_file.read_text(encoding="utf-8").replace(
+                "max_parallel_workers = 2", "max_parallel_workers = 7"
+            ),
+            encoding="utf-8",
+        )
+        cfg = load_config(self.root)
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need a replan.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        prompt = replanner.prompt
+        self.assertIn("required_max_parallel_workers", prompt)
+        self.assertIn("Set max_parallel_workers=7", prompt)
+
+    def test_config_without_the_key_never_forces_one_worker(self) -> None:
+        """Умолчание - не выбор человека.
+
+        Совместимость с v0.8 держит здесь единицу. Принять её за
+        пожелание значило бы загнать любой прогон со старым конфигом в
+        один поток при первой же смене плана.
+        """
+
+        cfg, store = self.initialize(graph([task("A")], max_workers=2))
+        config_file = self.root / ".codex-autopilot" / "config.toml"
+        config_file.write_text(
+            "\n".join(
+                line
+                for line in config_file.read_text(encoding="utf-8").splitlines()
+                if not line.startswith("max_parallel_workers")
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(self.root)
+        self.assertFalse(cfg.runtime.max_parallel_workers_declared)
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need a replan.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.assertNotIn("required_max_parallel_workers", replanner.prompt)
+        self.assertNotIn("max_parallel_workers=1", replanner.prompt)
+
+    def test_matching_worker_count_adds_no_instruction(self) -> None:
+        """Совпадающее число - не правка, и говорить о ней нечего."""
+
+        cfg, store = self.initialize(graph([task("A")], max_workers=2))
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need a replan.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.assertNotIn("required_max_parallel_workers", replanner.prompt)
+
+    def test_replanner_that_never_matches_the_schema_stops_the_run_loudly(self) -> None:
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        descriptor = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, descriptor.task_id, "Need cycle-safe replan.")
+        pending = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        current = load_plan(cfg.state_dir, cfg.profile)
+        bad = self.candidate_with_prerequisite(current)
+        bad["nonsense_field"] = {"whatever": 1}
+        outcome = None
+        for attempt in range(3):
+            self.mark_active(store, pending.reservation_token, f"replanner-{attempt}")
+            outcome = complete_desktop_worker(
                 cfg,
-                thread_id="replanner-PC1",
-                turn_id="turn-PC1",
+                thread_id=f"replanner-{attempt}",
+                turn_id=f"turn-{attempt}",
                 final_message=PLAN_CHANGE_RESULT_PREFIX
                 + " "
                 + json.dumps(
-                    {
-                        "request_id": "PC1",
-                        "base_graph_version": 1,
-                        "plan": cyclic,
-                    },
+                    {"request_id": "PC1", "base_graph_version": 1, "plan": bad},
                     separators=(",", ":"),
                 ),
                 hook_gate=lambda _cfg: None,
             )
-        self.assertEqual((cfg.state_dir / "plan.json").read_bytes(), before_plan)
-        self.assertEqual((cfg.state_dir / "run-state.json").read_bytes(), before_state)
+            if not outcome.descriptors:
+                break
+            pending = outcome.descriptors[0]
+        # Бесконечно возвращать одну и ту же ошибку значит жечь лимиты.
+        # Прогон обязан встать и назвать причину человеку.
+        self.assertEqual(outcome.descriptors, ())
+        state = store.load()
+        self.assertEqual(state.status, "BLOCKED")
+        self.assertEqual(state.phase, "PLAN_CHANGE_REJECTED")
+        self.assertIsNone(state.active_plan_change_id)
+        record = next(item for item in state.plan_changes if item["id"] == "PC1")
+        self.assertEqual(record["status"], "REJECTED")
+        self.assertEqual(len(record["rejections"]), 3)
+        # Остановка обязана называть причину там, куда человек смотрит.
+        from codex_autopilot.control import status_text
+
+        text = status_text(self.root)
+        self.assertIn("PC1 / REJECTED", text)
+        self.assertIn("nonsense_field", text)
 
     def test_interrupted_two_file_plan_commit_recovers_by_redo(self) -> None:
         cfg, store = self.initialize(graph([task("A")], max_workers=1))

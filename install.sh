@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="0.9.0-beta"
+version="0.9.14-beta"
 profile="adaptive"
 install_deps=0
 while [ "$#" -gt 0 ]; do
@@ -164,14 +164,94 @@ elif [ "$marketplace_root" != "$target" ] && [ "$marketplace_root" != "$install_
   "$codex_bin" plugin marketplace add "$install_root/current" >/dev/null
 fi
 
-# `plugin remove` deletes Codex's supported per-tool approval override. Keep the
-# selected plugin installed and let its cachebuster version refresh the cache.
-# Removing only the inactive profile is intentional when the user switches.
-case "$profile" in
-  adaptive) "$codex_bin" plugin remove "codex-autopilot-host-settings@codex-autopilot-local" >/dev/null 2>&1 || true ;;
-  host-settings) "$codex_bin" plugin remove "codex-autopilot-adaptive@codex-autopilot-local" >/dev/null 2>&1 || true ;;
-esac
+# Codex читает плагин НЕ из каталога установки, а из своего кэша. Пока в
+# кэше оставалась хоть одна прежняя копия, он продолжал грузить её: у
+# пользователя лежал 0.9.7, а работал 0.9.0 - с прежним объявлением
+# Interrupt на 30 секунд. Codex зажимает его до 3, переписывает файл,
+# хэш меняется, и доверие Stop-хука слетает. Каждая загрузка. Весь день
+# это выглядело как "хуки слетают сами".
+#
+# Поэтому кэш профиля вычищается целиком, плагин переустанавливается, а
+# результат сверяется. Одна копия, её версия известна - или установка
+# честно падает, а не оставляет расхождение на потом.
+codex_home=${CODEX_HOME:-"$HOME/.codex"}
+plugin_cache="$codex_home/plugins/cache/codex-autopilot-local"
+expected_version=$("$python_bin" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' \
+  "$target/plugins/codex-autopilot-$profile/.codex-plugin/plugin.json")
+
+"$codex_bin" plugin remove "codex-autopilot-host-settings@codex-autopilot-local" >/dev/null 2>&1 || true
+"$codex_bin" plugin remove "codex-autopilot-adaptive@codex-autopilot-local" >/dev/null 2>&1 || true
+rm -rf "$plugin_cache/codex-autopilot-adaptive" "$plugin_cache/codex-autopilot-host-settings"
 "$codex_bin" plugin add "codex-autopilot-$profile@codex-autopilot-local" >/dev/null
+
+# В дереве кэша Codex не должно быть ничего, кроме каталогов профилей.
+# Любая посторонняя папка там - готовый источник чужой копии: Codex
+# пересканирует дерево и восстановит плагин из неё. Именно так вернулась
+# копия 0.9.0, отложенная "в сторонку" внутри того же кэша.
+if [ -d "$plugin_cache" ]; then
+  for stray in "$plugin_cache"/* "$plugin_cache"/.[!.]*; do
+    [ -e "$stray" ] || continue
+    case "$(basename "$stray")" in
+      codex-autopilot-adaptive|codex-autopilot-host-settings) ;;
+      *) echo "Убираю постороннее из кэша Codex: $(basename "$stray")"; rm -rf "$stray" ;;
+    esac
+  done
+fi
+
+cached_dirs=$(ls -d "$plugin_cache/codex-autopilot-$profile"/*/ 2>/dev/null | wc -l | tr -d ' ')
+cached_version=$("$python_bin" - "$plugin_cache/codex-autopilot-$profile" <<'PYCHECK'
+import json, sys
+from pathlib import Path
+roots = sorted(Path(sys.argv[1]).glob("*/.codex-plugin/plugin.json"))
+print(json.loads(roots[0].read_text(encoding="utf-8"))["version"] if len(roots) == 1 else "")
+PYCHECK
+)
+if [ "$cached_dirs" = "0" ]; then
+  # Codex забирает копию не мгновенно. Это не расхождение - preflight
+  # перед прогоном сверит ещё раз и не пустит чужую копию.
+  echo "Плагин ещё не появился в кэше Codex; preflight сверит его перед прогоном."
+elif [ "$cached_dirs" != "1" ] || [ "$cached_version" != "$expected_version" ]; then
+  echo "Плагин в кэше Codex не совпадает с установленным." >&2
+  echo "  установлено: $expected_version" >&2
+  echo "  в кэше:      ${cached_version:-<копий: $cached_dirs>}" >&2
+  echo "Запуск в таком состоянии грузил бы чужую копию: остановлено." >&2
+  exit 1
+fi
+
+# Собственный скрипт Autopilot прописывается в execpolicy Codex, иначе его
+# запуск может упереться в нативный диалог, на который диспетчер не отвечает.
+# Подробности и замеры - в scripts/register_execpolicy.py.
+installed_script=$(ls -d "$codex_home/plugins/cache/codex-autopilot-local/codex-autopilot-$profile"/*/skills/"codex-autopilot-$profile"/scripts/codex-autopilot 2>/dev/null | tail -1)
+if [ -n "$installed_script" ]; then
+  "$python_bin" "$source_dir/scripts/register_execpolicy.py" --script "$installed_script" --rules "$codex_home/rules/default.rules"
+else
+  echo "Execpolicy: installed script not found in the plugin cache; skipped. Codex will ask for approval on each start."
+fi
+
+# Прежние установки больше не остаются лежать рядом. Пока их было
+# тринадцать, любая из них могла стать источником чужой копии, а разница
+# между "установлено" и "работает" стоила пользователю целой ночи. Они не
+# удаляются, а складываются в один архив рядом.
+legacy_zip="$install_root/legacy-backups/previous-installs-$(date +%Y%m%d-%H%M%S).zip"
+mkdir -p "$install_root/legacy-backups"
+pruned=0
+for previous in "$install_root"/*/; do
+  name=$(basename "$previous")
+  case "$name" in
+    "$version"|current|legacy-backups) continue ;;
+  esac
+  case "$name" in
+    [0-9]*) ;;
+    *) continue ;;
+  esac
+  if (cd "$install_root" && zip -rq "$legacy_zip" "$name") then
+    rm -rf "$previous"
+    pruned=$((pruned + 1))
+  fi
+done
+if [ "$pruned" -gt 0 ]; then
+  echo "Прежних установок убрано в архив: $pruned -> $legacy_zip"
+fi
 
 echo "Codex Autopilot $version installed with the $profile profile."
 echo "Codex safety requires one trust review after install or a real hook-definition change: open /hooks in Codex and trust the current Codex Autopilot hooks."

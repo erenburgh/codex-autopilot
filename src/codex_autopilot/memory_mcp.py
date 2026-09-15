@@ -23,7 +23,11 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
 _ACTION_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "memory_current",
-        "description": "Get the current milestone, critical constraints, and bounded relevant memory IDs.",
+        "description": (
+            "Get this task's contract, the original user request, critical constraints, "
+            "and bounded relevant memory IDs. Pass task_id - it is in your prompt - so the "
+            "answer describes your own task; on a task graph it cannot be inferred."
+        ),
         "inputSchema": _schema(
             {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}}
         ),
@@ -437,6 +441,52 @@ class MemoryMcpServer:
             )
         return args
 
+    def _resolve_current_task(self, plan: Any, state: Any, requested: Any) -> Any:
+        """Воркер получает свою задачу, а не первую попавшуюся.
+
+        Прежняя строка `plan.milestones[state.milestone_index]` родом из
+        последовательной модели v0.7, где на весь прогон был один
+        указатель. На графе он остаётся нулём: в живом прогоне v1.0 из
+        23 задач с двумя параллельными слотами `milestone_index` равен 0,
+        и любой воркер получал в ответ M1 - чужую задачу под видом своей.
+        Проверка доверия в preflight эту дыру не ловила: она выполняется
+        до создания run-state и уходит в ветку `initialized: False`.
+        """
+
+        from .task_state import ACTIVE_TASK_STATES
+
+        if requested is not None:
+            if not isinstance(requested, str) or not requested:
+                raise MemoryValidationError("task_id must be a non-empty string")
+            task = plan.task_map.get(requested)
+            if task is None:
+                known = ", ".join(sorted(plan.task_map))
+                raise MemoryValidationError(f"unknown task_id {requested!r}; plan has: {known}")
+            return task
+        if getattr(plan, "legacy_serial", False):
+            return plan.milestones[state.milestone_index]
+        active = sorted(
+            task_id
+            for task_id, value in (state.task_states or {}).items()
+            if value in {item.value for item in ACTIVE_TASK_STATES}
+        )
+        if not active:
+            # Выбирать не из чего - значит и догадки нет. Проба доверия в
+            # preflight зовёт `current` именно здесь: run-state ещё не имеет
+            # ни одной активной задачи, и своей задачи у пробы нет вовсе.
+            # Отказ в этой точке ломал запуск на ровном месте.
+            return None
+        if len(active) == 1:
+            return plan.task_map[active[0]]
+        # Догадкой не разрешается только настоящая неоднозначность:
+        # несколько работающих задач. Прежний код молча отвечал про
+        # веху с индексом ноль, то есть про M1.
+        raise MemoryValidationError(
+            "task_id is required on a task graph: this run has "
+            f"{len(active)} active tasks ({', '.join(active)}) and the caller's task "
+            "cannot be inferred. Pass the task_id from your own prompt."
+        )
+
     def _current(self, args: dict[str, Any]) -> dict[str, Any]:
         args = self._validate_keys(args, {"task_id"})
         state_dir = self.root / STATE_DIR_NAME
@@ -452,25 +502,22 @@ class MemoryMcpServer:
         cfg = load_config(self.root)
         state = StateStore(state_dir).load()
         plan = load_plan(state_dir, cfg.profile)
-        task_id = args.get("task_id")
-        if task_id is None:
-            item = plan.milestones[state.milestone_index]
+        item = self._resolve_current_task(plan, state, args.get("task_id"))
+        if item is None:
+            query = " ".join([plan.goal, *(t.title for t in plan.tasks[:3])])
         else:
-            item = plan.task_map.get(str(task_id))
-            if item is None:
-                raise MemoryValidationError(f"unknown task_id: {task_id!r}")
-        query = " ".join([item.title, item.objective, *item.definition_of_done])
+            query = " ".join([item.title, item.objective, *item.definition_of_done])
         return {
             "project_root": str(self.root),
             "initialized": True,
             "goal": plan.goal,
             "user_request": plan.user_request,
-            "milestone": {
+            "milestone": None if item is None else {
                 "id": item.id,
                 "title": item.title,
                 "objective": item.objective,
                 "definition_of_done": item.definition_of_done,
-                "index": state.milestone_index + 1,
+                "index": plan.milestones.index(item) + 1,
                 "total": len(plan.milestones),
             },
             "critical_constraints": self.memory.critical_constraints(8),

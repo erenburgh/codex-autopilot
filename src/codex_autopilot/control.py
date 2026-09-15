@@ -27,6 +27,7 @@ from .pipeline_engineer import (
 from .launch_gate import (
     LaunchVerdict,
     await_launch,
+    launch_confirmed,
     launch_verdict,
     render_launch_checklist,
     render_launch_timeline,
@@ -61,6 +62,25 @@ def find_project_root(start: Path) -> Path | None:
         if (candidate / STATE_DIR_NAME / "config.toml").is_file():
             return candidate
     return None
+
+
+def _revive_dead_relay_session(session: dict[str, Any]) -> bool:
+    """Вернуть к запуску релей, умерший до создания ветки.
+
+    Ветки нет - значит дублировать нечего. Прежде такая сессия запирала
+    прогон навсегда: запуск отвечал `cannot spawn from 'RELAYING'`, а
+    разобрать её не мог никто, потому что наблюдать со стороны App Server
+    тоже нечего. Это не догадка о побочном эффекте, а утверждение о его
+    отсутствии, проверенное по состоянию: есть thread_id - не трогаем.
+    """
+
+    if session.get("status") != "RELAYING" or str(session.get("thread_id") or ""):
+        return False
+    session["status"] = "CREATE_REQUESTED"
+    session["automatic_dispatch_state"] = None
+    session["automatic_dispatch_pid"] = None
+    session["automatic_dispatch_connection_pid"] = None
+    return True
 
 
 def pid_alive(pid: int | None) -> bool:
@@ -137,9 +157,10 @@ def spawn_automatic_app_server_relay(
             existing_pid = session.get("automatic_dispatch_pid")
             if isinstance(existing_pid, int) and pid_alive(existing_pid):
                 return existing_pid
-            raise RuntimeError(
-                f"automatic relay cannot spawn from {session.get('status')!r}"
-            )
+            if not _revive_dead_relay_session(session):
+                raise RuntimeError(
+                    f"automatic relay cannot spawn from {session.get('status')!r}"
+                )
         existing_state = session.get("automatic_dispatch_state")
         existing_pid = session.get("automatic_dispatch_pid")
         if existing_state in {"SCHEDULED", "RUNNING"}:
@@ -218,8 +239,33 @@ def _turn_is_completed(state: Any, thread_id: str, turn_id: str) -> bool:
     вставал с ошибкой про отсутствующего причинного предшественника.
     """
 
-    return any(
+    if any(
         str(item.get("event") or "") == "turn_completed"
+        and str(item.get("thread_id") or "") == thread_id
+        and str(item.get("turn_id") or "") == turn_id
+        for item in state.lifecycle_journal
+    ):
+        return True
+    # Журнальная запись - не единственное доказательство. Прогоны,
+    # созданные до того, как дежурный инженер начал её писать, имеют
+    # завершённый ход и не имеют события: цепочка вставала на
+    # "automatic relay has no completed causal predecessor", а починить
+    # это можно было только правкой журнала руками - то есть подделкой
+    # записи о том, чего система не наблюдала. Закрытая сессия с тем же
+    # ходом является таким же наблюдением, сделанным в своё время.
+    if any(
+        str(item.get("thread_id") or "") == thread_id
+        and str(item.get("turn_id") or "") == turn_id
+        and item.get("status") == "COMPLETED"
+        for item in state.worker_sessions
+    ):
+        return True
+    # Прерванный ход тоже кончился. Успехом он не кончился, и
+    # turn_completed по нему не будет никогда - значит ждать его значит
+    # ждать вечно. Замерено: реплэннер попросил разрешение, ход остался
+    # прерванным, и преемника было некому поднять.
+    return any(
+        str(item.get("event") or "") == "interrupt_observed"
         and str(item.get("thread_id") or "") == thread_id
         and str(item.get("turn_id") or "") == turn_id
         for item in state.lifecycle_journal
@@ -1204,8 +1250,12 @@ def _answer_escalation(cfg, state) -> tuple[str, ...]:
 
     from .pipeline_engineer import PipelineIncidentStore
 
-    if state.phase != "PIPELINE_ENGINEER_ESCALATED":
-        return ()
+    # Фаза прогона авторитетом здесь не является. Её выставляет только
+    # завершение инженера; инцидент, эскалированный маршрутизацией - как
+    # любой AMBIGUOUS_SIDE_EFFECT, - оставлял прогон в его прежней фазе, и
+    # возобновление молча ничего не закрывало. Тикет ждал человека,
+    # человек отвечал, и ответ пропадал. Авторитет - само хранилище
+    # инцидентов: закрываются ровно те тикеты, что ждут пользователя.
     store = PipelineIncidentStore(cfg.state_dir)
     closed: list[str] = []
     for incident_id in store.incident_ids_awaiting_the_user():

@@ -239,11 +239,35 @@ class AIStudioRuntimeTests(unittest.TestCase):
         )
         payload = context_payload(prompt)
 
-        self.assertEqual(
-            payload["acceptance_gate"]["original_user_request"],
+        # Исходный запрос неизменен на весь прогон и сузить его нельзя.
+        # Дословная копия в каждом промпте съедала бюджет: 51 475 из
+        # 62 635 символов при 395 символах самой задачи. Теперь это
+        # проверяемая ссылка, а текст берётся из Project Memory.
+        request = (
             "Deliver the requested behavior and judge it independently of "
-            "implementation-authored tests.",
+            "implementation-authored tests."
         )
+        reference = payload["acceptance_gate"]["original_user_request"]
+        self.assertFalse(reference["verbatim_in_prompt"])
+        self.assertEqual(reference["chars"], len(request))
+        self.assertEqual(
+            reference["sha256"], hashlib.sha256(request.encode("utf-8")).hexdigest()
+        )
+        self.assertEqual(
+            reference["retrieval"],
+            {
+                "server": "codex_autopilot_memory",
+                "tool": "memory",
+                "arguments": {"operation": "current", "task_id": "code-a"},
+                "field": "user_request",
+            },
+        )
+        self.assertNotIn(request, prompt)
+        # Ссылка бесполезна, если воркеру не сказали, как ею
+        # воспользоваться: до этой правки промпт не упоминал сервер
+        # памяти ни разу.
+        self.assertIn("codex_autopilot_memory", prompt)
+        self.assertIn('"operation":"current"', prompt)
         self.assertTrue(
             payload["acceptance_gate"]["implementation_tests_are_evidence_only"]
         )

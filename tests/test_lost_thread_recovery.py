@@ -155,24 +155,106 @@ if __name__ == "__main__":
 
 
 class OwnerTurnBarrierTests(unittest.TestCase):
-    """Ворота воркера открывает только устойчивое "completed".
+    """Ворота открывает ход, который действительно кончился.
 
     Пока синхронный Stop-хук работает, второй App Server наблюдает тот же
     ход как "interrupted". Замерено в рабочем прогоне 0.7: ход
     01a097aa-4832 виден сначала interrupted, затем completed. Принимать
-    interrupted значило бы открывать ворота ровно в тот момент, от
-    которого барьер и защищает.
+    одно лишь interrupted значило бы открывать ворота ровно в тот момент,
+    от которого барьер и защищает.
 
-    Поэтому Stop-хук обязан отвечать continue: ход, чей хук ответил block,
-    остаётся interrupted навсегда, и барьер не откроется никогда.
+    Исключение ровно одно и оно доказуемо: прерывание, записанное в наш
+    собственный журнал для этого же хода. Такой ход не станет completed
+    никогда, и ждать его - значит ждать вечно.
     """
 
-    def test_the_barrier_accepts_only_completed(self) -> None:
-        source = (
-            Path(__file__).resolve().parents[1]
-            / "src/codex_autopilot/lifecycle_dispatch.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn('if turn and turn.get("status") == "completed":', source)
+    @staticmethod
+    def _state(journal):
+        from codex_autopilot.run_state import RunState
+
+        state = RunState()
+        state.lifecycle_journal = list(journal)
+        return state
+
+    def test_completed_opens_the_gate(self) -> None:
+        from codex_autopilot.lifecycle_dispatch import causal_gate_open
+
+        self.assertTrue(
+            causal_gate_open(
+                {"id": "T", "status": "completed"},
+                self._state([]),
+                thread_id="TH",
+                turn_id="T",
+            )
+        )
+
+    def test_a_bare_interrupt_keeps_the_gate_shut(self) -> None:
+        """Тот самый миг перед completed, ради которого барьер и написан."""
+
+        from codex_autopilot.lifecycle_dispatch import causal_gate_open
+
+        self.assertFalse(
+            causal_gate_open(
+                {"id": "T", "status": "interrupted"},
+                self._state([]),
+                thread_id="TH",
+                turn_id="T",
+            )
+        )
+
+    def test_a_journalled_interrupt_opens_the_gate(self) -> None:
+        """Прерывание записано нами - ход кончился и completed не станет."""
+
+        from codex_autopilot.lifecycle_dispatch import causal_gate_open
+
+        journal = [
+            {"event": "interrupt_observed", "thread_id": "TH", "turn_id": "T"}
+        ]
+        self.assertTrue(
+            causal_gate_open(
+                {"id": "T", "status": "interrupted"},
+                self._state(journal),
+                thread_id="TH",
+                turn_id="T",
+            )
+        )
+
+    def test_an_interrupt_of_another_turn_proves_nothing(self) -> None:
+        from codex_autopilot.lifecycle_dispatch import causal_gate_open
+
+        journal = [
+            {"event": "interrupt_observed", "thread_id": "TH", "turn_id": "OTHER"}
+        ]
+        self.assertFalse(
+            causal_gate_open(
+                {"id": "T", "status": "interrupted"},
+                self._state(journal),
+                thread_id="TH",
+                turn_id="T",
+            )
+        )
+
+    def test_a_journalled_interrupt_also_counts_as_a_finished_turn(self) -> None:
+        """Тот же вывод на втором барьере - при выборе предшественника.
+
+        Оба гейта ждали `turn_completed`. Прерванный ход его не пишет, и
+        преемника было некому поднять ни здесь, ни в диспетчере.
+        """
+
+        from codex_autopilot.control import _turn_is_completed
+
+        state = self._state(
+            [{"event": "interrupt_observed", "thread_id": "TH", "turn_id": "T"}]
+        )
+        self.assertTrue(_turn_is_completed(state, "TH", "T"))
+        self.assertFalse(_turn_is_completed(state, "TH", "OTHER"))
+
+    def test_a_missing_turn_keeps_the_gate_shut(self) -> None:
+        from codex_autopilot.lifecycle_dispatch import causal_gate_open
+
+        self.assertFalse(
+            causal_gate_open(None, self._state([]), thread_id="TH", turn_id="T")
+        )
 
     def test_a_proceeding_launch_never_blocks_the_owner_turn(self) -> None:
         from codex_autopilot.control import _launch_report

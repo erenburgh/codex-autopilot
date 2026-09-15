@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from typing import Any
 import uuid
 
 from .plan import (
@@ -51,6 +52,12 @@ class RunState:
     task_states: dict[str, str] = field(default_factory=dict)
     task_attempts: dict[str, int] = field(default_factory=dict)
     task_revisions: dict[str, int] = field(default_factory=dict)
+    # Сколько раз задача была перенанята: воркер сменён, а способ
+    # достижения поднят на ступень. План и DoD при этом не меняются.
+    task_rehires: dict[str, int] = field(default_factory=dict)
+    # Ступень усилия, назначенная перенаймом поверх того, что записано
+    # в плане. Пусто, пока перенайма не было.
+    task_effort: dict[str, str] = field(default_factory=dict)
     active_task_ids: list[str] = field(default_factory=list)
     scheduler_sequence: int = 0
     task_ready_since: dict[str, int] = field(default_factory=dict)
@@ -62,6 +69,17 @@ class RunState:
     worker_sessions: list[dict[str, object]] = field(default_factory=list)
     task_retry_at: dict[str, int] = field(default_factory=dict)
     rate_limit_until: int | None = None
+    # Последний снимок лимитов от App Server. Нужен не для реакции на
+    # упор, а для планирования ёмкости: сколько воркеров имеет смысл
+    # держать параллельно прямо сейчас.
+    rate_limits: dict[str, Any] | None = None
+    # Отказы протокола приёмки по задачам: вердикт верифаера, который не
+    # удалось прочитать. Копится, чтобы следующий верифаер увидел причину.
+    verification_rejections: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # Решения человека снять остановку задачи: что, почему и когда.
+    # Остановка по нарушению правила не самозалечивается, но и не висит
+    # вечно - у неё есть названный автор.
+    user_unblocks: list[dict[str, Any]] = field(default_factory=list)
     plan_change_sequence: int = 0
     active_plan_change_id: str | None = None
     plan_changes: list[dict[str, object]] = field(default_factory=list)
@@ -118,6 +136,7 @@ class StateStore:
         self.lock_path = state_dir / "dispatcher.lock"
         self.pause_path = state_dir / "pause-requested"
         self.launch_path = state_dir / "launch-request.json"
+        self.rate_limits_path = state_dir / "rate-limits.json"
         self._lock_handle = None
 
     def acquire(self) -> None:
@@ -137,7 +156,9 @@ class StateStore:
 
     def load(self) -> RunState:
         if not self.path.exists():
-            return RunState()
+            # Снимок лимитов живёт отдельно от журнала и может появиться
+            # раньше него: событие приходит в первые же секунды хода.
+            return RunState(rate_limits=self.read_rate_limits())
         data = json.loads(self.path.read_text(encoding="utf-8"))
         schema = data.get("schema_version")
         if schema == LEGACY_RUN_STATE_SCHEMA_VERSION:
@@ -149,8 +170,48 @@ class StateStore:
             )
         known = RunState.__dataclass_fields__
         state = RunState(**{key: value for key, value in data.items() if key in known})
+        limits = self.read_rate_limits()
+        if limits is not None:
+            state.rate_limits = limits
         _validate_state(state)
         return state
+
+    def read_rate_limits(self) -> dict[str, Any] | None:
+        """Последний снимок лимитов, если он вообще был записан."""
+
+        try:
+            payload = json.loads(self.rate_limits_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def record_rate_limits(self, snapshot: dict[str, Any]) -> bool:
+        """Запомнить снимок лимитов, не трогая сам журнал прогона.
+
+        Событие приходит из читающего потока App Server, параллельно
+        диспетчеру. Если писать его в run-state.json, снимок пришлось бы
+        загружать и сохранять целиком - и запись, начатая до чужого
+        перехода сессии, затёрла бы этот переход. Отдельный файл имеет
+        ровно одного писателя и не может отменить ничего чужого.
+        """
+
+        if not isinstance(snapshot, dict) or not snapshot:
+            return False
+        if self.read_rate_limits() == snapshot:
+            return False
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        fd, raw = tempfile.mkstemp(prefix=".rate-limits-", dir=self.state_dir)
+        temp = Path(raw)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(snapshot, handle, ensure_ascii=False, allow_nan=False)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, self.rate_limits_path)
+        finally:
+            temp.unlink(missing_ok=True)
+        return True
 
     def save(self, state: RunState) -> None:
         _validate_state(state)
@@ -255,6 +316,8 @@ def _migrate_v08_payload(data: dict[str, object]) -> dict[str, object]:
             "task_states": task_states,
             "task_attempts": task_attempts,
             "task_revisions": {},
+            "task_rehires": {},
+            "task_effort": {},
             "active_task_ids": active,
             "scheduler_sequence": 1 if current_state is TaskState.READY else 0,
             "task_ready_since": (
@@ -361,6 +424,7 @@ def _validate_state(state: RunState) -> None:
     for name, values in (
         ("task_attempts", state.task_attempts),
         ("task_revisions", state.task_revisions),
+        ("task_rehires", state.task_rehires),
     ):
         if not isinstance(values, dict):
             raise ValueError(f"run-state {name} must be an object")

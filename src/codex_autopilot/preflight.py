@@ -9,8 +9,14 @@ import tempfile
 from typing import Any, Callable
 import uuid
 
-from .appserver import AppServerClient, AppServerError, ApprovalRequired, final_agent_message
-from .config import DESKTOP_OWNED_SURFACE
+from .appserver import (
+    AppServerClient,
+    AppServerError,
+    ApprovalRequired,
+    TurnTimeout,
+    final_agent_message,
+)
+from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME
 from .hook_trust import (
     HookPreflightError,
     HookTrustApprovalRequired,
@@ -18,7 +24,8 @@ from .hook_trust import (
 )
 from .memory import MemoryError, probe_sqlite_fts5
 from .models import resolve_selection
-from .plan import Plan
+from .plan import DEFAULT_MAX_PARALLEL_WORKERS, Plan
+from .usage import capacity_notice
 from .project_association import (
     ProjectAssociationError,
     require_desktop_project_root,
@@ -29,6 +36,24 @@ from .project_association import (
 MEMORY_SERVER_NAME = "codex_autopilot_memory"
 REQUIRED_MEMORY_TOOLS = {"memory"}
 MEMORY_PREFLIGHT_TITLE = "Codex Autopilot Preflight · Project Memory"
+# Проба доверия не рассуждает: она делает один вызов инструмента и
+# отвечает одной строкой. Прежде она шла на усилии рабочего воркера -
+# на прогоне v1.0 это был xhigh, и ход дважды не уложился в пять минут,
+# а на третий раз прошёл меньше чем за минуту. Autopilot ограничивает
+# ЛЕСТНИЦУ ВОРКЕРОВ значениями medium..max; App Server принимает и
+# minimal, и low, а проба воркером не является.
+PROBE_REASONING = "low"
+PROBE_TIMEOUT = 300.0
+# Один таймаут не повод валить весь запуск: третий заход показал, что
+# повтор решает. Прежде первый же валил.
+PROBE_ATTEMPTS = 3
+
+ANNOUNCEMENT = (
+    "За весь запуск у вас могут спросить один раз, и только про одно: доверие "
+    f"инструменту памяти `codex_autopilot_memory.memory` в отдельной задаче "
+    f"«{MEMORY_PREFLIGHT_TITLE}». Ответ — кнопкой в этой задаче. Больше preflight "
+    "ничего не спрашивает и ничего не ждёт от вас молча."
+)
 MEMORY_PREFLIGHT_OK = "MEMORY_PREFLIGHT_OK"
 MEMORY_PREFLIGHT_PROMPT = f"""Codex Autopilot Project Memory trust preflight.
 
@@ -58,19 +83,97 @@ class PreflightApprovalRequired(PreflightError):
         )
 
 
+def runtime_command_path() -> Path:
+    """Тот же путь, по которому запускается сам скилл.
+
+    Прошитый `~/Library/Application Support/...` работал бы только у
+    того, у кого рантайм лежит по умолчанию. Запускатель плагина
+    уважает CODEX_AUTOPILOT_RUNTIME, и выданная человеку команда обязана
+    указывать туда же - иначе она верна ровно у меня на машине.
+    """
+
+    override = os.environ.get("CODEX_AUTOPILOT_RUNTIME")
+    if override:
+        return Path(override)
+    # Рантайм знает своё место: <install_root>/current/runtime/src/...
+    candidate = Path(__file__).absolute().parents[3] / "bin/codex-autopilot"
+    if candidate.is_file():
+        return candidate
+    return Path.home() / "Library/Application Support/CodexAutopilot/current/bin/codex-autopilot"
+
+
+def _plan_file_for(project: Path) -> Path:
+    """План, с которым команда разрешения запустится без вопросов."""
+
+    state_dir = project / STATE_DIR_NAME
+    existing = state_dir / "plan.json"
+    return existing if existing.is_file() else state_dir / "bootstrap-plan.json"
+
+
+def approval_command(
+    project: Path,
+    plan_file: Path,
+    profile: str,
+    *,
+    app_server_project_id: str | None = None,
+    desktop_project_id: str | None = None,
+    language: str | None = None,
+) -> str:
+    """Готовая к запуску команда, а не описание того, как её собрать.
+
+    Прежде здесь стояло "повторите ту же команду с флагом": собрать её
+    предлагалось модели, и до человека она не доходила ни разу. Диалога
+    же нет вовсе - запрос инструмента уходит на соединение диспетчера,
+    который на approvals не отвечает. Значит единственный путь к
+    человеку - текст, который можно скопировать и запустить.
+    """
+
+    runtime = runtime_command_path()
+    parts = [
+        f'"{runtime}"',
+        "preflight",
+        f'--project "{project}"',
+        f'--plan-file "{plan_file}"',
+        f"--profile {profile}",
+    ]
+    # Без идентификаторов проекта preflight отказывает на проверке
+    # размещения: "каталог не принадлежит ни одному проекту Codex".
+    # Первая выданная пользователю команда была именно такой - неполной,
+    # и упала не на разрешении, а раньше.
+    if app_server_project_id:
+        parts.append(f"--app-server-project-id {app_server_project_id}")
+    if desktop_project_id:
+        parts.append(f"--desktop-project-id {desktop_project_id}")
+    if language:
+        parts.append(f"--language {language}")
+    parts.append("--approve-project-memory-always")
+    return " ".join(parts)
+
+
 class ProjectMemoryApprovalRequired(PreflightError):
     exit_code = 77
 
-    def __init__(self, thread_id: str, title: str) -> None:
+    def __init__(
+        self,
+        thread_id: str,
+        title: str,
+        command: str | None = None,
+    ) -> None:
         self.thread_id = thread_id
         self.title = title
+        self.command = command
+        ready = (
+            f"\n\nЗапусти эту команду в терминале - её запуск и есть твоё согласие:\n\n{command}\n"
+            if command
+            else ""
+        )
         super().__init__(
             "Project Memory MCP: APPROVAL REQUIRED\n\n"
-            f"No production worker or new run-state was created. Diagnostic preflight task: `{title}` (thread {thread_id}). "
-            "Ask the user whether to approve `codex_autopilot_memory.memory` with Always. "
-            "Only after explicit user confirmation, repeat the same command with "
-            "`--approve-project-memory-always`; it answers this one App Server request through the supported flow. "
-            "Autopilot never grants, infers, or bypasses approval on its own."
+            f"Никакой воркер и никакое состояние прогона не созданы. Диагностическая задача: `{title}` (тред {thread_id}).\n"
+            "Нужно одно разрешение - инструменту памяти `codex_autopilot_memory.memory`, с ответом Always. "
+            "Всплывающего окна не будет: запрос уходит на соединение диспетчера, а тот на approvals не отвечает."
+            f"{ready}"
+            "Autopilot не выдаёт, не выводит и не обходит это разрешение сам."
         )
 
 
@@ -145,6 +248,12 @@ def run_preflight(
     if emit:
         emit("Codex Autopilot preflight")
         emit("")
+        # Единственное место прогона, где может понадобиться человек, названо до
+        # первой длинной проверки. Без этой строки пользователь видит десять
+        # "OK", потом тишину, и не знает, что решение ждут от него и в другой
+        # задаче: замерено - полчаса "думаю" при том, что диалог висел рядом.
+        emit(ANNOUNCEMENT)
+        emit("")
         emit(f"Project: {project}")
     if not project.is_dir():
         report("Project", "FAIL", "target directory does not exist")
@@ -162,6 +271,18 @@ def run_preflight(
         report("Runtime", "FAIL", f"installed worker skill missing: {skill_path}")
         raise PreflightError(f"installed worker skill is missing: {skill_path}")
     report("Runtime", "OK", f"{codex_binary}; {skill_path}")
+    try:
+        cache_status, cache_detail = plugin_cache_state(installed_plugin_root(skill_path))
+    except PreflightError as exc:
+        # Скилл не внутри установленного плагина - сверять нечего, и это
+        # не повод останавливать проверку: путь уже проверен выше.
+        cache_status, cache_detail = "WARN", str(exc)
+    report("Plugin cache", cache_status, cache_detail)
+    if cache_status == "FAIL":
+        raise PreflightError(
+            "Codex грузит не ту копию плагина: " + cache_detail
+            + ". Переустанови Autopilot - установщик чистит кэш и сверяет результат."
+        )
 
     log_path = Path(tempfile.gettempdir()) / f"codex-autopilot-preflight-{os.getpid()}.jsonl"
     client = client_factory(codex_binary, log_path)
@@ -372,15 +493,49 @@ def run_preflight(
             raise PreflightError("Project Memory MCP did not bind to the target project root")
         report("Project Memory transport", "OK", f"SQLite {memory_probe['sqlite']} + FTS5; local stdio MCP connected and target-bound")
 
-        try:
-            started_turn = client.start_plain_turn(
-                thread_id=probe_thread_id,
-                prompt=MEMORY_PREFLIGHT_PROMPT,
-                effort=selection.reasoning if selection else None,
-                client_user_message_id=str(uuid.uuid4()),
-                cwd=project,
+        if emit:
+            # Пять минут молчания без единого признака жизни - это то,
+            # что человек видит как "ветка думает" и не знает, чего ждать.
+            emit(
+                f"Project Memory MCP: проверяю доверие в задаче «{MEMORY_PREFLIGHT_TITLE}» "
+                f"(до {int(PROBE_TIMEOUT)} с на попытку, попыток {PROBE_ATTEMPTS})"
             )
-            completed = client.wait_for_turn(probe_thread_id, started_turn["turn"]["id"], timeout=300)
+        started_turn = None
+        completed = None
+        last_timeout: TurnTimeout | None = None
+        try:
+            for attempt in range(1, PROBE_ATTEMPTS + 1):
+                started_turn = client.start_plain_turn(
+                    thread_id=probe_thread_id,
+                    prompt=MEMORY_PREFLIGHT_PROMPT,
+                    effort=PROBE_REASONING,
+                    client_user_message_id=str(uuid.uuid4()),
+                    cwd=project,
+                )
+                try:
+                    completed = client.wait_for_turn(
+                        probe_thread_id,
+                        started_turn["turn"]["id"],
+                        timeout=PROBE_TIMEOUT,
+                        what=f"Project Memory trust probe (attempt {attempt}/{PROBE_ATTEMPTS})",
+                    )
+                    break
+                except TurnTimeout as exc:
+                    last_timeout = exc
+                    report(
+                        "Project Memory MCP",
+                        "RETRY",
+                        f"attempt {attempt} of {PROBE_ATTEMPTS} did not finish within {int(PROBE_TIMEOUT)}s",
+                    )
+                    try:
+                        client.interrupt_turn(probe_thread_id, started_turn["turn"]["id"])
+                    except Exception:
+                        # Прерывание - уборка, а не условие. Его отказ не
+                        # должен подменять собой причину таймаута.
+                        pass
+            if completed is None:
+                report("Project Memory MCP", "FAIL", str(last_timeout))
+                raise PreflightError(str(last_timeout)) from last_timeout
         except ApprovalRequired as exc:
             params = exc.payload.get("params") or {}
             meta = params.get("_meta") or {}
@@ -389,7 +544,7 @@ def run_preflight(
                 and meta.get("codex_approval_kind") == "mcp_tool_call"
             )
             if not is_memory:
-                raise PreflightError(f"unexpected approval during Project Memory preflight: {exc}") from exc
+                raise PreflightError(_unexpected_approval_message(exc)) from exc
             advertised = _approval_persistence_options(exc.payload)
             if "always" not in advertised:
                 report(
@@ -479,7 +634,17 @@ def run_preflight(
                 )
             else:
                 report("Project Memory MCP", "APPROVAL REQUIRED", f"preflight task {probe_thread_id}; no production worker created")
-                raise ProjectMemoryApprovalRequired(probe_thread_id, MEMORY_PREFLIGHT_TITLE) from exc
+                raise ProjectMemoryApprovalRequired(
+                    probe_thread_id,
+                    MEMORY_PREFLIGHT_TITLE,
+                    approval_command(
+                        project,
+                        _plan_file_for(project),
+                        profile,
+                        app_server_project_id=result.project_id or app_server_project_id,
+                        desktop_project_id=desktop_project_id,
+                    ),
+                ) from exc
         else:
             _validate_memory_preflight_result(client, probe_thread_id, completed.turn)
         report("Project Memory MCP", "OK", "real model-to-MCP call completed without a trust interruption")
@@ -496,6 +661,26 @@ def run_preflight(
         if emit:
             emit(f"Routing: {result.routing}")
             emit(f"Next worker: {result.next_model} / {result.next_reasoning}")
+            # Человек не обязан знать ни своего тарифа, ни того, что число
+            # воркеров вообще задаётся. Сказать это один раз, назвав его
+            # собственное положение, честнее, чем молча поставить десятку
+            # из шаблона - именно так она и простояла весь прогон.
+            try:
+                limits = client.rate_limits()
+            except Exception:
+                limits = None
+            # Число считается заданным человеком, если оно отличается от
+            # умолчания: шаблон подставляет его сам, и молча выдать это за
+            # выбор пользователя было бы подменой.
+            declared_workers = (
+                plan.max_parallel_workers
+                if plan.max_parallel_workers != DEFAULT_MAX_PARALLEL_WORKERS
+                else None
+            )
+            emit(
+                "Ёмкость: "
+                + capacity_notice(limits, declared_workers)
+            )
             emit("")
             emit("Preflight: PASS")
         return result
@@ -541,7 +726,36 @@ def _reject_unprobed_capabilities(
         report("Declared capabilities", "FAIL", detail)
         raise PreflightError(detail)
     report("Declared capabilities", "OK", "none require an additional trust probe")
+def _unexpected_approval_message(exc: BaseException) -> str:
+    """Назвать чужой approval человеческим языком, а не сырым JSON.
 
+    Диспетчер не отвечает на approvals ни при каких условиях. Значит любой
+    approval, кроме доверия инструменту памяти, здесь - тупик: он висит в
+    интерфейсе, preflight его не закроет, и прогон не начнётся. Единственный
+    замеренный источник такого тупика - модель, которая сама приложила запрос
+    прав к команде `start-skill` и запустила её повторно.
+    """
+    payload = getattr(exc, "payload", None) or {}
+    params = payload.get("params") or {}
+    kind = str(params.get("kind") or "unknown")
+    reason = str(params.get("reason") or "").strip()
+    lines = [
+        "preflight остановлен: во время проверки памяти пришёл approval, "
+        f"который диспетчер не имеет права закрывать (kind={kind}).",
+        "",
+        "Диспетчер не отвечает на approvals никогда. Этот запрос не будет "
+        "закрыт сам и прогон с ним не начнётся.",
+    ]
+    if reason:
+        lines += ["", f"Текст запроса: {reason}"]
+    lines += [
+        "",
+        "Что делать: не прикладывайте запрос прав к `start-skill` и не "
+        "запускайте её повторно ради доступа. Отмените висящий запрос в "
+        "интерфейсе и устраните причину, названную предыдущей строкой вывода "
+        "preflight.",
+    ]
+    return "\n".join(lines)
 
 def _validate_memory_preflight_result(client: Any, thread_id: str, turn: dict[str, Any]) -> None:
     # App Server 0.153.4 can emit a partial turn/completed snapshot after an
@@ -610,6 +824,53 @@ def _archive_replaced_workers(project: Path, client: Any, *, exclude: set[str]) 
             raise PreflightError(f"could not retire previous worker {thread_id}; refusing duplicate restart: {exc}") from exc
         retired.append(thread_id)
     return retired
+
+
+def plugin_cache_dirs(plugin_name: str) -> list[Path]:
+    """Копии плагина, которые видит Codex - не то, что лежит в установке."""
+
+    home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    base = home / "plugins" / "cache" / "codex-autopilot-local" / plugin_name
+    return sorted(
+        manifest.parent.parent for manifest in base.glob("*/.codex-plugin/plugin.json")
+    )
+
+
+def plugin_cache_state(plugin_root: Path) -> tuple[str, str]:
+    """Совпадает ли то, что грузит Codex, с тем, что установлено.
+
+    Codex читает плагин из своего кэша, а рантайм - из каталога
+    установки. Пока в кэше оставалась прежняя копия, он грузил её: у
+    пользователя стоял 0.9.7, а работал 0.9.0 - с прежним объявлением
+    Interrupt на 30 секунд. Codex зажимает его до 3, переписывает файл,
+    хэш меняется, и доверие Stop-хука слетает на каждой загрузке. Со
+    стороны это выглядит как "хуки слетают сами", и починить это,
+    доверяя их заново, нельзя - через минуту слетят опять.
+    """
+
+    manifest = plugin_root / ".codex-plugin" / "plugin.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    name = str(payload.get("name") or "")
+    installed = str(payload.get("version") or "")
+    if ".local." not in installed:
+        # Метку ставит установщик. Без неё перед нами исходное дерево, а
+        # не установка: сверять его с чужим кэшем бессмысленно.
+        return "WARN", f"плагин {name} не из установки ({installed}) - сверять нечего"
+    cached = plugin_cache_dirs(name)
+    if not cached:
+        return "WARN", f"Codex ещё не забрал плагин {name} в свой кэш"
+    if len(cached) > 1:
+        versions = ", ".join(item.name for item in cached)
+        return "FAIL", f"в кэше Codex несколько копий {name}: {versions}"
+    cached_version = str(
+        json.loads(
+            (cached[0] / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        ).get("version")
+        or ""
+    )
+    if cached_version != installed:
+        return "FAIL", f"Codex грузит {cached_version}, установлено {installed}"
+    return "OK", f"{installed} - одна копия, та же, что установлена"
 
 
 def installed_plugin_root(skill_path: Path) -> Path:

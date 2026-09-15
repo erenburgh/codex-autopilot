@@ -195,3 +195,134 @@ class ResumeChainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeadRelayWithoutAThreadIsNotADeadEndTests(unittest.TestCase):
+    """Релей, умерший до создания ветки, не должен запирать прогон.
+
+    В живом прогоне сессия осталась в RELAYING с пустым thread_id: процесс
+    умер между «начал» и «создал». Запуск отвечал
+    `automatic relay cannot spawn from 'RELAYING'`, а разобрать эту сессию
+    не мог никто - наблюдать со стороны App Server тоже нечего, ветки не
+    существует. Прогон становился неоживимым, хотя не было создано ничего.
+    """
+
+    def test_a_relaying_session_without_a_thread_can_respawn(self) -> None:
+        from codex_autopilot import control
+
+        session = {
+            "reservation_token": "t1",
+            "relay_owner_thread_id": "owner",
+            "status": "RELAYING",
+            "thread_id": None,
+            "automatic_dispatch_pid": 999_999_999,
+            "automatic_dispatch_state": "RUNNING",
+        }
+        control._revive_dead_relay_session(session)
+        self.assertEqual(session["status"], "CREATE_REQUESTED")
+        self.assertIsNone(session["automatic_dispatch_pid"])
+
+    def test_a_relaying_session_with_a_thread_is_left_alone(self) -> None:
+        """Ветка есть - побочный эффект был, догадываться нельзя."""
+
+        from codex_autopilot import control
+
+        session = {
+            "reservation_token": "t1",
+            "status": "RELAYING",
+            "thread_id": "01a0-real",
+            "automatic_dispatch_pid": 999_999_999,
+        }
+        self.assertFalse(control._revive_dead_relay_session(session))
+        self.assertEqual(session["status"], "RELAYING")
+
+
+class ACompletedSessionIsAlsoAWitnessTests(unittest.TestCase):
+    """Завершённый ход доказывается не только журнальной записью.
+
+    Дежурный инженер начал писать `turn_completed` только сейчас. Прогоны,
+    созданные до этого, имеют завершённый ход инженера и не имеют
+    события: цепочка вставала на `automatic relay has no completed causal
+    predecessor`, а починить это можно было лишь правкой журнала руками -
+    то есть подделкой записи о том, чего система не наблюдала.
+    """
+
+    def state(self, *, journal, sessions):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(lifecycle_journal=journal, worker_sessions=sessions)
+
+    def test_the_journal_entry_is_enough(self) -> None:
+        from codex_autopilot.control import _turn_is_completed
+
+        state = self.state(
+            journal=[{"event": "turn_completed", "thread_id": "t", "turn_id": "u"}],
+            sessions=[],
+        )
+        self.assertTrue(_turn_is_completed(state, "t", "u"))
+
+    def test_a_completed_session_is_enough(self) -> None:
+        from codex_autopilot.control import _turn_is_completed
+
+        state = self.state(
+            journal=[],
+            sessions=[{"thread_id": "t", "turn_id": "u", "status": "COMPLETED"}],
+        )
+        self.assertTrue(_turn_is_completed(state, "t", "u"))
+
+    def test_an_unfinished_session_is_not_a_witness(self) -> None:
+        from codex_autopilot.control import _turn_is_completed
+
+        state = self.state(
+            journal=[],
+            sessions=[{"thread_id": "t", "turn_id": "u", "status": "ACTIVE"}],
+        )
+        self.assertFalse(_turn_is_completed(state, "t", "u"))
+
+
+class PlanChangePredecessorIsAcceptedTests(unittest.TestCase):
+    """Задача, запросившая смену плана, — законный предшественник.
+
+    Она завершила свой ход и записала turn_completed, но её сессия
+    остаётся в PLAN_CHANGE_REQUESTED. В control это учтено давно;
+    в lifecycle_dispatch лежала вторая копия проверки по статусу, и
+    зарезервированный такой задачей планировщик поднять было некому:
+    `automatic successor has no completed causal predecessor turn`.
+    """
+
+    def state(self, status: str, *, journal: bool):
+        from types import SimpleNamespace
+
+        session = {"thread_id": "owner", "turn_id": "turn-1", "status": status}
+        entries = (
+            [{"event": "turn_completed", "thread_id": "owner", "turn_id": "turn-1"}]
+            if journal
+            else []
+        )
+        return SimpleNamespace(worker_sessions=[session], lifecycle_journal=entries)
+
+    def accepts(self, state) -> bool:
+        # Настоящая функция из рантайма, а не её копия в тесте: первая
+        # версия этих проверок повторяла логику у себя и мутацию не ловила.
+        from codex_autopilot.lifecycle_dispatch import causal_predecessor
+
+        return causal_predecessor(state, "owner") is not None
+
+    def test_plan_change_requested_with_a_completed_turn_is_accepted(self) -> None:
+        self.assertTrue(self.accepts(self.state("PLAN_CHANGE_REQUESTED", journal=True)))
+
+    def test_a_completed_session_is_accepted_without_the_journal(self) -> None:
+        self.assertTrue(self.accepts(self.state("COMPLETED", journal=False)))
+
+    def test_an_unfinished_turn_is_still_refused(self) -> None:
+        self.assertFalse(self.accepts(self.state("ACTIVE", journal=False)))
+
+    def test_the_dispatcher_barrier_uses_the_shared_predicate(self) -> None:
+        """Две копии проверки - и чинить пришлось дважды."""
+
+        import inspect
+
+        from codex_autopilot import lifecycle_dispatch
+
+        body = inspect.getsource(lifecycle_dispatch.adopt_automatic_dispatcher_successor)
+        self.assertIn("causal_predecessor(state, owner)", body)

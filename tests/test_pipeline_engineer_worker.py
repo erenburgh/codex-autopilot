@@ -356,3 +356,632 @@ class PlanChangeUserRequestTests(unittest.TestCase):
         self.assertIn("The runtime carries user_request over", source)
         self.assertNotIn("Дословно сохрани user_request", source)
         self.assertNotIn("Preserve user_request verbatim", source)
+
+
+class ResolvedMustHandOverTests(unittest.TestCase):
+    """Починка без преемника завершением не является.
+
+    В живом прогоне инженер закрыл инцидент, его процесс штатно вышел, а
+    запускать задачу стало некому: RESOLVED возвращал пустой список
+    преемников, прогон уходил в READY/PREPARING и молча стоял. Причинный
+    предшественник к этому моменту мёртв - именно его смерть и была
+    инцидентом, - поэтому причинным звеном служит сам ход инженера.
+    """
+
+    def setUp(self) -> None:
+        import json as _json
+        import tempfile
+
+        from _gates import patch_hook_trust_gates
+        from _relay import reserve_ready_frontier
+        from codex_autopilot.bootstrap import initialize_project
+        from codex_autopilot.config import load_config
+        from codex_autopilot.pipeline_engineer import (
+            IncidentClass,
+            IncidentSignal,
+            PipelineIncidentStore,
+            SideEffectOutcome,
+        )
+        from codex_autopilot.run_state import StateStore, utc_now
+        from test_verification_lifecycle import graph, task
+
+        patch_hook_trust_gates(self)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        (self.root / ".git").mkdir()
+        skill = self.root / "SKILL.md"
+        skill.write_text("# test skill\n", encoding="utf-8")
+        plan_file = self.root / "input-plan.json"
+        # Граф, где B зависит от A: готовой остаётся ровно одна задача,
+        # как в живом инциденте. На графе с двумя независимыми задачами
+        # вторая занимает слот планировщика, и проверка меряла бы не то.
+        plan_file.write_text(_json.dumps(graph(task("A"))), encoding="utf-8")
+        initialize_project(
+            self.root,
+            plan_file,
+            profile="adaptive",
+            skill_path=skill,
+            desktop_project_id="desktop-project",
+        )
+        self.cfg = load_config(self.root)
+        self.store = StateStore(self.cfg.state_dir)
+        self.reserve = reserve_ready_frontier
+        first = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")[0]
+        self.task_id = first.task_id
+        self.failed_token = first.reservation_token
+
+        incidents = PipelineIncidentStore(self.cfg.state_dir)
+        incident = incidents.open_incident(
+            IncidentSignal(
+                signal_id="probe:launch",
+                code="detached_dispatch_failed",
+                surface=IncidentClass.PIPELINE,
+                summary="Worker requested approval; the dispatcher never answers",
+                affected_task_ids=(self.task_id,),
+                operation="create_thread",
+                side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+                system_state={},
+            ),
+            at=utc_now(),
+        )
+        self.incident_id = str(incident["incident_id"])
+        incidents.route_incident(self.incident_id, at=utc_now())
+        incidents.ensure_pipeline_engineer(self.incident_id, at=utc_now())
+
+    def resolve_and_complete(
+        self,
+        final_message: str,
+        *,
+        dispatcher_authorized: bool = False,
+        reserve_before_retry: bool = False,
+    ):
+        import os
+        import time
+
+        from _appserver_fakes import activate_via_app_server
+        from codex_autopilot.lifecycle_completion import complete_desktop_worker
+        from codex_autopilot.lifecycle_failures import record_desktop_failure
+        from codex_autopilot.pipeline_engineer import (
+            HealthcheckResult,
+            PipelineIncidentStore,
+            _expected_healthcheck,
+        )
+        from codex_autopilot.run_state import utc_now
+
+        # Живая картина инцидента: сессия задачи мертва - именно её смерть
+        # и была инцидентом, - а задача вернулась в READY. Провал
+        # оформляется настоящим путём: он же снимает блокировки ресурсов
+        # и ведёт журнал. Правка состояния руками ломала сверку замков с
+        # журналом, и это правильно, что ломала.
+        record_desktop_failure(
+            self.cfg,
+            self.failed_token,
+            reason="Worker requested approval; the dispatcher never answers",
+            definitive=True,
+            reserve_other_ready=False,
+        )
+
+        self.future = int(time.time()) + 3_600
+        # Инженер заводится в момент срыва, а не через час после него:
+        # окно повтора сорвавшейся задачи на этот момент ещё открыто.
+        reserve_epoch = int(time.time()) if reserve_before_retry else self.future
+        descriptor = self.reserve(
+            self.cfg, relay_owner_thread_id="owner-2", now_epoch=reserve_epoch
+        )[0]
+        activate_via_app_server(self.cfg, self.root, descriptor, "engineer-thread")
+        incidents = PipelineIncidentStore(self.cfg.state_dir)
+        record = next(
+            item
+            for item in incidents.load()["incidents"]
+            if item["incident_id"] == self.incident_id
+        )
+        incidents.complete_pipeline_engineer(
+            self.incident_id,
+            success=True,
+            at=utc_now(),
+            healthcheck=HealthcheckResult(
+                name=_expected_healthcheck(record) or "causal_predecessor_rearm_ready",
+                passed=True,
+                checks=("relay armed",),
+                observed_at=utc_now(),
+            ),
+        )
+        # К моменту, когда инженер закрывает инцидент, окно повтора
+        # сорвавшейся задачи уже истекло - в живом прогоне M1 стояла
+        # именно в READY, а не в RETRY_WAIT.
+        extra = {}
+        if dispatcher_authorized:
+            session = next(
+                item
+                for item in self.store.load().worker_sessions
+                if item.get("kind") == "pipeline_engineer"
+            )
+            session["automatic_dispatch_pid"] = os.getpid()
+            session["automatic_dispatch_state"] = "RUNNING"
+            state = self.store.load()
+            for item in state.worker_sessions:
+                if item.get("reservation_token") == session["reservation_token"]:
+                    item["automatic_dispatch_pid"] = os.getpid()
+                    item["automatic_dispatch_state"] = "RUNNING"
+            self.store.save(state)
+            extra = {
+                "dispatcher_reservation_token": session["reservation_token"],
+                "dispatcher_pid": os.getpid(),
+            }
+        return complete_desktop_worker(
+            self.cfg,
+            thread_id="engineer-thread",
+            turn_id="engineer-turn",
+            final_message=final_message,
+            now_epoch=self.future,
+            **extra,
+        )
+
+    def test_a_retry_due_while_the_engineer_worked_is_picked_up(self) -> None:
+        """Срок повтора истёк, пока инженер чинил - задачу обязаны поднять.
+
+        Замерено на живом прогоне: инженер закрыл инцидент и вышел, у
+        задачи срок повтора истёк двенадцатью минутами раньше, и она
+        осталась в RETRY_WAIT. Резервирование увидело RETRY_WAIT и
+        припарковало прогон в WAITING_RATE_LIMIT - при том что никакого
+        барьера лимитов не было вовсе. Диспетчер вышел, будить стало
+        некому, прогон встал навсегда.
+        """
+
+        outcome = self.resolve_and_complete(
+            "инцидент закрыт\nPIPELINE_ENGINEER_STATUS: RESOLVED",
+            reserve_before_retry=True,
+        )
+        self.assertEqual(outcome.worker_status, "RESOLVED")
+        self.assertTrue(outcome.descriptors)
+        state = self.store.load()
+        self.assertEqual(state.task_states[self.task_id], "RUNNING")
+        self.assertNotIn(self.task_id, state.task_retry_at)
+        self.assertNotEqual(state.phase, "WAITING_RATE_LIMIT")
+
+    def test_a_resolved_incident_hands_the_run_to_a_successor(self) -> None:
+        outcome = self.resolve_and_complete(
+            "инцидент закрыт\nPIPELINE_ENGINEER_STATUS: RESOLVED"
+        )
+        self.assertEqual(outcome.worker_status, "RESOLVED")
+        # Прежде здесь был пустой кортеж, и прогон вставал навсегда.
+        self.assertTrue(outcome.descriptors)
+        self.assertEqual(outcome.descriptors[0].task_id, self.task_id)
+        state = self.store.load()
+        # Прогон не просто "не встал" - он поехал: назначенный преемник
+        # переводит задачу в работу, а не оставляет её ждать.
+        self.assertEqual(state.status, "RUNNING")
+        self.assertEqual(state.task_states[self.task_id], "RUNNING")
+        self.assertNotEqual(state.phase, "PIPELINE_ENGINEER_NO_SUCCESSOR")
+
+    def test_the_engineer_turn_is_visible_to_the_causal_barrier(self) -> None:
+        """Барьер читает turn_completed, а не статус сессии.
+
+        Прежде инженер писал только `pipeline_engineer_completed`: его
+        завершённый ход оставался невидимым, и преемника некому было
+        поднять - `automatic relay has no completed causal predecessor`.
+        """
+
+        self.resolve_and_complete("готово\nPIPELINE_ENGINEER_STATUS: RESOLVED")
+        journal = self.store.load().lifecycle_journal
+        completed = [
+            item
+            for item in journal
+            if item.get("event") == "turn_completed"
+            and item.get("thread_id") == "engineer-thread"
+        ]
+        self.assertTrue(completed, "ход инженера не отмечен как завершённый")
+
+    def test_the_engineer_marks_the_successor_as_its_own_transition(self) -> None:
+        """Без этого учёта диспетчер отказывается вести цепочку дальше.
+
+        В живом прогоне инженер закрыл инцидент и назначил преемника, но
+        не отметил его у себя: следующий шаг ответил `current dispatcher
+        does not own the completed-to-successor transition`, резервация
+        повисла в CREATE_REQUESTED, и поверх закрытого инцидента
+        открылся новый - уже о падении самого диспетчера.
+        """
+
+        outcome = self.resolve_and_complete(
+            "инцидент закрыт\nPIPELINE_ENGINEER_STATUS: RESOLVED",
+            dispatcher_authorized=True,
+        )
+        engineer = next(
+            item
+            for item in self.store.load().worker_sessions
+            if item.get("kind") == "pipeline_engineer"
+        )
+        self.assertEqual(engineer["automatic_dispatch_state"], "ADVANCING")
+        self.assertEqual(
+            engineer["automatic_successor_tokens"],
+            [item.reservation_token for item in outcome.descriptors],
+        )
+
+    def test_the_engineer_thread_is_the_causal_link_for_the_successor(self) -> None:
+        """Релей выполняет ход инженера: другого живого предшественника нет."""
+
+        self.resolve_and_complete("готово\nPIPELINE_ENGINEER_STATUS: RESOLVED")
+        successor = next(
+            item
+            for item in self.store.load().worker_sessions
+            if item.get("kind") != "pipeline_engineer"
+            and item.get("status") not in {"COMPLETED", "FAILED", "RETRY_WAIT"}
+        )
+        self.assertEqual(successor["relay_owner_thread_id"], "engineer-thread")
+
+
+class FailureBeforeTheRequestIsNotAmbiguousTests(unittest.TestCase):
+    """Отказ до отправки запроса известен, а не неоднозначен.
+
+    В живом прогоне `installed_plugin_root` стоял среди аргументов
+    `client.start_thread`: он падал уже после `create_invoked = True`,
+    хотя ни одного `thread/start` в логе диспетчера не было. Отказ
+    записывался как UNKNOWN, порождал тикет AMBIGUOUS_SIDE_EFFECT, а
+    такой класс по устройству запрещает и автопочинку, и дежурного
+    инженера. Прогон вставал без выхода.
+    """
+
+    def test_the_plugin_root_is_resolved_before_the_flag_is_armed(self) -> None:
+        import inspect
+
+        from codex_autopilot import lifecycle_dispatch
+
+        # Только код: в комментарии рядом обе строки упомянуты нарочно,
+        # и текстовый поиск по ним ловил бы объяснение вместо реализации.
+        code = "\n".join(
+            line
+            for line in inspect.getsource(lifecycle_dispatch).splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        resolve = code.index("plugin_root = installed_plugin_root(cfg.skill_path)")
+        armed = code.index("create_invoked = True")
+        self.assertLess(
+            resolve,
+            armed,
+            "корень плагина обязан резолвиться до взведения create_invoked",
+        )
+
+    def test_the_flag_is_not_armed_from_inside_the_call_arguments(self) -> None:
+        """Вызов не должен считать отправленным то, что ещё собирается."""
+
+        import inspect
+
+        from codex_autopilot import lifecycle_dispatch
+
+        body = inspect.getsource(lifecycle_dispatch)
+        start = body.index("started = client.start_thread(")
+        args = body[start : body.index("\n            )", start)]
+        self.assertNotIn("installed_plugin_root(", args)
+
+
+class EscalationAlwaysHasAWayBackTests(unittest.TestCase):
+    """Ответ пользователя на эскалацию не должен зависеть от фазы прогона.
+
+    Фазу `PIPELINE_ENGINEER_ESCALATED` выставляет только завершение
+    инженера. Инцидент, эскалированный маршрутизацией, оставлял прогон в
+    прежней фазе - и возобновление молча ничего не закрывало.
+    """
+
+    def test_resume_does_not_gate_on_the_run_phase(self) -> None:
+        import inspect
+
+        from codex_autopilot import control
+
+        body = inspect.getsource(control._answer_escalation)
+        self.assertNotIn('state.phase != "PIPELINE_ENGINEER_ESCALATED"', body)
+        self.assertIn("incident_ids_awaiting_the_user", body)
+
+
+class ReplaceStartsWithoutInheritedTicketsTests(unittest.TestCase):
+    """Новый прогон не наследует тикеты прежнего.
+
+    В тикетах нет run_id, а дежурный инженер старше любой работы: два
+    открытых тикета прошлого прогона вставали поперёк нового ещё до
+    первой задачи. `--replace` чистил план, состояние и логи - и не
+    трогал хранилище инцидентов.
+    """
+
+    def setUp(self) -> None:
+        import json as _json
+        import tempfile
+
+        from _gates import patch_hook_trust_gates
+        from codex_autopilot.bootstrap import initialize_project
+        from codex_autopilot.pipeline_engineer import (
+            IncidentClass,
+            IncidentSignal,
+            PipelineIncidentStore,
+            SideEffectOutcome,
+        )
+        from codex_autopilot.run_state import utc_now
+        from test_verification_lifecycle import graph, task
+
+        patch_hook_trust_gates(self)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        (self.root / ".git").mkdir()
+        self.skill = self.root / "SKILL.md"
+        self.skill.write_text("# test skill\n", encoding="utf-8")
+        self.plan_file = self.root / "input-plan.json"
+        self.plan_file.write_text(_json.dumps(graph(task("A"))), encoding="utf-8")
+        self.initialize = initialize_project
+        self.initialize(
+            self.root,
+            self.plan_file,
+            profile="adaptive",
+            skill_path=self.skill,
+            desktop_project_id="desktop-project",
+        )
+        self.state_dir = self.root / ".codex-autopilot"
+        incidents = PipelineIncidentStore(self.state_dir)
+        incidents.open_incident(
+            IncidentSignal(
+                signal_id="probe:stale",
+                code="detached_dispatch_failed",
+                surface=IncidentClass.PIPELINE,
+                summary="Тикет прошлого прогона",
+                affected_task_ids=("A",),
+                operation="create_thread",
+                side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+                system_state={},
+            ),
+            at=utc_now(),
+        )
+        self.store_cls = PipelineIncidentStore
+
+    def replace_run(self) -> None:
+        # Первый запуск потребляет файл плана, поэтому повтор пишет его
+        # заново - ровно как это делает скилл на новом прогоне.
+        import json as _json
+
+        from test_verification_lifecycle import graph, task
+
+        self.plan_file.write_text(_json.dumps(graph(task("A"))), encoding="utf-8")
+        self.initialize(
+            self.root,
+            self.plan_file,
+            profile="adaptive",
+            skill_path=self.skill,
+            desktop_project_id="desktop-project",
+            replace=True,
+        )
+
+    def test_a_replaced_run_opens_with_an_empty_incident_store(self) -> None:
+        self.assertTrue(self.store_cls(self.state_dir).load()["incidents"])
+        self.replace_run()
+        self.assertEqual(self.store_cls(self.state_dir).load()["incidents"], [])
+
+    def test_the_previous_tickets_are_kept_beside_the_run(self) -> None:
+        """Это запись о поломке: откладывается, а не удаляется."""
+
+        self.replace_run()
+        archived = sorted(self.state_dir.glob("pipeline-incidents.*.json"))
+        self.assertEqual(len(archived), 1)
+        import json as _json
+
+        kept = _json.loads(archived[0].read_text(encoding="utf-8"))
+        self.assertEqual(len(kept["incidents"]), 1)
+
+
+class HookTimeoutsSurviveCodexLoadTests(unittest.TestCase):
+    """Codex не должен переписывать наши хуки при загрузке.
+
+    Пользователь весь день жаловался, что доверие хукам слетает перед
+    каждой новой задачей. Причина нашлась на её же экране: Codex писал
+    `clamping Interrupt hook timeout to 3s` и показывал все три хука в
+    состоянии Review. Мы объявляли Interrupt с таймаутом 30, Codex
+    зажимал его до своего предела - определение переставало совпадать с
+    доверенным, и весь файл уходил на повторный разбор при каждой
+    загрузке.
+    """
+
+    MAX_INTERRUPT_TIMEOUT = 3
+
+    def hook_files(self):
+        import json as _json
+
+        root = Path(__file__).resolve().parent.parent
+        files = sorted(root.glob("plugins/*/hooks/hooks.json"))
+        self.assertTrue(files, "файлы хуков не найдены")
+        return [(p, _json.loads(p.read_text(encoding="utf-8"))) for p in files]
+
+    def test_the_interrupt_timeout_is_never_above_what_codex_accepts(self) -> None:
+        for path, payload in self.hook_files():
+            for group in payload["hooks"].get("Interrupt", []):
+                for hook in group["hooks"]:
+                    self.assertLessEqual(
+                        hook["timeout"],
+                        self.MAX_INTERRUPT_TIMEOUT,
+                        f"{path.parts[-3]}: Codex зажмёт этот таймаут и потребует "
+                        "заново доверить все хуки файла",
+                    )
+
+    def test_both_profiles_declare_the_same_interrupt_timeout(self) -> None:
+        """Профили отличаются составом, а не поведением хуков."""
+
+        seen = {
+            hook["timeout"]
+            for _, payload in self.hook_files()
+            for group in payload["hooks"].get("Interrupt", [])
+            for hook in group["hooks"]
+        }
+        self.assertEqual(len(seen), 1, f"профили разошлись: {seen}")
+
+
+class RepeatedFailureIsNotACrashTests(unittest.TestCase):
+    """Второй отказ той же задачи не должен убивать диспетчер.
+
+    В живом прогоне это открыло тикет поверх тикета: настоящая поломка
+    уже ждала в RETRY_WAIT, пришла вторая запись отказа, машина
+    состояний отвергла переход RETRY_WAIT -> RETRY_WAIT, релей умер, и
+    появился второй инцидент - уже о падении самого диспетчера.
+    """
+
+    def setUp(self) -> None:
+        ResolvedMustHandOverTests.setUp(self)
+
+    def fail_once(self, token: str) -> None:
+        from codex_autopilot.lifecycle_failures import record_desktop_failure
+
+        record_desktop_failure(
+            self.cfg,
+            token,
+            reason="воркер сорвался",
+            definitive=True,
+            reserve_other_ready=False,
+        )
+
+    def park_in_retry_wait(self) -> None:
+        """Так это делает восстановление: прямым присваиванием.
+
+        `resilience.py` ставит RETRY_WAIT в обход машины состояний, когда
+        разбирает мёртвый диспетчер. Следом приходит запись отказа - и
+        встречает задачу уже в том состоянии, в которое собиралась её
+        перевести.
+        """
+
+        from codex_autopilot.task_state import TaskState
+
+        state = self.store.load()
+        state.task_states = {**state.task_states, self.task_id: TaskState.RETRY_WAIT.value}
+        state.active_task_ids = [t for t in state.active_task_ids if t != self.task_id]
+        self.store.save(state)
+
+    def test_a_failure_meeting_an_already_waiting_task_does_not_crash(self) -> None:
+        from codex_autopilot.task_state import TaskState
+
+        self.park_in_retry_wait()
+        # Прежде здесь падало IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT,
+        # релей умирал, и поверх настоящей поломки открывался второй тикет.
+        self.fail_once(self.failed_token)
+        self.assertEqual(
+            self.store.load().task_states[self.task_id], TaskState.RETRY_WAIT.value
+        )
+
+    def test_the_failure_is_still_recorded(self) -> None:
+        """Идемпотентность не должна превращаться в молчание."""
+
+        self.park_in_retry_wait()
+        self.fail_once(self.failed_token)
+        session = next(
+            item
+            for item in self.store.load().worker_sessions
+            if item.get("reservation_token") == self.failed_token
+        )
+        self.assertEqual(session["status"], "RETRY_WAIT")
+        self.assertIn("сорвался", str(session.get("failure_reason")))
+
+
+class ResolvedIncidentResumesTheRunItselfTests(unittest.TestCase):
+    """После починки прогон продолжается сам, без оператора.
+
+    Это и есть разница между «пайплайн чинится» и «пайплайн
+    автоматический». Резервация, созданная ДО инцидента, новой не
+    является, и обычный резерватор её не вернёт: она так и висела в
+    CREATE_REQUESTED, пока человек не возобновит прогон руками. Каждая
+    починка требовала оператора.
+    """
+
+    def orphan(self, **extra):
+        session = {
+            "task_id": "M1",
+            "kind": "replanner",
+            "status": "CREATE_REQUESTED",
+            "thread_id": None,
+            "descriptor": {
+                "schema_version": 2, "surface": "desktop_owned", "run_id": "r",
+                "graph_version": 1, "task_id": "M1", "task_title": "T",
+                "kind": "replanner", "attempt": 1, "worker_sequence": 1,
+                "reservation_token": "tok", "operation_id": "op",
+                "client_user_message_id": "cid", "desktop_project_id": "p",
+                "cwd": "/tmp", "title": "T", "prompt": "p", "model": None,
+                "thinking": None, "execution_mode": "code",
+                "created_at": "2026-09-14T00:00:00+00:00",
+                "prep_app_server_exited_at": "2026-09-14T00:00:00+00:00",
+                "descriptor_path": "/tmp/tok.json",
+            },
+        }
+        session.update(extra)
+        return session
+
+    def state(self, sessions):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(worker_sessions=sessions)
+
+    def test_a_reservation_without_a_thread_is_picked_up(self) -> None:
+        from codex_autopilot.lifecycle_completion import _orphaned_pending_descriptors
+
+        found = _orphaned_pending_descriptors(self.state([self.orphan()]))
+        self.assertEqual([item.task_id for item in found], ["M1"])
+
+    def test_a_reservation_that_already_has_a_thread_is_left_alone(self) -> None:
+        """Ветка есть - побочный эффект был, поднимать заново нельзя."""
+
+        from codex_autopilot.lifecycle_completion import _orphaned_pending_descriptors
+
+        found = _orphaned_pending_descriptors(
+            self.state([self.orphan(thread_id="01a0-real")])
+        )
+        self.assertEqual(found, ())
+
+    def test_a_running_session_is_not_a_leftover(self) -> None:
+        from codex_autopilot.lifecycle_completion import _orphaned_pending_descriptors
+
+        found = _orphaned_pending_descriptors(self.state([self.orphan(status="ACTIVE")]))
+        self.assertEqual(found, ())
+
+
+class EveryCompletionPathRecordsOwnershipTests(unittest.TestCase):
+    """Кто резервирует преемника - тот отмечает переход своим.
+
+    Барьер `adopt_automatic_dispatcher_successor` проверяет два поля у
+    завершившейся сессии: automatic_successor_tokens и ADVANCING. Без
+    них он отказывается вести цепочку словами "current dispatcher does
+    not own the completed-to-successor transition", резервация повисает,
+    и поверх неё открывается тикет о падении диспетчера.
+
+    Путей завершения три - воркер, дежурный инженер, планировщик. Я
+    чинила их по одному, каждый раз после того, как прогон вставал.
+    Этот тест закрывает класс: любая новая ветка, резервирующая
+    преемника, обязана вести тот же учёт.
+    """
+
+    def test_no_completion_path_reserves_without_recording(self) -> None:
+        import ast
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parent.parent
+            / "src/codex_autopilot/lifecycle_completion.py"
+        ).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            body = ast.dump(node)
+            if "_reserve_in_state" not in body:
+                continue
+            if "automatic_successor_tokens" not in body:
+                offenders.append(node.name)
+        self.assertEqual(
+            offenders,
+            [],
+            "эти пути резервируют преемника и не отмечают владение переходом",
+        )
+
+    def test_the_barrier_still_checks_both_fields(self) -> None:
+        """Иначе тест выше охранял бы уже ненужное правило."""
+
+        import inspect
+
+        from codex_autopilot import lifecycle_dispatch
+
+        body = inspect.getsource(
+            lifecycle_dispatch.adopt_automatic_dispatcher_successor
+        )
+        self.assertIn("automatic_successor_tokens", body)
+        self.assertIn("ADVANCING", body)

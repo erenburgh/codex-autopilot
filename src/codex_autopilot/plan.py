@@ -109,7 +109,12 @@ COMPAT_EXECUTION_STRATEGY = "serial"
 COMPAT_MAX_PARALLEL_WORKERS = 1
 # Консервативный, но реально параллельный предел: два воркера дают
 # настоящую параллельность при минимальном росте нагрузки и расхода.
-DEFAULT_MAX_PARALLEL_WORKERS = 2
+# Решение пользователя от 14 сентября 2026. Двойка стояла здесь как
+# умолчание и попала в шаблон плана, откуда планировщик копировал её не
+# глядя: граф из 24 задач с четырьмя независимыми ветками исполнялся по
+# две. Ограничение на Computer Use держится отдельным слотом и от этого
+# числа не зависит.
+DEFAULT_MAX_PARALLEL_WORKERS = 10
 DEFAULT_COMPUTER_USE_SLOTS = 1
 DEFAULT_MAX_MEMORY_RECORDS = 8
 DEFAULT_MAX_DEPENDENCY_OUTPUTS = 8
@@ -621,25 +626,29 @@ def _pytest_option_selects_subset(arg: str) -> bool:
     return name in _PYTEST_PARTIAL_SUITE_OPTIONS
 
 
+# Единственный список допустимых полей плана. Он же называется модели в
+# промпте реплэннера: иначе отказ "plan has unknown fields" не говорит,
+# какие поля вообще существуют, и переделка идёт вслепую.
+GRAPH_PLAN_FIELDS = frozenset(
+    {
+        "schema_version",
+        "graph_version",
+        "goal",
+        "user_request",
+        "model_strategy",
+        "execution_strategy",
+        "max_parallel_workers",
+        "computer_use_slots",
+        "roles",
+        "departments",
+        "tasks",
+        "compatibility",
+    }
+)
+
+
 def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
-    _reject_unknown(
-        data,
-        {
-            "schema_version",
-            "graph_version",
-            "goal",
-            "user_request",
-            "model_strategy",
-            "execution_strategy",
-            "max_parallel_workers",
-            "computer_use_slots",
-            "roles",
-            "departments",
-            "tasks",
-            "compatibility",
-        },
-        "plan",
-    )
+    _reject_unknown(data, set(GRAPH_PLAN_FIELDS), "plan")
     goal, user_request, strategy = _plan_header(
         data,
         profile,

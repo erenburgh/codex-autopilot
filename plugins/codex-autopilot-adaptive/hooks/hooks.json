@@ -1,8 +1,39 @@
 {
   "description": "Runs the deterministic Desktop-owned JIT relay lifecycle or explicit headless controls.",
   "hooks": {
-    "Stop": [{"hooks": [{"type": "command", "command": "\"__CODEX_AUTOPILOT_RUNTIME__\" hook", "timeout": 30, "statusMessage": "Advancing Codex Autopilot"}]}],
-    "Interrupt": [{"hooks": [{"type": "command", "command": "\"__CODEX_AUTOPILOT_RUNTIME__\" hook", "timeout": 30}]}],
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "\"__CODEX_AUTOPILOT_RUNTIME__\" hook", "timeout": 30}]}]
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__CODEX_AUTOPILOT_RUNTIME__\" hook",
+            "timeout": 30,
+            "statusMessage": "Advancing Codex Autopilot"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__CODEX_AUTOPILOT_RUNTIME__\" hook",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__CODEX_AUTOPILOT_RUNTIME__\" hook",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
   }
 }

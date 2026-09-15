@@ -15,6 +15,9 @@ from typing import Any, Callable
 from . import __version__
 
 
+INITIALIZE_TIMEOUT = 180.0
+
+
 class AppServerError(RuntimeError):
     pass
 
@@ -52,6 +55,27 @@ class ProjectRootDrift(AppServerError):
             f"saved project {project_id} does not contain the canonical root "
             f"{root}; its roots are: {shown}"
         )
+
+
+# Как часто спрашивать сервер о состоянии собственного хода и сколько
+# ждать подтверждения, прежде чем считать его оборвавшимся.
+TURN_PROBE_SECONDS = 60.0
+TURN_CONFIRM_SECONDS = 5.0
+TERMINAL_UNFINISHED_TURN_STATUSES = frozenset({"interrupted", "failed"})
+
+
+class TurnAbandoned(AppServerError):
+    """Ход кончился, но не успехом: ждать его завершения больше нечего."""
+
+
+class TurnTimeout(AppServerError):
+    """Ход модели не уложился в бюджет, хотя App Server отвечал исправно.
+
+    Прежде это место поднимало общий `Timed out waiting for App Server`.
+    На живом прогоне v1.0 оно дважды отправило и модель, и человека
+    чинить App Server и права, тогда как App Server был здоров: не
+    уложился ход модели, запущенный на усилии рабочего воркера.
+    """
 
 
 class ApprovalRequired(AppServerError):
@@ -135,7 +159,24 @@ class AppServerClient:
             raise AppServerError("App Server stdio pipes were not created")
         threading.Thread(target=self._read_stdout, daemon=True).start()
         threading.Thread(target=self._read_stderr, daemon=True).start()
-        result = self.request(
+        try:
+            result = self._initialize_request()
+        except AppServerError as exc:
+            if "Timed out waiting for App Server" not in str(exc):
+                raise
+            raise AppServerError(
+                f"App Server did not answer `initialize` within {INITIALIZE_TIMEOUT:.0f} s. "
+                "Это отказ рукопожатия, а не отказ в правах: запрашивать доступ к "
+                "CODEX_HOME и повторять команду бесполезно. Обычная причина - "
+                "установленный плагин или skill, который App Server не может "
+                "загрузить; его жалобы видны в stderr ниже. "
+                f"Исходный текст: {exc}"
+            ) from exc
+        self.notify("initialized")
+        return result
+
+    def _initialize_request(self) -> dict[str, Any]:
+        return self.request(
             "initialize",
             {
                 "clientInfo": {
@@ -153,9 +194,14 @@ class AppServerClient:
                     "mcpServerOpenaiFormElicitation": True,
                 },
             },
+            # Холодный старт App Server загружает каждый установленный плагин и
+            # каждый skill, включая чужие и сломанные. Замерено на живой машине:
+            # один плагин с невалидным YAML растянул рукопожатие за стандартные
+            # 60 секунд, preflight упал на "Timed out waiting for App Server", а
+            # модель приняла таймаут за отказ в правах. Бюджет рукопожатия
+            # отделён от обычного запроса именно поэтому.
+            timeout=INITIALIZE_TIMEOUT,
         )
-        self.notify("initialized")
-        return result
 
     def _record(self, direction: str, payload: Any) -> None:
         if self.log:
@@ -257,6 +303,19 @@ class AppServerClient:
         if self.event_sink and method:
             self.event_sink(method, params)
 
+    def _turn_status(self, thread_id: str, turn_id: str) -> str:
+        """Состояние конкретного хода по данным сервера, а не по событиям."""
+
+        try:
+            thread = self.read_thread(thread_id)
+        except Exception:
+            # Недоступность чтения - не приговор ходу: ждём дальше.
+            return ""
+        for turn in thread.get("turns") or []:
+            if turn.get("id") == turn_id:
+                return str(turn.get("status") or "")
+        return ""
+
     def wait_for_turn(
         self,
         thread_id: str,
@@ -264,11 +323,33 @@ class AppServerClient:
         *,
         timeout: float,
         pause_requested: Callable[[], bool] | None = None,
+        what: str = "model turn",
     ) -> TurnResult:
         deadline = time.monotonic() + timeout
         deferred: list[dict[str, Any]] = []
+        # Прерванный ход события `turn/completed` не пришлёт никогда. Без
+        # этой проверки диспетчер ждал его весь таймаут - четыре часа, -
+        # и прогон всё это время показывал "идёт". Замерено: дежурный
+        # инженер провёл ход в ожидании чужого окна повтора, ход
+        # оборвался, и никто этого не заметил.
+        #
+        # Раз в минуту, а не чаще: thread/read тянет всю ветку целиком.
+        next_probe = time.monotonic() + TURN_PROBE_SECONDS
         try:
             while True:
+                if time.monotonic() >= next_probe:
+                    next_probe = time.monotonic() + TURN_PROBE_SECONDS
+                    status = self._turn_status(thread_id, turn_id)
+                    if status in TERMINAL_UNFINISHED_TURN_STATUSES:
+                        # Подтверждение вторым чтением: мгновение перед
+                        # `completed` тот же ход виден прерванным.
+                        time.sleep(TURN_CONFIRM_SECONDS)
+                        if self._turn_status(thread_id, turn_id) in TERMINAL_UNFINISHED_TURN_STATUSES:
+                            raise TurnAbandoned(
+                                f"{what} on thread {thread_id} ended as {status!r} "
+                                "without completing; waiting for its completion would "
+                                "never return"
+                            )
                 if pause_requested and pause_requested():
                     try:
                         self.interrupt_turn(thread_id, turn_id)
@@ -278,6 +359,14 @@ class AppServerClient:
                     message = self.pending_events.popleft() if self.pending_events else self._get(deadline, maximum_wait=1)
                 except TimeoutError:
                     continue
+                except AppServerError as exc:
+                    if "Timed out waiting for App Server" not in str(exc):
+                        raise
+                    raise TurnTimeout(
+                        f"{what} did not finish within {timeout:g}s on thread "
+                        f"{thread_id}. App Server answered throughout, so this is the "
+                        f"model turn and not the transport. Detail: {exc}"
+                    ) from exc
                 self._inspect_event(message)
                 params = message.get("params") or {}
                 if message.get("method") == "turn/completed" and params.get("threadId") == thread_id and (params.get("turn") or {}).get("id") == turn_id:

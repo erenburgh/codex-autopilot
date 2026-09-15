@@ -28,6 +28,7 @@ from .resilience import (
     PlanChangeConflictError,
     PlanChangeProtocolError,
     active_plan_change,
+    append_resilience_event,
     commit_plan_change,
     parse_plan_change_request,
     parse_plan_change_result,
@@ -58,13 +59,13 @@ from .verification import (
 
 from .lifecycle_base import (
     IMPLEMENTATION_SESSION_KINDS,
+    PENDING_SESSION_STATUSES,
     SUCCESS_STATUSES,
     CompletionOutcome,
     DesktopLifecycleError,
     _active_session_by_thread,
     _append_event,
     _bind_resource_identity,
-    _block_if_revision_limit_reached,
     _dispatcher_owns_reservation,
     _finish_global_state,
     _latest_implementation_thread_id,
@@ -308,12 +309,22 @@ def complete_desktop_worker(
             turn_id=turn_id,
             final_message=final_message,
             at=at,
+            now_epoch=now_epoch,
+            dispatcher_authorized=dispatcher_authorized,
+            dispatcher_pid=dispatcher_pid,
         )
     if kind == "replanner":
         try:
             replanner_result = parse_plan_change_result(final_message)
         except PlanChangeProtocolError as exc:
             raise DesktopLifecycleError(str(exc)) from exc
+        # Владение переходом передаётся и сюда. Инженеру и воркеру его
+        # чинили по отдельности, реплэннера пропустили: сторона
+        # вызываемого была готова, а вызывающий флаг не передавал. Из-за
+        # этого весь учёт преемника у реплэннера был недостижим из
+        # продакшена, и следующий шаг отвечал "current dispatcher does
+        # not own the completed-to-successor transition" - на первой же
+        # смене плана.
         return _complete_replanner(
             cfg,
             session=session,
@@ -322,6 +333,8 @@ def complete_desktop_worker(
             result=replanner_result,
             at=at,
             now_epoch=now_epoch,
+            dispatcher_authorized=dispatcher_authorized,
+            dispatcher_pid=dispatcher_pid,
         )
     try:
         plan_change_request = parse_plan_change_request(final_message)
@@ -334,7 +347,23 @@ def complete_desktop_worker(
         try:
             verdict = parse_verifier_result(final_message)
         except VerificationProtocolError as exc:
-            raise DesktopLifecycleError(str(exc)) from exc
+            # Нечитаемый вердикт - ошибка модели, а не поломка рантайма.
+            # Замерено: верифаер приложил к вердикту поле `rubric` -
+            # рубрику отдела, которую предыдущая задача сама и создала, -
+            # ход завершился успешно, а диспетчер умер на разборе ответа.
+            # Работа осталась сделанной, приёмка не записана, поверх
+            # неё открылся тикет о падении диспетчера, и прогон простоял
+            # полтора часа. Тот же класс уже закрыт для реплэннера.
+            return _reject_verifier_result(
+                cfg,
+                session=session,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                reason=str(exc),
+                at=at,
+                now_epoch=now_epoch,
+                dispatcher_authorized=dispatcher_authorized,
+            )
         worker_status = verdict.verdict
     else:
         worker_status, reason_code = parse_desktop_worker_status(final_message)
@@ -609,7 +638,10 @@ def complete_desktop_worker(
                     timestamp,
                     detail=json.dumps(verdict.to_dict(), ensure_ascii=False, sort_keys=True),
                 )
-                _block_if_revision_limit_reached(plan, state, task_id, current, timestamp)
+                # Решение о перенайме принимается один раз - на резервации,
+                # где бюджет ревизий реально тратится и известен номер
+                # следующей ревизии. Второй вызов здесь поднимал ступень
+                # дважды за один отказ приёмки.
         elif worker_status in SUCCESS_STATUSES:
             expected = (
                 TaskState.REVISING.value
@@ -654,9 +686,6 @@ def complete_desktop_worker(
                     current["verification_issues"] = [item.to_dict() for item in issues]
                     state.task_states = transition_task(
                         plan, state.task_states, task_id, TaskState.REVISION_REQUIRED
-                    )
-                    _block_if_revision_limit_reached(
-                        plan, state, task_id, current, timestamp
                     )
         else:
             source = TaskState.REVISING if kind == "revision" else TaskState.RUNNING
@@ -802,6 +831,47 @@ def parse_pipeline_engineer_status(message: str) -> tuple[str, str]:
     return "ESCALATE_TO_USER", parts[1]
 
 
+def _orphaned_pending_descriptors(state: RunState) -> tuple[Any, ...]:
+    """Зарезервированная работа, которую некому поднять.
+
+    После инцидента остаются сессии в состояниях, пригодных к релею:
+    ветка ещё не создавалась, дублировать нечего. Их владелец - задача,
+    завершившая свой ход до инцидента, - поднять их уже не может: его
+    процесс вышел. Возврат их дескрипторов и есть продолжение прогона
+    без оператора.
+    """
+
+    from .lifecycle_base import RELAYABLE_SESSION_STATUSES, LaunchDescriptor
+
+    return tuple(
+        LaunchDescriptor.from_dict(dict(item["descriptor"]))
+        for item in state.worker_sessions
+        if item.get("status") in RELAYABLE_SESSION_STATUSES
+        and isinstance(item.get("descriptor"), dict)
+        and not str(item.get("thread_id") or "")
+    )
+
+
+def _would_idle_forever(state: RunState) -> bool:
+    """Прогон встал бы навсегда: работа готова, а делать её некому.
+
+    Пустой список преемников законен сам по себе - например, когда всё
+    упёрлось в заблокированную задачу. Признак беды другой: есть задача
+    в READY и при этом ни одной живой сессии, то есть никто не придёт и
+    ничего не сдвинет.
+    """
+
+    active = any(
+        item.get("status") in PENDING_SESSION_STATUSES
+        for item in state.worker_sessions
+    )
+    if active:
+        return False
+    return any(
+        value == TaskState.READY.value for value in (state.task_states or {}).values()
+    )
+
+
 def _complete_pipeline_engineer(
     cfg: Config,
     *,
@@ -810,6 +880,9 @@ def _complete_pipeline_engineer(
     turn_id: str,
     final_message: str,
     at: str | None,
+    now_epoch: int | None = None,
+    dispatcher_authorized: bool = False,
+    dispatcher_pid: int | None = None,
 ) -> CompletionOutcome:
     """Принять итог инженера, ничего не принимая на слово.
 
@@ -860,6 +933,12 @@ def _complete_pipeline_engineer(
         if escalation_code:
             current["escalation_code"] = escalation_code
         current["completed_at"] = timestamp
+        # Ход инженера завершился так же, как любой другой, и барьер
+        # причинности читает именно это событие. Прежде инженер писал
+        # только своё `pipeline_engineer_completed`: его завершённый ход
+        # оставался для барьера невидимым, и преемника некому было
+        # поднять - "automatic relay has no completed causal predecessor".
+        _append_event(state, "turn_completed", current, timestamp, detail=status)
         _append_event(
             state,
             "pipeline_engineer_completed",
@@ -873,6 +952,7 @@ def _complete_pipeline_engineer(
         _record_rule_conflicts(
             cfg, state, current, final_message, timestamp, ProjectMemory(cfg.root)
         )
+        descriptors: tuple[Any, ...] = ()
         if status == "ESCALATE_TO_USER":
             # Тикет обязан узнать об эскалации вместе с прогоном. Прежде
             # прогон уходил в BLOCKED, а тикет оставался в
@@ -895,8 +975,306 @@ def _complete_pipeline_engineer(
             state.status = "READY"
             state.phase = "PREPARING"
             state.last_error = None
+            # Починка без преемника завершением не является. Прежде здесь
+            # возвращался пустой список, прогон уходил в READY/PREPARING,
+            # и на этом всё кончалось: инженер закрывал инцидент, его
+            # процесс штатно выходил, а запускать M1 становилось некому.
+            # Причинный предшественник к этому моменту мёртв - именно его
+            # смерть и была инцидентом, - поэтому причинным звеном служит
+            # сам ход инженера: его Stop-хук выполняет релей, как у
+            # любого воркера.
+            descriptors = _reserve_in_state(
+                cfg,
+                load_plan(cfg.state_dir, cfg.profile),
+                state,
+                memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
+                relay_owner_thread_id=thread_id,
+                now_epoch=now_epoch,
+            )
+            # Резервация, созданная ДО инцидента, новой не является, и
+            # `_reserve_in_state` её не вернёт. Прежде она так и оставалась
+            # висеть в CREATE_REQUESTED: инженер чинил причину, выходил, а
+            # прогон стоял до тех пор, пока человек не возобновит его
+            # руками. Именно это и делало пайплайн неавтоматическим -
+            # каждая починка требовала оператора.
+            if not descriptors:
+                descriptors = _orphaned_pending_descriptors(state)
+            if dispatcher_authorized:
+                # Тот же учёт владения переходом, что и у обычного воркера.
+                # Прежде инженер назначал преемника и не отмечал его у себя:
+                # диспетчер отказывался вести цепочку дальше словами
+                # "current dispatcher does not own the completed-to-successor
+                # transition", резервация висела в CREATE_REQUESTED, и поверх
+                # закрытого инцидента открывался новый - о падении самого
+                # диспетчера.
+                current["automatic_successor_tokens"] = [
+                    item.reservation_token for item in descriptors
+                ]
+                current["automatic_dispatch_state"] = (
+                    "ADVANCING" if descriptors else "COMPLETED"
+                )
+            if not descriptors and _would_idle_forever(state):
+                # Исключение здесь потеряло бы саму запись о завершении
+                # инженера, поэтому прогон останавливается громко, а не
+                # падает: задача готова к работе, но назначить её некому.
+                state.status = "BLOCKED"
+                state.phase = "PIPELINE_ENGINEER_NO_SUCCESSOR"
+                state.last_error = (
+                    f"инженер закрыл инцидент {incident_id}, но преемник не назначен: "
+                    "есть готовая задача и ни одной активной сессии"
+                )
+                _append_event(
+                    state,
+                    "pipeline_engineer_left_no_successor",
+                    current,
+                    timestamp,
+                    detail=incident_id,
+                )
         store.save(state)
-    return CompletionOutcome(True, status, (), False)
+    return CompletionOutcome(True, status, descriptors, False)
+
+
+# Сколько раз реплэннеру возвращают его же граф с причиной отказа.
+# Три попытки всего: одна исходная и две с текстом ошибки на руках. Если
+# модель трижды не попала в схему, дело не в случайности, и следующий ход
+# будет жечь лимиты впустую - прогон должен остановиться громко и назвать
+# человеку причину, а не молча крутиться.
+MAX_PLAN_CHANGE_REJECTIONS = 2
+
+
+def _reject_replanner_result(
+    cfg: Config,
+    *,
+    session: dict[str, Any],
+    thread_id: str,
+    turn_id: str,
+    reason: str,
+    request_id: str,
+    current_plan: Plan,
+    at: str | None,
+    now_epoch: int | None,
+    dispatcher_authorized: bool = False,
+) -> CompletionOutcome:
+    """Вернуть реплэннеру его граф с причиной отказа и дать переделать.
+
+    План не меняется: отвергнутый граф не пишется никуда. Меняется
+    только запись смены плана - в ней копится список отказов, который
+    попадает в следующий промпт. Задача-заказчик уходит в BLOCKED, и
+    обычный путь резервирования поднимает из него свежего реплэннера:
+    он уже умеет BLOCKED -> READY для этого случая.
+    """
+
+    timestamp = at or utc_now()
+    store = StateStore(cfg.state_dir)
+    coordinator = ResourceLockCoordinator(store, cfg.root)
+    descriptors: tuple[Any, ...] = ()
+    with coordinator.transaction():
+        state = store.load()
+        current = _active_session_by_thread(state, thread_id)
+        if current is None or current.get("reservation_token") != session.get(
+            "reservation_token"
+        ):
+            return CompletionOutcome(False, None, (), state.status == "DONE")
+        if _session_kind(current) != "replanner":
+            raise DesktopLifecycleError("plan change result came from a non-replanner task")
+        change = active_plan_change(state, request_id=request_id)
+        rejections = list(change.get("rejections") or [])
+        rejections.append({"at": timestamp, "reason": reason})
+        change["rejections"] = rejections
+        exhausted = len(rejections) > MAX_PLAN_CHANGE_REJECTIONS
+
+        current["turn_id"] = turn_id
+        current["final_status"] = "PLAN_CHANGE_REJECTED"
+        current["completed_at"] = timestamp
+        current["status"] = "COMPLETED"
+        current["plan_change_rejection"] = reason
+        _bind_resource_identity(
+            state,
+            str(current["reservation_token"]),
+            thread_id=thread_id,
+            turn_id=turn_id,
+        )
+        _append_event(state, "turn_identity_bound", current, timestamp)
+        _append_event(
+            state,
+            "turn_completed",
+            current,
+            timestamp,
+            detail="PLAN_CHANGE_REJECTED",
+        )
+        release_resources_in_state(
+            state,
+            str(current["resource_ownership_token"]),
+            reason="replanner returned an invalid graph",
+            now=timestamp,
+        )
+        task_id = str(current["task_id"])
+        state.active_task_ids = [
+            item for item in state.active_task_ids if item != task_id
+        ]
+        state.task_states = transition_task(
+            current_plan,
+            state.task_states,
+            task_id,
+            TaskState.BLOCKED,
+        )
+        append_resilience_event(
+            state,
+            "plan_change_rejected",
+            at=timestamp,
+            task_id=task_id,
+            plan_change_id=request_id,
+            detail={"reason": reason, "attempt": len(rejections)},
+        )
+        if exhausted:
+            # Бюджет исчерпан. Молчаливое ожидание здесь и есть та дыра,
+            # из-за которой прогон стоит без объяснения: остановка должна
+            # называть причину в статусе.
+            change["status"] = "REJECTED"
+            state.active_plan_change_id = None
+            state.status = "BLOCKED"
+            state.phase = "PLAN_CHANGE_REJECTED"
+            if dispatcher_authorized:
+                current["automatic_successor_tokens"] = []
+                current["automatic_dispatch_state"] = "COMPLETED"
+            store.save(state)
+            return CompletionOutcome(True, "PLAN_CHANGE_REJECTED", (), False)
+
+        change["status"] = "DRAINING"
+        descriptors = _reserve_in_state(
+            cfg,
+            current_plan,
+            state,
+            memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
+            relay_owner_thread_id=thread_id,
+            now_epoch=now_epoch,
+        )
+        if dispatcher_authorized:
+            current["automatic_successor_tokens"] = [
+                item.reservation_token for item in descriptors
+            ]
+            current["automatic_dispatch_state"] = (
+                "ADVANCING" if descriptors else "COMPLETED"
+            )
+        _finish_global_state(
+            current_plan,
+            state,
+            descriptors,
+            paused=store.pause_requested(),
+        )
+        store.save(state)
+    _materialize(descriptors)
+    return CompletionOutcome(True, "PLAN_CHANGE_REJECTED", descriptors, False)
+
+
+# Сколько раз вердикт возвращают верифаеру с причиной. Три попытки
+# всего: одна исходная и две с текстом отказа на руках.
+MAX_VERIFICATION_REJECTIONS = 2
+
+
+def _reject_verifier_result(
+    cfg: Config,
+    *,
+    session: dict[str, Any],
+    thread_id: str,
+    turn_id: str,
+    reason: str,
+    at: str | None,
+    now_epoch: int | None,
+    dispatcher_authorized: bool = False,
+) -> CompletionOutcome:
+    """Вернуть верифаеру его вердикт с причиной и дать переписать.
+
+    Приёмка не засчитывается ни в какую сторону: непрочитанный вердикт
+    не PASS и не REVISE. Задача возвращается в IMPLEMENTED - работа
+    сделана и по-прежнему ждёт приёмки, - и обычный путь резервирования
+    поднимает свежего верифаера.
+    """
+
+    timestamp = at or utc_now()
+    store = StateStore(cfg.state_dir)
+    coordinator = ResourceLockCoordinator(store, cfg.root)
+    descriptors: tuple[Any, ...] = ()
+    plan = load_plan(cfg.state_dir, cfg.profile)
+    with coordinator.transaction():
+        state = store.load()
+        current = _active_session_by_thread(state, thread_id)
+        if current is None or current.get("reservation_token") != session.get(
+            "reservation_token"
+        ):
+            return CompletionOutcome(False, None, (), state.status == "DONE")
+        task_id = str(current["task_id"])
+        rejections = list(state.verification_rejections.get(task_id) or [])
+        rejections.append({"at": timestamp, "reason": reason})
+        state.verification_rejections[task_id] = rejections
+        exhausted = len(rejections) > MAX_VERIFICATION_REJECTIONS
+
+        current["turn_id"] = turn_id
+        current["final_status"] = "VERIFICATION_REJECTED"
+        current["completed_at"] = timestamp
+        current["status"] = "COMPLETED"
+        current["verification_rejection"] = reason
+        _bind_resource_identity(
+            state,
+            str(current["reservation_token"]),
+            thread_id=thread_id,
+            turn_id=turn_id,
+        )
+        _append_event(state, "turn_identity_bound", current, timestamp)
+        _append_event(
+            state, "turn_completed", current, timestamp, detail="VERIFICATION_REJECTED"
+        )
+        release_resources_in_state(
+            state,
+            str(current["resource_ownership_token"]),
+            reason="verifier returned an unreadable verdict",
+            now=timestamp,
+        )
+        state.active_task_ids = [
+            item for item in state.active_task_ids if item != task_id
+        ]
+        state.task_states = transition_task(
+            plan,
+            state.task_states,
+            task_id,
+            TaskState.BLOCKED if exhausted else TaskState.IMPLEMENTED,
+        )
+        if exhausted:
+            # Три нечитаемых вердикта подряд - это не случайность. Дальше
+            # жечь ходы бессмысленно: прогон встаёт громко и называет
+            # причину, а не крутится молча.
+            state.status = "BLOCKED"
+            state.phase = "VERIFICATION_PROTOCOL_BLOCKED"
+            state.last_error = (
+                f"верифаер {task_id} трижды вернул нечитаемый вердикт: {reason}"
+            )
+            if dispatcher_authorized:
+                current["automatic_successor_tokens"] = []
+                current["automatic_dispatch_state"] = "COMPLETED"
+            store.save(state)
+            return CompletionOutcome(True, "VERIFICATION_REJECTED", (), False)
+
+        descriptors = _reserve_in_state(
+            cfg,
+            plan,
+            state,
+            memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
+            relay_owner_thread_id=thread_id,
+            now_epoch=now_epoch,
+        )
+        if dispatcher_authorized:
+            current["automatic_successor_tokens"] = [
+                item.reservation_token for item in descriptors
+            ]
+            current["automatic_dispatch_state"] = (
+                "ADVANCING" if descriptors else "COMPLETED"
+            )
+        _finish_global_state(
+            plan, state, descriptors, paused=store.pause_requested()
+        )
+        store.save(state)
+    _materialize(descriptors)
+    return CompletionOutcome(True, "VERIFICATION_REJECTED", descriptors, False)
 
 
 def _complete_replanner(
@@ -908,6 +1286,8 @@ def _complete_replanner(
     result: Any,
     at: str | None,
     now_epoch: int | None,
+    dispatcher_authorized: bool = False,
+    dispatcher_pid: int | None = None,
 ) -> CompletionOutcome:
     current_plan = load_plan(cfg.state_dir, cfg.profile)
     request_id = str(session.get("plan_change_id") or "")
@@ -919,7 +1299,26 @@ def _complete_replanner(
             profile=cfg.profile,
         )
     except (PlanChangeProtocolError, PlanChangeConflictError, ValueError) as exc:
-        raise DesktopLifecycleError(str(exc)) from exc
+        # Негодный граф - ошибка модели, а не поломка инфраструктуры.
+        # Прежде она поднималась как DesktopLifecycleError: диспетчер
+        # падал, открывался PIPELINE-тикет, и прогон вставал навсегда -
+        # дежурному инженеру чинить нечего, сломан не рантайм, а ответ.
+        # Замерено: реплэннер вернул поле departments, которого нет в
+        # схеме, и прогон из 24 задач простоял с нулём выполненных.
+        # Верифаер в такой ситуации возвращает работу воркеру с
+        # причиной; у реплэннера этого пути не было.
+        return _reject_replanner_result(
+            cfg,
+            session=session,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            reason=str(exc),
+            request_id=request_id,
+            current_plan=current_plan,
+            at=at,
+            now_epoch=now_epoch,
+            dispatcher_authorized=dispatcher_authorized,
+        )
 
     timestamp = at or utc_now()
     store = StateStore(cfg.state_dir)
@@ -986,6 +1385,19 @@ def _complete_replanner(
             relay_owner_thread_id=thread_id,
             now_epoch=now_epoch,
         )
+        if dispatcher_authorized:
+            # Третий путь завершения, которому не передавали владение
+            # переходом. Планировщик менял план, резервировал преемника и
+            # не отмечал его у себя: следующий шаг отвечал "current
+            # dispatcher does not own the completed-to-successor
+            # transition". Тот же пробел уже был у дежурного инженера и
+            # чинился отдельно - путей три, а закрыт был один.
+            current["automatic_successor_tokens"] = [
+                item.reservation_token for item in descriptors
+            ]
+            current["automatic_dispatch_state"] = (
+                "ADVANCING" if descriptors else "COMPLETED"
+            )
         _finish_global_state(
             candidate,
             state,

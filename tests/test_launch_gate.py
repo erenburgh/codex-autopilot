@@ -578,6 +578,10 @@ class CausalPredecessorTests(unittest.TestCase):
         state.lifecycle_journal = [
             {"event": "turn_identity_bound", "thread_id": "owner", "turn_id": "turn-1"}
         ]
+        # Вторым свидетельством служит закрытая сессия с тем же ходом,
+        # поэтому заглушке нужен явно пустой список - иначе проверяется
+        # поведение Mock, а не правила.
+        state.worker_sessions = []
         self.assertFalse(_turn_is_completed(state, "owner", "turn-1"))
 
     def test_another_threads_completion_does_not_count(self) -> None:
@@ -586,3 +590,51 @@ class CausalPredecessorTests(unittest.TestCase):
         self.assertFalse(
             _turn_is_completed(self.state("COMPLETED"), "someone-else", "turn-1")
         )
+
+
+class AFastLaunchIsStillALaunchTests(ChecklistTests):
+    """Быстрый воркер не должен объявляться незапущенным.
+
+    Живой прогон получил тикет `launch_not_confirmed: dispatcher_alive,
+    send_acknowledged` при том, что в том же чек-листе стояло «ход
+    завершён». Оба пункта были ложны ИМЕННО потому, что работа успела
+    закончиться: статус сессии ушёл дальше ACTIVE, а диспетчер штатно
+    вышел. Чем быстрее веха, тем вероятнее ложный отказ - и каждый такой
+    отказ требовал оператора.
+    """
+
+    FINISHED = LAUNCHED + ((6, "turn_completed"),)
+
+    def test_a_finished_turn_needs_no_live_dispatcher(self) -> None:
+        checks = launch_checklist(
+            self.cfg,
+            self.state(
+                sessions=[session(status="COMPLETED")], events=journal(*self.FINISHED)
+            ),
+            task_ids=["A"],
+            pid_alive=lambda pid: False,
+        )
+        self.assertTrue(self.check(checks, "dispatcher_alive").passed)
+
+    def test_the_send_is_confirmed_by_the_journal_not_the_moment(self) -> None:
+        checks = launch_checklist(
+            self.cfg,
+            self.state(
+                sessions=[session(status="PLAN_CHANGE_REQUESTED")],
+                events=journal(*self.FINISHED),
+            ),
+            task_ids=["A"],
+            pid_alive=lambda pid: False,
+        )
+        self.assertTrue(self.check(checks, "send_acknowledged").passed)
+
+    def test_a_dead_dispatcher_without_a_finished_turn_still_fails(self) -> None:
+        """Ослабление не должно прятать настоящую смерть диспетчера."""
+
+        checks = launch_checklist(
+            self.cfg,
+            self.state(sessions=[session()], events=journal(*LAUNCHED)),
+            task_ids=["A"],
+            pid_alive=lambda pid: False,
+        )
+        self.assertFalse(self.check(checks, "dispatcher_alive").passed)

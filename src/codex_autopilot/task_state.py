@@ -56,6 +56,10 @@ TASK_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
         {
             TaskState.VERIFIED,
             TaskState.REVISION_REQUIRED,
+            # Верифаер, чей ответ не читается, ничего не проверил. Работа
+            # остаётся сделанной и по-прежнему ждёт приёмки, поэтому
+            # задача возвращается в IMPLEMENTED, а не переделывается.
+            TaskState.IMPLEMENTED,
             TaskState.RETRY_WAIT,
             TaskState.BLOCKED,
             TaskState.FAILED,

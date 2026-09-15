@@ -56,7 +56,8 @@ from .lifecycle_base import (
     DesktopLifecycleError,
     LaunchDescriptor,
     _append_event,
-    _block_if_revision_limit_reached,
+    _rehire_or_block_on_revision_limit,
+    task_effort,
     _latest_completion_context,
     _latest_task_session,
     _latest_verification_issues,
@@ -233,18 +234,22 @@ def _reserve_in_state(
         )
     state.dispatcher_pid = None
     epoch = int(time.time()) if now_epoch is None else now_epoch
-    if state.rate_limit_until is not None:
-        if epoch < state.rate_limit_until:
-            state.status = "WAITING"
-            state.phase = "WAITING_RATE_LIMIT"
-            return ()
-        append_resilience_event(
-            state,
-            "rate_limit_cleared",
-            detail={"rate_limit_until": state.rate_limit_until},
-        )
-        state.rate_limit_until = None
-        _prepare_state(plan, state, now_epoch=epoch)
+    if state.rate_limit_until is not None and epoch < state.rate_limit_until:
+        state.status = "WAITING"
+        state.phase = "WAITING_RATE_LIMIT"
+        return ()
+    # _prepare_state снимает истёкший барьер лимитов и поднимает задачи,
+    # чей срок повтора уже прошёл. Прежде он вызывался только внутри
+    # ветки барьера: прогон, у которого барьера нет вовсе, сроки повторов
+    # не пересматривал никогда.
+    #
+    # Замерено: дежурный инженер закрыл инцидент и вышел, у M0 срок
+    # повтора истёк двенадцатью минутами ранее, задача осталась в
+    # RETRY_WAIT, резервирование смены плана увидело RETRY_WAIT и
+    # припарковало прогон в WAITING_RATE_LIMIT - при том что никакого
+    # лимита не было. Диспетчер вышел, будить стало некому, прогон из
+    # 24 задач встал навсегда с нулём выполненных.
+    _prepare_state(plan, state, now_epoch=epoch)
     # Сломанный пайплайн старше любой работы: пока инцидент доведён до
     # дежурного инженера, новых задач не берём, а заводим инженера.
     # Прежде эта фаза была только ярлыком в JSON, и прогон вставал молча.
@@ -257,9 +262,10 @@ def _reserve_in_state(
     )
     if engineer:
         return engineer
-    if open_pipeline_engineer_incident(cfg) is not None:
-        # Инженер уже заведён и работает - новых задач не берём.
-        return ()
+    # Незакрытый инцидент больше не останавливает прогон целиком. Он
+    # держит только свои задачи; всё остальное, что готово к работе,
+    # идёт как обычно. Дежурный инженер закроет тикет своим ходом.
+    paused = tasks_paused_by_incidents(cfg, plan)
     if state.active_plan_change_id is not None:
         return _reserve_replanner_in_state(
             cfg,
@@ -275,6 +281,7 @@ def _reserve_in_state(
             state,
             memory_audit_before=memory_audit_before,
             relay_owner_thread_id=relay_owner_thread_id,
+            paused_task_ids=paused,
         )
     )
     decision = schedule(
@@ -283,6 +290,9 @@ def _reserve_in_state(
         build_scheduler_availability(plan, state, cfg.root),
     )
     for task_id in decision.selected_task_ids:
+        if task_id in paused:
+            # Задача ждёт своего инцидента. Остальные - нет.
+            continue
         if any(
             item.get("task_id") == task_id
             and item.get("status") in PENDING_SESSION_STATUSES
@@ -364,6 +374,30 @@ def _reserve_in_state(
         state.phase = "AWAITING_DESKTOP_CREATE"
         state.milestone_id = descriptors[0].task_id
     return tuple(descriptors)
+
+def tasks_paused_by_incidents(cfg: Config, plan: Plan) -> set[str]:
+    """Задачи, названные незакрытыми инцидентами - и только они.
+
+    Прежде любой незакрытый инцидент останавливал ВЕСЬ прогон: пока
+    дежурный инженер разбирался с M0, не двигалось ничего, даже задачи,
+    к инциденту отношения не имеющие. Тикет о сорвавшемся транспорте на
+    одной ветке держал двадцать три чужие.
+
+    Инцидент называет свои задачи сам - `affected_task_ids`. Пауза
+    распространяется ровно на них.
+    """
+
+    from .pipeline_engineer import PipelineIncidentStore
+
+    paused: set[str] = set()
+    for item in PipelineIncidentStore(cfg.state_dir).load().get("incidents", []):
+        if item.get("resolved_at"):
+            continue
+        for task_id in item.get("affected_task_ids") or ():
+            if str(task_id) in plan.task_map:
+                paused.add(str(task_id))
+    return paused
+
 
 def open_pipeline_engineer_incident(cfg: Config) -> dict[str, Any] | None:
     """Незакрытый инцидент, доведённый до дежурного инженера."""
@@ -626,8 +660,11 @@ def _reserve_followup_sessions_in_state(
     *,
     memory_audit_before: int,
     relay_owner_thread_id: str | None = None,
+    paused_task_ids: set[str] | None = None,
 ) -> tuple[LaunchDescriptor, ...]:
     """Reserve verifier/revision work before admitting unrelated READY work."""
+
+    paused_task_ids = paused_task_ids or set()
 
     worker_limit = min(plan.max_parallel_workers, state.max_parallel_workers)
     if plan.legacy_serial or "serial" in {
@@ -640,6 +677,8 @@ def _reserve_followup_sessions_in_state(
     for task in plan.tasks:
         if len(state.active_task_ids) >= worker_limit:
             break
+        if task.id in paused_task_ids:
+            continue
         raw_state = state.task_states[task.id]
         if raw_state == TaskState.IMPLEMENTED.value:
             kind = "verifier"
@@ -672,7 +711,7 @@ def _reserve_followup_sessions_in_state(
                 )
                 continue
         elif raw_state == TaskState.REVISION_REQUIRED.value:
-            if _block_if_revision_limit_reached(
+            if _rehire_or_block_on_revision_limit(
                 plan,
                 state,
                 task.id,
@@ -1101,7 +1140,8 @@ def _build_descriptor(
         else:
             key = logical_model(plan.model_strategy, execution_mode)
             model = MODEL_IDS[key]
-            thinking = task.reasoning or "medium"
+            # Перенайм поднимает ступень усилия поверх записанной в плане.
+            thinking = task_effort(plan, state, task_id)
     if kind == "pipeline_engineer":
         package = pipeline_engineer_package(cfg, state)
         incident = package["incident"]

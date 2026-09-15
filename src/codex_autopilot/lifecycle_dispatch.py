@@ -194,6 +194,13 @@ def create_desktop_thread_via_app_server(
                     raise DesktopLifecycleError(
                         "configured App Server project could not be verified"
                     )
+            # Всё, что может отказать ДО отправки запроса, вычисляется до
+            # взведения флага. Прежде `installed_plugin_root` стоял среди
+            # аргументов вызова: он падал уже после `create_invoked = True`,
+            # хотя запрос не уходил. Отказ становился UNKNOWN и порождал
+            # тикет AMBIGUOUS_SIDE_EFFECT, из которого нет выхода - при
+            # том что в логе диспетчера нет ни одного `thread/start`.
+            plugin_root = installed_plugin_root(cfg.skill_path)
             create_invoked = True
             started = client.start_thread(
                 cwd=cfg.root,
@@ -202,7 +209,7 @@ def create_desktop_thread_via_app_server(
                 # cwd that is already one of that project's durable roots.
                 project_id=cfg.desktop.project_id,
                 model=descriptor.model,
-                plugin_root=installed_plugin_root(cfg.skill_path),
+                plugin_root=plugin_root,
                 ephemeral=False,
                 # v0.7 не передавала threadSource вовсе, и её задачи
                 # появлялись в сайдбаре проекта обычными ветками.
@@ -624,6 +631,47 @@ def _pipeline_engineer_prompt_with_server_view(
     )
 
 
+def causal_gate_open(
+    turn: dict[str, Any] | None,
+    state: RunState,
+    *,
+    thread_id: str,
+    turn_id: str,
+) -> bool:
+    """Кончился ли ход предшественника на самом деле.
+
+    Устойчивое "completed" открывает ворота, как в v0.7. Одного лишь
+    "interrupted" мало: пока синхронный Stop-хук работает, второй App
+    Server видит тот же ход прерванным за мгновение до того, как он
+    станет completed - замерено в прогоне 0.7 на ходе 01a097aa-4832.
+    Принимать это значило бы открывать ворота ровно в тот момент, от
+    которого барьер и защищает.
+
+    Но прерывание, записанное в журнале для этого же хода, - наше
+    собственное и окончательное: ход не станет completed уже никогда.
+
+    Замерено: реплэннер попросил разрешение, диспетчер на approvals не
+    отвечает, ход остался 'interrupted' навсегда. Дежурный инженер,
+    посланный чинить именно это, сам не смог стартовать - его
+    предшественником был тот же мёртвый ход, - и открыл поверх первого
+    тикета второй. Прогон из 24 задач встал с нулём выполненных.
+    """
+
+    if not turn:
+        return False
+    status = str(turn.get("status") or "")
+    if status == "completed":
+        return True
+    if status != "interrupted":
+        return False
+    return any(
+        item.get("event") == "interrupt_observed"
+        and str(item.get("thread_id") or "") == thread_id
+        and str(item.get("turn_id") or "") == turn_id
+        for item in state.lifecycle_journal
+    )
+
+
 def run_automatic_app_server_turn(
     cfg: Config,
     reservation_token: str,
@@ -688,13 +736,12 @@ def run_automatic_app_server_turn(
                 ),
                 None,
             )
-            # Только устойчивое "completed" открывает ворота воркера, как в
-            # v0.7. Пока синхронный Stop-хук работает, второй App Server
-            # наблюдает этот же ход как "interrupted" - замерено в рабочем
-            # прогоне 0.7: ход 01a097aa-4832 виден сначала interrupted,
-            # затем completed. Принимать interrupted значило бы открывать
-            # ворота ровно в тот момент, от которого барьер и защищает.
-            if turn and turn.get("status") == "completed":
+            if causal_gate_open(
+                turn,
+                StateStore(cfg.state_dir).load(),
+                thread_id=owner,
+                turn_id=owner_turn,
+            ):
                 break
             if time.monotonic() >= deadline:
                 raise DesktopLifecycleError(
@@ -991,6 +1038,34 @@ def record_automatic_app_server_exit(
         )
         store.save(state)
 
+def causal_predecessor(state: Any, owner: str) -> dict[str, Any] | None:
+    """Последняя сессия владельца, чей ход действительно завершён.
+
+    Проверка одного лишь статуса "COMPLETED" отсекала законного
+    предшественника: задача, вернувшая PLAN_CHANGE_REQUEST, свой ход
+    завершила и записала turn_completed, но её сессия остаётся в
+    PLAN_CHANGE_REQUESTED. В control это учтено давно, здесь лежала
+    вторая копия проверки - и планировщик, зарезервированный такой
+    задачей, поднять было некому.
+    """
+
+    from .control import _turn_is_completed
+
+    return next(
+        (
+            item
+            for item in reversed(state.worker_sessions)
+            if item.get("thread_id") == owner
+            and item.get("turn_id")
+            and (
+                item.get("status") == "COMPLETED"
+                or _turn_is_completed(state, owner, str(item["turn_id"]))
+            )
+        ),
+        None,
+    )
+
+
 def adopt_automatic_dispatcher_successor(
     cfg: Config,
     *,
@@ -1020,16 +1095,7 @@ def adopt_automatic_dispatcher_successor(
         owner = str(successor.get("relay_owner_thread_id") or "")
         if not owner:
             raise DesktopLifecycleError("automatic successor has no causal owner")
-        predecessor = next(
-            (
-                item
-                for item in reversed(state.worker_sessions)
-                if item.get("thread_id") == owner
-                and item.get("status") == "COMPLETED"
-                and item.get("turn_id")
-            ),
-            None,
-        )
+        predecessor = causal_predecessor(state, owner)
         if predecessor is None:
             raise DesktopLifecycleError(
                 "automatic successor has no completed causal predecessor turn"

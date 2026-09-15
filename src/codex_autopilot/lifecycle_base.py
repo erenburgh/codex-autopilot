@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 from .config import Config, DESKTOP_OWNED_SURFACE
 from .language import is_russian
 from .memory import ProjectMemory
+from .models import next_effort_step
 from .plan import Plan, VerificationCheck, atomic_json, load_plan
 from .resilience import (
     RuntimeReconciliation,
@@ -628,32 +629,90 @@ def _latest_task_session(state: RunState, task_id: str) -> dict[str, Any]:
         raise DesktopLifecycleError(f"task {task_id} has no lifecycle session")
     return session
 
-def _block_if_revision_limit_reached(
+def task_effort(plan: Plan, state: RunState, task_id: str) -> str:
+    """Ступень усилия задачи с учётом перенайма."""
+
+    assigned = state.task_effort.get(task_id)
+    if assigned:
+        return assigned
+    return plan.task_map[task_id].reasoning or "medium"
+
+
+def _rehire_or_block_on_revision_limit(
     plan: Plan,
     state: RunState,
     task_id: str,
     session: dict[str, Any],
     at: str,
 ) -> bool:
+    """Исчерпан бюджет ревизий - перенанять исполнителя, а не встать.
+
+    Меняется не план и не планка, а способ достижения результата и тот, кто
+    его достигает: задача получает свежего воркера на следующей ступени
+    усилия и весь накопленный перечень претензий верификации. Definition of
+    Done, детерминированные проверки и граф остаются те же - иначе приёмка
+    двигалась бы под работу, а не наоборот.
+
+    Возвращает True только когда лестница найма кончилась. Это единственный
+    случай, когда задача действительно встаёт: класс PRODUCTION по
+    таксономии инцидентов принадлежит владельцу продукта, и автоматический
+    ремонт качества здесь запрещён. Соседние задачи, не зависящие от этой,
+    продолжают идти - перенайм ничего не сливает и не трогает общий граф.
+    """
+
     task = plan.task_map[task_id]
     used = int(state.task_revisions.get(task_id, 0))
+    hires = int(state.task_rehires.get(task_id, 0))
     maximum = task.verification.max_revision_attempts
-    if used < maximum:
+    # Бюджет выдаётся каждому найму заново, а счётчик ревизий остаётся
+    # сквозным: иначе история попыток и нумерация R{n} теряются.
+    if used < maximum * (hires + 1):
         return False
+
+    current = task_effort(plan, state, task_id)
+    promoted = next_effort_step(current)
+    if promoted is not None:
+        state.task_rehires[task_id] = hires + 1
+        state.task_effort[task_id] = promoted
+        _append_event(
+            state,
+            "task_rehired",
+            session,
+            at,
+            detail=json.dumps(
+                {
+                    "hire": hires + 1,
+                    "effort_from": current,
+                    "effort_to": promoted,
+                    "revision_attempts": used,
+                    "max_revision_attempts": maximum,
+                },
+                sort_keys=True,
+            ),
+        )
+        return False
+
     if state.task_states[task_id] == TaskState.REVISION_REQUIRED.value:
         state.task_states = transition_task(
             plan, state.task_states, task_id, TaskState.BLOCKED
         )
     state.last_error = (
-        f"{task_id} exhausted {maximum} verification revision attempt(s)"
+        f"{task_id} exhausted the hiring ladder: {hires + 1} hire(s) up to "
+        f"effort {current}, {used} revision attempt(s)"
     )
     _append_event(
         state,
-        "revision_limit_reached",
+        "hiring_ladder_exhausted",
         session,
         at,
         detail=json.dumps(
-            {"revision_attempts": used, "maximum": maximum}, sort_keys=True
+            {
+                "revision_attempts": used,
+                "max_revision_attempts": maximum,
+                "hires": hires + 1,
+                "effort": current,
+            },
+            sort_keys=True,
         ),
     )
     return True

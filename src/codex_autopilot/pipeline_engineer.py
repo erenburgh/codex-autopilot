@@ -416,7 +416,15 @@ class PipelineIncidentStore:
             incident["recovery_owner_id"] = owner_id
             incident["next_retry_at"] = _backoff_seconds(incident)
             incident["updated_at"] = at
-            state["recovery_slot"] = {"incident_id": incident_id, "token": token}
+            # owner_id кладётся здесь, потому что отсюда его читает статус.
+            # Писатель клал два ключа, читатель просил третий - и `status`
+            # падал KeyError ровно тогда, когда человек приходил
+            # разбираться с занятым слотом.
+            state["recovery_slot"] = {
+                "incident_id": incident_id,
+                "token": token,
+                "owner_id": owner_id,
+            }
             _append_event(
                 state,
                 "auto_recovery_started",
@@ -882,7 +890,13 @@ def render_pipeline_status(snapshot: Mapping[str, Any]) -> str:
     lines.append(
         "Recovery slot: free"
         if not slot
-        else f"Recovery slot: incident={slot['incident_id']} owner={slot['owner_id']}"
+        # Читатель не падает из-за отсутствующего ключа: статус - это то,
+        # куда человек приходит разбираться, и он обязан читаться всегда.
+        # Писатель клал два ключа, читатель просил третий, и `status`
+        # ронялся KeyError ровно на занятом слоте.
+        else "Recovery slot: incident={} owner={}".format(
+            slot.get("incident_id", "?"), slot.get("owner_id", "?")
+        )
     )
     pending = snapshot.get("pending_transport") or []
     lines.append(f"Pending authorized transport: {len(pending)}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -10,6 +11,9 @@ import unittest
 from codex_autopilot.appserver import AppServerError, ApprovalRequired, TurnResult
 from codex_autopilot.hook_trust import HookTrustApprovalRequired, runtime_hook_command
 from codex_autopilot.models import MODEL_IDS
+from codex_autopilot.appserver import AppServerClient, TurnTimeout
+from codex_autopilot.models import PUBLIC_REASONING
+from codex_autopilot.preflight import PROBE_ATTEMPTS, PROBE_REASONING
 from codex_autopilot.preflight import MEMORY_PREFLIGHT_OK, MEMORY_PREFLIGHT_TITLE, PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, REQUIRED_MEMORY_TOOLS, run_preflight
 from codex_autopilot.plan import validate_plan
 from codex_autopilot.project_association import ProjectAssociationError, require_desktop_project_root
@@ -331,6 +335,34 @@ class PreflightTests(unittest.TestCase):
     def setUp(self):
         PreflightClient.instances.clear()
 
+    def test_the_printed_report_runs_end_to_end(self) -> None:
+        """Печать отчёта - тоже код, и он должен исполняться в тестах.
+
+        Все прочие проверки звали preflight с emit=None, и весь блок
+        отчёта не исполнялся ни разу. В нём уехал NameError: строка про
+        ёмкость обращалась к DEFAULT_MAX_PARALLEL_WORKERS, которого в
+        модуле не было. Падение случилось у пользователя, в самом конце
+        успешного preflight, после выданного разрешения.
+        """
+
+        root = project()
+        lines: list[str] = []
+        run_preflight(
+            root,
+            plan=plan(),
+            profile="adaptive",
+            skill_path=SKILL,
+            binary="/bin/echo",
+            client_factory=PreflightClient,
+            desktop_project_id=DESKTOP_PROJECT,
+            emit=lines.append,
+        )
+        report = "\n".join(lines)
+        self.assertIn("Routing:", report)
+        self.assertIn("Next worker:", report)
+        self.assertIn("Ёмкость:", report)
+        self.assertIn("Preflight: PASS", report)
+
     def test_clean_first_run_checks_target_without_creating_state(self):
         root = project()
         result = run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=PreflightClient, desktop_project_id=DESKTOP_PROJECT, emit=None)
@@ -435,6 +467,16 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(client.archived, ["preflight-thread"])
         self.assertEqual(len(client.plain_turns), 1)
         self.assertFalse((root / ".codex-autopilot").exists())
+        # Проводка, а не помощник: мутационная проверка показала, что
+        # тесты на сам approval_command проходят и с оборванной связкой.
+        message = str(caught.exception)
+        self.assertIn("--approve-project-memory-always", message)
+        self.assertIn(str(root.resolve()), message)
+        self.assertIsNotNone(caught.exception.command)
+        # Команда без идентификаторов проекта падает раньше разрешения -
+        # на проверке размещения. Первая выданная пользователю команда
+        # была именно такой.
+        self.assertIn("--desktop-project-id", caught.exception.command)
 
     def test_untrusted_raw_mcp_without_advertised_always_is_rejected(self):
         root = project()
@@ -662,3 +704,177 @@ class TargetMustBelongToAProjectTests(unittest.TestCase):
             self.assertIn("Открой проект Codex", message)
             # Состояния нет: отказ наступил до его создания.
             self.assertFalse((root / ".codex-autopilot").exists())
+
+
+class TrustProbeTests(unittest.TestCase):
+    """Проба доверия — последний шаг preflight и единственный, где он падал.
+
+    На прогоне v1.0 preflight прошёл все десять проверок и дважды умер
+    здесь ровно по 302 секунды, а на третий заход прошёл меньше чем за
+    минуту. Причина — ход, которому нечего обдумывать, шёл на усилии
+    рабочего воркера.
+    """
+
+    def run_preflight(self, client_factory):
+        return run_preflight(
+            project(),
+            plan=plan(),
+            profile="adaptive",
+            skill_path=SKILL,
+            binary="/bin/echo",
+            client_factory=client_factory,
+            desktop_project_id=DESKTOP_PROJECT,
+            emit=None,
+        )
+
+    def test_the_probe_does_not_run_at_the_worker_effort(self):
+        self.run_preflight(PreflightClient)
+        turns = PreflightClient.instances[-1].plain_turns
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["effort"], PROBE_REASONING)
+        # Лестница воркеров начинается с medium. Проба воркером не
+        # является, и её усилие не должно в эту лестницу попадать:
+        # иначе правка маршрутизации молча вернёт xhigh.
+        self.assertNotIn(PROBE_REASONING, PUBLIC_REASONING)
+
+    def test_a_timed_out_probe_is_retried_instead_of_failing_the_launch(self):
+        class FlakyProbeClient(PreflightClient):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.attempts = 0
+                self.interrupted = []
+
+            def interrupt_turn(self, thread_id, turn_id):
+                self.interrupted.append((thread_id, turn_id))
+
+            def wait_for_turn(self, thread_id, turn_id, **kwargs):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise TurnTimeout("probe did not finish within 300s")
+                return super().wait_for_turn(thread_id, turn_id, **kwargs)
+
+        result = self.run_preflight(FlakyProbeClient)
+        self.assertEqual(result.next_model, "GPT-5.6 Sol")
+        client = FlakyProbeClient.instances[-1]
+        self.assertEqual(client.attempts, 2)
+        self.assertEqual(len(client.plain_turns), 2)
+        # Зависший ход прерывается, иначе он продолжает занимать тред.
+        self.assertEqual(len(client.interrupted), 1)
+
+    def test_exhausted_attempts_name_the_model_turn_and_not_the_transport(self):
+        class StuckProbeClient(PreflightClient):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.interrupted = []
+
+            def interrupt_turn(self, thread_id, turn_id):
+                self.interrupted.append((thread_id, turn_id))
+
+            def wait_for_turn(self, thread_id, turn_id, **kwargs):
+                raise TurnTimeout(
+                    "Project Memory trust probe did not finish within 300s on thread "
+                    f"{thread_id}. App Server answered throughout, so this is the "
+                    "model turn and not the transport."
+                )
+
+        with self.assertRaises(PreflightError) as caught:
+            self.run_preflight(StuckProbeClient)
+        message = str(caught.exception)
+        self.assertIn("model turn and not the transport", message)
+        client = StuckProbeClient.instances[-1]
+        self.assertEqual(len(client.plain_turns), PROBE_ATTEMPTS)
+        self.assertEqual(len(client.interrupted), PROBE_ATTEMPTS)
+
+    def test_the_real_timeout_message_blames_the_turn_not_the_server(self):
+        """Сообщение строится в appserver, а не в подделке теста.
+
+        Прежнее «Timed out waiting for App Server» отправляло чинить
+        транспорт и права, хотя App Server всё это время отвечал.
+        """
+
+        client = AppServerClient("/bin/true", Path(os.devnull))
+        with self.assertRaises(TurnTimeout) as caught:
+            client.wait_for_turn(
+                "thread-1", "turn-1", timeout=0.05, what="Project Memory trust probe"
+            )
+        message = str(caught.exception)
+        self.assertIn("Project Memory trust probe", message)
+        self.assertIn("did not finish within 0.05s", message)
+        self.assertIn("model turn and not the transport", message)
+
+
+class ApprovalArrivesAsACommandTests(unittest.TestCase):
+    """Человеку нужна строка, которую можно запустить, а не инструкция.
+
+    Всплывающего окна нет и быть не может: запрос инструмента памяти
+    уходит на соединение диспетчера, а тот на approvals не отвечает по
+    правилу. Прежде preflight писал "повторите ту же команду с флагом" -
+    собрать её предлагалось модели, и до человека она не доходила ни
+    разу за весь день.
+    """
+
+    def test_the_message_carries_a_runnable_command(self) -> None:
+        from codex_autopilot.preflight import ProjectMemoryApprovalRequired, approval_command
+
+        command = approval_command(
+            Path("/tmp/проект"), Path("/tmp/проект/.codex-autopilot/plan.json"), "adaptive"
+        )
+        message = str(ProjectMemoryApprovalRequired("thread-1", "Заголовок", command))
+        self.assertIn("preflight", message)
+        self.assertIn("--approve-project-memory-always", message)
+        self.assertIn("/tmp/проект", message)
+
+    def test_the_command_quotes_paths_with_spaces(self) -> None:
+        """Каталог проекта у пользователя называется через пробелы."""
+
+        from codex_autopilot.preflight import approval_command
+
+        command = approval_command(
+            Path("/Users/x/Autopilot Studio | Test"),
+            Path("/Users/x/Autopilot Studio | Test/.codex-autopilot/plan.json"),
+            "adaptive",
+        )
+        self.assertIn('--project "/Users/x/Autopilot Studio | Test"', command)
+        self.assertIn('"/Users/x/Autopilot Studio | Test/.codex-autopilot/plan.json"', command)
+
+    def test_the_message_says_no_dialog_is_coming(self) -> None:
+        """Иначе человек ждёт окна, которого не будет."""
+
+        from codex_autopilot.preflight import ProjectMemoryApprovalRequired
+
+        message = str(ProjectMemoryApprovalRequired("t", "T", "cmd"))
+        self.assertIn("окна не будет", message)
+
+
+class TheCommandPointsAtTheRealRuntimeTests(unittest.TestCase):
+    """Команда обязана указывать туда, откуда скилл запускается у ЭТОГО
+    пользователя, а не туда, где он лежит у меня.
+
+    Запускатель плагина уважает CODEX_AUTOPILOT_RUNTIME. Первая версия
+    генератора прошивала `~/Library/Application Support/...` наглухо:
+    у любого, кто поставил рантайм иначе, выданная строка указывала бы
+    в пустоту - и это ровно тот класс "работает только у автора".
+    """
+
+    def test_an_override_wins(self) -> None:
+        from unittest import mock
+
+        from codex_autopilot.preflight import runtime_command_path
+
+        with mock.patch.dict(
+            "os.environ", {"CODEX_AUTOPILOT_RUNTIME": "/opt/ap/bin/codex-autopilot"}
+        ):
+            self.assertEqual(
+                str(runtime_command_path()), "/opt/ap/bin/codex-autopilot"
+            )
+
+    def test_the_command_uses_it(self) -> None:
+        from unittest import mock
+
+        from codex_autopilot.preflight import approval_command
+
+        with mock.patch.dict(
+            "os.environ", {"CODEX_AUTOPILOT_RUNTIME": "/opt/ap/bin/codex-autopilot"}
+        ):
+            command = approval_command(Path("/p"), Path("/p/plan.json"), "adaptive")
+        self.assertIn('"/opt/ap/bin/codex-autopilot"', command)
