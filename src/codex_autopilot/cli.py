@@ -111,6 +111,18 @@ def parser() -> argparse.ArgumentParser:
     devops_resolve.add_argument("--healthcheck-name", required=True)
     devops_resolve.add_argument("--check", action="append", required=True)
     devops_resolve.add_argument("--action", action="append", default=[])
+    # Задача, остановленная нарушением правила, снимается только
+    # человеком и только с записанной причиной. Прежде снять её было
+    # нечем вовсе: "продолжи" отказывает на BLOCKED по любой причине,
+    # кроме эскалации, и правильно делает - но обратного пути не
+    # существовало, и прогон стоял навсегда.
+    unblock = sub.add_parser(
+        "unblock",
+        help="снять остановку задачи решением пользователя, с записанной причиной",
+    )
+    unblock.add_argument("--project", type=Path, default=Path.cwd())
+    unblock.add_argument("--task", required=True)
+    unblock.add_argument("--reason", required=True)
     authorize_root = sub.add_parser(
         "authorize-project-root",
         help="authorize Autopilot to add this project's canonical root to the saved Codex project",
@@ -442,6 +454,46 @@ def main(argv: list[str] | None = None) -> int:
                 owner=args.initiator_thread,
                 owner_turn=args.initiator_turn,
             )
+        if args.command == "unblock":
+            # Запуск этой команды и есть решение человека: она не
+            # проверяет, прав ли он, она записывает, что он решил. Без
+            # причины не работает - запись без причины ничем не лучше
+            # молчаливого снятия.
+            from .plan import load_plan
+            from .run_state import StateStore, utc_now
+            from .task_state import TaskState, transition_task
+
+            cfg = load_config(args.project)
+            store = StateStore(cfg.state_dir)
+            state = store.load()
+            plan = load_plan(cfg.state_dir, cfg.profile)
+            task_id = str(args.task).strip()
+            if task_id not in plan.task_map:
+                raise SystemExit(f"в плане нет задачи {task_id!r}")
+            if state.task_states.get(task_id) != TaskState.BLOCKED.value:
+                raise SystemExit(
+                    f"{task_id} не остановлена: сейчас "
+                    f"{state.task_states.get(task_id)}"
+                )
+            reason = str(args.reason).strip()
+            if not reason:
+                raise SystemExit("нужна причина: --reason")
+            state.task_states = transition_task(
+                plan, state.task_states, task_id, TaskState.READY
+            )
+            state.user_unblocks.append(
+                {"task_id": task_id, "reason": reason, "at": utc_now()}
+            )
+            if state.status == "BLOCKED":
+                state.status = "READY"
+                state.phase = "PREPARING"
+                state.last_error = None
+            store.save(state)
+            print(
+                f"{task_id}: остановка снята решением пользователя — {reason}\n"
+                "Продолжи прогон фразой «Resume Codex Autopilot.» в задаче Codex."
+            )
+            return 0
         if args.command == "devops-resolve-incident":
             # Дежурный инженер закрывает свой тикет сам, но только с
             # пройденной проверкой здоровья: закрытие без неё - это

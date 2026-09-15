@@ -76,6 +76,10 @@ class RunState:
     # Отказы протокола приёмки по задачам: вердикт верифаера, который не
     # удалось прочитать. Копится, чтобы следующий верифаер увидел причину.
     verification_rejections: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # Решения человека снять остановку задачи: что, почему и когда.
+    # Остановка по нарушению правила не самозалечивается, но и не висит
+    # вечно - у неё есть названный автор.
+    user_unblocks: list[dict[str, Any]] = field(default_factory=list)
     plan_change_sequence: int = 0
     active_plan_change_id: str | None = None
     plan_changes: list[dict[str, object]] = field(default_factory=list)

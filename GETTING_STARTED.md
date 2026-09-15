@@ -195,3 +195,17 @@ To remove one project's Autopilot state too:
 ```bash
 "$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" uninstall --yes --purge-project-state --project /absolute/path/to/project
 ```
+
+## Задача остановлена правилом
+
+Автопилот не снимает такую остановку сам: нарушение правила разбирает
+человек, и «продолжи» её намеренно не стирает. Когда вы разобрались и
+решили, что работа может идти дальше, снимите остановку своим решением —
+причина записывается в состояние прогона:
+
+```bash
+scripts/codex-autopilot unblock --project <путь> --task <ID> --reason "<почему это допустимо>"
+```
+
+После этого продолжите прогон обычной фразой «Resume Codex Autopilot.»
+в задаче Codex.
