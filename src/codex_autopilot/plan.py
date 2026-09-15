@@ -95,9 +95,9 @@ RESOURCE_KINDS = {
 }
 RESOURCE_ACCESS_MODES = {"read", "write", "exclusive"}
 
-# M10-REV-004: новый schema-3 прогон по умолчанию входит в заявленный
-# режим v0.9. Мигрированные v0.8 планы этим не затрагиваются: они несут
-# явно, и валидация не даёт им неявно уйти в параллельность.
+# Новый канонический schema-3 прогон по умолчанию допускает параллельное
+# исполнение. Совместимость конфигов проектов, созданных до v0.9, хранится
+# отдельно в COMPAT_* и не ослабляет контракт загружаемого плана.
 DEFAULT_EXECUTION_STRATEGY = "auto"
 
 # Значения для КОНФИГА БЕЗ секции [runtime], то есть для проекта,
@@ -224,7 +224,7 @@ class Plan:
 
     @property
     def milestones(self) -> tuple[Task, ...]:
-        """Compatibility view for the v0.8 serial orchestrator."""
+        """Compatibility alias for callers that use milestone terminology."""
 
         return self.tasks
 
@@ -238,23 +238,17 @@ class Plan:
 
 
 def validate_plan(data: dict[str, Any], profile: str) -> Plan:
-    """Load either a canonical v0.9 graph or a v0.8 serial plan.
+    """Load a canonical schema-3 graph and enforce its acceptance floor.
 
-    A v0.8 plan is represented in memory as a valid chain-shaped DAG. It is
-    explicitly pinned to serial execution with one worker and one Computer Use
-    slot; migration never opts a legacy project into parallel execution.
-
-    A schema-3 payload cannot authorize its own ``compatibility`` section.
-    Persisted migrated plans are loaded through :func:`load_plan`, which checks
-    migration provenance outside the replacement JSON before allowing the sole
-    legacy exception.
+    Older plan formats and caller-supplied ``compatibility`` claims fail closed.
+    In particular, no persisted or replacement plan can use migration prose to
+    bypass independent verification.
     """
 
     return _validate_plan_payload(data, profile)
 
 
 def _validate_plan_payload(data: dict[str, Any], profile: str) -> Plan:
-
     if profile not in {"adaptive", "host-settings"}:
         raise ValueError("profile must be adaptive or host-settings")
     if not isinstance(data, dict):
