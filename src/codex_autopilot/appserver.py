@@ -351,10 +351,15 @@ class AppServerClient:
                                 "never return"
                             )
                 if pause_requested and pause_requested():
-                    try:
-                        self.interrupt_turn(thread_id, turn_id)
-                    finally:
-                        raise PauseRequested("Pause requested")
+                    # Пауза объявлена дренажной: `pause_desktop_run` пишет
+                    # `semantics: drain`, статус показывает `Pause: drain`,
+                    # и обещано, что идущие ходы доигрывают. Прежде здесь
+                    # шёл Interrupt, и пауза на деле убивала работающий ход
+                    # вместе с попыткой - шесть минут приёмки терялись от
+                    # нажатия, сделанного за мгновение до её конца.
+                    # Диспетчер перестаёт ждать; ход доигрывает сам, а его
+                    # завершение принимает доверенный Stop-хук.
+                    raise PauseRequested("Pause requested")
                 try:
                     message = self.pending_events.popleft() if self.pending_events else self._get(deadline, maximum_wait=1)
                 except TimeoutError:

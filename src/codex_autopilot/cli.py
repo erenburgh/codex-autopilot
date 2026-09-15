@@ -182,7 +182,7 @@ def _record_detached_dispatch_failure(cfg, token: str, error: BaseException) -> 
         PipelineIncidentStore,
         SideEffectOutcome,
     )
-    from .run_state import StateStore, utc_now
+    from .run_state import utc_now
 
     now = utc_now()
     summary = f"{type(error).__name__}: {error}"
@@ -284,7 +284,6 @@ def _print_relay_timeline(cfg, token: str, headline: str) -> None:
     """
 
     from .launch_gate import render_launch_timeline
-    from .run_state import StateStore
 
     try:
         state = StateStore(cfg.state_dir).load()
@@ -460,7 +459,7 @@ def main(argv: list[str] | None = None) -> int:
             # причины не работает - запись без причины ничем не лучше
             # молчаливого снятия.
             from .plan import load_plan
-            from .run_state import StateStore, utc_now
+            from .run_state import utc_now
             from .task_state import TaskState, transition_task
 
             cfg = load_config(args.project)

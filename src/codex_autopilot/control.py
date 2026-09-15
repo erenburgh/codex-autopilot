@@ -1248,7 +1248,6 @@ def _answer_escalation(cfg, state) -> tuple[str, ...]:
     стирающей неразобранную поломку.
     """
 
-    from .pipeline_engineer import PipelineIncidentStore
 
     # Фаза прогона авторитетом здесь не является. Её выставляет только
     # завершение инженера; инцидент, эскалированный маршрутизацией - как
@@ -1405,7 +1404,6 @@ def _desktop_relay_continuation(
 def status_text(root: Path, *, detailed: bool = True) -> str:
     cfg = load_config(root)
     state = StateStore(cfg.state_dir).load()
-    from .plan import load_plan
     from .status import render_project_status, render_short_status
     plan = load_plan(cfg.state_dir, cfg.profile)
     running = pid_alive(state.dispatcher_pid)
