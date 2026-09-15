@@ -338,7 +338,23 @@ def complete_desktop_worker(
         try:
             verdict = parse_verifier_result(final_message)
         except VerificationProtocolError as exc:
-            raise DesktopLifecycleError(str(exc)) from exc
+            # Нечитаемый вердикт - ошибка модели, а не поломка рантайма.
+            # Замерено: верифаер приложил к вердикту поле `rubric` -
+            # рубрику отдела, которую предыдущая задача сама и создала, -
+            # ход завершился успешно, а диспетчер умер на разборе ответа.
+            # Работа осталась сделанной, приёмка не записана, поверх
+            # неё открылся тикет о падении диспетчера, и прогон простоял
+            # полтора часа. Тот же класс уже закрыт для реплэннера.
+            return _reject_verifier_result(
+                cfg,
+                session=session,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                reason=str(exc),
+                at=at,
+                now_epoch=now_epoch,
+                dispatcher_authorized=dispatcher_authorized,
+            )
         worker_status = verdict.verdict
     else:
         worker_status, reason_code = parse_desktop_worker_status(final_message)
@@ -1092,6 +1108,116 @@ def _reject_replanner_result(
         store.save(state)
     _materialize(descriptors)
     return CompletionOutcome(True, "PLAN_CHANGE_REJECTED", descriptors, False)
+
+
+# Сколько раз вердикт возвращают верифаеру с причиной. Три попытки
+# всего: одна исходная и две с текстом отказа на руках.
+MAX_VERIFICATION_REJECTIONS = 2
+
+
+def _reject_verifier_result(
+    cfg: Config,
+    *,
+    session: dict[str, Any],
+    thread_id: str,
+    turn_id: str,
+    reason: str,
+    at: str | None,
+    now_epoch: int | None,
+    dispatcher_authorized: bool = False,
+) -> CompletionOutcome:
+    """Вернуть верифаеру его вердикт с причиной и дать переписать.
+
+    Приёмка не засчитывается ни в какую сторону: непрочитанный вердикт
+    не PASS и не REVISE. Задача возвращается в IMPLEMENTED - работа
+    сделана и по-прежнему ждёт приёмки, - и обычный путь резервирования
+    поднимает свежего верифаера.
+    """
+
+    timestamp = at or utc_now()
+    store = StateStore(cfg.state_dir)
+    coordinator = ResourceLockCoordinator(store, cfg.root)
+    descriptors: tuple[Any, ...] = ()
+    plan = load_plan(cfg.state_dir, cfg.profile)
+    with coordinator.transaction():
+        state = store.load()
+        current = _active_session_by_thread(state, thread_id)
+        if current is None or current.get("reservation_token") != session.get(
+            "reservation_token"
+        ):
+            return CompletionOutcome(False, None, (), state.status == "DONE")
+        task_id = str(current["task_id"])
+        rejections = list(state.verification_rejections.get(task_id) or [])
+        rejections.append({"at": timestamp, "reason": reason})
+        state.verification_rejections[task_id] = rejections
+        exhausted = len(rejections) > MAX_VERIFICATION_REJECTIONS
+
+        current["turn_id"] = turn_id
+        current["final_status"] = "VERIFICATION_REJECTED"
+        current["completed_at"] = timestamp
+        current["status"] = "COMPLETED"
+        current["verification_rejection"] = reason
+        _bind_resource_identity(
+            state,
+            str(current["reservation_token"]),
+            thread_id=thread_id,
+            turn_id=turn_id,
+        )
+        _append_event(state, "turn_identity_bound", current, timestamp)
+        _append_event(
+            state, "turn_completed", current, timestamp, detail="VERIFICATION_REJECTED"
+        )
+        release_resources_in_state(
+            state,
+            str(current["resource_ownership_token"]),
+            reason="verifier returned an unreadable verdict",
+            now=timestamp,
+        )
+        state.active_task_ids = [
+            item for item in state.active_task_ids if item != task_id
+        ]
+        state.task_states = transition_task(
+            plan,
+            state.task_states,
+            task_id,
+            TaskState.BLOCKED if exhausted else TaskState.IMPLEMENTED,
+        )
+        if exhausted:
+            # Три нечитаемых вердикта подряд - это не случайность. Дальше
+            # жечь ходы бессмысленно: прогон встаёт громко и называет
+            # причину, а не крутится молча.
+            state.status = "BLOCKED"
+            state.phase = "VERIFICATION_PROTOCOL_BLOCKED"
+            state.last_error = (
+                f"верифаер {task_id} трижды вернул нечитаемый вердикт: {reason}"
+            )
+            if dispatcher_authorized:
+                current["automatic_successor_tokens"] = []
+                current["automatic_dispatch_state"] = "COMPLETED"
+            store.save(state)
+            return CompletionOutcome(True, "VERIFICATION_REJECTED", (), False)
+
+        descriptors = _reserve_in_state(
+            cfg,
+            plan,
+            state,
+            memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
+            relay_owner_thread_id=thread_id,
+            now_epoch=now_epoch,
+        )
+        if dispatcher_authorized:
+            current["automatic_successor_tokens"] = [
+                item.reservation_token for item in descriptors
+            ]
+            current["automatic_dispatch_state"] = (
+                "ADVANCING" if descriptors else "COMPLETED"
+            )
+        _finish_global_state(
+            plan, state, descriptors, paused=store.pause_requested()
+        )
+        store.save(state)
+    _materialize(descriptors)
+    return CompletionOutcome(True, "VERIFICATION_REJECTED", descriptors, False)
 
 
 def _complete_replanner(

@@ -192,7 +192,7 @@ def _worker_prompt(
         language=cfg.language,
         skill_path=cfg.skill_path,
     )
-    return runtime.build_prompt(
+    prompt = runtime.build_prompt(
         task_id,
         phase=phase,
         task_states=state.task_states,
@@ -203,6 +203,26 @@ def _worker_prompt(
         evidence=verification_evidence,
         deterministic_results=deterministic_results,
     )
+    # Причина, по которой прошлый вердикт не прочитался. Без неё свежий
+    # верифаер переписывает вслепую и повторяет ту же ошибку: замерено на
+    # поле `rubric`, которое предыдущая задача сама же и ввела.
+    rejections = (state.verification_rejections or {}).get(task_id) or []
+    if phase == "verification" and rejections:
+        last = str(rejections[-1].get("reason") or "")
+        note = (
+            f"\n\nПредыдущий вердикт отклонён runtime: {last}. Приёмка не "
+            "засчитана ни в какую сторону - вердикт не прочитан. Верни "
+            'AUTOPILOT_VERIFICATION ровно с двумя полями верхнего уровня: '
+            '"verdict" и "issues". Любое другое поле отвергает вердикт целиком.'
+            if is_russian(cfg.language)
+            else f"\n\nThe previous verdict was rejected by the runtime: {last}. "
+            "Acceptance was not recorded either way - the verdict was not read. "
+            'Return AUTOPILOT_VERIFICATION with exactly two top-level fields: '
+            '"verdict" and "issues". Any other field rejects the whole verdict.'
+        )
+        if len(prompt) + len(note) <= MAX_PROMPT_CHARS:
+            prompt += note
+    return prompt
 
 
 def _evidence_selectors(evidence: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:

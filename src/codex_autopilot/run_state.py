@@ -73,6 +73,9 @@ class RunState:
     # упор, а для планирования ёмкости: сколько воркеров имеет смысл
     # держать параллельно прямо сейчас.
     rate_limits: dict[str, Any] | None = None
+    # Отказы протокола приёмки по задачам: вердикт верифаера, который не
+    # удалось прочитать. Копится, чтобы следующий верифаер увидел причину.
+    verification_rejections: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     plan_change_sequence: int = 0
     active_plan_change_id: str | None = None
     plan_changes: list[dict[str, object]] = field(default_factory=list)
