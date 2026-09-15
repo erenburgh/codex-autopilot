@@ -21,6 +21,7 @@ import unittest
 
 from codex_autopilot.ai_studio import AIStudioRuntime
 from codex_autopilot.plan import validate_plan
+from _plan_contract import canonical_verification
 
 
 def _role(role_id: str, name: str) -> dict:
@@ -28,21 +29,8 @@ def _role(role_id: str, name: str) -> dict:
 
 
 def _task(task_id: str, title: str, *, role: str, depends: tuple[str, ...] = (),
-          policy: str = "deterministic", verifier: str | None = None) -> dict:
-    verification: dict = {"policy": policy, "required": True, "max_revision_attempts": 2}
-    if policy == "deterministic":
-        verification["deterministic_checks"] = [
-            {
-                "id": f"{task_id}-tests",
-                "kind": "command",
-                "description": "Run the deterministic tests.",
-                "argv": ["python3", "-m", "unittest"],
-                "timeout_seconds": 600,
-                "expected_exit_code": 0,
-            }
-        ]
-    if verifier:
-        verification["verifier_role"] = verifier
+          verifier: str | None = None) -> dict:
+    verification = canonical_verification(verifier_role=verifier)
     return {
         "id": task_id,
         "title": title,
@@ -91,7 +79,6 @@ def _plan():
                     "End-to-end acceptance and documentation",
                     role="runtime-engineer",
                     depends=("T1",),
-                    policy="independent",
                     verifier="reviewer",
                 ),
             ],

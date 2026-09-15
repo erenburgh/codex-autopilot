@@ -20,6 +20,7 @@ from codex_autopilot.resources import (
 )
 from codex_autopilot.run_state import RunState, StateStore
 from codex_autopilot.task_state import TaskState
+from _plan_contract import canonical_verification
 
 
 def raw_task(
@@ -39,11 +40,7 @@ def raw_task(
         "role": "worker",
         "depends_on": [],
         "priority": 0,
-        "verification": {
-            "policy": "independent",
-            "required": True,
-            "max_revision_attempts": 0,
-        },
+        "verification": canonical_verification(),
         "resources": resources or [],
         "required_capabilities": [],
         "context": {},

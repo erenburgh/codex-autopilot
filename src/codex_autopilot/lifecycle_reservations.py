@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from .ai_studio import AIStudioRuntime
 from .config import Config, DESKTOP_OWNED_SURFACE
+from .department_acceptance import task_department_binding
 from .hook_trust import require_trusted_stop_hook_for_config
 from .lifecycle_prompts import (
     _replanner_prompt,
@@ -1129,6 +1130,9 @@ def _build_descriptor(
             kind=kind,
             role_name=plan.role_map[role_id].name,
             revision_number=revision_number,
+            departmental_verifier=(
+                kind == "verifier" and task_department_binding(task) is not None
+            ),
         )
         prompt = _worker_prompt(
             cfg,

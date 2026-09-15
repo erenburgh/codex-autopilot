@@ -16,6 +16,7 @@ from codex_autopilot.scheduler import (
     schedule,
 )
 from codex_autopilot.task_state import TaskState, initial_task_states, transition_task
+from _plan_contract import canonical_verification
 
 
 def raw_task(
@@ -37,11 +38,7 @@ def raw_task(
         "role": "worker",
         "depends_on": list(dependencies),
         "priority": priority,
-        "verification": {
-            "policy": "independent",
-            "required": True,
-            "max_revision_attempts": 0,
-        },
+        "verification": canonical_verification(),
         "resources": [],
         "required_capabilities": list(capabilities),
         "context": {},

@@ -154,6 +154,7 @@ def run_preflight(
         report("Git", "FAIL", "existing repository required")
         raise PreflightError("Codex Autopilot requires an existing Git repository; it does not run `git init` or create commits automatically")
     report("Git", "OK", "existing repository")
+    _reject_unprobed_capabilities(plan, report)
     if not codex_binary:
         report("Runtime", "FAIL", "official Codex CLI not found")
         raise PreflightError("official Codex CLI/App Server is not installed")
@@ -509,6 +510,37 @@ def run_preflight(
                 pass
         client.close()
         log_path.unlink(missing_ok=True)
+
+
+def _reject_unprobed_capabilities(
+    plan: Plan,
+    report: Callable[[str, str, str], None],
+) -> None:
+    """Fail before App Server side effects when trust cannot be preflighted.
+
+    ``required_capabilities`` is currently an opaque scheduler constraint: it
+    has no trust classification or registered safe probe.  Treating an opaque
+    declaration as already trusted would defer the first real check to Worker
+    1.  Until Capability Broker introduces typed probes, every named
+    capability therefore fails closed here.  Empty declarations need no
+    additional trust beyond the built-in checks performed below.
+    """
+
+    declared = sorted(
+        {
+            capability
+            for task in plan.tasks
+            for capability in task.required_capabilities
+        }
+    )
+    if declared:
+        detail = (
+            "no registered pre-worker trust probe for declared capabilities: "
+            + ", ".join(declared)
+        )
+        report("Declared capabilities", "FAIL", detail)
+        raise PreflightError(detail)
+    report("Declared capabilities", "OK", "none require an additional trust probe")
 
 
 def _validate_memory_preflight_result(client: Any, thread_id: str, turn: dict[str, Any]) -> None:

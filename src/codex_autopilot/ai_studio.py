@@ -6,6 +6,15 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .department_acceptance import (
+    DepartmentAcceptanceError,
+    RubricReference,
+    load_task_department_acceptance,
+    omit_conflicting_rubric_guidance,
+    redact_conflicting_rubric_identity,
+    rubric_reference_from_raw,
+    task_department_binding,
+)
 from .language import is_russian
 from .memory import MemoryValidationError, ProjectMemory
 from .models import MODEL_IDS, MODEL_LABELS, logical_model
@@ -27,6 +36,7 @@ HARD_MAX_DEPENDENCY_OUTPUTS = 20
 MAX_MEMORY_STATEMENT_CHARS = 800
 MAX_OUTPUT_EXCERPT_CHARS = 2_000
 MAX_PROMPT_CHARS = 64_000
+MAX_INLINE_USER_REQUEST_CHARS = 16_000
 
 PIPELINE_ENGINEER_SYSTEM_ROLE = RoleProfile(
     id="pipeline-engineer",
@@ -256,6 +266,23 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         route = self.route(task_id, phase=phase)
         role = self.plan.role_map[route.role_id]
         context = self.select_context(task_id, task_states=task_states)
+        try:
+            department_binding = task_department_binding(task)
+        except DepartmentAcceptanceError as exc:
+            raise ContextBoundaryError(
+                f"department verifier cannot launch for task {task.id}: {exc}"
+            ) from exc
+        department_acceptance = None
+        if phase == "verification" and department_binding is not None:
+            department_acceptance = self._department_acceptance(
+                task,
+                context.dependency_outputs,
+            )
+        department_reference = self._department_reference(department_acceptance)
+        definition_of_done = self._verifier_definition_of_done(
+            task,
+            department_reference,
+        )
         envelope = {
             # Правило R17: блок правил идёт ПЕРЕД спецификациями задачи
             # и не подлежит усечению. Если бюджет контекста не вмещает
@@ -265,12 +292,12 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             "rules": rules_for_prompt(self.state_dir),
             "phase": phase,
             "task": self._task_contract(task),
-            "role": self._role_contract(role),
-            "definition_of_done": list(task.definition_of_done),
+            "role": self._role_contract(role, department_reference),
+            "definition_of_done": definition_of_done,
             "acceptance_gate": {
-                "original_user_request": self.plan.user_request,
+                "original_user_request": self._original_user_request_contract(task.id),
                 "run_goal": self.plan.goal,
-                "task_definition_of_done": list(task.definition_of_done),
+                "task_definition_of_done": definition_of_done,
                 "implementation_tests_are_evidence_only": True,
             },
             "resources": [
@@ -285,6 +312,11 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             ],
             "context": context.to_dict(),
             "verification": self._verification_contract(task),
+            **(
+                {"department_acceptance": department_acceptance}
+                if department_acceptance is not None
+                else {}
+            ),
             "phase_input": {
                 **({"verification_round": verification_round} if verification_round else {}),
                 **({"revision_number": revision_number} if revision_number else {}),
@@ -314,6 +346,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             reservation_token=reservation_token,
             verification_round=verification_round,
             revision_number=revision_number,
+            department_acceptance=department_acceptance,
         )
         if len(prompt) > MAX_PROMPT_CHARS:
             raise ContextBoundaryError(
@@ -322,6 +355,43 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 "defect: narrow the task context instead"
             )
         return prompt
+
+    def _department_acceptance(
+        self,
+        task: Task,
+        dependency_outputs: Sequence[Mapping[str, object]],
+    ) -> dict[str, Any]:
+        try:
+            loaded = load_task_department_acceptance(
+                self.memory,
+                departments=self.plan.departments,
+                task=task,
+                role_names={item.id: item.name for item in self.plan.roles},
+                dependency_outputs=dependency_outputs,
+            )
+        except DepartmentAcceptanceError as exc:
+            raise ContextBoundaryError(
+                f"department verifier cannot launch for task {task.id}: {exc}"
+            ) from exc
+        return loaded.to_dict()
+
+    def _original_user_request_contract(self, task_id: str) -> str | dict[str, Any]:
+        """Keep large immutable requests in canonical Project Memory."""
+
+        request = self.plan.user_request
+        if len(request) <= MAX_INLINE_USER_REQUEST_CHARS:
+            return request
+        return {
+            "verbatim_in_prompt": False,
+            "chars": len(request),
+            "sha256": hashlib.sha256(request.encode("utf-8")).hexdigest(),
+            "retrieval": {
+                "server": "codex_autopilot_memory",
+                "tool": "memory",
+                "arguments": {"operation": "current", "task_id": task_id},
+                "field": "user_request",
+            },
+        }
 
     def _select_verified_state(
         self,
@@ -506,15 +576,67 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         }
 
     @staticmethod
-    def _role_contract(role: RoleProfile) -> dict[str, Any]:
+    def _department_reference(
+        acceptance: Mapping[str, Any] | None,
+    ) -> RubricReference | None:
+        if acceptance is None:
+            return None
+        try:
+            rubric = acceptance["rubric"]
+            if not isinstance(rubric, Mapping):
+                raise DepartmentAcceptanceError(
+                    "department_acceptance.rubric must be an object"
+                )
+            return rubric_reference_from_raw(
+                rubric.get("reference"),
+                "department_acceptance.rubric.reference",
+            )
+        except (KeyError, DepartmentAcceptanceError) as exc:
+            raise ContextBoundaryError(
+                f"department verifier cannot launch: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _verifier_definition_of_done(
+        task: Task,
+        department_reference: RubricReference | None,
+    ) -> list[str]:
+        if department_reference is None:
+            return list(task.definition_of_done)
+        return [
+            redact_conflicting_rubric_identity(item, department_reference)
+            for item in task.definition_of_done
+        ]
+
+    @staticmethod
+    def _role_contract(
+        role: RoleProfile,
+        department_reference: RubricReference | None = None,
+    ) -> dict[str, Any]:
+        domain_focus = role.domain_focus
+        context_priorities = role.context_priorities
+        verification_expectations = role.verification_expectations
+        if department_reference is not None:
+            domain_focus = omit_conflicting_rubric_guidance(
+                domain_focus,
+                department_reference,
+            )
+            context_priorities = omit_conflicting_rubric_guidance(
+                context_priorities,
+                department_reference,
+            )
+            verification_expectations = omit_conflicting_rubric_guidance(
+                verification_expectations,
+                department_reference,
+            )
         return {
             "id": role.id,
             "name": role.name,
             "responsibilities": list(role.responsibilities),
-            "domain_focus": list(role.domain_focus),
+            "domain_focus": list(domain_focus),
             "preferred_tools": list(role.preferred_tools),
-            "context_priorities": list(role.context_priorities),
-            "verification_expectations": list(role.verification_expectations),
+            "context_priorities": list(context_priorities),
+            "verification_expectations": list(verification_expectations),
         }
 
     @staticmethod
@@ -558,8 +680,23 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         reservation_token: str,
         verification_round: int,
         revision_number: int,
+        department_acceptance: Mapping[str, Any] | None,
     ) -> str:
         russian = is_russian(self.language)
+        request_access = ""
+        if len(self.plan.user_request) > MAX_INLINE_USER_REQUEST_CHARS:
+            request_access = (
+                "Исходный запрос пользователя не вложен в prompt: получи его ровно одним "
+                "вызовом Project Memory из acceptance_gate.original_user_request.retrieval, "
+                "извлеки указанное field и до использования сверь chars и sha256. "
+                "Расхождение означает подмену и запрещает продолжение."
+                if russian
+                else "The original user request is not embedded in this prompt: retrieve it "
+                "with exactly one Project Memory call from "
+                "acceptance_gate.original_user_request.retrieval, extract the named field, "
+                "and verify chars and sha256 before use. A mismatch means substitution and "
+                "forbids continuing."
+            )
         if phase == "verification":
             identity = (
                 f"свежий независимый verifier V{verification_round}"
@@ -568,7 +705,10 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             )
             finish = (
                 'Независимо сопоставь результат с acceptance_gate.original_user_request, '
-                'run_goal, структурированным контрактом задачи и каждым пунктом DoD. Тесты, '
+                'run_goal, структурированным контрактом задачи и каждым пунктом DoD. Если '
+                'original_user_request является ссылочным объектом, получи точную строку одним '
+                'указанным вызовом Project Memory, извлеки field и проверь chars и sha256; '
+                'несовпадение запрещает PASS. Тесты, '
                 'написанные implementer, — только evidence: они не определяют и не отменяют '
                 'критерии приёмки. PASS допустим только после этой независимой проверки. Запиши '
                 'новое evidence с role=independent_verification. Последняя непустая строка: '
@@ -584,7 +724,9 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 if russian
                 else 'Independently compare the result with '
                 'acceptance_gate.original_user_request, run_goal, the structured task contract, '
-                'and every DoD item. Implementer-authored tests are evidence only: they neither '
+                'and every DoD item. If original_user_request is a reference object, retrieve '
+                'the exact string with its single specified Project Memory call, extract field, '
+                'and verify chars and sha256; a mismatch forbids PASS. Implementer-authored tests are evidence only: they neither '
                 'define nor waive acceptance criteria. PASS is allowed only after this independent '
                 'check. Record new evidence with role=independent_verification. Final non-empty line: '
                 'AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]} or REVISE with a non-empty '
@@ -596,6 +738,31 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 '"details":"Running ... printed an empty line instead of the thread list",'
                 '"dod_refs":[3]}]}. Any extra field rejects the whole verdict.'
             )
+            if department_acceptance is not None:
+                reference = department_acceptance["rubric"]["reference"]
+                attestation = json.dumps(
+                    reference,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                if russian:
+                    finish += (
+                        " Применяй критерии и standards только из "
+                        "department_acceptance.rubric.content. Рубрика уже загружена из "
+                        "Project Memory по зафиксированным record_id, version и sha256; "
+                        "не заменяй и не переосмысливай её. Финальный JSON обязан содержать "
+                        f"точную аттестацию \"rubric\":{attestation}; её отсутствие или "
+                        "расхождение отклоняет verdict."
+                    )
+                else:
+                    finish += (
+                        " Apply criteria and standards only from "
+                        "department_acceptance.rubric.content. The rubric was loaded from "
+                        "Project Memory by its pinned record_id, version, and sha256; do not "
+                        "replace or reinterpret it. The final JSON must contain the exact "
+                        f"attestation \"rubric\":{attestation}; omission or mismatch rejects "
+                        "the verdict."
+                    )
         elif phase == "revision":
             identity = f"свежий revision worker R{revision_number}" if russian else f"fresh revision worker R{revision_number}"
             finish = (
@@ -644,7 +811,7 @@ AUTOPILOT_BRIEF
 
 Брифинг берётся только из контракта задачи выше. Сроков в нём нет: время выполнения автопилоту неизвестно, и названное наугад - обещание, которого никто не давал. Дальше работай как обычно.
 
-Сначала полностью прочитай {self.skill_path}. Используй только структурированную задачу, роль, DoD, проверенное состояние, выбранные dependency outputs, issues и ресурсы выше. При необходимости получай перечисленные record/evidence ID напрямую через Project Memory. NO EVIDENCE -> NO TRUTH. Сохраняй чужие изменения; не создавай commit, tag, push, publish, reset или clean. Обнови свой задачный файл передачи .codex-autopilot/handoff/{task.id}.md — это обязательный чекпойнт завершения, и он твой: запись другой задачи его не заменяет. Общий HANDOFF.md остаётся необязательной запиской для человека. Этот task остаётся Desktop-owned; не создавай, не запускай и не отправляй сообщения другим задачам. После финальной protocol line уже работающий локальный dispatcher получает авторитетное App Server completion, полностью закрывает App Server-процесс этого task, детерминированно обновляет state и запускает точного successor. Stop hook автоматически управляемого turn служит только наблюдателем. Если Pipeline Engineer устранил сбой, DevOps только повторно активирует causal dispatcher и никогда не создаёт и не запускает destination task. Reservation token: {reservation_token}.
+Сначала полностью прочитай {self.skill_path}. Используй только структурированную задачу, роль, DoD, проверенное состояние, выбранные dependency outputs, issues и ресурсы выше. При необходимости получай перечисленные record/evidence ID напрямую через Project Memory. {request_access} NO EVIDENCE -> NO TRUTH. Сохраняй чужие изменения; не создавай commit, tag, push, publish, reset или clean. Обнови свой задачный файл передачи .codex-autopilot/handoff/{task.id}.md — это обязательный чекпойнт завершения, и он твой: запись другой задачи его не заменяет. Общий HANDOFF.md остаётся необязательной запиской для человека. Этот task остаётся Desktop-owned; не создавай, не запускай и не отправляй сообщения другим задачам. После финальной protocol line уже работающий локальный dispatcher получает авторитетное App Server completion, полностью закрывает App Server-процесс этого task, детерминированно обновляет state и запускает точного successor. Stop hook автоматически управляемого turn служит только наблюдателем. Если Pipeline Engineer устранил сбой, DevOps только повторно активирует causal dispatcher и никогда не создаёт и не запускает destination task. Reservation token: {reservation_token}.
 
 {finish}"""
         return f"""{headline}
@@ -667,7 +834,7 @@ Resources: <what is held for writing, or "none">
 
 The brief comes only from the task contract above. It carries no time estimate: Autopilot does not know how long the work takes, and a number picked at random is a promise nobody made. Then work as usual.
 
-Read {self.skill_path} completely first. Use only the structured task, role, DoD, verified state, selected dependency outputs, issues, and resources above. Retrieve listed record/evidence IDs directly through Project Memory when needed. NO EVIDENCE -> NO TRUTH. Preserve unrelated changes; do not commit, tag, push, publish, reset, or clean. Update your own task handoff file .codex-autopilot/handoff/{task.id}.md - it is the required completion checkpoint and it is yours: another task's write does not satisfy it. The shared HANDOFF.md stays an optional human-facing note. This task remains Desktop-owned; never create, start, or message other tasks. After the final protocol line, the already-running local dispatcher consumes the authoritative App Server completion, closes this task's App Server process, advances deterministic state, and starts the exact successor. The Stop hook is only an observer for an automatically owned turn. If Pipeline Engineer repaired a fault, DevOps only re-arms the causal dispatcher and never creates or starts the destination task. Reservation token: {reservation_token}.
+Read {self.skill_path} completely first. Use only the structured task, role, DoD, verified state, selected dependency outputs, issues, and resources above. Retrieve listed record/evidence IDs directly through Project Memory when needed. {request_access} NO EVIDENCE -> NO TRUTH. Preserve unrelated changes; do not commit, tag, push, publish, reset, or clean. Update your own task handoff file .codex-autopilot/handoff/{task.id}.md - it is the required completion checkpoint and it is yours: another task's write does not satisfy it. The shared HANDOFF.md stays an optional human-facing note. This task remains Desktop-owned; never create, start, or message other tasks. After the final protocol line, the already-running local dispatcher consumes the authoritative App Server completion, closes this task's App Server process, advances deterministic state, and starts the exact successor. The Stop hook is only an observer for an automatically owned turn. If Pipeline Engineer repaired a fault, DevOps only re-arms the causal dispatcher and never creates or starts the destination task. Reservation token: {reservation_token}.
 
 {finish}"""
 

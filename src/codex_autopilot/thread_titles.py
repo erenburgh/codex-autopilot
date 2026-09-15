@@ -65,6 +65,21 @@ def verifier_thread_title(
     )
 
 
+def department_verifier_thread_title(
+    task_id: str,
+    task_title: str,
+    *,
+    lead_role_name: str,
+) -> str:
+    """R30 title: <Lead Role> | Verify <Task ID> | <Short Task Title>."""
+
+    return _compose(
+        _role_segment(lead_role_name),
+        f"Verify {_identifier(task_id, 'task_id')}",
+        _text(task_title, "task_title"),
+    )
+
+
 def revision_thread_title(
     task_id: str,
     revision_number: int,
@@ -122,10 +137,17 @@ def task_phase_thread_title(
     kind: str,
     role_name: str,
     revision_number: int = 0,
+    departmental_verifier: bool = False,
 ) -> str:
     if kind in {"worker", "implementation"}:
         return implementation_thread_title(task_id, task_title, role_name=role_name)
     if kind == "verifier":
+        if departmental_verifier:
+            return department_verifier_thread_title(
+                task_id,
+                task_title,
+                lead_role_name=role_name,
+            )
         return verifier_thread_title(task_id, task_title, role_name=role_name)
     if kind == "revision":
         return revision_thread_title(

@@ -27,6 +27,7 @@ from codex_autopilot.task_state import (
     transition_task,
     validate_task_states,
 )
+from _plan_contract import canonical_verification
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,25 +54,12 @@ def task(
     required_verification: bool = True,
     policy: str = "independent",
 ) -> dict:
-    verification = {
-        "policy": policy,
-        "required": required_verification,
-        "verifier_role": "reviewer" if policy in {"independent", "auto"} else None,
-        "max_revision_attempts": 3,
-    }
-    if verification["verifier_role"] is None:
-        del verification["verifier_role"]
-    if policy == "deterministic":
-        verification["deterministic_checks"] = [
-            {
-                "id": "unit-tests",
-                "kind": "command",
-                "description": "Run the deterministic unit tests.",
-                "argv": ["python3", "-m", "unittest"],
-                "timeout_seconds": 600,
-                "expected_exit_code": 0,
-            }
-        ]
+    verification = canonical_verification(
+        verifier_role="reviewer",
+        max_revision_attempts=3,
+    )
+    verification["policy"] = policy
+    verification["required"] = required_verification
     return {
         "id": task_id,
         "title": f"Task {task_id}",
@@ -121,8 +109,8 @@ def graph() -> dict:
             # R8: даже задача, не гейтящая зависимости, не принимает
             # сама себя. "Не требует верификации" - тот же самосуд,
             # объявленный планировщиком заранее.
-            task("B", required_verification=False, policy="independent"),
-            task("C", dependencies=["A", "B"], policy="deterministic"),
+            task("B"),
+            task("C", dependencies=["A", "B"]),
         ],
     }
 
@@ -161,20 +149,22 @@ class TaskGraphSchemaTests(unittest.TestCase):
                 "execution_mode": "code",
                 "execution_mode_reason": "Independent review is repository-based.",
                 "reasoning": "xhigh",
-                "deterministic_checks": [
-                    {
-                        "id": "artifact",
-                        "kind": "artifact",
-                        "description": "Required output exists.",
-                        "path": "outputs/A.json",
-                    },
-                    {
-                        "id": "evidence",
-                        "kind": "evidence",
-                        "description": "Project Memory contains execution evidence.",
-                    },
-                ],
             }
+        )
+        raw["tasks"][0]["verification"]["deterministic_checks"].extend(
+            [
+                {
+                    "id": "artifact",
+                    "kind": "artifact",
+                    "description": "Required output exists.",
+                    "path": "outputs/A.json",
+                },
+                {
+                    "id": "evidence",
+                    "kind": "evidence",
+                    "description": "Project Memory contains execution evidence.",
+                },
+            ]
         )
         raw["tasks"][0]["resources"] = [
             {
@@ -208,11 +198,8 @@ class TaskGraphSchemaTests(unittest.TestCase):
             validate_plan(raw, "adaptive")
 
         raw = graph()
-        raw["tasks"][2]["verification"] = {
-            "policy": "deterministic",
-            "required": True,
-        }
-        with self.assertRaisesRegex(ValueError, "deterministic_checks"):
+        raw["tasks"][2]["verification"]["deterministic_checks"] = []
+        with self.assertRaisesRegex(ValueError, "suite"):
             validate_plan(raw, "adaptive")
 
         raw = graph()
@@ -298,6 +285,141 @@ class TaskGraphSchemaTests(unittest.TestCase):
         raw["roles"].append(role("legacy-worker", "Legacy serial worker"))
         raw["tasks"][0]["role"] = "legacy-worker"
         with self.assertRaisesRegex(ValueError, "concrete RoleProfile"):
+            validate_plan(raw, "adaptive")
+
+    def test_canonical_tasks_require_independent_acceptance_floor(self):
+        mutations = [
+            (
+                lambda verification: verification.update(policy="deterministic"),
+                "must be \\\"independent\\\"",
+            ),
+            (
+                lambda verification: verification.update(policy="auto"),
+                "must be \\\"independent\\\"",
+            ),
+            (
+                lambda verification: verification.update(required=False),
+                "required must be true",
+            ),
+            (
+                lambda verification: verification.update(max_revision_attempts=1),
+                "at least 2",
+            ),
+            (
+                lambda verification: verification.pop("max_revision_attempts"),
+                "must be declared",
+            ),
+            (
+                lambda verification: verification.update(deterministic_checks=[]),
+                "full-suite deterministic check",
+            ),
+        ]
+        for mutate, message in mutations:
+            with self.subTest(message=message):
+                raw = graph()
+                mutate(raw["tasks"][0]["verification"])
+                with self.assertRaisesRegex(ValueError, message):
+                    validate_plan(raw, "adaptive")
+
+    def test_canonical_suite_check_requires_clean_identity_environment(self):
+        for missing in (
+            "CODEX_THREAD_ID=",
+            "CODEX_TURN_ID=",
+            "CODEX_SESSION_ID=",
+        ):
+            with self.subTest(missing=missing):
+                raw = graph()
+                argv = raw["tasks"][0]["verification"]["deterministic_checks"][0]["argv"]
+                argv.remove(missing)
+                with self.assertRaisesRegex(ValueError, "reset CODEX_THREAD_ID="):
+                    validate_plan(raw, "adaptive")
+
+    def test_canonical_suite_check_rejects_shell_or_nonzero_success_contract(self):
+        raw = graph()
+        check = raw["tasks"][0]["verification"]["deterministic_checks"][0]
+        check["argv"] = ["sh", "-c", "python3 -m unittest discover -s tests"]
+        with self.assertRaisesRegex(ValueError, "launched through env"):
+            validate_plan(raw, "adaptive")
+
+        raw = graph()
+        raw["tasks"][0]["verification"]["deterministic_checks"][0][
+            "expected_exit_code"
+        ] = 1
+        with self.assertRaisesRegex(ValueError, "successful command"):
+            validate_plan(raw, "adaptive")
+
+    def test_canonical_suite_check_rejects_noop_or_mislabelled_commands(self):
+        for command in (["true"], ["python3", "-c", "raise SystemExit(0)"]):
+            with self.subTest(command=command):
+                raw = graph()
+                argv = raw["tasks"][0]["verification"]["deterministic_checks"][0][
+                    "argv"
+                ]
+                argv[4:] = command
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "full-suite deterministic check",
+                ):
+                    validate_plan(raw, "adaptive")
+
+        raw = graph()
+        argv = raw["tasks"][0]["verification"]["deterministic_checks"][0][
+            "argv"
+        ]
+        argv[4:] = ["/usr/bin/uname"]
+        with self.assertRaisesRegex(ValueError, "full-suite deterministic check"):
+            validate_plan(raw, "adaptive")
+
+    def test_canonical_suite_check_rejects_partial_runner_options(self):
+        commands = (
+            [
+                "python3",
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "tests",
+                "-k",
+                "one_case",
+            ],
+            ["python3", "-m", "pytest", "--collect-only"],
+            ["pytest", "--ignore=tests/integration"],
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                raw = graph()
+                argv = raw["tasks"][0]["verification"]["deterministic_checks"][0][
+                    "argv"
+                ]
+                argv[4:] = command
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "full-suite deterministic check",
+                ):
+                    validate_plan(raw, "adaptive")
+
+    def test_canonical_suite_check_rejects_project_controlled_env_wrapper(self):
+        raw = graph()
+        argv = raw["tasks"][0]["verification"]["deterministic_checks"][0]["argv"]
+        argv[0] = "tools/env"
+        with self.assertRaisesRegex(ValueError, "launched through env"):
+            validate_plan(raw, "adaptive")
+
+        raw = graph()
+        argv = raw["tasks"][0]["verification"]["deterministic_checks"][0][
+            "argv"
+        ]
+        argv[4:] = [
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests",
+            "-p",
+            "test_one.py",
+        ]
+        with self.assertRaisesRegex(ValueError, "full-suite deterministic check"):
             validate_plan(raw, "adaptive")
 
 

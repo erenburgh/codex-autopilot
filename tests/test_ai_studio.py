@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -8,6 +9,7 @@ import unittest
 from codex_autopilot.ai_studio import (
     AIStudioRuntime,
     HARD_MAX_MEMORY_RECORDS,
+    MAX_INLINE_USER_REQUEST_CHARS,
     MAX_OUTPUT_EXCERPT_CHARS,
     MAX_PROMPT_CHARS,
     ContextBoundaryError,
@@ -15,6 +17,7 @@ from codex_autopilot.ai_studio import (
 from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.plan import validate_plan
 from codex_autopilot.verification import VerificationIssue
+from _plan_contract import canonical_verification
 
 
 def role(role_id: str, name: str) -> dict:
@@ -41,13 +44,7 @@ def task(
     verifier_mode: str | None = None,
 ) -> dict:
     dependency_ids = dependencies or []
-    verification: dict = {
-        "policy": "independent",
-        "required": True,
-        "max_revision_attempts": 2,
-    }
-    if verifier_role:
-        verification["verifier_role"] = verifier_role
+    verification = canonical_verification(verifier_role=verifier_role)
     if verifier_mode:
         verification.update(
             {
@@ -257,6 +254,70 @@ class AIStudioRuntimeTests(unittest.TestCase):
         self.assertIn("Independently compare the result", prompt)
         self.assertIn("Implementer-authored tests are evidence only", prompt)
         self.assertIn("PASS is allowed only after this independent check", prompt)
+
+    def test_large_original_request_uses_lossless_canonical_reference(self):
+        raw_task = task("code-a", "integrator", verifier_role="reviewer")
+        raw_plan = {
+            "schema_version": 3,
+            "graph_version": 1,
+            "goal": "Verify the complete request without duplicating it in every prompt.",
+            "user_request": "complete request\n" * MAX_INLINE_USER_REQUEST_CHARS,
+            "model_strategy": "auto",
+            "execution_strategy": "auto",
+            "max_parallel_workers": 2,
+            "computer_use_slots": 1,
+            "roles": [
+                role("integrator", "Systems Integrator"),
+                role("reviewer", "Independent Reviewer"),
+            ],
+            "tasks": [raw_task],
+        }
+        runtime = AIStudioRuntime(
+            validate_plan(raw_plan, "adaptive"),
+            self.root,
+            language="en",
+            skill_path=self.skill,
+            memory=self.memory,
+        )
+
+        prompt = runtime.build_prompt(
+            "code-a",
+            phase="verification",
+            task_states={"code-a": "VERIFYING"},
+            reservation_token="fresh-large-acceptance",
+            verification_round=1,
+        )
+        payload = context_payload(prompt)
+        reference = payload["acceptance_gate"]["original_user_request"]
+        canonical_request = runtime.plan.user_request
+
+        self.assertLess(len(prompt), MAX_PROMPT_CHARS)
+        self.assertFalse(reference["verbatim_in_prompt"])
+        self.assertEqual(reference["chars"], len(canonical_request))
+        self.assertEqual(
+            reference["sha256"],
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(
+            reference["retrieval"],
+            {
+                "server": "codex_autopilot_memory",
+                "tool": "memory",
+                "arguments": {"operation": "current", "task_id": "code-a"},
+                "field": "user_request",
+            },
+        )
+        self.assertNotIn(canonical_request, prompt)
+        self.assertIn("single specified Project Memory call", prompt)
+
+        implementation_prompt = runtime.build_prompt(
+            "code-a",
+            phase="implementation",
+            task_states={"code-a": "READY"},
+            reservation_token="fresh-large-implementation",
+        )
+        self.assertIn("exactly one Project Memory call", implementation_prompt)
+        self.assertIn("verify chars and sha256 before use", implementation_prompt)
 
     def test_selective_verified_memory_and_dependency_output_are_bounded(self):
         evidence = self.memory.record_evidence(

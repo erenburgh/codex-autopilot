@@ -19,6 +19,7 @@ from codex_autopilot.plan import validate_plan
 from codex_autopilot.resources import build_scheduler_availability
 from codex_autopilot.run_state import RunState
 from codex_autopilot.scheduler import schedule
+from _plan_contract import canonical_verification
 
 
 def graph() -> dict[str, object]:
@@ -34,7 +35,7 @@ def graph() -> dict[str, object]:
             "role": "builder",
             "depends_on": [],
             "priority": 0,
-            "verification": {"policy": "independent", "required": True},
+            "verification": canonical_verification(),
             "resources": [],
             "required_capabilities": [],
             "context": {},

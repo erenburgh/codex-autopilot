@@ -8,6 +8,11 @@ import sys
 import tempfile
 import unittest
 
+from _plan_contract import canonical_verification
+from codex_autopilot.bootstrap import initialize_project
+from codex_autopilot.memory import MemoryValidationError
+from codex_autopilot.memory_mcp import MemoryMcpServer
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,8 +58,9 @@ class McpTests(unittest.TestCase):
         self.assertTrue(tools["memory"]["annotations"]["destructiveHint"])
         branches = tools["memory"]["inputSchema"]["oneOf"]
         actions = {branch["properties"]["operation"]["const"] for branch in branches}
-        self.assertEqual(len(actions), 16)
+        self.assertEqual(len(actions), 17)
         self.assertIn("record_verified_fact", actions)
+        self.assertIn("store_department_rubric", actions)
         identity = responses[2]["result"]["structuredContent"]
         self.assertEqual(Path(identity["project_root"]), root.resolve())
         self.assertFalse(identity["initialized"])
@@ -86,6 +92,69 @@ class McpTests(unittest.TestCase):
         response = json.loads(result.stdout)
         self.assertEqual(response["error"]["code"], -32602)
         self.assertIn("unknown argument", response["error"]["message"])
+
+    def test_current_can_retrieve_the_canonical_request_for_an_exact_task(self):
+        root = git_project()
+        skill = root / "SKILL.md"
+        skill.write_text("test skill\n", encoding="utf-8")
+        plan_file = root / "plan.json"
+        plan_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": 3,
+                    "graph_version": 1,
+                    "goal": "Exercise task-addressed Project Memory retrieval.",
+                    "user_request": "canonical original request",
+                    "model_strategy": "auto",
+                    "execution_strategy": "auto",
+                    "max_parallel_workers": 2,
+                    "computer_use_slots": 1,
+                    "roles": [
+                        {
+                            "id": "builder",
+                            "name": "Builder",
+                            "responsibilities": ["Build."],
+                        }
+                    ],
+                    "tasks": [
+                        {
+                            "id": task_id,
+                            "title": f"Task {task_id}",
+                            "objective": f"Produce {task_id}.",
+                            "definition_of_done": [f"{task_id} is done."],
+                            "execution_mode": "code",
+                            "execution_mode_reason": "Repository work.",
+                            "reasoning": "medium",
+                            "role": "builder",
+                            "depends_on": [],
+                            "priority": 0,
+                            "verification": canonical_verification(),
+                            "resources": [],
+                            "required_capabilities": [],
+                            "context": {},
+                            "outputs": [],
+                            "tags": [],
+                        }
+                        for task_id in ("A", "B")
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        initialize_project(
+            root,
+            plan_file,
+            profile="adaptive",
+            skill_path=skill,
+        )
+        server = MemoryMcpServer(root)
+
+        current = server.actions["current"]({"task_id": "B"})
+
+        self.assertEqual(current["user_request"], "canonical original request")
+        self.assertEqual(current["milestone"]["id"], "B")
+        with self.assertRaisesRegex(MemoryValidationError, "unknown task_id"):
+            server.actions["current"]({"task_id": "missing"})
 
 
 if __name__ == "__main__":

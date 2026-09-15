@@ -6,6 +6,13 @@ from pathlib import Path
 import subprocess
 from typing import Any, Mapping, Sequence
 
+from .department_acceptance import (
+    DepartmentAcceptanceError,
+    RubricReference,
+    resolve_task_department,
+    rubric_reference_from_raw,
+    task_department_binding,
+)
 from .models import MODEL_IDS, MODEL_LABELS, logical_model
 from .plan import Plan, Task, VerificationCheck
 
@@ -72,11 +79,13 @@ class VerificationIssue:
 class VerificationVerdict:
     verdict: str
     issues: tuple[VerificationIssue, ...]
+    rubric: RubricReference | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "verdict": self.verdict,
             "issues": [item.to_dict() for item in self.issues],
+            **({"rubric": self.rubric.to_dict()} if self.rubric else {}),
         }
 
 
@@ -137,7 +146,7 @@ def parse_verifier_result(message: str) -> VerificationVerdict:
         raise VerificationProtocolError("verifier result is not valid JSON") from exc
     if not isinstance(raw, dict):
         raise VerificationProtocolError("verifier result must be a JSON object")
-    unknown = set(raw) - {"verdict", "issues"}
+    unknown = set(raw) - {"verdict", "issues", "rubric"}
     if unknown:
         raise VerificationProtocolError(
             f"verifier result has unknown fields: {sorted(unknown)}"
@@ -156,7 +165,13 @@ def parse_verifier_result(message: str) -> VerificationVerdict:
         raise VerificationProtocolError("PASS must contain an empty issues array")
     if verdict == "REVISE" and not issues:
         raise VerificationProtocolError("REVISE must contain at least one issue")
-    return VerificationVerdict(verdict=verdict, issues=issues)
+    rubric = None
+    if "rubric" in raw:
+        try:
+            rubric = rubric_reference_from_raw(raw["rubric"], "verifier rubric")
+        except DepartmentAcceptanceError as exc:
+            raise VerificationProtocolError(str(exc)) from exc
+    return VerificationVerdict(verdict=verdict, issues=issues, rubric=rubric)
 
 
 def run_deterministic_checks(
@@ -194,10 +209,27 @@ def deterministic_issues(
 
 
 def verifier_route(plan: Plan, task: Task) -> VerifierRoute:
-    """Route a verifier by required capability, never by specialist role."""
+    """Route capability separately while deriving the judge from department."""
 
     policy = task.verification
-    role_id = policy.verifier_role or task.role
+    try:
+        department_binding = task_department_binding(task)
+    except DepartmentAcceptanceError as exc:
+        raise VerificationProtocolError(str(exc)) from exc
+    if department_binding is not None:
+        try:
+            department = resolve_task_department(
+                plan.departments,
+                task,
+                role_names={item.id: item.name for item in plan.roles},
+            )
+        except DepartmentAcceptanceError as exc:
+            raise VerificationProtocolError(str(exc)) from exc
+        if department is None:
+            raise VerificationProtocolError("department binding disappeared")
+        role_id = department.lead_role_id
+    else:
+        role_id = policy.verifier_role or task.role
     execution_mode = policy.execution_mode or task.execution_mode
     execution_reason = (
         policy.execution_mode_reason

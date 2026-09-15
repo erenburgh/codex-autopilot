@@ -9,6 +9,7 @@ from unittest import mock
 from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
+from _plan_contract import canonical_verification
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
 from codex_autopilot.lifecycle import (
     reconcile_desktop_runtime,
@@ -49,11 +50,7 @@ def task(task_id: str, *, depends_on: tuple[str, ...] = ()) -> dict[str, object]
         "role": "builder",
         "depends_on": list(depends_on),
         "priority": 0,
-        "verification": {
-            "policy": "independent",
-            "required": True,
-            "max_revision_attempts": 1,
-        },
+        "verification": canonical_verification(),
         "resources": [
             {
                 "id": "tree",

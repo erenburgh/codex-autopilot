@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import subprocess
@@ -343,6 +344,35 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(client.archived, ["preflight-thread"])
         self.assertEqual(len(client.plain_turns), 1)
         self.assertEqual(Path(client.plain_turns[0]["cwd"]).resolve(), root.resolve())
+        self.assertFalse((root / ".codex-autopilot").exists())
+
+    def test_unprobed_declared_capability_fails_before_app_server(self):
+        root = project()
+        base = plan()
+        capability_plan = replace(
+            base,
+            tasks=(
+                replace(
+                    base.tasks[0],
+                    required_capabilities=("requires-explicit-trust",),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(
+            PreflightError,
+            "no registered pre-worker trust probe.*requires-explicit-trust",
+        ):
+            run_preflight(
+                root,
+                plan=capability_plan,
+                profile="adaptive",
+                skill_path=SKILL,
+                binary="/bin/echo",
+                client_factory=PreflightClient,
+                desktop_project_id=DESKTOP_PROJECT,
+                emit=None,
+            )
+        self.assertFalse(PreflightClient.instances)
         self.assertFalse((root / ".codex-autopilot").exists())
 
     def test_explicit_user_authorization_answers_pending_request_with_always(self):

@@ -13,6 +13,7 @@ from codex_autopilot.appserver import TurnResult
 from codex_autopilot.bootstrap import initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
+from _plan_contract import canonical_verification
 from _appserver_fakes import activate_via_app_server
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
 from codex_autopilot.lifecycle import (
@@ -112,14 +113,13 @@ def task(
     verifier_mode: str | None = None,
     max_revisions: int = 2,
 ) -> dict[str, object]:
-    verification: dict[str, object] = {
-        "policy": policy,
-        "required": required,
-        "deterministic_checks": checks or [],
-        "max_revision_attempts": max_revisions,
-    }
-    if verifier_role:
-        verification["verifier_role"] = verifier_role
+    verification = canonical_verification(
+        checks=checks or (),
+        verifier_role=verifier_role,
+        max_revision_attempts=max_revisions,
+    )
+    verification["policy"] = policy
+    verification["required"] = required
     if verifier_mode:
         verification["execution_mode"] = verifier_mode
         verification["execution_mode_reason"] = (
@@ -174,7 +174,7 @@ def graph(first: dict[str, object]) -> dict[str, object]:
         ],
         "tasks": [
             first,
-            task("B", depends_on=("A",), required=False),
+            task("B", depends_on=("A",)),
         ],
     }
 
@@ -326,6 +326,11 @@ class VerificationLifecycleTests(unittest.TestCase):
         recorded_rejection = self.memory.list_verification_results(
             task_id="A", limit=8
         ).records
+        recorded_rejection = [
+            item
+            for item in recorded_rejection
+            if item["check_id"] == "independent-acceptance"
+        ]
         self.assertEqual(len(recorded_rejection), 1)
         self.assertEqual(recorded_rejection[0]["verdict"], "REVISE")
         self.assertEqual(
@@ -375,7 +380,12 @@ class VerificationLifecycleTests(unittest.TestCase):
             task_id="A", limit=8
         ).records
         self.assertEqual(
-            [item["verdict"] for item in recorded_verdicts], ["REVISE", "PASS"]
+            [
+                item["verdict"]
+                for item in recorded_verdicts
+                if item["check_id"] == "independent-acceptance"
+            ],
+            ["REVISE", "PASS"],
         )
         state = self.store.load()
         self.assertEqual(state.task_states["A"], TaskState.VERIFIED.value)
@@ -389,7 +399,7 @@ class VerificationLifecycleTests(unittest.TestCase):
             {"verifier-thread-1", "verifier-thread-2"},
         )
 
-    def test_exhaustive_deterministic_policy_is_precheck_not_acceptance(self) -> None:
+    def test_deterministic_checks_are_admission_not_acceptance(self) -> None:
         checks = [
             {
                 "id": "command-check",
@@ -413,7 +423,7 @@ class VerificationLifecycleTests(unittest.TestCase):
                 "description": "Implementation supplied reproducible evidence.",
             },
         ]
-        self.initialize(task("A", policy="deterministic", checks=checks))
+        self.initialize(task("A", checks=checks))
         implementation = reserve_ready_frontier(self.cfg)[0]
         self.activate(implementation, "implementation-thread")
         (self.root / "artifact.txt").write_text("ok\n", encoding="utf-8")
@@ -445,7 +455,7 @@ class VerificationLifecycleTests(unittest.TestCase):
         ).records
         self.assertEqual(
             {item["check_id"] for item in verification_results},
-            {"command-check", "artifact-check", "implementation-proof"},
+            {"suite", "command-check", "artifact-check", "implementation-proof"},
         )
         self.assertTrue(all(item["verdict"] == "PASS" for item in verification_results))
         session = next(
@@ -453,7 +463,7 @@ class VerificationLifecycleTests(unittest.TestCase):
             for item in self.store.load().worker_sessions
             if item["thread_id"] == "implementation-thread"
         )
-        self.assertEqual(len(session["memory_verification_ids"]), 3)
+        self.assertEqual(len(session["memory_verification_ids"]), 4)
 
     def test_failed_deterministic_check_creates_structured_revision(self) -> None:
         checks = [
@@ -467,9 +477,8 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.initialize(
             task(
                 "A",
-                policy="deterministic",
                 checks=checks,
-                max_revisions=1,
+                max_revisions=2,
             )
         )
         implementation = reserve_ready_frontier(self.cfg)[0]
@@ -494,16 +503,16 @@ class VerificationLifecycleTests(unittest.TestCase):
         ).records
         self.assertEqual(
             [(item["check_id"], item["verdict"]) for item in failed_result],
-            [("failing-check", "REVISE")],
+            [("suite", "PASS"), ("failing-check", "REVISE")],
         )
 
-    def test_independent_policy_ignores_local_checks_and_routes_verifier_capability(self) -> None:
+    def test_independent_policy_runs_checks_then_routes_verifier_capability(self) -> None:
         checks = [
             {
-                "id": "must-not-short-circuit",
+                "id": "admission-check",
                 "kind": "command",
-                "description": "Independent policy must not use this for promotion.",
-                "argv": [sys.executable, "-c", "raise SystemExit(9)"],
+                "description": "Independent policy runs this before judgement.",
+                "argv": [sys.executable, "-c", "raise SystemExit(0)"],
             }
         ]
         self.initialize(
@@ -532,7 +541,7 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertEqual(verifier.thinking, "high")
         self.assertIn("Independent Reviewer", verifier.prompt)
         state = self.store.load()
-        self.assertFalse(
+        self.assertTrue(
             any(
                 item["event"] == "deterministic_verification_completed"
                 for item in state.lifecycle_journal
@@ -570,21 +579,11 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertEqual(state.task_states["B"], TaskState.WAITING.value)
         self.assertIn("requires Computer Use", state.last_error)
 
-    def test_auto_without_checks_selects_fresh_independent_verifier(self) -> None:
-        self.initialize(task("A", policy="auto", verifier_role="reviewer"))
-        implementation = reserve_ready_frontier(self.cfg)[0]
-        self.activate(implementation, "implementation-thread")
-        self.evidence("A", "implementation")
-        outcome = complete_desktop_worker(
-            self.cfg,
-            thread_id="implementation-thread",
-            turn_id="implementation-turn",
-            final_message="AUTOPILOT_STATUS: ROTATE",
-        )
-        self.assertEqual(outcome.descriptors[0].kind, "verifier")
-        self.assertEqual(outcome.descriptors[0].model, "gpt-5.6-sol")
+    def test_auto_policy_is_rejected_before_initialization(self) -> None:
+        with self.assertRaisesRegex(ValueError, 'must be "independent"'):
+            self.initialize(task("A", policy="auto", verifier_role="reviewer"))
 
-    def test_auto_with_declared_checks_still_requires_independent_acceptance(self) -> None:
+    def test_deterministic_policy_is_rejected_even_with_declared_checks(self) -> None:
         checks = [
             {
                 "id": "artifact-check",
@@ -593,22 +592,8 @@ class VerificationLifecycleTests(unittest.TestCase):
                 "path": "auto.txt",
             }
         ]
-        self.initialize(task("A", policy="auto", checks=checks))
-        implementation = reserve_ready_frontier(self.cfg)[0]
-        self.activate(implementation, "implementation-thread")
-        (self.root / "auto.txt").write_text("verified\n", encoding="utf-8")
-        self.evidence("A", "auto implementation")
-        outcome = complete_desktop_worker(
-            self.cfg,
-            thread_id="implementation-thread",
-            turn_id="implementation-turn",
-            final_message="AUTOPILOT_STATUS: ROTATE",
-        )
-        self.assertEqual([item.task_id for item in outcome.descriptors], ["A"])
-        self.assertEqual(outcome.descriptors[0].kind, "verifier")
-        self.assertTrue(
-            any(item["kind"] == "verifier" for item in self.store.load().worker_sessions)
-        )
+        with self.assertRaisesRegex(ValueError, 'must be "independent"'):
+            self.initialize(task("A", policy="deterministic", checks=checks))
 
     def test_revision_limit_blocks_without_unlocking_dependency(self) -> None:
         self.initialize(
@@ -616,7 +601,7 @@ class VerificationLifecycleTests(unittest.TestCase):
                 "A",
                 policy="independent",
                 verifier_role="reviewer",
-                max_revisions=0,
+                max_revisions=2,
             )
         )
         implementation = reserve_ready_frontier(self.cfg)[0]
@@ -628,23 +613,44 @@ class VerificationLifecycleTests(unittest.TestCase):
             turn_id="implementation-turn",
             final_message="AUTOPILOT_STATUS: ROTATE",
         ).descriptors[0]
-        self.activate(verifier, "verifier-thread")
-        self.evidence("A", "independent rejection", role="independent_verification")
-        outcome = complete_desktop_worker(
-            self.cfg,
-            thread_id="verifier-thread",
-            turn_id="verifier-turn",
-            final_message=(
-                VERIFICATION_PREFIX
-                + '{"verdict":"REVISE","issues":['
-                '{"code":"I-1","summary":"incorrect","details":"correct it","dod_refs":[1]}]}'
-            ),
-        )
+        outcome = None
+        for round_index in range(1, 4):
+            verifier_thread = f"verifier-thread-{round_index}"
+            self.activate(verifier, verifier_thread)
+            self.evidence(
+                "A",
+                f"independent rejection {round_index}",
+                role="independent_verification",
+            )
+            outcome = complete_desktop_worker(
+                self.cfg,
+                thread_id=verifier_thread,
+                turn_id=f"verifier-turn-{round_index}",
+                final_message=(
+                    VERIFICATION_PREFIX
+                    + '{"verdict":"REVISE","issues":['
+                    '{"code":"I-1","summary":"incorrect","details":"correct it","dod_refs":[1]}]}'
+                ),
+            )
+            if round_index == 3:
+                break
+            revision = outcome.descriptors[0]
+            self.assertEqual(revision.kind, "revision")
+            revision_thread = f"revision-thread-{round_index}"
+            self.activate(revision, revision_thread)
+            self.evidence("A", f"revision {round_index}")
+            verifier = complete_desktop_worker(
+                self.cfg,
+                thread_id=revision_thread,
+                turn_id=f"revision-turn-{round_index}",
+                final_message="AUTOPILOT_STATUS: ROTATE",
+            ).descriptors[0]
+        assert outcome is not None
         self.assertEqual(outcome.descriptors, ())
         state = self.store.load()
         self.assertEqual(state.task_states["A"], TaskState.BLOCKED.value)
         self.assertEqual(state.task_states["B"], TaskState.WAITING.value)
-        self.assertEqual(state.task_revisions["A"], 0)
+        self.assertEqual(state.task_revisions["A"], 2)
         self.assertTrue(
             any(item["event"] == "revision_limit_reached" for item in state.lifecycle_journal)
         )

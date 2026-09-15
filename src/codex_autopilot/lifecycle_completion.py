@@ -4,8 +4,16 @@ import json
 import re
 from typing import Any, Callable
 
+from .ai_studio import AIStudioRuntime, ContextBoundaryError
 from .bootstrap import mark_roadmap, select_milestone
 from .config import Config
+from .department_acceptance import (
+    DepartmentAcceptanceError,
+    LoadedDepartmentAcceptance,
+    load_task_department_acceptance,
+    require_rubric_attestation,
+    task_department_binding,
+)
 from .hook_trust import require_trusted_stop_hook_for_config
 from .lifecycle_base import parse_applied_rules
 from .memory import ProjectMemory
@@ -37,6 +45,7 @@ from .task_state import (
     TaskState,
     transition_task,
 )
+from .thread_titles import department_verifier_thread_title
 from .verification import (
     DeterministicCheckResult,
     VerificationProtocolError,
@@ -350,7 +359,48 @@ def complete_desktop_worker(
         )
     plan = load_plan(cfg.state_dir, cfg.profile)
     task = plan.task_map[task_id]
+    loaded_department_acceptance: LoadedDepartmentAcceptance | None = None
     if verdict is not None:
+        try:
+            department_binding = task_department_binding(task)
+            if department_binding is not None:
+                dependency_outputs = AIStudioRuntime(
+                    plan,
+                    cfg.root,
+                    language=cfg.language,
+                    skill_path=cfg.skill_path,
+                    memory=memory,
+                ).select_context(
+                    task.id,
+                    task_states=initial.task_states,
+                ).dependency_outputs
+                loaded_department_acceptance = load_task_department_acceptance(
+                    memory,
+                    departments=plan.departments,
+                    task=task,
+                    role_names={item.id: item.name for item in plan.roles},
+                    dependency_outputs=dependency_outputs,
+                )
+                department = loaded_department_acceptance.department
+                require_rubric_attestation(department.rubric, verdict.rubric)
+                expected_title = department_verifier_thread_title(
+                    task.id,
+                    task.title,
+                    lead_role_name=plan.role_map[department.lead_role_id].name,
+                )
+                actual_title = str((session.get("descriptor") or {}).get("title") or "")
+                if actual_title != expected_title:
+                    raise DepartmentAcceptanceError(
+                        "department verifier title does not identify the pinned Lead Role: "
+                        f"expected {expected_title!r}, observed {actual_title!r}"
+                    )
+            elif verdict.rubric is not None:
+                raise DepartmentAcceptanceError(
+                    "verifier attested a department rubric for a task without "
+                    "department-binding and rubric-binding resources"
+                )
+        except (DepartmentAcceptanceError, ContextBoundaryError) as exc:
+            raise DesktopLifecycleError(str(exc)) from exc
         invalid_refs = sorted(
             {
                 ref
@@ -367,7 +417,6 @@ def complete_desktop_worker(
     if (
         kind in IMPLEMENTATION_SESSION_KINDS | {"revision"}
         and worker_status in SUCCESS_STATUSES
-        and task.verification.policy in {"deterministic", "auto"}
         and task.verification.deterministic_checks
     ):
         deterministic_results = run_deterministic_checks(
@@ -419,6 +468,14 @@ def complete_desktop_worker(
             details={
                 "verification_round": int(session.get("verification_round") or 0),
                 "issues": [item.to_dict() for item in verdict.issues],
+                **(
+                    {
+                        "department_rubric": loaded_department_acceptance.rubric.to_dict(),
+                        "department_acceptance": loaded_department_acceptance.to_dict(),
+                    }
+                    if loaded_department_acceptance is not None
+                    else {}
+                ),
             },
         )
         memory_verification_ids.append(str(verification["id"]))

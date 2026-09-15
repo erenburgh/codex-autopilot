@@ -23,6 +23,7 @@ from codex_autopilot.thread_titles import (
     task_phase_thread_title,
     verifier_thread_title,
 )
+from _plan_contract import canonical_verification
 
 
 def task(task_id: str, *, depends_on: tuple[str, ...] = ()) -> dict[str, object]:
@@ -37,11 +38,7 @@ def task(task_id: str, *, depends_on: tuple[str, ...] = ()) -> dict[str, object]
         "role": "builder",
         "depends_on": list(depends_on),
         "priority": 0,
-        "verification": {
-            "policy": "independent",
-            "required": True,
-            "max_revision_attempts": 1,
-        },
+        "verification": canonical_verification(),
         "resources": [],
         "required_capabilities": [],
         "context": {},

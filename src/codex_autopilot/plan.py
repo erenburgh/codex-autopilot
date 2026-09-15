@@ -8,6 +8,14 @@ import re
 import tempfile
 from typing import Any, Iterable
 
+from .department_acceptance import (
+    DepartmentAcceptanceError,
+    DepartmentContract,
+    department_contract_from_raw,
+    task_department_binding,
+    resolve_task_department,
+    validate_department_contracts,
+)
 from .models import EXECUTION_MODES, STRATEGIES
 from .reasoning import normalize
 
@@ -19,6 +27,62 @@ LEGACY_PLAN_SCHEMA_VERSION = 2
 EXECUTION_STRATEGIES = {"serial", "parallel", "auto"}
 VERIFICATION_POLICIES = {"self", "deterministic", "independent", "auto"}
 VERIFICATION_CHECK_KINDS = {"command", "artifact", "evidence"}
+_CLEAN_IDENTITY_ASSIGNMENTS = {
+    "CODEX_THREAD_ID": "",
+    "CODEX_TURN_ID": "",
+    "CODEX_SESSION_ID": "",
+}
+_SHELL_COMMANDS = frozenset(
+    {
+        "bash",
+        "cmd",
+        "cmd.exe",
+        "dash",
+        "fish",
+        "ksh",
+        "powershell",
+        "pwsh",
+        "sh",
+        "zsh",
+    }
+)
+_NOOP_COMMANDS = frozenset({":", "echo", "false", "printf", "true"})
+_DIRECT_TEST_RUNNERS = frozenset(
+    {
+        "cargo",
+        "dotnet",
+        "go",
+        "gradle",
+        "gradlew",
+        "make",
+        "mvn",
+        "mvnw",
+        "py.test",
+        "pytest",
+    }
+)
+_PACKAGE_TEST_RUNNERS = frozenset({"bun", "npm", "pnpm", "yarn"})
+_PYTEST_PARTIAL_SUITE_OPTIONS = frozenset(
+    {
+        "--co",
+        "--collect-only",
+        "--deselect",
+        "--failed-first",
+        "--ff",
+        "--ignore",
+        "--ignore-glob",
+        "--last-failed",
+        "--lf",
+        "--m",
+        "--new-first",
+        "--nf",
+        "--pyargs",
+        "--stepwise",
+        "--sw",
+        "-k",
+        "-m",
+    }
+)
 RESOURCE_KINDS = {
     "path",
     "directory",
@@ -149,6 +213,7 @@ class Plan:
     model_strategy: str
     tasks: tuple[Task, ...]
     roles: tuple[RoleProfile, ...]
+    departments: tuple[DepartmentContract, ...] = ()
     graph_version: int = 1
     execution_strategy: str = DEFAULT_EXECUTION_STRATEGY
     max_parallel_workers: int = DEFAULT_MAX_PARALLEL_WORKERS
@@ -255,6 +320,8 @@ def plan_to_dict(plan: Plan) -> dict[str, Any]:
         "roles": [_role_to_dict(item) for item in plan.roles],
         "tasks": [_task_to_dict(item) for item in plan.tasks],
     }
+    if plan.departments:
+        payload["departments"] = [item.to_dict() for item in plan.departments]
     if plan.legacy_serial:
         payload["compatibility"] = {
             "migrated_from_schema": plan.source_schema_version,
@@ -385,29 +452,173 @@ def _validate_legacy_plan(data: dict[str, Any], profile: str) -> Plan:
     return plan
 
 
-def _reject_self_acceptance(plan: "Plan") -> None:
-    """Правило R8 (ENFORCED): каноническая задача не принимает сама себя.
+def _validate_canonical_acceptance(plan: "Plan") -> None:
+    """Enforce the acceptance floor for every new canonical task.
 
-    policy="self" означает, что вердикт выносит тот же воркер, который
-    делал работу. Именно так восемь задач из девяти получили VERIFIED
-    в ту же секунду, что и IMPLEMENTED, и именно поэтому неверные
-    реализации проходили дальше по графу.
+    R8/R29 make deterministic checks admission evidence for a fresh judge,
+    never acceptance by themselves.  The argv gate can prove the identity
+    environment is reset and that a direct command exists; executing the
+    declared repository-wide check, not this lint, proves its outcome (R25).
 
-    Мигрированный план v0.8 (legacy_serial) - единственное исключение:
-    он предшествует появлению верификации, и менять его задним числом
-    значило бы переписывать историю чужого прогона. Такой план остаётся
-    serial и новую работу в этом режиме не принимает.
+    Migrated v0.8 ``legacy_serial`` plans remain the sole compatibility
+    exception because rewriting their historical acceptance contract would
+    mutate an existing run.
     """
 
     if plan.legacy_serial:
         return
-    offenders = [task.id for task in plan.tasks if task.verification.policy == "self"]
-    if offenders:
-        raise ValueError(
-            "R8: policy=\"self\" запрещена для канонических задач "
-            f"{', '.join(offenders)}; задача не может принимать сама себя. "
-            "Используй deterministic, independent или auto"
+
+    for task in plan.tasks:
+        verification = task.verification
+        if verification.policy != "independent":
+            raise ValueError(
+                "R8/R29: canonical task "
+                f"{task.id} verification.policy must be \"independent\"; "
+                f"got {verification.policy!r}. Deterministic checks admit work "
+                "to independent judgement and never replace it"
+            )
+        if not verification.required:
+            raise ValueError(
+                f"R8/R29: canonical task {task.id} verification.required must be true"
+            )
+        if verification.max_revision_attempts < 2:
+            raise ValueError(
+                "R29: canonical task "
+                f"{task.id} verification.max_revision_attempts must be at least 2"
+            )
+        suite = next(
+            (
+                check
+                for check in verification.deterministic_checks
+                if _is_clean_suite_command(check)
+            ),
+            None,
         )
+        if suite is None:
+            names = ", ".join(f"{name}=" for name in _CLEAN_IDENTITY_ASSIGNMENTS)
+            raise ValueError(
+                "R29: canonical task "
+                f"{task.id} must declare at least one full-suite deterministic "
+                "check as a successful command argv launched through env, reset "
+                f"{names}, and invoke the command directly"
+            )
+
+
+def _is_clean_suite_command(check: VerificationCheck) -> bool:
+    if (
+        check.kind != "command"
+        or check.expected_exit_code != 0
+        or len(check.argv) < 2
+        or check.argv[0] not in {"env", "/usr/bin/env"}
+    ):
+        return False
+
+    assignments: dict[str, str] = {}
+    command_index = 1
+    while command_index < len(check.argv):
+        token = check.argv[command_index]
+        if "=" not in token:
+            break
+        name, value = token.split("=", 1)
+        if not name or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            return False
+        assignments[name] = value
+        command_index += 1
+    if command_index >= len(check.argv):
+        return False
+    clean_identity = all(
+        assignments.get(name) == value
+        for name, value in _CLEAN_IDENTITY_ASSIGNMENTS.items()
+    )
+    if not clean_identity:
+        return False
+
+    command = check.argv[command_index:]
+    executable = Path(command[0]).name.lower()
+    if executable in _SHELL_COMMANDS or executable in _NOOP_COMMANDS:
+        return False
+    # A suite command may legitimately be a project script, make target, or
+    # language-specific runner.  Validation cannot prove its semantic
+    # completeness (R25), but an inline interpreter expression is visibly not
+    # a stable repository-wide runner and must not satisfy the declaration.
+    if len(command) > 1 and command[1] in {"-c", "-e", "--eval"}:
+        return False
+    return _invokes_full_test_suite(command)
+
+
+def _invokes_full_test_suite(command: tuple[str, ...]) -> bool:
+    """Recognize direct repository-suite runners, not arbitrary commands.
+
+    This remains a plan lint: execution supplies outcome evidence and the
+    independent verifier judges whether the declared runner really covers the
+    repository (R25/R29).  The lint nevertheless rejects argv that plainly
+    cannot be a suite, such as ``uname`` renamed to check id ``suite``.
+    """
+
+    executable = Path(command[0]).name.lower()
+    args = command[1:]
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?", executable):
+        if len(args) >= 3 and args[:3] == ("-m", "unittest", "discover"):
+            return _unittest_discovers_test_root(args[3:])
+        if len(args) >= 2 and args[:2] == ("-m", "pytest"):
+            return _pytest_covers_test_root(args[2:])
+        if args and not args[0].startswith("-"):
+            stem = Path(args[0]).stem.lower()
+            return "suite" in stem
+        return False
+    if executable in {"pytest", "py.test"}:
+        return _pytest_covers_test_root(args)
+    if executable in _PACKAGE_TEST_RUNNERS:
+        return bool(args) and (
+            args[0] == "test"
+            or (len(args) >= 2 and args[0] == "run" and args[1] == "test")
+        )
+    if executable in _DIRECT_TEST_RUNNERS:
+        return bool(args) and args[0] == "test"
+    if "test" in executable and ("all" in executable or "suite" in executable):
+        return True
+    return False
+
+
+def _unittest_discovers_test_root(args: tuple[str, ...]) -> bool:
+    if any(
+        arg == "-k" or arg.startswith("-k=") or arg.startswith("--test-name-patterns=")
+        for arg in args
+    ):
+        return False
+    for flag in ("-p", "--pattern"):
+        if flag in args:
+            try:
+                if args[args.index(flag) + 1] != "test*.py":
+                    return False
+            except IndexError:
+                return False
+    for arg in args:
+        if arg.startswith("-p=") or arg.startswith("--pattern="):
+            if arg.split("=", 1)[1] != "test*.py":
+                return False
+    for flag in ("-s", "--start-directory"):
+        try:
+            root = args[args.index(flag) + 1]
+        except (ValueError, IndexError):
+            continue
+        if Path(root).name.lower() in {"test", "tests"}:
+            return True
+    return False
+
+
+def _pytest_covers_test_root(args: tuple[str, ...]) -> bool:
+    if any(_pytest_option_selects_subset(arg) or "::" in arg for arg in args):
+        return False
+    positional = [arg for arg in args if not arg.startswith("-")]
+    return not positional or all(
+        Path(arg).name.lower() in {"test", "tests"} for arg in positional
+    )
+
+
+def _pytest_option_selects_subset(arg: str) -> bool:
+    name = arg.split("=", 1)[0]
+    return name in _PYTEST_PARTIAL_SUITE_OPTIONS
 
 
 def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
@@ -423,6 +634,7 @@ def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
             "max_parallel_workers",
             "computer_use_slots",
             "roles",
+            "departments",
             "tasks",
             "compatibility",
         },
@@ -475,6 +687,21 @@ def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
     roles = tuple(_role_from_raw(raw, index) for index, raw in enumerate(raw_roles, 1))
     _validate_unique((role.id for role in roles), "role id")
 
+    raw_departments = data.get("departments", [])
+    if not isinstance(raw_departments, list):
+        raise ValueError("plan.departments must be an array")
+    try:
+        departments = tuple(
+            department_contract_from_raw(raw, f"department {index}")
+            for index, raw in enumerate(raw_departments, 1)
+        )
+        validate_department_contracts(
+            departments,
+            role_ids=(role.id for role in roles),
+        )
+    except DepartmentAcceptanceError as exc:
+        raise ValueError(str(exc)) from exc
+
     raw_tasks = data.get("tasks")
     if not isinstance(raw_tasks, list) or not raw_tasks:
         raise ValueError("plan.tasks must be a non-empty array")
@@ -490,6 +717,7 @@ def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
         model_strategy=strategy,
         tasks=tuple(tasks),
         roles=roles,
+        departments=departments,
         graph_version=graph_version,
         execution_strategy=execution_strategy,
         max_parallel_workers=max_parallel_workers,
@@ -497,7 +725,7 @@ def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
         source_schema_version=source_schema,
         legacy_serial=legacy_serial,
     )
-    _reject_self_acceptance(plan)
+    _validate_canonical_acceptance(plan)
     _validate_graph(plan)
     return plan
 
@@ -663,6 +891,10 @@ def _verification_from_raw(raw: Any, profile: str, label: str) -> VerificationPo
     policy = str(raw.get("policy", "")).strip()
     if policy not in VERIFICATION_POLICIES:
         raise ValueError(f"{label}.policy must be one of {sorted(VERIFICATION_POLICIES)}")
+    if policy == "independent" and "max_revision_attempts" not in raw:
+        raise ValueError(
+            f"{label}.max_revision_attempts must be declared and be at least 2"
+        )
     required = raw.get("required", True)
     if not isinstance(required, bool):
         raise ValueError(f"{label}.required must be a boolean")
@@ -842,6 +1074,10 @@ def _reasoning(raw: dict[str, Any], profile: str, label: str) -> str | None:
 def _validate_graph(plan: Plan) -> None:
     task_map = plan.task_map
     role_ids = set(plan.role_map)
+    try:
+        validate_department_contracts(plan.departments, role_ids=role_ids)
+    except DepartmentAcceptanceError as exc:
+        raise ValueError(str(exc)) from exc
     for task in plan.tasks:
         if task.role not in role_ids:
             raise ValueError(f"task {task.id} references unknown role {task.role!r}")
@@ -866,6 +1102,26 @@ def _validate_graph(plan: Plan) -> None:
                 raise ValueError(
                     f"task {task.id} verifier requires a concrete RoleProfile, "
                     "not generic legacy-worker"
+                )
+        try:
+            department_binding = task_department_binding(task)
+        except DepartmentAcceptanceError as exc:
+            raise ValueError(f"task {task.id}: {exc}") from exc
+        if department_binding is not None:
+            try:
+                department = resolve_task_department(
+                    plan.departments,
+                    task,
+                    role_names={item.id: item.name for item in plan.roles},
+                )
+            except DepartmentAcceptanceError as exc:
+                raise ValueError(f"task {task.id}: {exc}") from exc
+            if department is None:
+                raise ValueError(f"task {task.id}: department binding disappeared")
+            if not task.context.dependency_outputs:
+                raise ValueError(
+                    f"task {task.id} department acceptance requires a selected "
+                    "dependency output carrying the pinned rubric reference"
                 )
         for dependency in task.depends_on:
             if dependency == task.id:

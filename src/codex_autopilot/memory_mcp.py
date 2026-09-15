@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from . import __version__
 from .config import STATE_DIR_NAME
+from .department_acceptance import store_department_rubric
 from .memory import CATEGORIES, MAX_PAGE_SIZE, MemoryError, MemoryValidationError, ProjectMemory
 
 
@@ -23,7 +24,9 @@ _ACTION_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "memory_current",
         "description": "Get the current milestone, critical constraints, and bounded relevant memory IDs.",
-        "inputSchema": _schema({}),
+        "inputSchema": _schema(
+            {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}}
+        ),
     },
     {
         "name": "memory_search",
@@ -105,6 +108,52 @@ _ACTION_DEFINITIONS: list[dict[str, Any]] = [
                 "provider_thread_id": {"type": "string", "maxLength": 256},
             },
             ["statement", "evidence_ids", "verification_method", "created_by"],
+        ),
+    },
+    {
+        "name": "memory_store_department_rubric",
+        "description": (
+            "Store one immutable, evidence-backed department acceptance rubric. "
+            "A new version must advance exactly once and cite outcome evidence."
+        ),
+        "inputSchema": _schema(
+            {
+                "department_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,63}$",
+                },
+                "version": {"type": "integer", "minimum": 1},
+                "criteria": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": _schema(
+                        {
+                            "id": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,63}$",
+                            },
+                            "requirement": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2000,
+                            },
+                        },
+                        ["id", "requirement"],
+                    ),
+                },
+                "standards": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": 2000},
+                },
+                "evidence_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": "^EVID-[0-9]{3,}$"},
+                    "minItems": 1,
+                    "uniqueItems": True,
+                },
+                "created_by": {"type": "string", "minLength": 1, "maxLength": 256},
+            },
+            ["department_id", "version", "criteria", "evidence_ids", "created_by"],
         ),
     },
     {
@@ -362,6 +411,7 @@ class MemoryMcpServer:
             "get": self._get,
             "record_evidence": self._record_evidence,
             "record_verified_fact": self._record_verified_fact,
+            "store_department_rubric": self._store_department_rubric,
             "record_verification_result": self._record_verification_result,
             "list_verification_results": self._list_verification_results,
             "add_observation": self._add_observation,
@@ -388,7 +438,7 @@ class MemoryMcpServer:
         return args
 
     def _current(self, args: dict[str, Any]) -> dict[str, Any]:
-        self._validate_keys(args, set())
+        args = self._validate_keys(args, {"task_id"})
         state_dir = self.root / STATE_DIR_NAME
         if not (state_dir / "config.toml").is_file():
             return {
@@ -402,7 +452,13 @@ class MemoryMcpServer:
         cfg = load_config(self.root)
         state = StateStore(state_dir).load()
         plan = load_plan(state_dir, cfg.profile)
-        item = plan.milestones[state.milestone_index]
+        task_id = args.get("task_id")
+        if task_id is None:
+            item = plan.milestones[state.milestone_index]
+        else:
+            item = plan.task_map.get(str(task_id))
+            if item is None:
+                raise MemoryValidationError(f"unknown task_id: {task_id!r}")
         query = " ".join([item.title, item.objective, *item.definition_of_done])
         return {
             "project_root": str(self.root),
@@ -487,6 +543,21 @@ class MemoryMcpServer:
     def _record_verified_fact(self, args: dict[str, Any]) -> dict[str, Any]:
         allowed = {"statement", "evidence_ids", "verification_method", "created_by", "scope", "contradicts", "provider", "provider_thread_id"}
         return self.memory.record_verified_fact(**self._validate_keys(args, allowed))
+
+    def _store_department_rubric(self, args: dict[str, Any]) -> dict[str, Any]:
+        allowed = {
+            "department_id",
+            "version",
+            "criteria",
+            "standards",
+            "evidence_ids",
+            "created_by",
+        }
+        reference = store_department_rubric(
+            self.memory,
+            **self._validate_keys(args, allowed),
+        )
+        return reference.to_dict()
 
     def _record_verification_result(self, args: dict[str, Any]) -> dict[str, Any]:
         allowed = {

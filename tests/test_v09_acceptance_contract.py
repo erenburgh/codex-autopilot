@@ -17,6 +17,7 @@ from codex_autopilot.thread_titles import (
     revision_thread_title,
     verifier_thread_title,
 )
+from _plan_contract import canonical_verification
 
 
 def _role(role_id: str, name: str) -> dict[str, object]:
@@ -37,22 +38,8 @@ def _task(
     verifier_mode: str | None = None,
     policy: str = "independent",
 ) -> dict[str, object]:
-    verification: dict[str, object] = {
-        "policy": policy,
-        "required": True,
-        "max_revision_attempts": 2,
-    }
-    if policy == "deterministic":
-        verification["deterministic_checks"] = [
-            {
-                "id": "exact-artifact",
-                "kind": "artifact",
-                "description": "The required artifact exists.",
-                "path": "artifact.txt",
-            }
-        ]
-    if verifier_role:
-        verification["verifier_role"] = verifier_role
+    verification = canonical_verification(verifier_role=verifier_role)
+    verification["policy"] = policy
     if verifier_mode:
         verification.update(
             {
@@ -188,21 +175,9 @@ class V09ContractRegressionTests(unittest.TestCase):
         self.assertIsNone(project)
         self.assertIsNone(source)
 
-    def test_deterministic_policy_still_requires_the_verifier(self) -> None:
-        plan = _plan([_task("T1", "builder", policy="deterministic")])
-        states = {"T1": TaskState.IMPLEMENTED.value}
-        # Product decision of 2026-09-12 (rule R29): the verifier is always
-        # required. Deterministic checks are admission to judgement, never a
-        # substitute for it. Green checks mean "ready to show the lead", not
-        # "done". The alternative requires somebody to decide which contracts
-        # are exhaustively machine-checkable, and that somebody would be the
-        # planner -- a model. That is self-assessment moved one level up.
-        with self.assertRaises(IllegalTaskTransition):
-            transition_task(plan, states, "T1", TaskState.VERIFIED)
-        # The lawful path stays IMPLEMENTED -> VERIFYING -> VERIFIED.
-        via_verifier = transition_task(plan, states, "T1", TaskState.VERIFYING)
-        via_verifier = transition_task(plan, via_verifier, "T1", TaskState.VERIFIED)
-        self.assertEqual(via_verifier["T1"], TaskState.VERIFIED.value)
+    def test_deterministic_policy_is_rejected_before_execution(self) -> None:
+        with self.assertRaisesRegex(ValueError, 'must be "independent"'):
+            _plan([_task("T1", "builder", policy="deterministic")])
 
 
 class AIStudioAcceptanceShapeTests(unittest.TestCase):

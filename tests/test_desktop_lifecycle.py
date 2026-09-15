@@ -31,6 +31,7 @@ from codex_autopilot.control import (
 )
 from codex_autopilot.hook_trust import HookTrustApprovalRequired
 from _handoff import bump_task_checkpoint
+from _plan_contract import canonical_verification
 from codex_autopilot.lifecycle import task_checkpoint_path
 from _appserver_fakes import activate_via_app_server
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
@@ -66,8 +67,6 @@ def task(
     *,
     depends_on: tuple[str, ...] = (),
     path: str | None = None,
-    verification_required: bool = True,
-    verification_policy: str = "independent",
 ) -> dict[str, object]:
     return {
         "id": task_id,
@@ -80,11 +79,7 @@ def task(
         "role": "builder",
         "depends_on": list(depends_on),
         "priority": 0,
-        "verification": {
-            "policy": verification_policy,
-            "required": verification_required,
-            "max_revision_attempts": 1,
-        },
+        "verification": canonical_verification(),
         "resources": (
             [
                 {
@@ -123,7 +118,7 @@ def graph(*, max_workers: int = 2) -> dict[str, object]:
         ],
         "tasks": [
             task("A", path="src/a"),
-            task("B", path="src/b", verification_required=False),
+            task("B", path="src/b"),
             task("C", depends_on=("A", "B"), path="src/c"),
         ],
     }
@@ -1458,7 +1453,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         plan_file = self.root / "independent-plan.json"
         independent_graph = graph(max_workers=1)
         independent_graph["tasks"] = [
-            task("A", verification_policy="independent"),
+            task("A"),
             task("B", depends_on=("A",)),
         ]
         plan_file.write_text(json.dumps(independent_graph), encoding="utf-8")
