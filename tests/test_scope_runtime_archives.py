@@ -1,0 +1,40 @@
+"""Архивы рантайма не предъявляются воркеру как чужая запись.
+
+Рантайм сам кладёт рядом со своим состоянием архивы прежних прогонов:
+`.codex-autopilot.stuck-<время>` появляется при --replace. Исключение
+сравнивало имя точно, поэтому архивы под него не попадали.
+
+Замерено на живом прогоне: задача M0 заблокирована по R7 за 37 путей,
+все до одного внутри .codex-autopilot.stuck-20260914T184420. Работы она
+там не вела - каталог создал сам рантайм. Прогон встал на правиле за то,
+чего задача не делала.
+"""
+
+from __future__ import annotations
+
+import unittest
+
+from codex_autopilot.config import STATE_DIR_NAME
+from codex_autopilot.scope import _is_runtime_state
+
+
+class RuntimeArchiveScopeTests(unittest.TestCase):
+    def test_the_state_directory_itself_is_runtime(self) -> None:
+        self.assertTrue(_is_runtime_state(f"{STATE_DIR_NAME}/run-state.json"))
+
+    def test_an_archive_of_a_previous_run_is_runtime_too(self) -> None:
+        self.assertTrue(
+            _is_runtime_state(f"{STATE_DIR_NAME}.stuck-20260914T184420/config.toml")
+        )
+        self.assertTrue(
+            _is_runtime_state(f"{STATE_DIR_NAME}.v080-done/plan.json")
+        )
+
+    def test_a_real_work_path_is_not_runtime(self) -> None:
+        self.assertFalse(_is_runtime_state("src/codex_autopilot/plan.py"))
+        self.assertFalse(_is_runtime_state("docs/README.md"))
+
+    def test_a_name_that_merely_starts_alike_is_not_runtime(self) -> None:
+        """Совпадение префикса без точки - чужой каталог, не наш архив."""
+
+        self.assertFalse(_is_runtime_state(f"{STATE_DIR_NAME}-notes/plan.md"))

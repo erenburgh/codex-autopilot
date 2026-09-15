@@ -89,7 +89,18 @@ def observe_changed_paths(root: Path, baseline: str | None) -> tuple[str, ...]:
 
 
 def _is_runtime_state(name: str) -> bool:
-    return Path(name).parts[:1] == (STATE_DIR_NAME,)
+    head = Path(name).parts[:1]
+    if not head:
+        return False
+    # Рантайм сам кладёт рядом свои архивы: `.codex-autopilot.stuck-<время>`
+    # от --replace, снимки прежних прогонов. Имя у них другое, под точное
+    # сравнение они не попадали - и собственный мусор рантайма предъявлялся
+    # воркеру как запись вне объявленной области.
+    #
+    # Замерено: задача M0 заблокирована по R7 за 37 путей, все до одного
+    # внутри .codex-autopilot.stuck-20260914T184420. Работы она там не
+    # вела; каталог создал установщик прогона.
+    return head[0] == STATE_DIR_NAME or head[0].startswith(STATE_DIR_NAME + ".")
 
 
 def audit_declared_scope(
