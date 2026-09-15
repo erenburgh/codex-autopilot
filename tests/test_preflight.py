@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 
+from _plan_contract import canonical_verification
 from codex_autopilot.appserver import AppServerError, ApprovalRequired, TurnResult
 from codex_autopilot.hook_trust import HookTrustApprovalRequired, runtime_hook_command
 from codex_autopilot.models import MODEL_IDS
@@ -32,17 +33,46 @@ def project() -> Path:
 
 
 def plan(profile: str = "adaptive"):
+    """Канонический план схемы 3.
+
+    Прежде фикстура строила план формата v0.8 через `milestones`. Формат
+    снят целиком: он был единственным путём, по которому в систему
+    попадала задача с самопринятием, а подлинность такого плана
+    подтверждалась файлами на диске, которые правятся руками.
+    """
+
     item = {
+        "id": "M1",
         "title": "Build UI",
         "objective": "Build and verify the UI",
         "definition_of_done": ["UI tests pass"],
         "execution_mode": "code",
         "execution_mode_reason": "Files and tests are sufficient.",
+        "role": "builder",
+        "depends_on": [],
+        "verification": canonical_verification(),
     }
     if profile == "adaptive":
         item["reasoning"] = "high"
     return validate_plan(
-        {"goal": "Ship", "model_strategy": "auto" if profile == "adaptive" else "host-settings", "milestones": [item]},
+        {
+            "schema_version": 3,
+            "graph_version": 1,
+            "goal": "Ship",
+            "user_request": "Ship the UI exactly as specified.",
+            "model_strategy": "auto" if profile == "adaptive" else "host-settings",
+            "execution_strategy": "serial",
+            "max_parallel_workers": 1,
+            "computer_use_slots": 1,
+            "roles": [
+                {
+                    "id": "builder",
+                    "name": "Builder",
+                    "responsibilities": ["Build and verify the UI."],
+                }
+            ],
+            "tasks": [item],
+        },
         profile,
     )
 

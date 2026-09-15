@@ -40,7 +40,6 @@ from .lifecycle import (
     pause_desktop_run,
     record_policy_rejected_create_transport,
     record_desktop_interrupt,
-    recover_desktop_frontier_from_predecessor_stop,
     relayable_descriptors,
     relay_session_status,
     reserve_ready_frontier,
@@ -980,30 +979,10 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
         )
         if continuation:
             return continuation
-        try:
-            recovered = recover_desktop_frontier_from_predecessor_stop(
-                cfg,
-                predecessor_thread_id=str(payload.get("session_id") or ""),
-                stop_turn_id=str(payload.get("turn_id") or ""),
-            )
-        except (DesktopLifecycleError, HookPreflightError) as exc:
-            return {"decision": "block", "reason": str(exc)}
-        if recovered:
-            pids = _spawn_automatic_descriptors(
-                cfg,
-                recovered,
-                triggering_thread_id=str(payload.get("session_id") or ""),
-                triggering_turn_id=str(payload.get("turn_id") or ""),
-            )
-            return _launch_report(
-                cfg,
-                [item.task_id for item in recovered],
-                started=(
-                    "Codex Autopilot automatic retry dispatcher started: "
-                    + ", ".join(str(pid) for pid in pids)
-                ),
-                timeout=15.0,
-            )
+        # Ветка восстановления сорвавшегося повтора жила только ради
+        # формата v0.8: её гейтом было наличие due legacy retry. Формат
+        # снят - вместе с ним снята и она. Обычный путь ниже поднимает
+        # резервацию по заявке на запуск.
     store = StateStore(root / STATE_DIR_NAME) if root else None
     request = store.claim_launch() if store else None
     if request:

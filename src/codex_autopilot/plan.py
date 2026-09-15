@@ -22,7 +22,6 @@ from .reasoning import normalize
 
 PLAN_FILE = "plan.json"
 PLAN_SCHEMA_VERSION = 3
-LEGACY_PLAN_SCHEMA_VERSION = 2
 
 EXECUTION_STRATEGIES = {"serial", "parallel", "auto"}
 VERIFICATION_POLICIES = {"self", "deterministic", "independent", "auto"}
@@ -98,7 +97,6 @@ RESOURCE_ACCESS_MODES = {"read", "write", "exclusive"}
 
 # M10-REV-004: новый schema-3 прогон по умолчанию входит в заявленный
 # режим v0.9. Мигрированные v0.8 планы этим не затрагиваются: они несут
-# execution_strategy="serial", max_parallel_workers=1 и legacy_serial=True
 # явно, и валидация не даёт им неявно уйти в параллельность.
 DEFAULT_EXECUTION_STRATEGY = "auto"
 
@@ -223,8 +221,6 @@ class Plan:
     execution_strategy: str = DEFAULT_EXECUTION_STRATEGY
     max_parallel_workers: int = DEFAULT_MAX_PARALLEL_WORKERS
     computer_use_slots: int = DEFAULT_COMPUTER_USE_SLOTS
-    source_schema_version: int = PLAN_SCHEMA_VERSION
-    legacy_serial: bool = False
 
     @property
     def milestones(self) -> tuple[Task, ...]:
@@ -247,21 +243,29 @@ def validate_plan(data: dict[str, Any], profile: str) -> Plan:
     A v0.8 plan is represented in memory as a valid chain-shaped DAG. It is
     explicitly pinned to serial execution with one worker and one Computer Use
     slot; migration never opts a legacy project into parallel execution.
+
+    A schema-3 payload cannot authorize its own ``compatibility`` section.
+    Persisted migrated plans are loaded through :func:`load_plan`, which checks
+    migration provenance outside the replacement JSON before allowing the sole
+    legacy exception.
     """
+
+    return _validate_plan_payload(data, profile)
+
+
+def _validate_plan_payload(data: dict[str, Any], profile: str) -> Plan:
 
     if profile not in {"adaptive", "host-settings"}:
         raise ValueError("profile must be adaptive or host-settings")
     if not isinstance(data, dict):
         raise ValueError("plan must be an object")
     schema = data.get("schema_version")
-    if schema in {None, LEGACY_PLAN_SCHEMA_VERSION} and "milestones" in data:
-        return _validate_legacy_plan(data, profile)
     if schema != PLAN_SCHEMA_VERSION:
-        raise ValueError(
-            f"plan.schema_version must be {PLAN_SCHEMA_VERSION}; "
-            f"v0.8 serial plans may use {LEGACY_PLAN_SCHEMA_VERSION} or omit it"
-        )
-    return _validate_graph_plan(data, profile)
+        raise ValueError(f"plan.schema_version must be {PLAN_SCHEMA_VERSION}")
+    return _validate_graph_plan(
+        data,
+        profile,
+    )
 
 
 def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> Plan:
@@ -283,11 +287,11 @@ def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> P
     # надёжно, и расхождение там означает намерение, а не ошибку копии.
     data = dict(data)
     data["user_request"] = current.user_request
-    candidate = validate_plan(data, profile)
-    # Migration provenance can remain schema 2 inside a canonical schema-3
-    # graph. Check the submitted format, preserving its serial compatibility.
     if data.get("schema_version") != PLAN_SCHEMA_VERSION:
         raise ValueError("plan changes must use the canonical v0.9 schema")
+    if data.get("compatibility") is not None:
+        raise ValueError("plan.compatibility is not part of the canonical schema")
+    candidate = _validate_plan_payload(data, profile)
     if candidate.graph_version != current.graph_version + 1:
         raise ValueError(
             "plan change graph_version must increment exactly once "
@@ -305,8 +309,26 @@ def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> P
 
 def load_plan(state_dir: Path, profile: str) -> Plan:
     data = json.loads((state_dir / PLAN_FILE).read_text(encoding="utf-8"))
-    return validate_plan(data, profile)
+    return validate_persisted_plan(data, profile, state_dir=state_dir)
 
+
+def validate_persisted_plan(
+    data: dict[str, Any],
+    profile: str,
+    *,
+    state_dir: Path | None = None,
+) -> Plan:
+    """Проверить сохранённый план.
+
+    Прежде здесь был отдельный путь для планов v0.8: их впускали, сверяя
+    происхождение по файлам на диске. Файлы правятся руками, а впуск
+    означал разрешённое самопринятие - задача принимала собственную
+    работу, что запрещено правилом R8. Формат v0.8 снят целиком, и
+    вместе с ним исчезла и эта дыра. state_dir остаётся в сигнатуре для
+    совместимости вызовов и больше ни на что не влияет.
+    """
+
+    return validate_plan(data, profile)
 
 def save_plan(state_dir: Path, plan: Plan) -> None:
     atomic_json(state_dir / PLAN_FILE, plan_to_dict(plan))
@@ -327,11 +349,6 @@ def plan_to_dict(plan: Plan) -> dict[str, Any]:
     }
     if plan.departments:
         payload["departments"] = [item.to_dict() for item in plan.departments]
-    if plan.legacy_serial:
-        payload["compatibility"] = {
-            "migrated_from_schema": plan.source_schema_version,
-            "legacy_serial": True,
-        }
     return payload
 
 
@@ -361,102 +378,6 @@ def topological_order(plan: Plan) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _validate_legacy_plan(data: dict[str, Any], profile: str) -> Plan:
-    _reject_unknown(
-        data,
-        {"schema_version", "goal", "user_request", "model_strategy", "roles", "milestones"},
-        "plan",
-    )
-    goal, user_request, strategy = _plan_header(data, profile)
-    raw_milestones = data.get("milestones")
-    if not isinstance(raw_milestones, list) or not raw_milestones:
-        raise ValueError("plan.milestones must be a non-empty array")
-    raw_roles = data.get("roles")
-    if raw_roles is None:
-        roles = (
-            RoleProfile(
-                id="legacy-worker",
-                name="Legacy serial worker",
-                responsibilities=("Execute one migrated v0.8 milestone at a time.",),
-                context_priorities=("Current milestone and bounded Project Memory records.",),
-                verification_expectations=("Record new milestone evidence before completion.",),
-            ),
-        )
-    else:
-        if not isinstance(raw_roles, list) or not raw_roles:
-            raise ValueError("plan.roles must be a non-empty array")
-        roles = tuple(_role_from_raw(raw, index) for index, raw in enumerate(raw_roles, 1))
-        _validate_unique((role.id for role in roles), "role id")
-        if any(
-            role.id == "legacy-worker" or role.name.casefold() == "legacy serial worker"
-            for role in roles
-        ):
-            raise ValueError(
-                "structured legacy roles must use a concrete RoleProfile, not generic legacy-worker"
-            )
-    tasks: list[Task] = []
-    previous_id: str | None = None
-    for index, raw in enumerate(raw_milestones, 1):
-        if not isinstance(raw, dict):
-            raise ValueError(f"milestone {index} must be an object")
-        _reject_unknown(
-            raw,
-            {
-                "id",
-                "title",
-                "objective",
-                "definition_of_done",
-                "execution_mode",
-                "execution_mode_reason",
-                "reasoning",
-                "role",
-            },
-            f"milestone {index}",
-        )
-        if raw_roles is None and "role" in raw:
-            raise ValueError(
-                f"milestone {index}.role requires plan.roles; role identity is never inferred"
-            )
-        if raw_roles is not None and "role" not in raw:
-            raise ValueError(
-                f"milestone {index}.role is required when plan.roles preserves structured roles"
-            )
-        task_id = _identifier(raw.get("id", f"M{index}"), f"milestone {index}.id")
-        role_id = (
-            _identifier(raw.get("role"), f"milestone {index}.role")
-            if raw_roles is not None
-            else "legacy-worker"
-        )
-        tasks.append(
-            _task_from_raw(
-                raw,
-                profile,
-                f"milestone {index}",
-                canonical=False,
-                task_id=task_id,
-                role=role_id,
-                depends_on=(previous_id,) if previous_id else (),
-            )
-        )
-        previous_id = task_id
-    _validate_unique((task.id for task in tasks), "milestone id")
-    plan = Plan(
-        goal=goal,
-        user_request=user_request,
-        model_strategy=strategy,
-        tasks=tuple(tasks),
-        roles=roles,
-        graph_version=1,
-        execution_strategy="serial",
-        max_parallel_workers=1,
-        computer_use_slots=1,
-        source_schema_version=LEGACY_PLAN_SCHEMA_VERSION,
-        legacy_serial=True,
-    )
-    _validate_graph(plan)
-    return plan
-
-
 def _validate_canonical_acceptance(plan: "Plan") -> None:
     """Enforce the acceptance floor for every new canonical task.
 
@@ -465,13 +386,10 @@ def _validate_canonical_acceptance(plan: "Plan") -> None:
     environment is reset and that a direct command exists; executing the
     declared repository-wide check, not this lint, proves its outcome (R25).
 
-    Migrated v0.8 ``legacy_serial`` plans remain the sole compatibility
-    exception because rewriting their historical acceptance contract would
-    mutate an existing run.
+    Исключений нет ни для кого. Прежде их имел мигрированный план v0.8:
+    он выходил отсюда, ничего не проверив, и самопринятие проходило.
+    Формат v0.8 снят целиком, вместе с ним снято и исключение.
     """
-
-    if plan.legacy_serial:
-        return
 
     for task in plan.tasks:
         verification = task.verification
@@ -569,7 +487,12 @@ def _invokes_full_test_suite(command: tuple[str, ...]) -> bool:
             return _pytest_covers_test_root(args[2:])
         if args and not args[0].startswith("-"):
             stem = Path(args[0]).stem.lower()
-            return "suite" in stem
+            runner_args = args[1:]
+            return "suite" in stem and not any(
+                _unittest_option_selects_subset(arg)
+                or _pytest_option_selects_subset(arg)
+                for arg in runner_args
+            )
         return False
     if executable in {"pytest", "py.test"}:
         return _pytest_covers_test_root(args)
@@ -586,10 +509,7 @@ def _invokes_full_test_suite(command: tuple[str, ...]) -> bool:
 
 
 def _unittest_discovers_test_root(args: tuple[str, ...]) -> bool:
-    if any(
-        arg == "-k" or arg.startswith("-k=") or arg.startswith("--test-name-patterns=")
-        for arg in args
-    ):
+    if any(_unittest_option_selects_subset(arg) for arg in args):
         return False
     for flag in ("-p", "--pattern"):
         if flag in args:
@@ -601,6 +521,13 @@ def _unittest_discovers_test_root(args: tuple[str, ...]) -> bool:
     for arg in args:
         if arg.startswith("-p=") or arg.startswith("--pattern="):
             if arg.split("=", 1)[1] != "test*.py":
+                return False
+        # Слитная форма argparse: `-ptest_plan*.py` - тот же фильтр, что и
+        # `-p test_plan*.py`, но прежде она проверку не проходила и
+        # «полным прогоном» засчитывался кусок набора. Проверка, которая
+        # принимает подмножество за целое, не доказывает ничего.
+        if _attached_short_option(arg, "-p"):
+            if arg[2:] != "test*.py":
                 return False
     for flag in ("-s", "--start-directory"):
         try:
@@ -623,7 +550,27 @@ def _pytest_covers_test_root(args: tuple[str, ...]) -> bool:
 
 def _pytest_option_selects_subset(arg: str) -> bool:
     name = arg.split("=", 1)[0]
-    return name in _PYTEST_PARTIAL_SUITE_OPTIONS
+    return name in _PYTEST_PARTIAL_SUITE_OPTIONS or any(
+        _attached_short_option(arg, option) for option in ("-k", "-m")
+    )
+
+
+def _unittest_option_selects_subset(arg: str) -> bool:
+    return (
+        _attached_short_option(arg, "-k")
+        or arg == "--test-name-patterns"
+        or arg.startswith("--test-name-patterns=")
+    )
+
+
+def _attached_short_option(arg: str, option: str) -> bool:
+    """Match both ``-k value`` and argparse's compact ``-kvalue`` form."""
+
+    return arg == option or (
+        not arg.startswith("--")
+        and len(arg) > len(option)
+        and arg.startswith(option)
+    )
 
 
 # Единственный список допустимых полей плана. Он же называется модели в
@@ -666,29 +613,8 @@ def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
         data.get("computer_use_slots", DEFAULT_COMPUTER_USE_SLOTS),
         "plan.computer_use_slots",
     )
-    compatibility = data.get("compatibility")
-    legacy_serial = False
-    source_schema = PLAN_SCHEMA_VERSION
-    if compatibility is not None:
-        if not isinstance(compatibility, dict):
-            raise ValueError("plan.compatibility must be an object")
-        _reject_unknown(compatibility, {"migrated_from_schema", "legacy_serial"}, "plan.compatibility")
-        raw_source_schema = compatibility.get("migrated_from_schema", PLAN_SCHEMA_VERSION)
-        if isinstance(raw_source_schema, bool) or not isinstance(raw_source_schema, int):
-            raise ValueError("plan.compatibility.migrated_from_schema must be an integer")
-        source_schema = raw_source_schema
-        raw_legacy_serial = compatibility.get("legacy_serial", False)
-        if not isinstance(raw_legacy_serial, bool):
-            raise ValueError("plan.compatibility.legacy_serial must be a boolean")
-        legacy_serial = raw_legacy_serial
-        if legacy_serial and (
-            source_schema != LEGACY_PLAN_SCHEMA_VERSION
-            or execution_strategy != "serial"
-            or max_parallel_workers != 1
-        ):
-            raise ValueError(
-                "a migrated v0.8 legacy_serial plan must remain serial with max_parallel_workers=1"
-            )
+    if data.get("compatibility") is not None:
+        raise ValueError("plan.compatibility is not part of the canonical schema")
 
     raw_roles = data.get("roles")
     if not isinstance(raw_roles, list) or not raw_roles:
@@ -731,8 +657,6 @@ def _validate_graph_plan(data: dict[str, Any], profile: str) -> Plan:
         execution_strategy=execution_strategy,
         max_parallel_workers=max_parallel_workers,
         computer_use_slots=computer_use_slots,
-        source_schema_version=source_schema,
-        legacy_serial=legacy_serial,
     )
     _validate_canonical_acceptance(plan)
     _validate_graph(plan)
@@ -1091,9 +1015,7 @@ def _validate_graph(plan: Plan) -> None:
         if task.role not in role_ids:
             raise ValueError(f"task {task.id} references unknown role {task.role!r}")
         role = plan.role_map[task.role]
-        if not plan.legacy_serial and (
-            role.id == "legacy-worker" or role.name.casefold() == "legacy serial worker"
-        ):
+        if role.id == "legacy-worker" or role.name.casefold() == "legacy serial worker":
             raise ValueError(
                 f"task {task.id} requires a concrete RoleProfile, not generic legacy-worker"
             )
@@ -1102,7 +1024,7 @@ def _validate_graph(plan: Plan) -> None:
                 f"task {task.id} verification references unknown role "
                 f"{task.verification.verifier_role!r}"
             )
-        if task.verification.verifier_role and not plan.legacy_serial:
+        if task.verification.verifier_role:
             verifier_role = plan.role_map[task.verification.verifier_role]
             if (
                 verifier_role.id == "legacy-worker"

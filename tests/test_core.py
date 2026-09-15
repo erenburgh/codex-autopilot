@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from _plan_contract import canonical_verification
+
 from codex_autopilot.appserver import AppServerRpcError, ApprovalRequired, PauseRequested, TurnResult, is_rate_limit_error, rate_limit_reset_at
 from _gates import patch_hook_trust_gates
 from codex_autopilot.bootstrap import initialize_project
@@ -52,21 +54,44 @@ def make_project(
     root = Path(tempfile.mkdtemp(prefix="codex-autopilot-test-"))
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / ".codex-autopilot").mkdir()
-    milestones = []
+    # Канонический граф схемы 3. Прежде фикстура строила план формата
+    # v0.8 через `milestones`: он снят вместе с путём, по которому в
+    # систему попадала задача, принимающая собственную работу.
+    from _plan_contract import canonical_verification
+
+    tasks = []
+    previous = None
     for index in range(count):
         mode = modes[index] if modes else "code"
+        task_id = f"M{index + 1}"
         item = {
+            "id": task_id,
             "title": f"Step {index + 1}",
             "objective": f"Do step {index + 1}",
             "definition_of_done": [f"step {index + 1} verified"],
             "execution_mode": mode,
             "execution_mode_reason": "A real GUI is required by the Definition of Done." if mode == "computer_use" else "Repository files and shell verification are sufficient.",
+            "role": "builder",
+            "depends_on": [] if previous is None else [previous],
+            "verification": canonical_verification(),
         }
         if profile == "adaptive":
             item["reasoning"] = "medium"
-        milestones.append(item)
+        tasks.append(item)
+        previous = task_id
     plan_file = root / ".codex-autopilot/bootstrap-plan.json"
-    plan_file.write_text(json.dumps({"goal": "Test goal", "model_strategy": strategy or ("auto" if profile == "adaptive" else "host-settings"), "milestones": milestones}), encoding="utf-8")
+    plan_file.write_text(json.dumps({
+        "schema_version": 3,
+        "graph_version": 1,
+        "goal": "Test goal",
+        "user_request": "Test goal exactly as specified.",
+        "model_strategy": strategy or ("auto" if profile == "adaptive" else "host-settings"),
+        "execution_strategy": "serial",
+        "max_parallel_workers": 1,
+        "computer_use_slots": 1,
+        "roles": [{"id": "builder", "name": "Builder", "responsibilities": ["Do the steps."]}],
+        "tasks": tasks,
+    }), encoding="utf-8")
     initialize_project(
         root,
         plan_file,
@@ -340,13 +365,13 @@ class CoreTests(unittest.TestCase):
 
     def test_plan_has_one_adaptive_source(self):
         item = {"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "high"}
-        plan = validate_plan({"goal": "g", "model_strategy": "auto", "milestones": [item]}, "adaptive")
-        self.assertEqual(plan.milestones[0].reasoning, "high")
-        with self.assertRaises(ValueError): validate_plan({"goal": "g", "model_strategy": "auto", "milestones": [{key: value for key, value in item.items() if key != "reasoning"}]}, "adaptive")
+        plan = validate_plan({"schema_version": 3, "graph_version": 1, "user_request": "Exactly as specified.", "execution_strategy": "serial", "max_parallel_workers": 1, "computer_use_slots": 1, "roles": [{"id": "builder", "name": "Builder", "responsibilities": ["Do the work."]}], "goal": "g", "model_strategy": "auto", "tasks": [dict(item, id="M1", role="builder", depends_on=[], verification=canonical_verification())]}, "adaptive")
+        self.assertEqual(plan.tasks[0].reasoning, "high")
+        with self.assertRaises(ValueError): validate_plan({"schema_version": 3, "graph_version": 1, "user_request": "Exactly as specified.", "execution_strategy": "serial", "max_parallel_workers": 1, "computer_use_slots": 1, "roles": [{"id": "builder", "name": "Builder", "responsibilities": ["Do the work."]}], "goal": "g", "model_strategy": "auto", "tasks": [dict({key: value for key, value in item.items() if key != "reasoning"}, id="M1", role="builder", depends_on=[], verification=canonical_verification())]}, "adaptive")
 
     def test_host_plan_rejects_reasoning(self):
         item = {"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "high"}
-        with self.assertRaises(ValueError): validate_plan({"goal": "g", "model_strategy": "host-settings", "milestones": [item]}, "host-settings")
+        with self.assertRaises(ValueError): validate_plan({"schema_version": 3, "graph_version": 1, "user_request": "Exactly as specified.", "execution_strategy": "serial", "max_parallel_workers": 1, "computer_use_slots": 1, "roles": [{"id": "builder", "name": "Builder", "responsibilities": ["Do the work."]}], "goal": "g", "model_strategy": "host-settings", "tasks": [dict(item, id="M1", role="builder", depends_on=[], verification=canonical_verification())]}, "host-settings")
 
 
     def test_bootstrap_creates_only_documented_state(self):
@@ -364,7 +389,7 @@ class CoreTests(unittest.TestCase):
         state_dir = root / ".codex-autopilot"
         state_dir.mkdir()
         plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "g", "model_strategy": "auto", "milestones": [{"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
+        plan_file.write_text(json.dumps({"schema_version": 3, "graph_version": 1, "user_request": "Exactly as specified.", "execution_strategy": "serial", "max_parallel_workers": 1, "computer_use_slots": 1, "roles": [{"id": "builder", "name": "Builder", "responsibilities": ["Do the work."]}], "goal": "g", "model_strategy": "auto", "tasks": [{"id": "M1", "role": "builder", "depends_on": [], "verification": canonical_verification(), "title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
         with self.assertRaisesRegex(ValueError, "BCP-47"):
             initialize_project(
                 root,
@@ -383,7 +408,7 @@ class CoreTests(unittest.TestCase):
         (state_dir / "logs").mkdir()
         (state_dir / "logs/old.log").write_text("old")
         plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "new", "model_strategy": "auto", "milestones": [{"title": "new", "objective": "new", "definition_of_done": ["done"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
+        plan_file.write_text(json.dumps({"schema_version": 3, "graph_version": 1, "user_request": "Exactly as specified.", "execution_strategy": "serial", "max_parallel_workers": 1, "computer_use_slots": 1, "roles": [{"id": "builder", "name": "Builder", "responsibilities": ["Do the work."]}], "goal": "new", "model_strategy": "auto", "tasks": [{"id": "M1", "role": "builder", "depends_on": [], "verification": canonical_verification(), "title": "new", "objective": "new", "definition_of_done": ["done"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
         initialize_project(root, plan_file, profile="adaptive", skill_path=ADAPTIVE_SKILL, replace=True)
         self.assertFalse((state_dir / "BLOCKED.json").exists())
         self.assertFalse((state_dir / "pause-requested").exists())
@@ -395,7 +420,7 @@ class CoreTests(unittest.TestCase):
         state_dir = root / ".codex-autopilot"
         state_dir.mkdir()
         plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "g", "model_strategy": "auto", "milestones": [{"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
+        plan_file.write_text(json.dumps({"schema_version": 3, "graph_version": 1, "user_request": "Exactly as specified.", "execution_strategy": "serial", "max_parallel_workers": 1, "computer_use_slots": 1, "roles": [{"id": "builder", "name": "Builder", "responsibilities": ["Do the work."]}], "goal": "g", "model_strategy": "auto", "tasks": [{"id": "M1", "role": "builder", "depends_on": [], "verification": canonical_verification(), "title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
         initialize_project(root, plan_file, profile="adaptive", skill_path=ADAPTIVE_SKILL, project_id="project-1")
         self.assertEqual(load_config(root).desktop.project_id, "project-1")
         self.assertEqual(StateStore(state_dir).load().project_id, "project-1")

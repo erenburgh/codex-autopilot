@@ -98,40 +98,6 @@ def reserve_ready_frontier(
         plan = load_plan(cfg.state_dir, cfg.profile)
         state = store.load()
         epoch = int(time.time()) if now_epoch is None else now_epoch
-        if _legacy_retry_requires_bound_owner(
-            state,
-            plan,
-            now_epoch=epoch,
-        ):
-            recovery = _legacy_retry_recovery_context(
-                state,
-                plan,
-                now_epoch=epoch,
-            )
-            if recovery is None:
-                raise DesktopLifecycleError(
-                    "due legacy retry has no unique authoritative predecessor owner"
-                )
-            task_id, retry_session, required_owner = recovery
-            if relay_owner_thread_id != required_owner:
-                raise DesktopLifecycleError(
-                    f"due retry {task_id} belongs to owner thread {required_owner}"
-                )
-            if recovery_stop_turn_id:
-                retry_session["relay_owner_thread_id"] = required_owner
-                _append_event(
-                    state,
-                    "retry_owner_recovered",
-                    retry_session,
-                    utc_now(),
-                    detail=json.dumps(
-                        {
-                            "predecessor_thread_id": required_owner,
-                            "stop_turn_id": recovery_stop_turn_id,
-                        },
-                        sort_keys=True,
-                    ),
-                )
         _prepare_state(plan, state, now_epoch=now_epoch)
         descriptors = _reserve_in_state(
             cfg,
@@ -144,50 +110,6 @@ def reserve_ready_frontier(
         store.save(state)
     _materialize(descriptors)
     return descriptors
-
-def recover_desktop_frontier_from_predecessor_stop(
-    cfg: Config,
-    *,
-    predecessor_thread_id: str,
-    stop_turn_id: str,
-    now_epoch: int | None = None,
-    hook_gate: Callable[[Config], Any] | None = None,
-) -> tuple[LaunchDescriptor, ...]:
-    """Recover a due legacy retry only from its causal predecessor Stop.
-
-    A delegated message is not trusted user input, but its resulting Stop event
-    still carries the authoritative Desktop thread identity.  This recovery path
-    lets that exact completed predecessor resume an already-authorized run after
-    a create-side failure or process interruption.  It never accepts a caller-
-    supplied substitute for the Stop hook's thread id.
-    """
-
-    _require_desktop_owned(cfg)
-    owner = str(predecessor_thread_id or "").strip()
-    turn_id = str(stop_turn_id or "").strip()
-    if not owner or not turn_id:
-        return ()
-    epoch = int(time.time()) if now_epoch is None else now_epoch
-    store = StateStore(cfg.state_dir)
-    plan = load_plan(cfg.state_dir, cfg.profile)
-    recovery = _legacy_retry_recovery_context(
-        store.load(),
-        plan,
-        now_epoch=epoch,
-    )
-    if (
-        store.pause_requested()
-        or recovery is None
-        or recovery[2] != owner
-    ):
-        return ()
-    return reserve_ready_frontier(
-        cfg,
-        now_epoch=epoch,
-        hook_gate=hook_gate,
-        relay_owner_thread_id=owner,
-        recovery_stop_turn_id=turn_id,
-    )
 
 def relayable_descriptors(
     cfg: Config,
@@ -667,7 +589,7 @@ def _reserve_followup_sessions_in_state(
     paused_task_ids = paused_task_ids or set()
 
     worker_limit = min(plan.max_parallel_workers, state.max_parallel_workers)
-    if plan.legacy_serial or "serial" in {
+    if "serial" in {
         plan.execution_strategy,
         state.execution_strategy,
     }:
@@ -836,8 +758,7 @@ def _reserve_followup_sessions_in_state(
 
 def _prepare_state(plan: Plan, state: RunState, *, now_epoch: int | None) -> None:
     if set(state.task_states) != set(plan.task_map):
-        if state.worker_sessions or not plan.legacy_serial:
-            raise DesktopLifecycleError("durable task state does not match the active graph")
+        raise DesktopLifecycleError("durable task state does not match the active graph")
         state.task_states = migrate_v08_task_states(plan, asdict(state))
         state.active_task_ids = [
             task_id
@@ -868,235 +789,6 @@ def _prepare_state(plan: Plan, state: RunState, *, now_epoch: int | None) -> Non
                 plan, state.task_states, task_id, TaskState.READY
             )
             del state.task_retry_at[task_id]
-
-def _legacy_retry_requires_bound_owner(
-    state: RunState,
-    plan: Plan,
-    *,
-    now_epoch: int,
-) -> bool:
-    if (
-        not plan.legacy_serial
-        or state.status != "WAITING"
-        or state.phase != "WAITING_RATE_LIMIT"
-        or state.active_task_ids
-        or any(
-            item.get("status") in PENDING_SESSION_STATUSES
-            for item in state.worker_sessions
-        )
-    ):
-        return False
-    task_id = str(state.milestone_id or "")
-    task = plan.task_map.get(task_id)
-    if task is None:
-        return False
-    current_attempt = int(state.task_attempts.get(task_id, 0))
-    current_sessions = [
-        item
-        for item in state.worker_sessions
-        if item.get("task_id") == task_id
-        and item.get("status") == "RETRY_WAIT"
-        and int(item.get("attempt") or 0) == current_attempt
-    ]
-    has_required_owner = bool(
-        len(current_sessions) == 1
-        and (
-            current_sessions[0].get("relay_owner_thread_id")
-            or task.depends_on
-        )
-    )
-    raw_state = state.task_states.get(task_id)
-    if raw_state == TaskState.RETRY_WAIT.value:
-        retry_at = state.task_retry_at.get(task_id)
-        return has_required_owner and (
-            not isinstance(retry_at, int) or retry_at <= now_epoch
-        )
-    if raw_state != TaskState.READY.value or task_id in state.task_retry_at:
-        return False
-    return has_required_owner
-
-def _legacy_retry_recovery_context(
-    state: RunState,
-    plan: Plan,
-    *,
-    now_epoch: int,
-) -> tuple[str, dict[str, Any], str] | None:
-    """Resolve a due retry to its exact authoritative predecessor thread."""
-
-    task_id = str(state.milestone_id or "")
-    if (
-        not _legacy_retry_requires_bound_owner(
-            state,
-            plan,
-            now_epoch=now_epoch,
-        )
-        or state.status != "WAITING"
-        or state.phase != "WAITING_RATE_LIMIT"
-    ):
-        return None
-    task = plan.task_map[task_id]
-    current_attempt = int(state.task_attempts.get(task_id, 0))
-    retry_sessions = [
-        item
-        for item in state.worker_sessions
-        if item.get("task_id") == task_id
-        and item.get("status") == "RETRY_WAIT"
-        and int(item.get("attempt") or 0) == current_attempt
-    ]
-    if len(retry_sessions) != 1:
-        return None
-    retry_session = retry_sessions[0]
-    retry_token = str(retry_session.get("reservation_token") or "")
-    retry_events = [
-        item
-        for item in state.lifecycle_journal
-        if item.get("event") == "retry_scheduled"
-        and item.get("reservation_token") == retry_token
-    ]
-    if not retry_token or len(retry_events) != 1:
-        return None
-    try:
-        retry_detail = json.loads(str(retry_events[0].get("detail") or ""))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    retry_at = retry_detail.get("retry_at")
-    if not isinstance(retry_at, int) or retry_at > now_epoch:
-        return None
-    raw_state = state.task_states.get(task_id)
-    if raw_state == TaskState.RETRY_WAIT.value:
-        if state.task_retry_at.get(task_id) != retry_at:
-            return None
-    elif raw_state == TaskState.READY.value:
-        if task_id in state.task_retry_at:
-            return None
-    else:
-        return None
-
-    bound_owner = str(retry_session.get("relay_owner_thread_id") or "")
-    if not bound_owner and not task.depends_on:
-        return None
-
-    completion_sequence: dict[str, int] = {}
-    for event in state.lifecycle_journal:
-        if event.get("event") != "turn_completed":
-            continue
-        token = str(event.get("reservation_token") or "")
-        sequence = int(event.get("sequence") or 0)
-        if token and sequence > completion_sequence.get(token, 0):
-            completion_sequence[token] = sequence
-    reservation_events = [
-        item
-        for item in state.lifecycle_journal
-        if item.get("event") == "reservation_created"
-        and item.get("reservation_token") == retry_token
-    ]
-    if len(reservation_events) != 1:
-        return None
-    reservation = reservation_events[0]
-    reservation_sequence = int(reservation.get("sequence") or 0)
-    allowed_source_tasks = {task_id, *task.depends_on}
-    sources = [
-        item
-        for item in state.worker_sessions
-        if item.get("task_id") in allowed_source_tasks
-        and item.get("status") == "COMPLETED"
-        and item.get("thread_id")
-        and 0
-        < completion_sequence.get(str(item.get("reservation_token") or ""), 0)
-        < reservation_sequence
-    ]
-    if bound_owner:
-        if reservation.get("relay_owner_thread_id") != bound_owner:
-            return None
-        owned_sources = [
-            item
-            for item in sources
-            if str(item.get("thread_id") or "") == bound_owner
-        ]
-        if task.depends_on and not owned_sources:
-            return None
-        if not owned_sources:
-            return task_id, retry_session, bound_owner
-        source = max(
-            owned_sources,
-            key=lambda item: completion_sequence[
-                str(item.get("reservation_token") or "")
-            ],
-        )
-    else:
-        if not sources:
-            return None
-        prior_events = [
-            item
-            for item in state.lifecycle_journal
-            if int(item.get("sequence") or 0) == reservation_sequence - 1
-            and item.get("event")
-            in {
-                "implementation_completed",
-                "revision_completed",
-                "verification_passed",
-                "deterministic_verification_completed",
-                "verification_revise",
-            }
-        ]
-        if len(prior_events) != 1:
-            return None
-        prior = prior_events[0]
-        accepted_owner = ""
-        if prior.get("event") == "verification_passed":
-            try:
-                accepted_owner = str(
-                    json.loads(str(prior.get("detail") or "")).get(
-                        "accepted_implementation_thread_id"
-                    )
-                    or ""
-                )
-            except (TypeError, ValueError, json.JSONDecodeError):
-                return None
-        source = next(
-            (
-                item
-                for item in sources
-                if (
-                    str(item.get("thread_id") or "") == accepted_owner
-                    if accepted_owner
-                    else item.get("reservation_token")
-                    == prior.get("reservation_token")
-                )
-            ),
-            None,
-        )
-        if source is None:
-            return None
-        if not accepted_owner and (
-            prior.get("thread_id") != source.get("thread_id")
-            or prior.get("turn_id") != source.get("turn_id")
-        ):
-            return None
-
-    source_token = str(source.get("reservation_token") or "")
-    completion_events = [
-        item
-        for item in state.lifecycle_journal
-        if item.get("event") == "turn_completed"
-        and item.get("reservation_token") == source_token
-    ]
-    if len(completion_events) != 1:
-        return None
-    completion = completion_events[0]
-    if (
-        completion.get("thread_id") != source.get("thread_id")
-        or completion.get("turn_id") != source.get("turn_id")
-    ):
-        return None
-    if source.get("task_id") in task.depends_on and (
-        state.task_states.get(str(source.get("task_id")))
-        != TaskState.VERIFIED.value
-        or source.get("final_status") not in SUCCESS_STATUSES
-    ):
-        return None
-    required_owner = bound_owner or str(source.get("thread_id") or "")
-    return task_id, retry_session, required_owner
 
 def _build_descriptor(
     cfg: Config,

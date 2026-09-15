@@ -280,6 +280,28 @@ class TaskGraphSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "replace the run goal"):
             validate_plan_change(current, changed_goal, "adaptive")
 
+    def test_canonical_graph_cannot_forge_legacy_migration_provenance(self):
+        current = validate_plan(graph(), "adaptive")
+        counterfeit = graph()
+        counterfeit["graph_version"] = current.graph_version + 1
+        counterfeit["execution_strategy"] = "serial"
+        counterfeit["max_parallel_workers"] = 1
+        counterfeit["compatibility"] = {
+            "migrated_from_schema": 2,
+            "legacy_serial": True,
+        }
+        counterfeit_verification = counterfeit["tasks"][0]["verification"]
+        counterfeit_verification.update(
+            policy="self",
+            deterministic_checks=[],
+            max_revision_attempts=0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "not part of the canonical schema"):
+            validate_plan(counterfeit, "adaptive")
+        with self.assertRaisesRegex(ValueError, "not part of the canonical schema"):
+            validate_plan_change(current, counterfeit, "adaptive")
+
     def test_generic_role_is_rejected_when_a_concrete_role_contract_is_required(self):
         raw = graph()
         raw["roles"].append(role("legacy-worker", "Legacy serial worker"))
@@ -289,6 +311,10 @@ class TaskGraphSchemaTests(unittest.TestCase):
 
     def test_canonical_tasks_require_independent_acceptance_floor(self):
         mutations = [
+            (
+                lambda verification: verification.update(policy="self"),
+                "must be \\\"independent\\\"",
+            ),
             (
                 lambda verification: verification.update(policy="deterministic"),
                 "must be \\\"independent\\\"",
@@ -320,6 +346,17 @@ class TaskGraphSchemaTests(unittest.TestCase):
                 mutate(raw["tasks"][0]["verification"])
                 with self.assertRaisesRegex(ValueError, message):
                     validate_plan(raw, "adaptive")
+
+    def test_canonical_task_cannot_fall_back_to_default_self_acceptance(self):
+        raw = graph()
+        raw["tasks"][0].pop("verification")
+        with self.assertRaisesRegex(ValueError, "verification must be an object"):
+            validate_plan(raw, "adaptive")
+
+        raw = graph()
+        raw["tasks"][0]["verification"].pop("policy")
+        with self.assertRaisesRegex(ValueError, "policy must be one of"):
+            validate_plan(raw, "adaptive")
 
     def test_canonical_suite_check_requires_clean_identity_environment(self):
         for missing in (
@@ -382,8 +419,20 @@ class TaskGraphSchemaTests(unittest.TestCase):
                 "-k",
                 "one_case",
             ],
+            [
+                "python3",
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "tests",
+                "-kone_case",
+            ],
             ["python3", "-m", "pytest", "--collect-only"],
+            ["python3", "-m", "pytest", "-kone_case"],
+            ["pytest", "-mnot_slow"],
             ["pytest", "--ignore=tests/integration"],
+            ["python3", "tests/project_suite.py", "-kone_case"],
         )
         for command in commands:
             with self.subTest(command=command):
@@ -461,150 +510,38 @@ class TaskStateContractTests(unittest.TestCase):
             validate_task_states(self.plan, {"A": "READY", "B": "READY", "C": "RUNNING"})
 
 
-class V08CompatibilityTests(unittest.TestCase):
-    def test_legacy_plan_becomes_an_explicit_serial_dag(self):
-        plan = validate_plan(legacy_plan(), "adaptive")
-        self.assertTrue(plan.legacy_serial)
-        self.assertEqual(plan.execution_strategy, "serial")
-        self.assertEqual(plan.max_parallel_workers, 1)
-        self.assertEqual([item.depends_on for item in plan.tasks], [(), ("M1",), ("M2",)])
-        self.assertEqual(topological_order(plan), ("M1", "M2", "M3"))
+# Класс V08CompatibilityTests удалён вместе с форматом v0.8. Он проверял
+# впуск планов, где задача принимала собственную работу; формат снят, и
+# проверять больше нечего.
 
-        state_dir = Path(tempfile.mkdtemp(prefix="codex-autopilot-v08-plan-"))
-        save_plan(state_dir, plan)
-        saved = json.loads((state_dir / "plan.json").read_text())
-        self.assertEqual(saved["schema_version"], 3)
-        self.assertTrue(saved["compatibility"]["legacy_serial"])
-        self.assertNotIn("milestones", saved)
-        self.assertEqual(load_plan(state_dir, "adaptive"), plan)
+class CompactPatternIsNotAFullSuite(unittest.TestCase):
+    """Фильтр в слитной форме - подмножество, а не полный набор.
 
-    def test_legacy_migration_preserves_structured_milestone_roles(self):
-        raw = legacy_plan(2)
-        raw["user_request"] = "Keep the specialist assignment for every milestone."
-        raw["roles"] = [
-            role("resilience", "Resilience Engineer"),
-            role("devops", "DevOps"),
-        ]
-        raw["milestones"][0]["role"] = "resilience"
-        raw["milestones"][1]["role"] = "devops"
+    Замечание приёмки M1: «Проверка полного suite принимает компактный
+    unittest -p фильтр». Формы `-p X` и `-p=X` отсекались, а слитная
+    `-pX` проходила как полный прогон. Проверка, принимающая кусок
+    набора за целое, не доказывает ничего - а на ней держится допуск
+    задачи к приёмке.
+    """
 
-        plan = validate_plan(raw, "adaptive")
+    def test_a_separate_pattern_is_rejected(self) -> None:
+        from codex_autopilot.plan import _unittest_discovers_test_root
 
-        self.assertEqual([item.role for item in plan.tasks], ["resilience", "devops"])
-        self.assertEqual(
-            [plan.role_map[item.role].name for item in plan.tasks],
-            ["Resilience Engineer", "DevOps"],
+        self.assertFalse(
+            _unittest_discovers_test_root(("discover", "-s", "tests", "-p", "test_plan*.py"))
         )
-        self.assertEqual(plan.user_request, raw["user_request"])
-        self.assertNotIn("legacy-worker", plan.role_map)
-        restored = validate_plan(plan_to_dict(plan), "adaptive")
-        self.assertEqual(restored, plan)
 
-    def test_legacy_structured_roles_are_never_inferred_or_collapsed(self):
-        raw = legacy_plan(1)
-        raw["roles"] = [role("ux", "UX Designer")]
-        with self.assertRaisesRegex(ValueError, "role is required"):
-            validate_plan(raw, "adaptive")
+    def test_an_attached_pattern_is_rejected_too(self) -> None:
+        from codex_autopilot.plan import _unittest_discovers_test_root
 
-        raw["milestones"][0]["role"] = "ux"
-        raw["roles"] = [role("legacy-worker", "Legacy serial worker")]
-        raw["milestones"][0]["role"] = "legacy-worker"
-        with self.assertRaisesRegex(ValueError, "generic legacy-worker"):
-            validate_plan(raw, "adaptive")
-
-    def test_v08_config_without_runtime_section_is_fail_closed_serial(self):
-        root = Path(tempfile.mkdtemp(prefix="codex-autopilot-v08-config-"))
-        state_dir = root / ".codex-autopilot"
-        state_dir.mkdir()
-        (state_dir / "config.toml").write_text(
-            "\n".join(
-                [
-                    'profile = "adaptive"',
-                    "",
-                    "[project]",
-                    f"root = {json.dumps(str(root))}",
-                    "",
-                    "[desktop]",
-                    'permission_profile = ":workspace"',
-                    f"skill_path = {json.dumps(str(SKILL))}",
-                ]
-            ),
-            encoding="utf-8",
+        self.assertFalse(
+            _unittest_discovers_test_root(("discover", "-s", "tests", "-ptest_plan*.py"))
         )
-        cfg = load_config(root)
-        self.assertEqual(cfg.runtime.execution_strategy, "serial")
-        self.assertEqual(cfg.runtime.max_parallel_workers, 1)
-        self.assertEqual(cfg.runtime.computer_use_slots, 1)
 
-    def test_v08_state_schema_migrates_in_memory_without_parallelism(self):
-        state_dir = Path(tempfile.mkdtemp(prefix="codex-autopilot-v08-state-"))
-        (state_dir / "run-state.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 4,
-                    "run_id": "legacy-run",
-                    "status": "RUNNING",
-                    "phase": "RUNNING_TURN",
-                    "milestone_index": 1,
-                    "milestone_id": "M2",
-                    "attempt": 2,
-                    "worker_history": [
-                        {"milestone_id": "M1", "status": "ROTATE"},
-                        {"milestone_id": "M2", "status": "RUNNING"},
-                    ],
-                }
-            ),
-            encoding="utf-8",
+    def test_the_default_pattern_still_counts_as_full(self) -> None:
+        from codex_autopilot.plan import _unittest_discovers_test_root
+
+        self.assertTrue(_unittest_discovers_test_root(("discover", "-s", "tests")))
+        self.assertTrue(
+            _unittest_discovers_test_root(("discover", "-s", "tests", "-ptest*.py"))
         )
-        state = StateStore(state_dir).load()
-        self.assertEqual(state.schema_version, 5)
-        self.assertEqual(state.migrated_from_schema, 4)
-        self.assertEqual(state.execution_strategy, "serial")
-        self.assertEqual(state.max_parallel_workers, 1)
-        self.assertEqual(state.task_states, {"M1": "VERIFIED", "M2": "RUNNING"})
-        self.assertEqual(state.active_task_ids, ["M2"])
-
-    def test_legacy_cursor_maps_to_complete_chain_states(self):
-        plan = validate_plan(legacy_plan(), "adaptive")
-        states = migrate_v08_task_states(
-            plan,
-            {
-                "status": "RUNNING",
-                "phase": "RUNNING_TURN",
-                "milestone_index": 1,
-                "milestone_id": "M2",
-                "worker_history": [{"milestone_id": "M1", "status": "ROTATE"}],
-            },
-        )
-        self.assertEqual(states, {"M1": "VERIFIED", "M2": "RUNNING", "M3": "WAITING"})
-
-    def test_new_bootstrap_persists_explicit_runtime_limits(self):
-        root = Path(tempfile.mkdtemp(prefix="codex-autopilot-v09-bootstrap-"))
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
-        state_dir = root / ".codex-autopilot"
-        state_dir.mkdir()
-        plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps(graph()), encoding="utf-8")
-        initialize_project(root, plan_file, profile="adaptive", skill_path=SKILL)
-
-        cfg = load_config(root)
-        state = StateStore(state_dir).load()
-        self.assertEqual(cfg.runtime.execution_strategy, "parallel")
-        self.assertEqual(cfg.runtime.max_parallel_workers, 3)
-        self.assertEqual(state.execution_strategy, "parallel")
-        self.assertEqual(state.task_states, {"A": "READY", "B": "READY", "C": "WAITING"})
-
-    def test_serial_run_state_rejects_multiple_active_tasks(self):
-        state_dir = Path(tempfile.mkdtemp(prefix="codex-autopilot-invalid-state-"))
-        state = RunState(
-            execution_strategy="serial",
-            max_parallel_workers=2,
-            task_states={"A": "RUNNING", "B": "RUNNING"},
-            active_task_ids=["A", "B"],
-        )
-        with self.assertRaisesRegex(ValueError, "serial"):
-            StateStore(state_dir).save(state)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -13,8 +13,8 @@ from .plan import (
     plan_to_dict,
     save_plan,
     topological_order,
-    validate_plan,
     validate_plan_change,
+    validate_persisted_plan,
 )
 from .resources import release_resources_in_state
 from .run_state import RunState, StateStore, utc_now
@@ -402,7 +402,11 @@ def recover_plan_change_transaction(state_dir: Path, profile: str) -> bool:
         raise PlanChangeConflictError("plan change transaction plan digest mismatch")
     if _state_digest(target_state_raw) != raw["target_state_sha256"]:
         raise PlanChangeConflictError("plan change transaction state digest mismatch")
-    target = validate_plan(target_plan_raw, profile)
+    target = validate_persisted_plan(
+        target_plan_raw,
+        profile,
+        state_dir=state_dir,
+    )
     if target.graph_version != raw["target_graph_version"]:
         raise PlanChangeConflictError("plan change transaction target version mismatch")
     known = RunState.__dataclass_fields__

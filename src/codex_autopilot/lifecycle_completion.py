@@ -759,8 +759,6 @@ def complete_desktop_worker(
         completed = _verified_prefix(plan, state)
         next_index = state.milestone_index
     mark_roadmap(cfg.root, plan, completed, language=cfg.language)
-    if plan.legacy_serial and not done:
-        select_milestone(cfg.state_dir, plan, next_index, language=cfg.language)
     _materialize(descriptors)
     _notify_completion(cfg, plan, task_id, state_after=task_state_after, done=done)
     return CompletionOutcome(True, worker_status, descriptors, done)
@@ -1416,7 +1414,5 @@ def _complete_replanner(
         completed = _verified_prefix(candidate, state)
         next_index = state.milestone_index
     mark_roadmap(cfg.root, candidate, completed, language=cfg.language)
-    if candidate.legacy_serial and not done:
-        select_milestone(cfg.state_dir, candidate, next_index, language=cfg.language)
     _materialize(descriptors)
     return CompletionOutcome(True, "PLAN_CHANGE_APPLIED", descriptors, done)

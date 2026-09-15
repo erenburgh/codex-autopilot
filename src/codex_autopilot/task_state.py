@@ -270,8 +270,6 @@ def migrate_v08_task_states(plan: Plan, legacy: Mapping[str, object]) -> dict[st
     for task in tasks:
         if states[task.id] == TaskState.WAITING.value and dependencies_eligible(plan, task.id, states):
             states[task.id] = TaskState.READY.value
-            if plan.legacy_serial:
-                break
     return validate_task_states(plan, states)
 
 
