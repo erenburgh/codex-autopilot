@@ -47,6 +47,7 @@ from .lifecycle_base import (  # noqa: F401
 )
 
 from .lifecycle_reservations import (  # noqa: F401
+    recover_desktop_frontier_from_predecessor_stop,
     relayable_descriptors,
     reserve_ready_frontier,
 )
@@ -94,6 +95,7 @@ __all__ = [
     "record_desktop_failure",
     "record_desktop_interrupt",
     "record_policy_rejected_create_transport",
+    "recover_desktop_frontier_from_predecessor_stop",
     "relay_session_status",
     "relayable_descriptors",
     "reserve_ready_frontier",

@@ -68,7 +68,7 @@ def project_status_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[st
         value == TaskState.VERIFIED.value for value in state.task_states.values()
     )
     worker_limit = min(plan.max_parallel_workers, state.max_parallel_workers)
-    if "serial" in {
+    if plan.legacy_serial or "serial" in {
         plan.execution_strategy,
         state.execution_strategy,
     }:

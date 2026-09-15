@@ -463,7 +463,7 @@ class MemoryMcpServer:
                 known = ", ".join(sorted(plan.task_map))
                 raise MemoryValidationError(f"unknown task_id {requested!r}; plan has: {known}")
             return task
-        if False:
+        if plan.legacy_serial:
             return plan.milestones[state.milestone_index]
         active = sorted(
             task_id

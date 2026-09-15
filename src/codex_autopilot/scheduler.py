@@ -269,7 +269,7 @@ def _effective_strategy(plan: Plan, state: RunState) -> str:
     # Plan and durable/runtime state may each tighten execution. The least
     # permissive value wins so a stale/migrated state can never enable parallel
     # work that the plan did not authorize.
-    if "serial" in {plan.execution_strategy, state.execution_strategy}:
+    if plan.legacy_serial or "serial" in {plan.execution_strategy, state.execution_strategy}:
         return "serial"
     if "auto" in {plan.execution_strategy, state.execution_strategy}:
         return "auto"

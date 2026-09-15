@@ -384,6 +384,7 @@ def _two_task_plan_sharing_a_resource(second_target: str = "src/shared"):
         execution_strategy="parallel",
         max_parallel_workers=2,
         computer_use_slots=1,
+        legacy_serial=False,
     )
 
 

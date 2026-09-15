@@ -226,6 +226,66 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertIsNone(state.active_plan_change_id)
         self.assertEqual(state.plan_changes[0]["status"], "APPLIED")
 
+    def test_migrated_serial_run_accepts_resource_replan_and_preserves_provenance(self) -> None:
+        raw = graph([task("A")], max_workers=1)
+        raw["execution_strategy"] = "serial"
+        raw["compatibility"] = {"migrated_from_schema": 2, "legacy_serial": True}
+        cfg, store = self.initialize(raw)
+        descriptor = reserve_ready_frontier(
+            cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, descriptor.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, "A", "Resource change requested.\n")
+        outcome = complete_desktop_worker(
+            cfg, thread_id="worker-A", turn_id="turn-A",
+            final_message=request_line("A", kind="resource"),
+            hook_gate=lambda _cfg: None,
+        )
+        replanner = outcome.descriptors[0]
+        self.assertEqual(replanner.kind, "replanner")
+        self.mark_active(store, replanner.reservation_token, "replanner-PC1")
+        current = load_plan(cfg.state_dir, cfg.profile)
+        candidate = plan_to_dict(current)
+        candidate["graph_version"] += 1
+        candidate["tasks"][0]["resources"].append(
+            {"id": "docs", "kind": "directory", "target": "docs", "access": "write"}
+        )
+        result = complete_desktop_worker(
+            cfg, thread_id="replanner-PC1", turn_id="turn-PC1",
+            final_message=PLAN_CHANGE_RESULT_PREFIX + " " + json.dumps({
+                "request_id": "PC1", "base_graph_version": 1, "plan": candidate,
+            }),
+            hook_gate=lambda _cfg: None,
+        )
+        self.assertEqual(result.worker_status, "PLAN_CHANGE_APPLIED")
+        updated = load_plan(cfg.state_dir, cfg.profile)
+        self.assertEqual(updated.graph_version, 2)
+        self.assertEqual(updated.source_schema_version, 2)
+        self.assertTrue(updated.legacy_serial)
+        self.assertEqual(updated.execution_strategy, "serial")
+        self.assertEqual(updated.max_parallel_workers, 1)
+        self.assertEqual(updated.computer_use_slots, 1)
+        self.assertEqual(plan_to_dict(updated)["compatibility"], raw["compatibility"])
+        self.assertEqual(updated.task_map["A"].resources[-1].target, "docs")
+        self.assertEqual(store.load().plan_changes[0]["status"], "APPLIED")
+
+    def test_replanner_still_rejects_an_actual_schema_two_payload(self) -> None:
+        raw = graph([task("A")], max_workers=1)
+        legacy = {
+            key: raw[key] for key in ("goal", "user_request", "model_strategy", "roles")
+        }
+        legacy["schema_version"] = 2
+        legacy["milestones"] = [{
+            key: raw["tasks"][0][key]
+            for key in (
+                "id", "title", "objective", "definition_of_done", "execution_mode",
+                "execution_mode_reason", "reasoning", "role",
+            )
+        }]
+        current = validate_plan(legacy, "adaptive")
+        with self.assertRaisesRegex(ValueError, "canonical v0.9 schema"):
+            validate_plan_change(current, legacy, "adaptive")
+
     def test_cycle_from_replanner_is_rejected_without_plan_or_state_write(self) -> None:
         cfg, store = self.initialize(graph([task("A")], max_workers=1))
         descriptor = reserve_ready_frontier(

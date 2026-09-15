@@ -147,6 +147,29 @@ class EnforcedRuleTests(unittest.TestCase):
             validate_plan(data, "adaptive")
         self.assertIn("R8", str(caught.exception))
 
+    def test_r8_exempts_a_migrated_v08_plan(self) -> None:
+        """Мигрированный v0.8 план предшествует верификации и остаётся serial."""
+        legacy = {
+            "schema_version": 2,
+            "goal": "g",
+            "model_strategy": "auto",
+            "milestones": [
+                {
+                    "title": "t",
+                    "objective": "o",
+                    "definition_of_done": ["d"],
+                    "execution_mode": "code",
+                    "execution_mode_reason": "files suffice",
+                    "reasoning": "medium",
+                }
+            ],
+        }
+        plan = validate_plan(legacy, "adaptive")
+        self.assertTrue(plan.legacy_serial)
+        self.assertEqual(plan.tasks[0].verification.policy, "self")
+
+
+class ContextOrderTests(unittest.TestCase):
     def test_r17_rules_come_before_specifications_and_are_not_truncatable(self) -> None:
         """R17: правила грузятся раньше спецификаций и не усекаются."""
         block = rules_for_prompt()
