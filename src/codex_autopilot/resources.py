@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
 import fcntl
 import fnmatch
 from pathlib import Path, PurePath
@@ -206,18 +205,8 @@ class AcquisitionResult:
     reused: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class ReconciliationResult:
-    released_lock_ids: tuple[str, ...]
-    active_lock_ids: tuple[str, ...]
-    unresolved_lock_ids: tuple[str, ...]
 
 
-class AuthoritativeWorkerState(str, Enum):
-    ACTIVE = "active"
-    TERMINAL = "terminal"
-    ABSENT = "absent"
-    UNKNOWN = "unknown"
 
 
 def normalize_claim(claim: ResourceClaim, project_root: Path) -> NormalizedResourceClaim:
@@ -624,167 +613,13 @@ class ResourceLockCoordinator:
         self.project_root = project_root.resolve(strict=False)
         self.transaction_path = state_store.state_dir / "resource-coordinator.lock"
 
-    def snapshot(self) -> tuple[DurableResourceLock, ...]:
-        with self._transaction():
-            state = self.state_store.load()
-            return validate_persisted_resource_state(
-                state.resource_locks,
-                state.resource_lock_journal,
-                state.resource_journal_sequence,
-            )
-
-    def availability(self, plan: Plan) -> SchedulerAvailability:
-        with self._transaction():
-            return build_scheduler_availability(plan, self.state_store.load(), self.project_root)
-
-    def acquire(
-        self,
-        plan: Plan,
-        task_id: str,
-        owner: LockOwner,
-        *,
-        now: str | None = None,
-    ) -> AcquisitionResult:
-        with self._transaction():
-            state = self.state_store.load()
-            result = acquire_resources_in_state(
-                plan,
-                state,
-                self.project_root,
-                task_id,
-                owner,
-                now=now,
-            )
-            if result.acquired and not result.reused:
-                self.state_store.save(state)
-            return result
-
-    def release(
-        self,
-        ownership_token: str,
-        *,
-        reason: str,
-        now: str | None = None,
-    ) -> bool:
-        with self._transaction():
-            state = self.state_store.load()
-            released = release_resources_in_state(
-                state,
-                ownership_token,
-                reason=reason,
-                now=now,
-            )
-            if released:
-                self.state_store.save(state)
-            return released
-
-    def heartbeat(self, ownership_token: str, *, now: str | None = None) -> bool:
-        token = _nonempty_string(ownership_token, "ownership token")
-        timestamp = _timestamp(now or _utc_now(), "heartbeat timestamp")
-        with self._transaction():
-            state = self.state_store.load()
-            locks = list(
-                validate_persisted_resource_state(
-                    state.resource_locks,
-                    state.resource_lock_journal,
-                    state.resource_journal_sequence,
-                )
-            )
-            changed = False
-            updated: list[DurableResourceLock] = []
-            for lock in locks:
-                if lock.owner.ownership_token == token:
-                    lock = DurableResourceLock(
-                        lock_id=lock.lock_id,
-                        owner=lock.owner,
-                        claims=lock.claims,
-                        acquired_at=lock.acquired_at,
-                        heartbeat_at=timestamp,
-                        computer_use_slot=lock.computer_use_slot,
-                    )
-                    changed = True
-                updated.append(lock)
-            if changed:
-                state.resource_locks = [item.to_dict() for item in updated]
-                self.state_store.save(state)
-            return changed
-
-    def reconcile(
-        self,
-        authoritative_states: Mapping[str, AuthoritativeWorkerState | str],
-        *,
-        now: str | None = None,
-    ) -> ReconciliationResult:
-        """Release only owners authoritatively known terminal or absent.
-
-        Missing and explicitly unknown owner states retain their locks. A stale
-        wall-clock heartbeat is never, by itself, authority to permit a second
-        writer.
-        """
-
-        resolved = {
-            _nonempty_string(token, "authoritative ownership token"): (
-                value if isinstance(value, AuthoritativeWorkerState) else AuthoritativeWorkerState(value)
-            )
-            for token, value in authoritative_states.items()
-        }
-        timestamp = _timestamp(now or _utc_now(), "reconciliation timestamp")
-        with self._transaction():
-            state = self.state_store.load()
-            locks = list(
-                validate_persisted_resource_state(
-                    state.resource_locks,
-                    state.resource_lock_journal,
-                    state.resource_journal_sequence,
-                )
-            )
-            kept: list[DurableResourceLock] = []
-            released: list[str] = []
-            active: list[str] = []
-            unresolved: list[str] = []
-            for lock in locks:
-                owner_state = resolved.get(
-                    lock.owner.ownership_token,
-                    AuthoritativeWorkerState.UNKNOWN,
-                )
-                if owner_state in {
-                    AuthoritativeWorkerState.TERMINAL,
-                    AuthoritativeWorkerState.ABSENT,
-                }:
-                    released.append(lock.lock_id)
-                    self._append_event(
-                        state,
-                        lock,
-                        "reconciled_release",
-                        timestamp,
-                        reason=f"authoritative_owner_{owner_state.value}",
-                    )
-                else:
-                    kept.append(lock)
-                    if owner_state is AuthoritativeWorkerState.ACTIVE:
-                        active.append(lock.lock_id)
-                    else:
-                        unresolved.append(lock.lock_id)
-            if released:
-                state.resource_locks = [lock.to_dict() for lock in kept]
-                self.state_store.save(state)
-            return ReconciliationResult(
-                released_lock_ids=tuple(released),
-                active_lock_ids=tuple(active),
-                unresolved_lock_ids=tuple(unresolved),
-            )
 
 
-    @staticmethod
-    def _append_event(
-        state: RunState,
-        lock: DurableResourceLock,
-        event: str,
-        timestamp: str,
-        *,
-        reason: str | None,
-    ) -> None:
-        append_resource_event(state, lock, event, timestamp, reason=reason)
+
+
+
+
+
 
     def transaction(self) -> Iterator[None]:
         """Public shared transaction boundary for deterministic lifecycle work."""

@@ -106,6 +106,18 @@ def verify(state: RunState, plan: Plan, task_id: str) -> None:
     state.task_states = transition_task(plan, state.task_states, task_id, TaskState.VERIFIED)
 
 
+def deferral_reasons(decision, task_id: str) -> tuple[str, ...]:
+    """Причины отсрочки задачи - прямо из решения планировщика.
+
+    Раньше это был метод ``SchedulerDecision.reasons_for``. Продакшен не
+    звал его ни разу: решение везде читают по ``deferred``. Метод снят как
+    вторая дорога к тому же полю, тесты смотрят в поле.
+    """
+
+    item = next((item for item in decision.deferred if item.task_id == task_id), None)
+    return item.reasons if item else ()
+
+
 class DependencySchedulerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.plan = make_plan(
@@ -205,7 +217,7 @@ class PriorityAndFairnessTests(unittest.TestCase):
         )
         self.assertEqual(decision.ready_task_ids, ("available", "blocked"))
         self.assertEqual(decision.selected_task_ids, ("available",))
-        self.assertIn("resource_unavailable", decision.reasons_for("blocked"))
+        self.assertIn("resource_unavailable", deferral_reasons(decision, "blocked"))
 
 
 class CapacityAndStrategyTests(unittest.TestCase):
@@ -221,7 +233,7 @@ class CapacityAndStrategyTests(unittest.TestCase):
                 self.assertEqual(decision.strategy, strategy)
                 self.assertEqual(decision.worker_limit, 2)
                 self.assertEqual(decision.selected_task_ids, ("A", "B"))
-                self.assertIn("worker_capacity", decision.reasons_for("C"))
+                self.assertIn("worker_capacity", deferral_reasons(decision, "C"))
 
     def test_serial_is_one_at_a_time_even_with_a_larger_configured_limit(self):
         plan = make_plan(
@@ -245,7 +257,7 @@ class CapacityAndStrategyTests(unittest.TestCase):
         decision = schedule(plan, state)
         self.assertEqual(decision.open_worker_slots, 1)
         self.assertEqual(decision.selected_task_ids, ("B",))
-        self.assertIn("worker_capacity", decision.reasons_for("C"))
+        self.assertIn("worker_capacity", deferral_reasons(decision, "C"))
 
     def test_durable_state_can_tighten_a_parallel_plan_to_serial(self):
         plan = make_plan([raw_task("A"), raw_task("B")], max_workers=2)
@@ -273,7 +285,7 @@ class CapacityAndStrategyTests(unittest.TestCase):
             ),
         )
         self.assertEqual(decision.selected_task_ids, ("gpu_high", "cpu"))
-        self.assertIn("capability_capacity:gpu", decision.reasons_for("gpu_low"))
+        self.assertIn("capability_capacity:gpu", deferral_reasons(decision, "gpu_low"))
 
     def test_active_task_consumes_its_named_capability_capacity(self):
         plan = make_plan(
@@ -300,7 +312,7 @@ class CapacityAndStrategyTests(unittest.TestCase):
         self.assertEqual(decision.selected_task_ids, ("ordinary",))
         self.assertIn(
             "capability_capacity:gpu",
-            decision.reasons_for("waiting_gpu"),
+            deferral_reasons(decision, "waiting_gpu"),
         )
 
     def test_missing_capability_does_not_block_unrelated_work(self):
@@ -316,7 +328,7 @@ class CapacityAndStrategyTests(unittest.TestCase):
         self.assertEqual(decision.selected_task_ids, ("ordinary",))
         self.assertIn(
             "capability_unavailable:device:lab",
-            decision.reasons_for("special"),
+            deferral_reasons(decision, "special"),
         )
 
     def test_computer_use_slot_is_independent_from_worker_limit(self):
@@ -333,7 +345,7 @@ class CapacityAndStrategyTests(unittest.TestCase):
         self.assertEqual(decision.selected_task_ids, ("gui_a", "code"))
         self.assertIn(
             "capability_capacity:computer_use",
-            decision.reasons_for("gui_b"),
+            deferral_reasons(decision, "gui_b"),
         )
 
     def test_ready_age_survives_atomic_state_round_trip(self):

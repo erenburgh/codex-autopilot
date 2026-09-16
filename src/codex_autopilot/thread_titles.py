@@ -100,10 +100,6 @@ def revision_thread_title(
     )
 
 
-def planner_thread_title(goal_summary: str) -> str:
-    return _compose("Planner", "PLAN", _text(goal_summary, "goal_summary"))
-
-
 def replanner_thread_title(plan_change_id: str, change_summary: str) -> str:
     identifier = _identifier(plan_change_id, "plan_change_id")
     # Нормализуем к точной форме PC-<ID>: и "PC-04", и "PC1", и "04"

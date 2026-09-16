@@ -17,7 +17,6 @@ from codex_autopilot.thread_titles import (
     MAX_THREAD_TITLE_CHARS,
     ThreadTitleError,
     implementation_thread_title,
-    planner_thread_title,
     replanner_thread_title,
     revision_thread_title,
     task_phase_thread_title,
@@ -90,10 +89,6 @@ class ThreadTitleTests(unittest.TestCase):
         self.assertEqual(
             revision_thread_title("T44", 1, title, role_name="Resilience Engineer"),
             "Resilience Engineer | T44-R1 | Revise workspace metadata",
-        )
-        self.assertEqual(
-            planner_thread_title("Build dependency-aware runtime"),
-            "Planner | PLAN | Build dependency-aware runtime",
         )
         self.assertEqual(
             replanner_thread_title("PC7", "Add a prerequisite audit"),

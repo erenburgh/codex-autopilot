@@ -9,13 +9,15 @@ import unittest
 
 from codex_autopilot.plan import Plan, ResourceClaim, validate_plan
 from codex_autopilot.resources import (
-    AuthoritativeWorkerState,
     LockOwner,
     NormalizedResourceClaim,
     ResourceLockCoordinator,
+    acquire_resources_in_state,
+    build_scheduler_availability,
     claims_conflict,
     claims_match,
     normalize_claim,
+    release_resources_in_state,
     validate_persisted_resource_state,
 )
 from codex_autopilot.run_state import RunState, StateStore
@@ -157,6 +159,60 @@ class ResourceMatchingTests(unittest.TestCase):
             self.assertTrue(path.target.startswith(str(root.resolve())))
 
 
+class _ResourceHarness:
+    """Тот же путь, которым резервирует продакшен.
+
+    lifecycle_reservations держит ``coordinator.transaction()`` и внутри
+    зовёт функции модуля: замок берёт транзакция, решение принимают
+    acquire_resources_in_state и release_resources_in_state. Своей логики
+    здесь нет - конфликты, журнал и слоты считают они же.
+
+    Раньше на их месте стояли одноимённые методы координатора. Они
+    повторяли этот путь и не вызывались из продакшена ни разу, поэтому
+    сняты; тесты переставлены на функции, которые работают на самом деле.
+    """
+
+    def __init__(self, state_store: StateStore, project_root: Path) -> None:
+        self.state_store = state_store
+        self.project_root = project_root
+        self._coordinator = ResourceLockCoordinator(state_store, project_root)
+
+    def acquire(self, plan, task_id, owner, *, now=None):
+        with self._coordinator.transaction():
+            state = self.state_store.load()
+            result = acquire_resources_in_state(
+                plan, state, self.project_root, task_id, owner, now=now
+            )
+            if result.acquired and not result.reused:
+                self.state_store.save(state)
+            return result
+
+    def release(self, ownership_token, *, reason, now=None):
+        with self._coordinator.transaction():
+            state = self.state_store.load()
+            released = release_resources_in_state(
+                state, ownership_token, reason=reason, now=now
+            )
+            if released:
+                self.state_store.save(state)
+            return released
+
+    def snapshot(self):
+        with self._coordinator.transaction():
+            state = self.state_store.load()
+            return validate_persisted_resource_state(
+                state.resource_locks,
+                state.resource_lock_journal,
+                state.resource_journal_sequence,
+            )
+
+    def availability(self, plan):
+        with self._coordinator.transaction():
+            return build_scheduler_availability(
+                plan, self.state_store.load(), self.project_root
+            )
+
+
 class ResourceCoordinatorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -166,7 +222,7 @@ class ResourceCoordinatorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def initialize(self, plan: Plan, *, attempt: int = 1) -> ResourceLockCoordinator:
+    def initialize(self, plan: Plan, *, attempt: int = 1) -> "_ResourceHarness":
         state = RunState(
             graph_version=plan.graph_version,
             execution_strategy=plan.execution_strategy,
@@ -177,7 +233,7 @@ class ResourceCoordinatorTests(unittest.TestCase):
             task_revisions={task.id: 0 for task in plan.tasks},
         )
         self.state_store.save(state)
-        return ResourceLockCoordinator(self.state_store, self.root)
+        return _ResourceHarness(self.state_store, self.root)
 
     def owner(self, plan: Plan, task_id: str, *, attempt: int = 1) -> LockOwner:
         state = self.state_store.load()
@@ -278,16 +334,13 @@ class ResourceCoordinatorTests(unittest.TestCase):
         )
         self.assertTrue(acquired.acquired)
 
-        reloaded = ResourceLockCoordinator(
+        reloaded = _ResourceHarness(
             StateStore(self.root / ".codex-autopilot"), self.root
         )
         locks = reloaded.snapshot()
         self.assertEqual(len(locks), 1)
         self.assertEqual(locks[0].owner, owner)
         self.assertEqual(locks[0].lock_id, acquired.lock_id)
-        self.assertTrue(
-            reloaded.heartbeat(owner.ownership_token, now="2026-09-10T10:01:00+00:00")
-        )
         self.assertTrue(
             reloaded.release(
                 owner.ownership_token,
@@ -302,43 +355,6 @@ class ResourceCoordinatorTests(unittest.TestCase):
             ["acquired", "released"],
         )
         self.assertEqual(state.resource_journal_sequence, 2)
-
-    def test_recovery_keeps_unknown_stale_owner_and_releases_only_authoritative_end(self) -> None:
-        shared = [resource("tree", "directory", "src", "write")]
-        plan = make_plan([raw_task("old", resources=shared), raw_task("new", resources=shared)])
-        coordinator = self.initialize(plan)
-        old = self.owner(plan, "old")
-        new = self.owner(plan, "new")
-        acquired = coordinator.acquire(
-            plan,
-            "old",
-            old,
-            now="2000-01-01T00:00:00+00:00",
-        )
-        self.assertTrue(acquired.acquired)
-
-        unknown = coordinator.reconcile({}, now="2026-09-10T10:00:00+00:00")
-        self.assertEqual(unknown.unresolved_lock_ids, (acquired.lock_id,))
-        self.assertFalse(coordinator.acquire(plan, "new", new).acquired)
-
-        active = coordinator.reconcile(
-            {old.ownership_token: AuthoritativeWorkerState.ACTIVE},
-            now="2026-09-10T10:01:00+00:00",
-        )
-        self.assertEqual(active.active_lock_ids, (acquired.lock_id,))
-        self.assertFalse(coordinator.acquire(plan, "new", new).acquired)
-
-        released = coordinator.reconcile(
-            {old.ownership_token: AuthoritativeWorkerState.ABSENT},
-            now="2026-09-10T10:02:00+00:00",
-        )
-        self.assertEqual(released.released_lock_ids, (acquired.lock_id,))
-        self.assertTrue(coordinator.acquire(plan, "new", new).acquired)
-        state = self.state_store.load()
-        self.assertEqual(
-            [item["event"] for item in state.resource_lock_journal[:2]],
-            ["acquired", "reconciled_release"],
-        )
 
     def test_computer_use_slot_serializes_gui_without_blocking_code(self) -> None:
         plan = make_plan(
@@ -381,7 +397,7 @@ class ResourceCoordinatorTests(unittest.TestCase):
 
         def acquire(task_id: str) -> bool:
             barrier.wait()
-            separate = ResourceLockCoordinator(
+            separate = _ResourceHarness(
                 StateStore(self.root / ".codex-autopilot"), self.root
             )
             return separate.acquire(plan, task_id, owners[task_id]).acquired

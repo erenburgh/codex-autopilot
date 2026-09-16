@@ -67,10 +67,6 @@ class SchedulerDecision:
     priorities: tuple[PriorityScore, ...]
     deferred: tuple[DeferredTask, ...]
 
-    def reasons_for(self, task_id: str) -> tuple[str, ...]:
-        item = next((item for item in self.deferred if item.task_id == task_id), None)
-        return item.reasons if item else ()
-
 
 def compute_ready_task_ids(
     plan: Plan,

@@ -12,7 +12,6 @@ from codex_autopilot.scheduler import schedule
 from codex_autopilot.task_state import IllegalTaskTransition, TaskState, initial_task_states, transition_task
 from codex_autopilot.thread_titles import (
     implementation_thread_title,
-    planner_thread_title,
     replanner_thread_title,
     revision_thread_title,
     verifier_thread_title,
@@ -167,10 +166,6 @@ class V09ContractRegressionTests(unittest.TestCase):
             "3D Artist | T44-R1 | Revise Weapon Model",
         )
         self.assertEqual(
-            planner_thread_title("Build Analytics Dashboard"),
-            "Planner | PLAN | Build Analytics Dashboard",
-        )
-        self.assertEqual(
             replanner_thread_title("PC-04", "Add Missing Migration Step"),
             "Planner | PC-04 | Add Missing Migration Step",
         )
@@ -263,7 +258,12 @@ class AIStudioAcceptanceShapeTests(unittest.TestCase):
         )
         decision = schedule(plan, _state(plan))
         self.assertEqual(decision.selected_task_ids, ("code", "gui-a"))
-        self.assertIn("capability_capacity:computer_use", decision.reasons_for("gui-b"))
+        deferred = next(
+            item for item in decision.deferred if item.task_id == "gui-b"
+        )
+        # reasons_for снят как вторая дорога к тому же полю: продакшен
+        # везде читает решение по deferred.
+        self.assertIn("capability_capacity:computer_use", deferred.reasons)
 
         runtime = AIStudioRuntime(
             plan,
