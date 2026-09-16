@@ -263,7 +263,7 @@ be held by the session that failed, and the repairer must not be blocked by the
 thing it came to repair.
 
 Its tools are the helper commands, resolved relative to this `SKILL.md`:
-`relay-status`, `relay-complete`, `relay-fail --definitive`,
+`relay-status`, `relay-complete`, `relay-fail --failure-code <kind> --definitive`,
 `devops-rearm-relay-owner`, `arm`, and `devops-resolve-incident`.
 
 Three rules bind it:

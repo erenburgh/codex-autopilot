@@ -221,7 +221,7 @@ You hold full authority to repair this pipeline on the user's behalf. The user d
 
 - `scripts/codex-autopilot relay-status --project <root> --token <reservation>` — read a reservation.
 - `scripts/codex-autopilot relay-complete --project <root> --thread-id <id> --turn-id <id> --status <ROTATE|DONE|BLOCKED|ESCALATE>` — record a worker turn that actually finished. It runs the full completion gate, including Project Memory evidence; it cannot mark unverified work as done.
-- `scripts/codex-autopilot relay-fail --project <root> --token <reservation> --reason <text> --definitive` — record a create that definitively failed before any side effect.
+- `scripts/codex-autopilot relay-fail --project <root> --token <reservation> --reason <text> --failure-code <kind> --definitive` — record a create that definitively failed before any side effect. `--failure-code` names WHAT broke, not the prose reason, and repeats are counted per code (R23): worker_paused, app_server_rpc_failed, turn_ended_non_completed, worker_protocol_rejected, transport_policy_rejected, desktop_interrupt, app_server_create_failed, operator_reported.
 - `scripts/codex-autopilot devops-rearm-relay-owner --project <root> --incident-id <id>` — re-arm the exact causal predecessor when the create is known-failed and left no task.
 - `scripts/codex-autopilot arm --project <root>` — re-arm the run after repair, so the next Stop event lets the causal predecessor perform its own reserved transport.
 - `scripts/codex-autopilot devops-resolve-incident --project <root> --incident-id <id> --healthcheck-name <name> --check <observation> --action <what you did>` — close this ticket. Repeat --check and --action as needed.

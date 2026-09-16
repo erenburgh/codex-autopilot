@@ -128,6 +128,90 @@ def context_payload(prompt: str) -> dict:
     return json.loads(raw)
 
 
+class RunbookIsExecutableTests(unittest.TestCase):
+    """Команду из рантбука дежурный инженер исполняет дословно.
+
+    ``--failure-code`` стал обязательным у ``relay-fail``, а строка в
+    рантбуке осталась прежней. Инженер выполнил бы её как написано и
+    получил "error: the following arguments are required: --failure-code",
+    exit 2. Состояние при этом цело - argparse падает до любой работы, -
+    но ход сгорает целиком, а на прогоне инженер поднимается первым.
+
+    Проверяется класс, а не случай: у каждой команды, названной в
+    рантбуке, каждый обязательный флаг обязан стоять в его тексте. Тогда
+    следующий обязательный флаг не разойдётся с промптом молча.
+
+    Промпт здесь строится, а не читается из исходника: сверять текст
+    файла значит проверять, как написано, вместо того что выполнится.
+    """
+
+    def prompt(self) -> str:
+        from codex_autopilot.pipeline_engineer import FORBIDDEN_ACTIONS
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        (root / ".git").mkdir()
+        skill = root / "SKILL.md"
+        skill.write_text("# test skill\n", encoding="utf-8")
+        runtime = AIStudioRuntime(
+            plan([task("code-a", "integrator")]),
+            root,
+            language="en",
+            skill_path=skill,
+        )
+        return runtime.build_pipeline_engineer_prompt(
+            {
+                "incident": {
+                    "incident_id": "INC-1",
+                    "classification": "PIPELINE",
+                    "phase": "PIPELINE_ENGINEER",
+                    "summary": "транспорт сорвался",
+                    "affected_task_ids": ["A"],
+                },
+                "forbidden_actions": sorted(FORBIDDEN_ACTIONS),
+                "allowed_actions": ["read_state"],
+            },
+            reservation_token="token-1",
+        )
+
+    def test_every_required_flag_of_a_runbook_command_is_named_in_it(self) -> None:
+        import argparse
+        import re
+
+        from codex_autopilot.cli import parser
+
+        text = self.prompt()
+        # Флаг ищется ВНУТРИ самой команды, а не где угодно в промпте.
+        # Пояснение рядом с командой тоже называет флаг по имени, и поиск
+        # по всему тексту зеленел бы, даже если из команды флаг убрать -
+        # та же подстрочная слепота, что прятала мёртвый код.
+        invocations = re.findall(r"`scripts/codex-autopilot (\S+)([^`]*)`", text)
+        self.assertTrue(invocations, "рантбук не называет ни одной команды")
+
+        subparsers = {}
+        for action in parser()._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                subparsers.update(action.choices)
+
+        missing = []
+        for command, arguments in invocations:
+            sub = subparsers.get(command)
+            self.assertIsNotNone(sub, f"рантбук называет несуществующую команду {command}")
+            for item in sub._actions:
+                if not item.option_strings or not item.required:
+                    continue
+                flag = max(item.option_strings, key=len)
+                if flag not in arguments:
+                    missing.append(f"{command} {flag}")
+        self.assertEqual(
+            missing,
+            [],
+            "обязательный флаг есть в CLI и отсутствует в рантбуке — инженер "
+            "получит exit 2 и потеряет ход: " + ", ".join(missing),
+        )
+
+
 class AIStudioRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory(prefix="codex-autopilot-ai-studio-")

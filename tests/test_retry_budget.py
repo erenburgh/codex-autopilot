@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 import tempfile
@@ -41,6 +42,58 @@ from codex_autopilot.lifecycle_failures import record_desktop_failure
 from codex_autopilot.pipeline_engineer import PipelineIncidentStore
 from codex_autopilot.run_state import StateStore
 from test_desktop_lifecycle import graph, task
+
+
+SRC = Path(__file__).resolve().parents[1] / "src" / "codex_autopilot"
+
+
+def production_failure_shapes() -> dict[str, frozenset[bool]]:
+    """С каким ``definitive`` продакшен зовёт каждый код отказа.
+
+    Берётся разбором ``src``, а не константой здесь. Первая редакция
+    этого файла звала всё с ``definitive=True`` и была зелёной, не
+    поймав, что у ``worker_protocol_rejected`` потолка нет вовсе:
+    продакшен передаёт его с ``definitive=False``, а счёт тогда стоял за
+    ранним возвратом. Тест, назначивший форму сам, проверяет комбинацию,
+    которой в продакшене не бывает, и молчит ровно там, где должен
+    кричать.
+
+    Где ``definitive`` - выражение, а не константа, берутся оба значения:
+    неизвестное надо проверять в худшем случае, а не в удобном.
+    """
+
+    shapes: dict[str, set[bool]] = {}
+    for path in sorted(SRC.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if getattr(node.func, "id", "") != "record_desktop_failure":
+                continue
+            keywords = {item.arg: item.value for item in node.keywords}
+            code = keywords.get("failure_code")
+            if not isinstance(code, ast.Constant) or not isinstance(code.value, str):
+                # Код собирается на лету (путь CLI): формы у него нет.
+                continue
+            declared = keywords.get("definitive")
+            if isinstance(declared, ast.Constant):
+                values = {bool(declared.value)}
+            else:
+                values = {True, False}
+            shapes.setdefault(code.value, set()).update(values)
+    return {code: frozenset(values) for code, values in shapes.items()}
+
+
+def production_definitive(code: str) -> bool:
+    """Форма, в которой этот код труднее всего посчитать.
+
+    Если продакшен зовёт код и так и так, проверяем недоопределённый
+    путь: он выходит раньше, и именно на нём счёт однажды потерялся.
+    """
+
+    values = production_failure_shapes().get(code)
+    assert values, f"{code} не зовётся в продакшене"
+    return False if False in values else True
 
 
 class RetryBudgetTests(unittest.TestCase):
@@ -78,7 +131,14 @@ class RetryBudgetTests(unittest.TestCase):
                 return str(item["reservation_token"])
         return None
 
-    def fail_once(self, task_id: str, code: str, *, rate_limited: bool = False) -> None:
+    def fail_once(
+        self,
+        task_id: str,
+        code: str,
+        *,
+        rate_limited: bool = False,
+        definitive: bool | None = None,
+    ) -> None:
         """Один настоящий отказ задачи: берём её слот и роняем.
 
         При двух слотах фронтир забирает обе задачи сразу, поэтому
@@ -97,7 +157,7 @@ class RetryBudgetTests(unittest.TestCase):
             token,
             reason=f"обстоятельства попытки для {task_id}",
             failure_code=code,
-            definitive=True,
+            definitive=production_definitive(code) if definitive is None else definitive,
             rate_limited=rate_limited,
             reserve_other_ready=False,
         )
@@ -165,6 +225,37 @@ class RetryBudgetTests(unittest.TestCase):
             2,
             "счёт по задаче вместо сигнатуры",
         )
+
+    def test_every_production_failure_shape_reaches_the_counter(self) -> None:
+        """Каждый код, которым продакшен роняет воркера, обязан считаться.
+
+        Именно этой проверки не хватало. ``worker_protocol_rejected``
+        передаётся с ``definitive=False``, ранний возврат стоял до
+        счётчика - и у той самой петли, ради которой написано R23,
+        потолка не было вовсе. Пять тестов были зелёными, потому что
+        хелпер звал всё с ``definitive=True``.
+
+        Здесь форма не назначается: она берётся из ``src``. Новый код
+        отказа или смена формы у существующего попадут сюда сами.
+        """
+
+        shapes = production_failure_shapes()
+        self.assertIn(
+            False,
+            shapes.get("worker_protocol_rejected", frozenset()),
+            "продакшен перестал передавать этот код недоопределённым - "
+            "проверьте, что мотив R23 всё ещё покрыт",
+        )
+        for code, values in sorted(shapes.items()):
+            for definitive in sorted(values):
+                with self.subTest(code=code, definitive=definitive):
+                    before = self.attempts(code)
+                    self.fail_once("A", code, definitive=definitive)
+                    self.assertEqual(
+                        self.attempts(code),
+                        before + 1,
+                        f"{code} с definitive={definitive} не дошёл до счёта",
+                    )
 
     def test_waiting_for_a_rate_limit_does_not_spend_the_cap(self) -> None:
         """У лимита свой барьер и своя причина.

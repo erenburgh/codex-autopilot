@@ -181,6 +181,13 @@ def record_desktop_failure(
     store = StateStore(cfg.state_dir)
     plan = load_plan(cfg.state_dir, cfg.profile)
     coordinator = ResourceLockCoordinator(store, cfg.root)
+    # Три пути ниже завершаются раньше остальных. Возвращаться прямо из
+    # них больше нельзя: тикет на исчерпанном потолке заводится после
+    # транзакции и обязан завестись на любом из них, включая
+    # недоопределённый отказ.
+    early_exit = False
+    exhausted = False
+    descriptors: tuple[LaunchDescriptor, ...] = ()
     with coordinator.transaction():
         state = store.load()
         session = _session_by_token(state, reservation_token)
@@ -206,99 +213,18 @@ def record_desktop_failure(
         else:
             event = "start_failed"
         _append_event(state, event, session, timestamp, detail=reason)
-        if not definitive:
-            session["status"] = "AMBIGUOUS"
-            if session.get("automatic_dispatch_state") is not None:
-                session["automatic_dispatch_state"] = "AMBIGUOUS"
-                session["automatic_dispatch_pid"] = None
-                session["automatic_dispatch_connection_pid"] = None
-            session["ambiguous_phase"] = failure_phase
-            session["failure_reason"] = reason
-            store.save(state)
-            return ()
-
-        # A known Desktop task is never replaced merely because its harmless
-        # cwd preparation or a definitely rejected production send failed.
-        # Both phases can retry the same task without risking duplicate work.
-        if failure_phase in {"CREATED", "PREPARING"}:
-            session["status"] = "CREATED"
-            if session.get("automatic_dispatch_state") is not None:
-                session["automatic_dispatch_state"] = "FAILED"
-                session["automatic_dispatch_pid"] = None
-                session["automatic_dispatch_connection_pid"] = None
-            session["prep_process_pid"] = None
-            session["prep_app_server_pid"] = None
-            session["failure_reason"] = reason
-            state.phase = "AWAITING_DESKTOP_CWD_PREP"
-            state.last_error = reason
-            store.save(state)
-            return ()
-        if failure_phase in {"PREPARED", "SEND_RELAYING"}:
-            session["status"] = "PREPARED"
-            if session.get("automatic_dispatch_state") is not None:
-                session["automatic_dispatch_state"] = "FAILED"
-                session["automatic_dispatch_pid"] = None
-                session["automatic_dispatch_connection_pid"] = None
-            session["failure_reason"] = reason
-            state.phase = "AWAITING_DESKTOP_SEND"
-            state.last_error = reason
-            store.save(state)
-            return ()
-
         task_id = str(session["task_id"])
-        session["status"] = "RETRY_WAIT"
-        if session.get("automatic_dispatch_state") is not None:
-            session["automatic_dispatch_state"] = "RETRY_WAIT"
-            session["automatic_dispatch_pid"] = None
-            session["automatic_dispatch_connection_pid"] = None
-        session["failure_reason"] = reason
-        # Повторный отказ уже ожидающей задачи - не новое состояние.
-        # Прежде вторая запись отказа для той же задачи поднимала
-        # IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT, релей умирал,
-        # и поверх настоящей поломки открывался тикет о падении самого
-        # диспетчера. Машина состояний права, что запрещает самопереход;
-        # идемпотентной обязана быть запись отказа.
-        if state.task_states.get(task_id) != TaskState.RETRY_WAIT.value:
-            state.task_states = transition_task(
-                plan, state.task_states, task_id, TaskState.RETRY_WAIT
-            )
-        state.active_task_ids = [item for item in state.active_task_ids if item != task_id]
-        release_resources_in_state(
-            state,
-            str(session["resource_ownership_token"]),
-            reason="definitive Desktop worker failure",
-            now=timestamp,
-        )
-        # R23: потолок считается по сигнатуре отказа, а не по задаче.
-        # Ожидание лимита неудачей не считается - у него свой барьер и
-        # своя причина; тратить на него потолок значит останавливать
-        # прогон за чужой счёт.
+        # R23: попытка считается ЗДЕСЬ, до любого раннего возврата.
+        # Ниже три пути выходят раньше, и первый из них - недоопределённый
+        # отказ, которым продакшен передаёт worker_protocol_rejected:
+        # ровно ту протокольную ошибку, ради которой правило и написано.
+        # Пока счёт стоял после них, она не считалась ни разу, а потолок
+        # ловил только те сигнатуры, что доходили до RETRY_WAIT.
         attempts = int(state.failure_signature_attempts.get(failure_code, 0))
         if not rate_limited:
             attempts += 1
             state.failure_signature_attempts[failure_code] = attempts
-        # Ровно на пересечении: дальше задача стоит на паузе тикета, и
-        # второй тикет о той же поломке заводить не из чего.
         exhausted = not rate_limited and attempts == cfg.retry.maximum_attempts
-        delay = min(
-            cfg.retry.maximum_seconds,
-            cfg.retry.initial_seconds * (2 ** max(0, int(session["attempt"]) - 1)),
-        )
-        retry_at = epoch + delay
-        if reset_at is not None:
-            if isinstance(reset_at, bool) or not isinstance(reset_at, int) or reset_at < 0:
-                raise DesktopLifecycleError("rate-limit reset_at must be a non-negative epoch")
-            retry_at = max(retry_at, reset_at + 5)
-        state.task_retry_at[task_id] = retry_at
-        if rate_limited:
-            state.rate_limit_until = max(int(state.rate_limit_until or 0), retry_at)
-            append_resilience_event(
-                state,
-                "rate_limit_coordinated",
-                at=timestamp,
-                task_id=task_id,
-                detail={"retry_at": retry_at, "reset_at": reset_at},
-            )
         if exhausted:
             _append_event(
                 state,
@@ -315,35 +241,116 @@ def record_desktop_failure(
                     sort_keys=True,
                 ),
             )
-        _append_event(
-            state,
-            "retry_scheduled",
-            session,
-            timestamp,
-            detail=json.dumps(
-                {"retry_at": retry_at, "rate_limited": rate_limited},
-                sort_keys=True,
-            ),
-        )
-        descriptors = (
-            _reserve_in_state(
-                cfg,
+        if not definitive:
+            session["status"] = "AMBIGUOUS"
+            if session.get("automatic_dispatch_state") is not None:
+                session["automatic_dispatch_state"] = "AMBIGUOUS"
+                session["automatic_dispatch_pid"] = None
+                session["automatic_dispatch_connection_pid"] = None
+            session["ambiguous_phase"] = failure_phase
+            session["failure_reason"] = reason
+            store.save(state)
+            early_exit = True
+
+        # A known Desktop task is never replaced merely because its harmless
+        # cwd preparation or a definitely rejected production send failed.
+        # Both phases can retry the same task without risking duplicate work.
+        elif failure_phase in {"CREATED", "PREPARING"}:
+            session["status"] = "CREATED"
+            if session.get("automatic_dispatch_state") is not None:
+                session["automatic_dispatch_state"] = "FAILED"
+                session["automatic_dispatch_pid"] = None
+                session["automatic_dispatch_connection_pid"] = None
+            session["prep_process_pid"] = None
+            session["prep_app_server_pid"] = None
+            session["failure_reason"] = reason
+            state.phase = "AWAITING_DESKTOP_CWD_PREP"
+            state.last_error = reason
+            store.save(state)
+            early_exit = True
+        elif failure_phase in {"PREPARED", "SEND_RELAYING"}:
+            session["status"] = "PREPARED"
+            if session.get("automatic_dispatch_state") is not None:
+                session["automatic_dispatch_state"] = "FAILED"
+                session["automatic_dispatch_pid"] = None
+                session["automatic_dispatch_connection_pid"] = None
+            session["failure_reason"] = reason
+            state.phase = "AWAITING_DESKTOP_SEND"
+            state.last_error = reason
+            store.save(state)
+            early_exit = True
+        else:
+            session["status"] = "RETRY_WAIT"
+            if session.get("automatic_dispatch_state") is not None:
+                session["automatic_dispatch_state"] = "RETRY_WAIT"
+                session["automatic_dispatch_pid"] = None
+                session["automatic_dispatch_connection_pid"] = None
+            session["failure_reason"] = reason
+            # Повторный отказ уже ожидающей задачи - не новое состояние.
+            # Прежде вторая запись отказа для той же задачи поднимала
+            # IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT, релей умирал,
+            # и поверх настоящей поломки открывался тикет о падении самого
+            # диспетчера. Машина состояний права, что запрещает самопереход;
+            # идемпотентной обязана быть запись отказа.
+            if state.task_states.get(task_id) != TaskState.RETRY_WAIT.value:
+                state.task_states = transition_task(
+                    plan, state.task_states, task_id, TaskState.RETRY_WAIT
+                )
+            state.active_task_ids = [item for item in state.active_task_ids if item != task_id]
+            release_resources_in_state(
+                state,
+                str(session["resource_ownership_token"]),
+                reason="definitive Desktop worker failure",
+                now=timestamp,
+            )
+            delay = min(
+                cfg.retry.maximum_seconds,
+                cfg.retry.initial_seconds * (2 ** max(0, int(session["attempt"]) - 1)),
+            )
+            retry_at = epoch + delay
+            if reset_at is not None:
+                if isinstance(reset_at, bool) or not isinstance(reset_at, int) or reset_at < 0:
+                    raise DesktopLifecycleError("rate-limit reset_at must be a non-negative epoch")
+                retry_at = max(retry_at, reset_at + 5)
+            state.task_retry_at[task_id] = retry_at
+            if rate_limited:
+                state.rate_limit_until = max(int(state.rate_limit_until or 0), retry_at)
+                append_resilience_event(
+                    state,
+                    "rate_limit_coordinated",
+                    at=timestamp,
+                    task_id=task_id,
+                    detail={"retry_at": retry_at, "reset_at": reset_at},
+                )
+            _append_event(
+                state,
+                "retry_scheduled",
+                session,
+                timestamp,
+                detail=json.dumps(
+                    {"retry_at": retry_at, "rate_limited": rate_limited},
+                    sort_keys=True,
+                ),
+            )
+            descriptors = (
+                _reserve_in_state(
+                    cfg,
+                    plan,
+                    state,
+                    memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
+                    relay_owner_thread_id=session.get("relay_owner_thread_id"),
+                    now_epoch=now_epoch,
+                )
+                if reserve_other_ready
+                else ()
+            )
+            _finish_global_state(
                 plan,
                 state,
-                memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
-                relay_owner_thread_id=session.get("relay_owner_thread_id"),
-                now_epoch=now_epoch,
+                descriptors,
+                paused=store.pause_requested(),
             )
-            if reserve_other_ready
-            else ()
-        )
-        _finish_global_state(
-            plan,
-            state,
-            descriptors,
-            paused=store.pause_requested(),
-        )
-        store.save(state)
+            store.save(state)
     if exhausted:
         # Потолок исчерпан - к дежурному инженеру, а не сразу к человеку.
         # R3: инфраструктурный сбой не уходит в BLOCKED, пока бюджет
@@ -385,6 +392,8 @@ def record_desktop_failure(
         incident_store.ensure_pipeline_engineer(
             str(incident["incident_id"]), at=timestamp
         )
+    if early_exit:
+        return ()
     _materialize(descriptors)
     return descriptors
 
