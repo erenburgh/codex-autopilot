@@ -299,6 +299,38 @@ class SemanticStatusTests(unittest.TestCase):
         ):
             self.assertIn(expected, rendered)
 
+    def test_the_runtime_line_does_not_invent_a_model_it_never_recorded(self) -> None:
+        """R26: отображается только измеренное.
+
+        ``selected_model_display`` и ``selected_reasoning`` не пишет ни
+        один продакшен-путь: все шесть полей выбора модели в RunState
+        мертвы, записей вне ``run_state.py`` - ноль. Статус подставлял
+        вместо них "Host default", и это было утверждение без замера -
+        оно печаталось одинаково на любом прогоне, в том числе на том,
+        где хост шёл на другой модели и другом уровне рассуждения.
+        Настоящий выбор модели живёт на задаче, в маршрутизации
+        AIStudioRuntime, и в прогонное состояние не попадает вовсе.
+        """
+
+        self.assertIsNone(self.state.selected_model_display)
+        self.assertIsNone(self.state.selected_reasoning)
+
+        rendered = render_project_status(
+            self.cfg,
+            self.state,
+            self.plan,
+            dispatcher_running=False,
+        )
+        runtime = next(
+            line for line in rendered.splitlines() if line.startswith("Runtime:")
+        )
+        self.assertNotIn("Host default", runtime)
+        self.assertNotIn("model=", runtime)
+        self.assertNotIn("reasoning=", runtime)
+        # Измеренное остаётся на месте: оно приходит из плана и состояния.
+        self.assertIn("execution_mode=", runtime)
+        self.assertIn("strategy=", runtime)
+
 
 class WaitingReasonTests(unittest.TestCase):
     """Раздел 33: статус обязан называть причину ожидания."""

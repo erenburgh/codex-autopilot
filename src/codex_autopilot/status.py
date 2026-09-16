@@ -280,9 +280,14 @@ def render_project_status(
             f"Canonical cwd: {placement['canonical_cwd']}",
             f"Project association: {placement['association']}",
             (
-                f"Runtime: model={state.selected_model_display or 'Host default'}, "
-                f"reasoning={state.selected_reasoning or 'Host default'}, "
-                f"execution_mode={state.execution_mode or plan.tasks[state.milestone_index].execution_mode}, "
+                # Модель и уровень рассуждения отсюда сняты: их не пишет
+                # ни один продакшен-путь, и подставленное "Host default"
+                # было утверждением без замера - R26. Замерено: записей в
+                # selected_model_display и selected_reasoning вне
+                # run_state.py ноль, строка печаталась одинаково на любом
+                # прогоне. Настоящий выбор принадлежит задаче и живёт в
+                # маршрутизации AIStudioRuntime, а не в состоянии прогона.
+                f"Runtime: execution_mode={state.execution_mode or plan.tasks[state.milestone_index].execution_mode}, "
                 f"strategy={plan.model_strategy}, surface={cfg.runtime.worker_surface}, "
                 f"dispatcher={'running' if dispatcher_running else 'not running'}, "
                 f"phase={state.phase}, last_error={state.last_error or 'none'}"

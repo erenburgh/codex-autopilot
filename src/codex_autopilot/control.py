@@ -1302,10 +1302,16 @@ def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
                         f"{state.last_error or 'review BLOCKED.json'}"
                     ),
                 }
-            state.last_error = None
         store.clear_pause()
         recovered = _reconcile_before_resume(cfg)
         state = store.load()
+        if answered_ids:
+            # Причина снимается ПОСЛЕ перечитывания. Раньше её снимали на
+            # объекте выше, а следом состояние перечитывалось с диска ради
+            # задач, которые вернула реконсиляция, - и приносило прежний
+            # last_error обратно. Замерено: прогон уходил в READY/ARMED,
+            # а подробный статус печатал причину остановки, которой нет.
+            state.last_error = None
         request = {
             "project_root": str(cfg.root),
             "armed_at": utc_now(),

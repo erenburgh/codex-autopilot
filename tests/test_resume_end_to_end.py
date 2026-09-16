@@ -192,6 +192,67 @@ class ResumeChainTests(unittest.TestCase):
         self.assertIn("слот зарезервирован", report)
         self.assertIn("ЗАПУСК", report)
 
+    # --- 7. снятая причина остановки не возвращается с диска ----------
+
+    def _escalate(self) -> str:
+        """Завести тикет, ждущий пользователя, и остановить прогон по нему."""
+
+        from codex_autopilot.pipeline_engineer import (
+            IncidentClass,
+            IncidentSignal,
+            PipelineIncidentStore,
+            SideEffectOutcome,
+            _atomic_json,
+        )
+
+        store = PipelineIncidentStore(self.cfg.state_dir)
+        incident = store.open_incident(
+            IncidentSignal(
+                signal_id="sig-b4",
+                code="detached_dispatch_failed",
+                surface=IncidentClass.PIPELINE,
+                operation="create_thread",
+                summary="вердикт не разобран",
+                affected_task_ids=("M4",),
+                system_state={},
+                side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+            ),
+            at="2026-09-15T17:00:00+00:00",
+        )
+        incident_id = str(incident["incident_id"])
+        raw = store.load()
+        for item in raw["incidents"]:
+            if item["incident_id"] == incident_id:
+                item["phase"] = "ESCALATE_TO_USER"
+        _atomic_json(store.path, raw)
+        return incident_id
+
+    def test_answering_the_escalation_clears_the_blocked_reason(self) -> None:
+        """Причина остановки снималась в памяти и возвращалась с диска.
+
+        Возобновление ставило ``last_error = None`` на объекте, а следом
+        перечитывало состояние (``state = store.load()``) - ради задач,
+        которые вернула реконсиляция. Перечитанное состояние несло
+        прежнюю причину, и она же сохранялась. Замерено: после ответа на
+        эскалацию прогон уходит в READY/ARMED, а подробный статус до сих
+        пор печатает ``last_error`` остановки, которой больше нет.
+        """
+
+        self._escalate()
+        state = self.store.load()
+        state.status = "BLOCKED"
+        state.last_error = "M0 DANGEROUS_PERMISSION: перезапись живого рантайма"
+        self.store.save(state)
+
+        self.resume()
+
+        after = self.store.load()
+        self.assertEqual((after.status, after.phase), ("READY", "ARMED"))
+        self.assertIsNone(
+            after.last_error,
+            "причина остановки пережила ответ на эскалацию",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
