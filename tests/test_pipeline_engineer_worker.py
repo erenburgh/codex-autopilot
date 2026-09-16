@@ -458,6 +458,7 @@ class ResolvedMustHandOverTests(unittest.TestCase):
             self.cfg,
             self.failed_token,
             reason="Worker requested approval; the dispatcher never answers",
+            failure_code="app_server_rpc_failed",
             definitive=True,
             reserve_other_ready=False,
         )
@@ -829,6 +830,7 @@ class RepeatedFailureIsNotACrashTests(unittest.TestCase):
             self.cfg,
             token,
             reason="воркер сорвался",
+            failure_code="app_server_rpc_failed",
             definitive=True,
             reserve_other_ready=False,
         )

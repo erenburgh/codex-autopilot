@@ -88,6 +88,8 @@ def parser() -> argparse.ArgumentParser:
     relay_fail.add_argument("--project", type=Path, default=Path.cwd())
     relay_fail.add_argument("--token", required=True)
     relay_fail.add_argument("--reason", required=True)
+    # Вид отказа называет вызывающий: по нему R23 считает повторы.
+    relay_fail.add_argument("--failure-code", required=True)
     relay_fail.add_argument("--definitive", action="store_true")
     relay_fail.add_argument("--rate-limited", action="store_true")
     relay_fail.add_argument("--reset-at", type=int)
@@ -616,6 +618,7 @@ def main(argv: list[str] | None = None) -> int:
                 load_config(args.project),
                 args.token,
                 reason=args.reason,
+                failure_code=args.failure_code,
                 definitive=args.definitive,
                 rate_limited=args.rate_limited,
                 reset_at=args.reset_at,

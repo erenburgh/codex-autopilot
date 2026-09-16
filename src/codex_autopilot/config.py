@@ -42,7 +42,11 @@ class DesktopConfig:
 class RetryConfig:
     initial_seconds: int = 30
     maximum_seconds: int = 900
-    maximum_attempts: int = 96
+    # Попыток на ОДНУ сигнатуру отказа, не на задачу (R23). Было 96 и не
+    # читалось никем: повторы шли без потолка вовсе. Пять при задержке
+    # 30..900 с - около восьми минут топтания, тот же порядок, что у
+    # бюджета авто-восстановления инженера (retry_budget=2), а не сутки.
+    maximum_attempts: int = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +202,7 @@ def load_config(root_or_path: Path) -> Config:
         retry=RetryConfig(
             initial_seconds=_positive_int(retry.get("initial_seconds", 30), "retry.initial_seconds"),
             maximum_seconds=_positive_int(retry.get("maximum_seconds", 900), "retry.maximum_seconds"),
-            maximum_attempts=_positive_int(retry.get("maximum_attempts", 96), "retry.maximum_attempts"),
+            maximum_attempts=_positive_int(retry.get("maximum_attempts", 5), "retry.maximum_attempts"),
         ),
         runtime=RuntimeConfig(
             execution_strategy=_execution_strategy(

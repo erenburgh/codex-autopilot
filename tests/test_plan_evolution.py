@@ -918,6 +918,7 @@ class PlanEvolutionTests(unittest.TestCase):
             cfg,
             a.reservation_token,
             reason="account bucket exhausted",
+            failure_code="app_server_rpc_failed",
             definitive=True,
             rate_limited=True,
             reset_at=200,

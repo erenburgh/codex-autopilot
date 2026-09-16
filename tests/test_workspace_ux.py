@@ -263,6 +263,9 @@ class SemanticStatusTests(unittest.TestCase):
                 "recovery_slot": None,
                 "incidents": [],
                 "pending_transport": [],
+                # R23: отчёт о повторах читается из реестра подписей.
+                # На чистом прогоне повторов нет.
+                "repeat_breakages": [],
             },
         )
         self.assertEqual(

@@ -70,7 +70,6 @@ KNOWN_DEBT = {
     "ArtifactStagingStore.workspace_for": "ни одной ссылки ни в src, ни в тестах",
     "ProjectMemory.ensure_healthy": "ни одного продакшен-вызова",
     "ProjectMemory.export_summary": "ни одного продакшен-вызова",
-    "PipelineIncidentStore.signature_ledger": "читатель реестра подписей; подключается вместе с A5/R23 - решение владелицы от 16.09",
     "PreflightResult.lines": "ни одного продакшен-вызова",
     "EvidenceTrust.to_storage": "ни одной ссылки ни в src, ни в тестах",
 }

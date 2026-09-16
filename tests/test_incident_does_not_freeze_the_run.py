@@ -67,6 +67,7 @@ class IncidentScopeTests(unittest.TestCase):
             self.cfg,
             token,
             reason="Worker requested approval; the dispatcher never answers",
+            failure_code="app_server_rpc_failed",
             definitive=True,
             reserve_other_ready=False,
         )

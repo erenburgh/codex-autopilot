@@ -115,7 +115,11 @@ class RunState:
     relevant_memory_count: int | None = None
     preflight_completed_at: str | None = None
     prep_app_server_exited_at: str | None = None
-    retry_count: int = 0
+    # Счёт попыток по сигнатуре отказа (R23): ключ - failure_code, а не
+    # задача. Одна поломка у двух задач - одна поломка, поэтому в ключ не
+    # входит task_id. Прежний retry_count был скаляром, объявленным и ни
+    # с чем не сравниваемым, - снят вместе с иллюзией, что потолок есть.
+    failure_signature_attempts: dict[str, int] = field(default_factory=dict)
     retry_at: int | None = None
     reset_at: int | None = None
     last_error: str | None = None
@@ -583,6 +587,13 @@ def _validate_state(state: RunState) -> None:
         raise ValueError("worker session tokens and operation ids must be unique")
     if len(pending_tasks) != len(set(pending_tasks)):
         raise ValueError("a task must not have more than one pending worker session")
+    if not isinstance(state.failure_signature_attempts, dict):
+        raise ValueError("failure_signature_attempts must be an object")
+    for signature, value in state.failure_signature_attempts.items():
+        if not isinstance(signature, str) or not signature.strip():
+            raise ValueError("failure signature keys must be non-empty strings")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("failure signature counts must be non-negative integers")
     if not isinstance(state.task_retry_at, dict):
         raise ValueError("task_retry_at must be an object")
     for task_id, value in state.task_retry_at.items():

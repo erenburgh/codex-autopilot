@@ -145,6 +145,7 @@ def record_desktop_failure(
     reservation_token: str,
     *,
     reason: str,
+    failure_code: str,
     definitive: bool,
     rate_limited: bool = False,
     reset_at: int | None = None,
@@ -159,6 +160,20 @@ def record_desktop_failure(
     """Fail one reservation without corrupting or stopping independent work."""
 
     _require_desktop_owned(cfg)
+    # R23 считает повторы по сигнатуре отказа, а сигнатура в этом проекте
+    # отвечает на вопрос "что сломалось". Свободный текст reason на него
+    # не отвечает: str(exc) меняется от случая к случаю, и один и тот же
+    # отказ выглядел бы каждый раз новым. Поэтому вид отказа называет
+    # вызывающий, а не угадывает нормализатор.
+    if not isinstance(failure_code, str) or not failure_code.strip():
+        raise DesktopLifecycleError(
+            "failure_code must be a non-empty identifier of WHAT broke, "
+            "not the free-text reason: worker_paused, app_server_rpc_failed, "
+            "turn_ended_non_completed, worker_protocol_rejected, "
+            "transport_policy_rejected, desktop_interrupt, "
+            "app_server_create_failed, operator_reported"
+        )
+    failure_code = failure_code.strip()
     if reserve_other_ready:
         (hook_gate or require_trusted_stop_hook_for_config)(cfg)
     timestamp = at or utc_now()
@@ -254,6 +269,17 @@ def record_desktop_failure(
             reason="definitive Desktop worker failure",
             now=timestamp,
         )
+        # R23: потолок считается по сигнатуре отказа, а не по задаче.
+        # Ожидание лимита неудачей не считается - у него свой барьер и
+        # своя причина; тратить на него потолок значит останавливать
+        # прогон за чужой счёт.
+        attempts = int(state.failure_signature_attempts.get(failure_code, 0))
+        if not rate_limited:
+            attempts += 1
+            state.failure_signature_attempts[failure_code] = attempts
+        # Ровно на пересечении: дальше задача стоит на паузе тикета, и
+        # второй тикет о той же поломке заводить не из чего.
+        exhausted = not rate_limited and attempts == cfg.retry.maximum_attempts
         delay = min(
             cfg.retry.maximum_seconds,
             cfg.retry.initial_seconds * (2 ** max(0, int(session["attempt"]) - 1)),
@@ -272,6 +298,22 @@ def record_desktop_failure(
                 at=timestamp,
                 task_id=task_id,
                 detail={"retry_at": retry_at, "reset_at": reset_at},
+            )
+        if exhausted:
+            _append_event(
+                state,
+                "retry_budget_exhausted",
+                session,
+                timestamp,
+                detail=json.dumps(
+                    {
+                        "failure_code": failure_code,
+                        "attempts": attempts,
+                        "maximum_attempts": cfg.retry.maximum_attempts,
+                        "reason": reason,
+                    },
+                    sort_keys=True,
+                ),
             )
         _append_event(
             state,
@@ -302,6 +344,47 @@ def record_desktop_failure(
             paused=store.pause_requested(),
         )
         store.save(state)
+    if exhausted:
+        # Потолок исчерпан - к дежурному инженеру, а не сразу к человеку.
+        # R3: инфраструктурный сбой не уходит в BLOCKED, пока бюджет
+        # восстановления не исчерпан; исчерпание потолка и есть исчерпание
+        # ЭТОГО бюджета, но не инженерного. Тикет ставит задачу на паузу -
+        # именно она и разрывает цикл повторов; остановка прогона наступает
+        # дальше по пути инженера, когда исчерпан уже он.
+        incident_store = PipelineIncidentStore(cfg.state_dir)
+        incident = incident_store.open_incident(
+            IncidentSignal(
+                signal_id=f"{state.run_id}:{task_id}:{failure_code}:retry_budget_exhausted",
+                code=failure_code,
+                surface=IncidentClass.PIPELINE,
+                summary=(
+                    f"{task_id}: {attempts} попыток с одной сигнатурой "
+                    f"{failure_code}, потолок {cfg.retry.maximum_attempts}. "
+                    f"Последняя причина: {reason}"
+                ),
+                affected_task_ids=(task_id,),
+                # operation описывает мутирующую операцию транспорта и
+                # разрешён списком; исчерпание потолка - не она, поэтому
+                # поле не заполняется выдуманным значением.
+                side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+                system_state={
+                    "run_id": state.run_id,
+                    "task_id": task_id,
+                    "failure_code": failure_code,
+                    "attempts": str(attempts),
+                    "maximum_attempts": str(cfg.retry.maximum_attempts),
+                },
+                recent_events=tuple(
+                    dict(item)
+                    for item in state.lifecycle_journal
+                    if item.get("reservation_token") == reservation_token
+                )[-20:],
+            ),
+            at=timestamp,
+        )
+        incident_store.ensure_pipeline_engineer(
+            str(incident["incident_id"]), at=timestamp
+        )
     _materialize(descriptors)
     return descriptors
 
@@ -448,6 +531,7 @@ def record_policy_rejected_create_transport(
             cfg,
             token,
             reason=detail,
+            failure_code="transport_policy_rejected",
             definitive=True,
             now_epoch=now_epoch,
             at=timestamp,
@@ -475,6 +559,7 @@ def record_desktop_interrupt(
         cfg,
         str(session["reservation_token"]),
         reason=reason,
+        failure_code="desktop_interrupt",
         definitive=True,
         thread_id=thread_id,
         turn_id=turn_id,
@@ -509,6 +594,9 @@ def _record_app_server_create_failure(
         cfg,
         reservation_token,
         reason=reason,
+        # Отказ создания треда: определённость решает definitive, но
+        # сломалось одно и то же, поэтому сигнатура одна.
+        failure_code="app_server_create_failed",
         definitive=definitive,
         now_epoch=now_epoch,
         at=timestamp,

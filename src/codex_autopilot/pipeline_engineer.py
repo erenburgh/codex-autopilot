@@ -823,6 +823,11 @@ class PipelineIncidentStore:
                 for item in state["transport_reservations"]
                 if item["status"] not in {TransportStatus.ACKNOWLEDGED.value, TransportStatus.FAILED.value}
             ],
+            # R23 требует от отчёта три вещи: сигнатуру, число попыток и
+            # что менялось между ними. Первые две несёт сам реестр,
+            # третью - список его решений: это и есть перечень того, чем
+            # поломку пробовали чинить.
+            "repeat_breakages": _repeat_breakages(self.signature_ledger()),
         }
 
     def incident_package(self, incident_id: str) -> dict[str, Any]:
@@ -895,6 +900,40 @@ class PipelineIncidentStore:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def _repeat_breakages(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Поломки, случившиеся больше одного раза, и чем их чинили.
+
+    Одиночное событие поводом для отчёта не является: R23 ограничивает
+    ПОВТОР. Порядок - по числу повторов, чтобы самое назойливое читалось
+    первым.
+    """
+
+    repeats = []
+    for signature, entry in ledger.items():
+        if not isinstance(entry, Mapping):
+            continue
+        occurrences = int(entry.get("occurrences") or 0)
+        if occurrences < 2:
+            continue
+        tried = sorted(
+            {
+                action
+                for item in entry.get("resolutions") or []
+                if isinstance(item, Mapping)
+                for action in (item.get("actions") or [])
+            }
+        )
+        repeats.append(
+            {
+                "signature": signature,
+                "code": str(entry.get("code") or ""),
+                "occurrences": occurrences,
+                "tried": tried,
+            }
+        )
+    return sorted(repeats, key=lambda item: (-item["occurrences"], item["signature"]))
+
+
 def render_pipeline_status(snapshot: Mapping[str, Any]) -> str:
     lines = [
         f"Pipeline Engineer · On call — {snapshot['phase']}",
@@ -919,6 +958,12 @@ def render_pipeline_status(snapshot: Mapping[str, Any]) -> str:
     for incident in snapshot.get("incidents") or []:
         lines.append(
             f"- {incident['incident_id']}: {incident['classification']} / {incident['phase']} — {incident['summary']}"
+        )
+    for repeat in snapshot.get("repeat_breakages") or []:
+        tried = ", ".join(repeat["tried"]) if repeat["tried"] else "ничего не записано"
+        lines.append(
+            f"- повтор {repeat['code']} ({repeat['signature']}): "
+            f"{repeat['occurrences']} раз; пробовали: {tried}"
         )
     return "\n".join(lines)
 
