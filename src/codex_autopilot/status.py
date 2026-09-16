@@ -189,8 +189,19 @@ def render_short_status(
         )
     if snapshot["pause"]["requested"]:
         lines.append("Пауза запрошена: новых задач не запускается.")
-    if not dispatcher_running and not snapshot["running"] and not blocked:
-        lines.append("Диспетчер не работает.")
+    # Диспетчер - короткоживущий процесс: он поднимается на переход между
+    # задачами и гаснет, пока воркер или верификатор ведёт ход. Прежде
+    # условие смотрело только на "идёт" и забывало про "проверяется",
+    # поэтому карточка объявляла диспетчер мёртвым посреди идущей приёмки,
+    # противореча собственной строке "Проверяется" двумя выше. Единственное
+    # место, куда пользователь смотрит за правдой, врало ему.
+    if (
+        not dispatcher_running
+        and not snapshot["running"]
+        and not snapshot["verifying"]
+        and not blocked
+    ):
+        lines.append("Никто не работает: диспетчер не запущен.")
     audit = snapshot["creation_causality"]
     if audit["violations"]:
         lines.append(

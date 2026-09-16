@@ -20,7 +20,7 @@ import tempfile
 import unittest
 
 from _gates import patch_hook_trust_gates
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import load_config
 from codex_autopilot.run_state import StateStore
 from test_desktop_lifecycle import graph, task
@@ -148,7 +148,7 @@ class R32InterventionIsRecorded(unittest.TestCase):
         from pathlib import Path
 
         from _gates import patch_hook_trust_gates
-        from codex_autopilot.bootstrap import initialize_project
+        from _plan_contract import initialize_verified_project as initialize_project
         from codex_autopilot.config import load_config
         from codex_autopilot.run_state import StateStore
         from test_desktop_lifecycle import graph, task

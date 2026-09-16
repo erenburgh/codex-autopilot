@@ -8,14 +8,16 @@ import subprocess
 import tempfile
 import unittest
 
+from _plan_contract import canonicalize_plan, canonical_verification
 from codex_autopilot.appserver import AppServerError, ApprovalRequired, TurnResult
 from codex_autopilot.hook_trust import HookTrustApprovalRequired, runtime_hook_command
 from codex_autopilot.models import MODEL_IDS
 from codex_autopilot.appserver import AppServerClient, TurnTimeout
 from codex_autopilot.models import PUBLIC_REASONING
 from codex_autopilot.preflight import PROBE_ATTEMPTS, PROBE_REASONING
-from codex_autopilot.preflight import MEMORY_PREFLIGHT_OK, MEMORY_PREFLIGHT_TITLE, PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, REQUIRED_MEMORY_TOOLS, run_preflight
+from codex_autopilot.preflight import MEMORY_PREFLIGHT_OK, MEMORY_PREFLIGHT_TITLE, PLAN_VERIFICATION_TITLE, PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, REQUIRED_MEMORY_TOOLS, run_preflight
 from codex_autopilot.plan import validate_plan
+from codex_autopilot.plan_verification import PLAN_VERIFICATION_PREFIX
 from codex_autopilot.project_association import ProjectAssociationError, require_desktop_project_root
 
 
@@ -32,17 +34,41 @@ def project() -> Path:
 
 
 def plan(profile: str = "adaptive"):
-    item = {
+    # Канонический schema-3 план. Формат v0.8 здесь был сокращением, а
+    # сокращение это и была дыра: он не требует независимой приёмки.
+    item: dict = {
+        "id": "M1",
         "title": "Build UI",
         "objective": "Build and verify the UI",
         "definition_of_done": ["UI tests pass"],
         "execution_mode": "code",
         "execution_mode_reason": "Files and tests are sufficient.",
+        "role": "builder",
+        "depends_on": [],
+        "priority": 0,
+        "verification": canonical_verification(),
+        "resources": [
+            {"id": "tree", "kind": "directory", "target": "src", "access": "write"}
+        ],
     }
     if profile == "adaptive":
         item["reasoning"] = "high"
     return validate_plan(
-        {"goal": "Ship", "model_strategy": "auto" if profile == "adaptive" else "host-settings", "milestones": [item]},
+        canonicalize_plan({
+            "schema_version": 3,
+            "graph_version": 1,
+            "goal": "Ship",
+            "user_request": "Ship the UI exactly as specified.",
+            "model_strategy": "auto" if profile == "adaptive" else "host-settings",
+            "roles": [
+                {
+                    "id": "builder",
+                    "name": "Builder",
+                    "responsibilities": ["Build and verify the UI."],
+                }
+            ],
+            "tasks": [item],
+        }),
         profile,
     )
 
@@ -138,6 +164,27 @@ class PreflightClient:
         return {"turn": {"id": "preflight-turn"}}
 
     def wait_for_turn(self, thread_id, turn_id, **_kwargs):
+        call = next(
+            turn
+            for turn in reversed(self.plain_turns)
+            if turn["thread_id"] == thread_id
+        )
+        if "PLAN_VERIFICATION_CONTEXT:" in call["prompt"]:
+            turn = {
+                "id": turn_id,
+                "status": "completed",
+                "items": [
+                    {
+                        "type": "agentMessage",
+                        "phase": "final_answer",
+                        "text": (
+                            f'{PLAN_VERIFICATION_PREFIX} '
+                            '{"verdict":"PASS","issues":[]}'
+                        ),
+                    }
+                ],
+            }
+            return TurnResult(thread_id, turn, [])
         turn = {
             "id": turn_id,
             "status": "completed",
@@ -369,13 +416,24 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(result.project, root.resolve())
         self.assertEqual(result.next_model, "GPT-5.6 Sol")
         client = PreflightClient.instances[-1]
-        self.assertEqual(client.thread_args["cwd"], root.resolve())
-        self.assertFalse(client.thread_args["ephemeral"])
-        self.assertTrue(client.thread_args["project_memory"])
-        self.assertEqual(client.named, [("preflight-thread", MEMORY_PREFLIGHT_TITLE)])
-        self.assertEqual(client.archived, ["preflight-thread"])
-        self.assertEqual(len(client.plain_turns), 1)
+        memory_args, verifier_args = client.thread_args_history
+        self.assertEqual(memory_args["cwd"], root.resolve())
+        self.assertFalse(memory_args["ephemeral"])
+        self.assertTrue(memory_args["project_memory"])
+        self.assertFalse(verifier_args["project_memory"])
+        self.assertEqual(
+            client.named,
+            [
+                ("preflight-thread", MEMORY_PREFLIGHT_TITLE),
+                ("preflight-thread-2", PLAN_VERIFICATION_TITLE),
+            ],
+        )
+        self.assertEqual(
+            client.archived, ["preflight-thread", "preflight-thread-2"]
+        )
+        self.assertEqual(len(client.plain_turns), 2)
         self.assertEqual(Path(client.plain_turns[0]["cwd"]).resolve(), root.resolve())
+        self.assertEqual(Path(client.plain_turns[1]["cwd"]).resolve(), root.resolve())
         self.assertFalse((root / ".codex-autopilot").exists())
 
     def test_unprobed_declared_capability_fails_before_app_server(self):
@@ -424,7 +482,7 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(result.memory_preflight_thread_id, "preflight-thread")
         self.assertEqual(len(client.approval_responses), 1)
         self.assertEqual(client.approval_responses[0][1], "always")
-        self.assertEqual(len(client.plain_turns), 2)
+        self.assertEqual(len(client.plain_turns), 3)
         self.assertTrue(
             all(
                 Path(turn["cwd"]).resolve() == root.resolve()
@@ -436,9 +494,13 @@ class PreflightTests(unittest.TestCase):
             [
                 ("preflight-thread", MEMORY_PREFLIGHT_TITLE),
                 ("preflight-thread-2", f"{MEMORY_PREFLIGHT_TITLE} · verification"),
+                ("preflight-thread-3", PLAN_VERIFICATION_TITLE),
             ],
         )
-        self.assertEqual(client.archived, ["preflight-thread", "preflight-thread-2"])
+        self.assertEqual(
+            client.archived,
+            ["preflight-thread", "preflight-thread-2", "preflight-thread-3"],
+        )
         self.assertTrue(client.closed)
 
     def test_approved_compact_completion_is_hydrated_before_fresh_task_verification(self):
@@ -455,8 +517,11 @@ class PreflightTests(unittest.TestCase):
             approve_project_memory_always=True,
         )
         client = PreflightClient.instances[-1]
-        self.assertEqual(len(client.plain_turns), 2)
-        self.assertEqual(client.archived, ["preflight-thread", "preflight-thread-2"])
+        self.assertEqual(len(client.plain_turns), 3)
+        self.assertEqual(
+            client.archived,
+            ["preflight-thread", "preflight-thread-2", "preflight-thread-3"],
+        )
 
     def test_fresh_untrusted_mcp_stops_before_real_worker_or_run_state(self):
         root = project()
@@ -730,8 +795,9 @@ class TrustProbeTests(unittest.TestCase):
     def test_the_probe_does_not_run_at_the_worker_effort(self):
         self.run_preflight(PreflightClient)
         turns = PreflightClient.instances[-1].plain_turns
-        self.assertEqual(len(turns), 1)
+        self.assertEqual(len(turns), 2)
         self.assertEqual(turns[0]["effort"], PROBE_REASONING)
+        self.assertEqual(turns[1]["effort"], "high")
         # Лестница воркеров начинается с medium. Проба воркером не
         # является, и её усилие не должно в эту лестницу попадать:
         # иначе правка маршрутизации молча вернёт xhigh.
@@ -756,8 +822,8 @@ class TrustProbeTests(unittest.TestCase):
         result = self.run_preflight(FlakyProbeClient)
         self.assertEqual(result.next_model, "GPT-5.6 Sol")
         client = FlakyProbeClient.instances[-1]
-        self.assertEqual(client.attempts, 2)
-        self.assertEqual(len(client.plain_turns), 2)
+        self.assertEqual(client.attempts, 3)
+        self.assertEqual(len(client.plain_turns), 3)
         # Зависший ход прерывается, иначе он продолжает занимать тред.
         self.assertEqual(len(client.interrupted), 1)
 

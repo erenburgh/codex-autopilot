@@ -19,7 +19,7 @@ import unittest
 
 from _gates import patch_hook_trust_gates
 from _relay import reserve_ready_frontier
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import load_config
 from codex_autopilot.lifecycle_failures import record_desktop_failure
 from codex_autopilot.run_state import StateStore

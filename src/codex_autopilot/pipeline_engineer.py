@@ -657,9 +657,25 @@ class PipelineIncidentStore:
             phase = IncidentPhase(str(incident["phase"]))
             if phase is IncidentPhase.ESCALATE_TO_USER:
                 return phase
-            if phase is not IncidentPhase.PIPELINE_ENGINEER:
+            # Инженер вправе закрыть сам сбой и при этом поднять решение
+            # владельцу: это разные вещи. Тикет он чинит, а конфликт
+            # правила решить не может - это не его полномочие.
+            #
+            # Прежде эскалация допускалась только из фазы «удерживается
+            # инженером», и закрытый тикет её отвергал. 16.09.2026 это
+            # дважды останавливало прогон целиком: инженер закрывал сбой,
+            # эскалировал конфликт R31, отказ уходил наверх, диспетчер
+            # падал, завершение хода принимать становилось некому. При
+            # этом терять такую эскалацию нельзя - решение, которого
+            # никто не увидит, не отличается от решения непринятого.
+            if phase not in {
+                IncidentPhase.PIPELINE_ENGINEER,
+                IncidentPhase.RESOLVED,
+                IncidentPhase.RECOVERED,
+            }:
                 raise PipelineIncidentError(
-                    "escalation requires an incident held by Pipeline Engineer"
+                    "escalation requires an incident held, resolved or recovered "
+                    "by Pipeline Engineer"
                 )
             escalate_to_user(incident, reason_code, at=at, detail=detail)
             incident["updated_at"] = at

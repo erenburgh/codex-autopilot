@@ -57,6 +57,18 @@ class AppServerTests(unittest.TestCase):
         self.assertNotIn("selectedCapabilityRoots", params)
         self.assertEqual(set(params), {"cwd", "permissions", "ephemeral", "runtimeWorkspaceRoots"})
 
+    def test_tool_free_thread_does_not_load_project_memory_plugin(self):
+        client = CaptureClient()
+        client.start_thread(
+            cwd=Path("/project"),
+            permission_profile=":workspace",
+            project_id=None,
+            model=None,
+            project_memory=False,
+        )
+        params = client.calls[-1][1]
+        self.assertEqual(set(params), {"cwd", "permissions", "ephemeral"})
+
     def test_adaptive_thread_start_sends_only_resolved_model(self):
         client = CaptureClient()
         client.start_thread(cwd=Path("/project"), permission_profile=":workspace", project_id=None, model="gpt-5.6-sol", plugin_root=PLUGIN_ROOT)

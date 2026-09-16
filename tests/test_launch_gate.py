@@ -315,7 +315,7 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
     def setUp(self) -> None:
         from unittest import mock
 
-        from codex_autopilot.bootstrap import initialize_project
+        from _plan_contract import initialize_verified_project as initialize_project
         from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
         import json
 

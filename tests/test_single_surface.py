@@ -56,7 +56,7 @@ class WrittenConfigTests(unittest.TestCase):
     def test_bootstrap_takes_no_surface_argument(self) -> None:
         import inspect
 
-        from codex_autopilot.bootstrap import initialize_project
+        from _plan_contract import initialize_verified_project as initialize_project
 
         self.assertNotIn(
             "worker_surface", inspect.signature(initialize_project).parameters

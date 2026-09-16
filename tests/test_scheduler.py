@@ -16,7 +16,11 @@ from codex_autopilot.scheduler import (
     schedule,
 )
 from codex_autopilot.task_state import TaskState, initial_task_states, transition_task
-from _plan_contract import canonical_verification
+from _plan_contract import (
+    canonical_plan_verification,
+    canonicalize_plan,
+    canonical_verification,
+)
 
 
 def raw_task(
@@ -55,7 +59,7 @@ def make_plan(
     computer_use_slots: int = 1,
 ) -> Plan:
     return validate_plan(
-        {
+        canonicalize_plan({
             "schema_version": 3,
             "graph_version": 1,
             "goal": "Exercise deterministic scheduling.",
@@ -72,7 +76,7 @@ def make_plan(
                 }
             ],
             "tasks": tasks,
-        },
+        }),
         "adaptive",
     )
 
@@ -86,6 +90,7 @@ def make_state(plan: Plan) -> RunState:
         task_states=initial_task_states(plan),
         task_attempts={task.id: 0 for task in plan.tasks},
         task_revisions={task.id: 0 for task in plan.tasks},
+        plan_verification=canonical_plan_verification(plan),
     )
 
 

@@ -5,6 +5,10 @@ import re
 from typing import Any, Callable
 
 from .ai_studio import AIStudioRuntime, ContextBoundaryError
+from .artifact_staging_lifecycle import (
+    audit_completed_task_scope,
+    bind_completion_artifact_gate,
+)
 from .bootstrap import mark_roadmap, select_milestone
 from .config import Config
 from .department_acceptance import (
@@ -18,12 +22,16 @@ from .hook_trust import require_trusted_stop_hook_for_config
 from .lifecycle_base import parse_applied_rules
 from .memory import ProjectMemory
 from .rules import record_violation
-from .scope import (
-    ScopeNotObservable,
-    audit_declared_scope,
-    observe_changed_paths,
+from .plan import Plan, load_plan, plan_to_dict, validate_plan_change
+from .skill_packs import record_runtime_skill_attestation
+from .plan_verification import (
+    PlanVerificationError,
+    deterministic_plan_issues,
+    format_plan_verification_issues,
+    parse_plan_verification_result,
+    plan_change_verification_mode,
+    plan_sha256,
 )
-from .plan import Plan, load_plan
 from .resilience import (
     PlanChangeConflictError,
     PlanChangeProtocolError,
@@ -58,6 +66,7 @@ from .verification import (
 )
 
 from .lifecycle_base import (
+    WorkerProtocolError,
     IMPLEMENTATION_SESSION_KINDS,
     PENDING_SESSION_STATUSES,
     SUCCESS_STATUSES,
@@ -68,6 +77,7 @@ from .lifecycle_base import (
     _bind_resource_identity,
     _dispatcher_owns_reservation,
     _finish_global_state,
+    _latest_completion_context,
     _latest_implementation_thread_id,
     _materialize,
     _record_deterministic_evidence,
@@ -77,11 +87,14 @@ from .lifecycle_base import (
     _sync_legacy_cursor,
     _verified_prefix,
     parse_desktop_worker_status,
-    task_checkpoint,
-    task_checkpoint_path,
 )
 from .lifecycle_failures import reconcile_desktop_thread_identity
 from .lifecycle_reservations import _reserve_in_state
+from .plan_verification_lifecycle import (
+    apply_legacy_plan_change_without_goal_contract,
+    complete_plan_verifier as _complete_plan_verifier,
+    reject_plan_verifier_result as _reject_plan_verifier_result,
+)
 
 
 def _audit_rule_declaration(
@@ -222,35 +235,6 @@ def _rule_statement_record(memory, rule_id: str, statement: str) -> dict[str, An
     )
 
 
-def _audit_task_scope(
-    cfg: Config,
-    plan: Plan,
-    state: RunState,
-    session: dict[str, Any],
-    at: str,
-) -> None:
-    """Правило R7: сверить фактически изменённые пути с объявленной областью.
-
-    Правило в режиме CHECKED: расхождение записывается как дефект и
-    поднимает R7 в приоритете правил следующего воркера, но не рушит
-    завершение. Невозможность наблюдать пути записывается отдельно -
-    "не проверено" не должно выглядеть как "нарушений нет".
-    """
-
-    task = plan.task_map.get(str(session.get("task_id") or ""))
-    if task is None:
-        return
-    try:
-        changed = observe_changed_paths(cfg.root, session.get("scope_baseline"))
-    except ScopeNotObservable as error:
-        _append_event(state, "scope_not_observed", session, at, detail=str(error))
-        return
-    violations = audit_declared_scope(task, changed, project_root=cfg.root)
-    for detail in violations:
-        record_violation(cfg.state_dir, "R7", detail=detail)
-        _append_event(state, "scope_violation_recorded", session, at, detail=detail)
-
-
 def complete_desktop_worker(
     cfg: Config,
     *,
@@ -317,7 +301,7 @@ def complete_desktop_worker(
         try:
             replanner_result = parse_plan_change_result(final_message)
         except PlanChangeProtocolError as exc:
-            raise DesktopLifecycleError(str(exc)) from exc
+            raise WorkerProtocolError(str(exc)) from exc
         # Владение переходом передаётся и сюда. Инженеру и воркеру его
         # чинили по отдельности, реплэннера пропустили: сторона
         # вызываемого была готова, а вызывающий флаг не передавал. Из-за
@@ -336,10 +320,34 @@ def complete_desktop_worker(
             dispatcher_authorized=dispatcher_authorized,
             dispatcher_pid=dispatcher_pid,
         )
+    if kind == "plan_verifier":
+        try:
+            plan_verdict = parse_plan_verification_result(final_message)
+        except PlanVerificationError as exc:
+            return _reject_plan_verifier_result(
+                cfg,
+                session=session,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                reason=str(exc),
+                at=at,
+                now_epoch=now_epoch,
+                dispatcher_authorized=dispatcher_authorized,
+            )
+        return _complete_plan_verifier(
+            cfg,
+            session=session,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            verdict=plan_verdict,
+            at=at,
+            now_epoch=now_epoch,
+            dispatcher_authorized=dispatcher_authorized,
+        )
     try:
         plan_change_request = parse_plan_change_request(final_message)
     except PlanChangeProtocolError as exc:
-        raise DesktopLifecycleError(str(exc)) from exc
+        raise WorkerProtocolError(str(exc)) from exc
     reason_code = ""
     if plan_change_request is not None:
         worker_status = "PLAN_CHANGE_REQUEST"
@@ -369,12 +377,9 @@ def complete_desktop_worker(
         worker_status, reason_code = parse_desktop_worker_status(final_message)
     task_id = str(session["task_id"])
     checkpoint_before = str(session.get("checkpoint_before") or "")
-    checkpoint_path = task_checkpoint_path(cfg.state_dir, task_id)
-    if task_checkpoint(cfg.state_dir, task_id) == checkpoint_before:
-        raise DesktopLifecycleError(
-            "worker did not update its own checkpoint file: "
-            f"{checkpoint_path.relative_to(cfg.state_dir.parent)}"
-        )
+    artifact_gate = bind_completion_artifact_gate(
+        cfg, session, task_id, checkpoint_before
+    )
     memory = ProjectMemory(cfg.root)
     evidence = memory.milestone_evidence(
         task_id,
@@ -383,7 +388,7 @@ def complete_desktop_worker(
     )
     needs_evidence = kind == "verifier" or worker_status in SUCCESS_STATUSES
     if needs_evidence and not evidence:
-        raise DesktopLifecycleError(
+        raise WorkerProtocolError(
             f"{task_id} returned completion without new Project Memory evidence"
         )
     plan = load_plan(cfg.state_dir, cfg.profile)
@@ -429,7 +434,7 @@ def complete_desktop_worker(
                     "department-binding and rubric-binding resources"
                 )
         except (DepartmentAcceptanceError, ContextBoundaryError) as exc:
-            raise DesktopLifecycleError(str(exc)) from exc
+            raise WorkerProtocolError(str(exc)) from exc
         invalid_refs = sorted(
             {
                 ref
@@ -439,7 +444,7 @@ def complete_desktop_worker(
             }
         )
         if invalid_refs:
-            raise DesktopLifecycleError(
+            raise WorkerProtocolError(
                 f"verifier issues reference unknown Definition of Done items: {invalid_refs}"
             )
     deterministic_results: tuple[DeterministicCheckResult, ...] = ()
@@ -449,7 +454,7 @@ def complete_desktop_worker(
         and task.verification.deterministic_checks
     ):
         deterministic_results = run_deterministic_checks(
-            cfg.root,
+            artifact_gate.workspace,
             task.verification.deterministic_checks,
             evidence,
         )
@@ -465,7 +470,21 @@ def complete_desktop_worker(
             after_audit_id=int(session.get("memory_audit_before") or 0),
             limit=100,
         )
+    if (
+        artifact_gate.staged
+        and kind in IMPLEMENTATION_SESSION_KINDS | {"revision"}
+        and worker_status in SUCCESS_STATUSES
+    ):
+        artifact_gate.seal_and_record(
+            task_id, memory, provider_thread_id=thread_id
+        )
+        evidence = memory.milestone_evidence(
+            task_id,
+            after_audit_id=int(session.get("memory_audit_before") or 0),
+            limit=100,
+        )
     memory_verification_ids: list[str] = []
+    independent_verification_id: str | None = None
     if deterministic_results:
         memory_verification_ids.extend(
             _record_deterministic_verification_results(
@@ -479,7 +498,7 @@ def complete_desktop_worker(
         )
     if verdict is not None:
         verifier_role = plan.role_map[verifier_route(plan, task).role_id].name
-        verification = memory.record_verification_result(
+        verification = memory._record_runtime_verification_result(
             task_id=task_id,
             check_id="independent-acceptance",
             policy="independent",
@@ -507,7 +526,19 @@ def complete_desktop_worker(
                 ),
             },
         )
-        memory_verification_ids.append(str(verification["id"]))
+        independent_verification_id = str(verification["id"])
+        memory_verification_ids.append(independent_verification_id)
+        if verdict.verdict == "PASS" and task.skill_attestation is not None:
+            implementation_evidence, implementation_checks = _latest_completion_context(
+                memory, initial, task_id
+            )
+            skill_verification = record_runtime_skill_attestation(
+                memory, plan, task, evidence=implementation_evidence,
+                check_results=implementation_checks, created_by=verifier_role,
+                provider_thread_id=thread_id, provider_turn_id=turn_id,
+            )
+            assert skill_verification is not None
+            memory_verification_ids.append(str(skill_verification["id"]))
     timestamp = at or utc_now()
     coordinator = ResourceLockCoordinator(store, cfg.root)
     with coordinator.transaction():
@@ -540,7 +571,7 @@ def complete_desktop_worker(
         )
         _append_event(state, "turn_identity_bound", current, timestamp)
         _append_event(state, "turn_completed", current, timestamp, detail=worker_status)
-        _audit_task_scope(cfg, plan, state, current, timestamp)
+        audit_completed_task_scope(cfg, plan, state, current, timestamp)
         _audit_rule_declaration(cfg, state, current, final_message, timestamp)
         _record_rule_conflicts(cfg, state, current, final_message, timestamp, memory)
 
@@ -608,6 +639,13 @@ def complete_desktop_worker(
                 raise DesktopLifecycleError("verifier completion requires VERIFYING state")
             assert verdict is not None
             if verdict.verdict == "PASS":
+                artifact_gate.promote(
+                    task_id,
+                    independent_verification_id,
+                    state=state,
+                    session=current,
+                    at=timestamp,
+                )
                 state.task_states = transition_task(
                     plan, state.task_states, task_id, TaskState.VERIFIED
                 )
@@ -627,6 +665,7 @@ def complete_desktop_worker(
                     ),
                 )
             else:
+                artifact_gate.require_revision(task_id)
                 state.task_states = transition_task(
                     plan, state.task_states, task_id, TaskState.REVISION_REQUIRED
                 )
@@ -679,6 +718,7 @@ def complete_desktop_worker(
                     ),
                 )
                 if not passed:
+                    artifact_gate.require_revision(task_id)
                     state.task_states = transition_task(
                         plan, state.task_states, task_id, TaskState.VERIFYING
                     )
@@ -1297,6 +1337,7 @@ def _complete_replanner(
             result,
             request_id=request_id,
             profile=cfg.profile,
+            promotion_evidence_store=ProjectMemory(cfg.root),
         )
     except (PlanChangeProtocolError, PlanChangeConflictError, ValueError) as exc:
         # Негодный граф - ошибка модели, а не поломка инфраструктуры.
@@ -1320,6 +1361,30 @@ def _complete_replanner(
             dispatcher_authorized=dispatcher_authorized,
         )
 
+    admission_issues = deterministic_plan_issues(candidate)
+    if admission_issues:
+        return _reject_replanner_result(
+            cfg,
+            session=session,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            reason=(
+                "proposed plan failed deterministic coverage admission: "
+                + format_plan_verification_issues(admission_issues)
+            ),
+            request_id=request_id,
+            current_plan=current_plan,
+            at=at,
+            now_epoch=now_epoch,
+            dispatcher_authorized=dispatcher_authorized,
+        )
+    if current_plan.goal_contract is None:
+        return apply_legacy_plan_change_without_goal_contract(
+            cfg, current_plan=current_plan, candidate=candidate, session=session,
+            result=result, thread_id=thread_id, turn_id=turn_id, at=at,
+            now_epoch=now_epoch, dispatcher_authorized=dispatcher_authorized,
+        )
+
     timestamp = at or utc_now()
     store = StateStore(cfg.state_dir)
     coordinator = ResourceLockCoordinator(store, cfg.root)
@@ -1336,13 +1401,25 @@ def _complete_replanner(
         if int(change["base_graph_version"]) != current_plan.graph_version:
             raise DesktopLifecycleError("active plan change base version changed")
         current["turn_id"] = turn_id
-        current["final_status"] = "PLAN_CHANGE_APPLIED"
+        verification_mode = plan_change_verification_mode(
+            current_plan,
+            candidate,
+            accepted_patches_since_full=(
+                state.accepted_plan_patches_since_full_revalidation
+            ),
+            full_revalidation_patches=(
+                cfg.runtime.full_plan_revalidation_patches
+            ),
+        )
+        current["final_status"] = "PLAN_CHANGE_PROPOSED"
         current["completed_at"] = timestamp
         current["status"] = "COMPLETED"
         current["plan_change_result"] = {
             "request_id": result.request_id,
             "base_graph_version": result.base_graph_version,
             "target_graph_version": candidate.graph_version,
+            "proposed_plan_sha256": plan_sha256(candidate),
+            "verification_mode": verification_mode,
         }
         _bind_resource_identity(
             state,
@@ -1356,7 +1433,7 @@ def _complete_replanner(
             "turn_completed",
             current,
             timestamp,
-            detail="PLAN_CHANGE_APPLIED",
+            detail="PLAN_CHANGE_PROPOSED",
         )
         release_resources_in_state(
             state,
@@ -1367,19 +1444,21 @@ def _complete_replanner(
         state.active_task_ids = [
             task_id for task_id in state.active_task_ids if task_id != current["task_id"]
         ]
-        change["status"] = "REPLANNING"
-        reconcile_plan_change_state(
+        requester_task_id = str(change["requester_task_id"])
+        state.task_states = transition_task(
             current_plan,
-            candidate,
-            state,
-            request_id=request_id,
-            requester_task_id=str(change["requester_task_id"]),
-            at=timestamp,
+            state.task_states,
+            requester_task_id,
+            TaskState.BLOCKED,
         )
-        _sync_legacy_cursor(candidate, state)
+        change["status"] = "PLAN_VERIFICATION_REQUIRED"
+        change["proposed_plan"] = plan_to_dict(candidate)
+        change["proposed_plan_sha256"] = plan_sha256(candidate)
+        change["verification_mode"] = verification_mode
+        change["proposed_at"] = timestamp
         descriptors = _reserve_in_state(
             cfg,
-            candidate,
+            current_plan,
             state,
             memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
             relay_owner_thread_id=thread_id,
@@ -1399,24 +1478,12 @@ def _complete_replanner(
                 "ADVANCING" if descriptors else "COMPLETED"
             )
         _finish_global_state(
-            candidate,
+            current_plan,
             state,
             descriptors,
             paused=store.pause_requested(),
         )
-        commit_plan_change(
-            cfg.state_dir,
-            profile=cfg.profile,
-            current=current_plan,
-            candidate=candidate,
-            state=state,
-            request_id=request_id,
-        )
-        done = state.status == "DONE"
-        completed = _verified_prefix(candidate, state)
-        next_index = state.milestone_index
-    mark_roadmap(cfg.root, candidate, completed, language=cfg.language)
-    if candidate.legacy_serial and not done:
-        select_milestone(cfg.state_dir, candidate, next_index, language=cfg.language)
+        store.save(state)
+        done = False
     _materialize(descriptors)
-    return CompletionOutcome(True, "PLAN_CHANGE_APPLIED", descriptors, done)
+    return CompletionOutcome(True, "PLAN_CHANGE_PROPOSED", descriptors, done)

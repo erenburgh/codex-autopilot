@@ -13,7 +13,7 @@ from unittest import mock
 from _gates import patch_hook_trust_gates
 
 from codex_autopilot.appserver import DESKTOP_ORIGINATOR, AppServerRpcError, TurnResult
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.cli import (
     _run_automatic_relay_dispatch,
     parser as cli_parser,
@@ -31,7 +31,7 @@ from codex_autopilot.control import (
 )
 from codex_autopilot.hook_trust import HookTrustApprovalRequired
 from _handoff import bump_task_checkpoint
-from _plan_contract import canonical_verification
+from _plan_contract import TEST_OUTCOME_ID, canonicalize_plan, canonical_verification
 from codex_autopilot.lifecycle import task_checkpoint_path
 from _appserver_fakes import activate_via_app_server
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
@@ -96,11 +96,13 @@ def task(
         "context": {},
         "outputs": [],
         "tags": [],
+        "produces_outcomes": [TEST_OUTCOME_ID],
+        "acceptance_class": "mixed",
     }
 
 
 def graph(*, max_workers: int = 2) -> dict[str, object]:
-    return {
+    return canonicalize_plan({
         "schema_version": 3,
         "graph_version": 1,
         "goal": "Exercise the Desktop-owned JIT lifecycle.",
@@ -121,10 +123,17 @@ def graph(*, max_workers: int = 2) -> dict[str, object]:
             task("B", path="src/b"),
             task("C", depends_on=("A", "B"), path="src/c"),
         ],
-    }
+    })
 
 
 def legacy_graph() -> dict[str, object]:
+    """План v0.8: последовательная цепочка M6-M7-M8.
+
+    Эти тесты проверяют именно legacy-поведение повторов, поэтому формат
+    остаётся родным. Впустить его можно только как миграцию настоящего
+    прогона - её подкладывает `seed_migrated_project`.
+    """
+
     return {
         "schema_version": 2,
         "goal": "Recover a migrated serial run.",
@@ -142,6 +151,45 @@ def legacy_graph() -> dict[str, object]:
             for task_id in ("M6", "M7", "M8")
         ],
     }
+
+
+def seed_migrated_project(root: Path, milestone_ids: tuple[str, ...]) -> None:
+    """Сделать проект похожим на прогон, который действительно мигрируют.
+
+    План v0.8 впускается только как миграция существующего прогона:
+    доказательство - его состояние и его план на диске. Свежий проект
+    формат v0.8 не принимает вовсе, и это не придирка, а закрытая дыра -
+    иначе любой новый план объявлял бы себя мигрированным и выходил
+    из-под независимой приёмки.
+    """
+
+    state_dir = root / ".codex-autopilot"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "plan.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "goal": "Previous run.",
+                "model_strategy": "auto",
+                "milestones": [{"id": task_id} for task_id in milestone_ids],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state_dir / "run-state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 4,
+                "run_id": "existing-v08-run",
+                "status": "DONE",
+                "phase": "DONE",
+                "milestone_index": max(len(milestone_ids) - 1, 0),
+                "milestone_id": milestone_ids[-1] if milestone_ids else None,
+                "worker_history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 class FakePrepClient:
@@ -570,9 +618,11 @@ class DesktopLifecycleTests(unittest.TestCase):
         skill.write_text("# test skill\n", encoding="utf-8")
         plan_file = root / "input-plan.json"
         plan_file.write_text(json.dumps(legacy_graph()), encoding="utf-8")
+        seed_migrated_project(root, ("M6", "M7", "M8"))
         initialize_project(
             root,
             plan_file,
+            replace=True,
             profile="adaptive",
             skill_path=skill,
             desktop_project_id="desktop-project",
@@ -1898,9 +1948,11 @@ class DesktopLifecycleTests(unittest.TestCase):
         plan_data["milestones"] = plan_data["milestones"][:1]
         plan_file = root / "input-plan.json"
         plan_file.write_text(json.dumps(plan_data), encoding="utf-8")
+        seed_migrated_project(root, ("M6",))
         initialize_project(
             root,
             plan_file,
+            replace=True,
             profile="adaptive",
             skill_path=skill,
             desktop_project_id="desktop-project",

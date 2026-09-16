@@ -26,7 +26,7 @@ from codex_autopilot.ai_studio import (
     PROMPT_BUDGET_SHARE,
     AIStudioRuntime,
 )
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import load_config
 from codex_autopilot.memory import MemoryValidationError, ProjectMemory
 from codex_autopilot.memory_mcp import MemoryMcpServer, _combined_input_schema
@@ -34,6 +34,7 @@ from codex_autopilot.plan import validate_plan
 from codex_autopilot.preflight import MEMORY_SERVER_NAME as PREFLIGHT_MEMORY_SERVER_NAME
 from codex_autopilot.run_state import StateStore
 from codex_autopilot.task_state import TaskState
+from _plan_contract import canonicalize_plan
 
 from test_ai_studio import context_payload, role, task
 from test_verification_lifecycle import graph, task as graph_task
@@ -56,7 +57,7 @@ class PromptBudgetTests(unittest.TestCase):
 
     def runtime(self, user_request: str) -> AIStudioRuntime:
         plan = validate_plan(
-            {
+            canonicalize_plan({
                 "schema_version": 3,
                 "goal": "Exercise the prompt budget.",
                 "user_request": user_request,
@@ -66,7 +67,7 @@ class PromptBudgetTests(unittest.TestCase):
                 "computer_use_slots": 1,
                 "roles": [role("integrator", "Release Integrator")],
                 "tasks": [task("code-a", "integrator")],
-            },
+            }),
             "adaptive",
         )
         return AIStudioRuntime(
@@ -260,7 +261,7 @@ class ApprovalIsNeverRequestedByAWorkerTests(unittest.TestCase):
 
     def prompt(self, language: str) -> str:
         plan = validate_plan(
-            {
+            canonicalize_plan({
                 "schema_version": 3,
                 "goal": "Exercise the approval instruction.",
                 "user_request": "Проверь утверждение о зелёном CI.",
@@ -270,7 +271,7 @@ class ApprovalIsNeverRequestedByAWorkerTests(unittest.TestCase):
                 "computer_use_slots": 1,
                 "roles": [role("integrator", "Release Integrator")],
                 "tasks": [task("code-a", "integrator")],
-            },
+            }),
             "adaptive",
         )
         runtime = AIStudioRuntime(

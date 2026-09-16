@@ -23,7 +23,7 @@ from codex_autopilot.thread_titles import (
     task_phase_thread_title,
     verifier_thread_title,
 )
-from _plan_contract import canonical_verification
+from _plan_contract import canonicalize_plan, canonical_verification
 
 
 def task(task_id: str, *, depends_on: tuple[str, ...] = ()) -> dict[str, object]:
@@ -49,7 +49,7 @@ def task(task_id: str, *, depends_on: tuple[str, ...] = ()) -> dict[str, object]
 
 def plan():
     return validate_plan(
-        {
+        canonicalize_plan({
             "schema_version": 3,
             "graph_version": 1,
             "goal": "Exercise workspace UX.",
@@ -71,7 +71,7 @@ def plan():
                 task("T46"),
                 task("T47", depends_on=("T44",)),
             ],
-        },
+        }),
         "adaptive",
     )
 
@@ -424,7 +424,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class ShortStatusTests(unittest.TestCase):
+class ShortStatusTests(SemanticStatusTests):
     """Ответ хука приходит одним куском: длина - часть контракта.
 
     Полный отчёт - двадцать пять строк с путями и метаданными. В
@@ -439,6 +439,48 @@ class ShortStatusTests(unittest.TestCase):
         self.assertTrue(_clip("x" * 200, 30).endswith("…"))
         self.assertEqual(len(_clip("x" * 200, 30)), 30)
         self.assertTrue(callable(render_short_status))
+
+    def test_the_card_never_calls_the_dispatcher_dead_during_verification(self) -> None:
+        """Карточка не имеет права противоречить сама себе.
+
+        Диспетчер - короткоживущий процесс: он поднимается на переход
+        между задачами и гаснет, пока воркер или верификатор ведёт ход.
+        Условие смотрело только на «идёт» и забывало про «проверяется»,
+        поэтому посреди идущей приёмки карточка писала «Диспетчер не
+        работает» - строкой ниже собственного «Проверяется: M1».
+        Единственное место, куда пользователь смотрит за правдой, врало.
+        """
+
+        from dataclasses import replace
+
+        from codex_autopilot.status import render_short_status
+
+        verifying_only = replace(
+            self.state,
+            task_states={**self.state.task_states, "T44": "VERIFIED"},
+            active_task_ids=["T45"],
+        )
+        card = render_short_status(
+            self.cfg, verifying_only, self.plan, dispatcher_running=False
+        )
+        self.assertIn("Проверяется", card)
+        self.assertNotIn("Диспетчер не работает", card)
+
+    def test_the_card_says_plainly_when_nobody_is_working(self) -> None:
+        """Тишина должна быть названа тишиной, а не скрыта."""
+
+        from dataclasses import replace
+
+        from codex_autopilot.status import render_short_status
+
+        idle = replace(
+            self.state,
+            task_states={task_id: "READY" for task_id in self.state.task_states},
+            active_task_ids=[],
+            worker_sessions=[],
+        )
+        card = render_short_status(self.cfg, idle, self.plan, dispatcher_running=False)
+        self.assertIn("Никто не работает", card)
 
     def test_the_short_form_points_at_the_full_one(self) -> None:
         """Сокращение без выхода к полному - потеря, а не краткость."""

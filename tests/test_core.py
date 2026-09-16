@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from _plan_contract import canonicalize_plan, canonical_verification
 from codex_autopilot.appserver import AppServerRpcError, ApprovalRequired, PauseRequested, TurnResult, is_rate_limit_error, rate_limit_reset_at
 from _gates import patch_hook_trust_gates
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from codex_autopilot.control import arm, handle_prompt_hook, handle_stop_hook
 from codex_autopilot.control import status_text
@@ -20,7 +21,7 @@ from codex_autopilot.cli import uninstall
 from codex_autopilot.models import MODEL_IDS, ModelRoutingError, logical_model, resolve_reasoning, resolve_selection
 from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.project_association import match_saved_project
-from codex_autopilot.plan import load_plan, validate_plan
+from codex_autopilot.plan import load_plan, validate_migrating_plan, validate_plan
 from codex_autopilot.preflight import REQUIRED_MEMORY_TOOLS
 from codex_autopilot.reasoning import normalize
 from codex_autopilot.resources import LockOwner, acquire_resources_in_state
@@ -31,6 +32,23 @@ from codex_autopilot.task_state import TaskState, transition_task
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTIVE_SKILL = ROOT / "plugins/codex-autopilot-adaptive/skills/codex-autopilot-adaptive/SKILL.md"
 HOST_SKILL = ROOT / "plugins/codex-autopilot-host-settings/skills/codex-autopilot-host-settings/SKILL.md"
+
+
+def validate_legacy_migration(raw: dict, profile: str):
+    with tempfile.TemporaryDirectory(prefix="codex-autopilot-v08-input-") as temp:
+        state_dir = Path(temp)
+        (state_dir / "plan.json").write_text(json.dumps(raw), encoding="utf-8")
+        (state_dir / "run-state.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 4,
+                    "run_id": "existing-v08-run",
+                    "status": "DONE",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return validate_migrating_plan(raw, profile, state_dir=state_dir)
 
 
 def model_catalog() -> list[dict]:
@@ -52,21 +70,60 @@ def make_project(
     root = Path(tempfile.mkdtemp(prefix="codex-autopilot-test-"))
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / ".codex-autopilot").mkdir()
-    milestones = []
+    # Канонический schema-3 план, а не формат v0.8. Прежде здесь лежал
+    # v0.8: он не требует ни ролей, ни верификации, и потому был удобным
+    # сокращением - но именно это и было дырой. Формат v0.8 впускается
+    # только как миграция существующего прогона, а свежий проект обязан
+    # объявлять независимую приёмку, как и всякий пользователь.
+    tasks = []
+    previous: str | None = None
     for index in range(count):
         mode = modes[index] if modes else "code"
+        task_id = f"M{index + 1}"
         item = {
+            "id": task_id,
             "title": f"Step {index + 1}",
             "objective": f"Do step {index + 1}",
             "definition_of_done": [f"step {index + 1} verified"],
             "execution_mode": mode,
             "execution_mode_reason": "A real GUI is required by the Definition of Done." if mode == "computer_use" else "Repository files and shell verification are sufficient.",
+            "reasoning": "medium",
+            "role": "builder",
+            "depends_on": [previous] if previous else [],
+            "priority": 0,
+            "verification": canonical_verification(),
+            "resources": [
+                {
+                    "id": f"tree-{task_id.lower()}",
+                    "kind": "directory",
+                    "target": f"src/{task_id.lower()}",
+                    "access": "write",
+                }
+            ],
         }
-        if profile == "adaptive":
-            item["reasoning"] = "medium"
-        milestones.append(item)
+        tasks.append(item)
+        previous = task_id
     plan_file = root / ".codex-autopilot/bootstrap-plan.json"
-    plan_file.write_text(json.dumps({"goal": "Test goal", "model_strategy": strategy or ("auto" if profile == "adaptive" else "host-settings"), "milestones": milestones}), encoding="utf-8")
+    plan_file.write_text(
+        json.dumps(
+            canonicalize_plan({
+                "schema_version": 3,
+                "graph_version": 1,
+                "goal": "Test goal",
+                "user_request": "Test goal exactly as specified.",
+                "model_strategy": strategy or ("auto" if profile == "adaptive" else "host-settings"),
+                "roles": [
+                    {
+                        "id": "builder",
+                        "name": "Builder",
+                        "responsibilities": ["Implement one bounded step at a time."],
+                    }
+                ],
+                "tasks": tasks,
+            })
+        ),
+        encoding="utf-8",
+    )
     initialize_project(
         root,
         plan_file,
@@ -340,20 +397,41 @@ class CoreTests(unittest.TestCase):
 
     def test_plan_has_one_adaptive_source(self):
         item = {"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "high"}
-        plan = validate_plan({"goal": "g", "model_strategy": "auto", "milestones": [item]}, "adaptive")
+        plan = validate_legacy_migration(
+            {"goal": "g", "model_strategy": "auto", "milestones": [item]},
+            "adaptive",
+        )
         self.assertEqual(plan.milestones[0].reasoning, "high")
-        with self.assertRaises(ValueError): validate_plan({"goal": "g", "model_strategy": "auto", "milestones": [{key: value for key, value in item.items() if key != "reasoning"}]}, "adaptive")
+        with self.assertRaises(ValueError):
+            validate_legacy_migration(
+                {
+                    "goal": "g",
+                    "model_strategy": "auto",
+                    "milestones": [
+                        {key: value for key, value in item.items() if key != "reasoning"}
+                    ],
+                },
+                "adaptive",
+            )
 
     def test_host_plan_rejects_reasoning(self):
         item = {"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "high"}
-        with self.assertRaises(ValueError): validate_plan({"goal": "g", "model_strategy": "host-settings", "milestones": [item]}, "host-settings")
+        with self.assertRaises(ValueError):
+            validate_legacy_migration(
+                {
+                    "goal": "g",
+                    "model_strategy": "host-settings",
+                    "milestones": [item],
+                },
+                "host-settings",
+            )
 
 
     def test_bootstrap_creates_only_documented_state(self):
         root = make_project()
         names = {p.name for p in (root / ".codex-autopilot").iterdir()}
-        self.assertTrue({"config.toml", "plan.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "handoff", "run-state.json", "memory.sqlite3"}.issubset(names))
-        self.assertTrue(names.issubset({"config.toml", "plan.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "handoff", "run-state.json", "memory.sqlite3", "memory.sqlite3-wal", "memory.sqlite3-shm", "memory.lock"}))
+        self.assertTrue({"config.toml", "plan.json", "role-specifications.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "handoff", "run-state.json", "memory.sqlite3"}.issubset(names))
+        self.assertTrue(names.issubset({"config.toml", "plan.json", "role-specifications.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "handoff", "run-state.json", "memory.sqlite3", "memory.sqlite3-wal", "memory.sqlite3-shm", "memory.lock"}))
         self.assertTrue((root / "ROADMAP.md").is_file())
         self.assertFalse((root / ".git/refs/heads/main").exists())
 
@@ -383,7 +461,13 @@ class CoreTests(unittest.TestCase):
         (state_dir / "logs").mkdir()
         (state_dir / "logs/old.log").write_text("old")
         plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "new", "model_strategy": "auto", "milestones": [{"title": "new", "objective": "new", "definition_of_done": ["done"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
+        replacement = json.loads((state_dir / "plan.json").read_text(encoding="utf-8"))
+        replacement["goal"] = "new"
+        replacement["user_request"] = "new exactly as specified"
+        replacement["tasks"][0]["title"] = "new"
+        replacement["tasks"][0]["objective"] = "new"
+        replacement["tasks"][0]["definition_of_done"] = ["done"]
+        plan_file.write_text(json.dumps(replacement), encoding="utf-8")
         initialize_project(root, plan_file, profile="adaptive", skill_path=ADAPTIVE_SKILL, replace=True)
         self.assertFalse((state_dir / "BLOCKED.json").exists())
         self.assertFalse((state_dir / "pause-requested").exists())
@@ -395,7 +479,28 @@ class CoreTests(unittest.TestCase):
         state_dir = root / ".codex-autopilot"
         state_dir.mkdir()
         plan_file = state_dir / "bootstrap-plan.json"
-        plan_file.write_text(json.dumps({"goal": "g", "model_strategy": "auto", "milestones": [{"title": "t", "objective": "o", "definition_of_done": ["d"], "execution_mode": "code", "execution_mode_reason": "files suffice", "reasoning": "medium"}]}))
+        plan_file.write_text(json.dumps(canonicalize_plan({
+            "schema_version": 3,
+            "graph_version": 1,
+            "goal": "g",
+            "user_request": "g exactly as specified.",
+            "model_strategy": "auto",
+            "roles": [{"id": "builder", "name": "Builder", "responsibilities": ["Do the work."]}],
+            "tasks": [{
+                "id": "M1",
+                "title": "t",
+                "objective": "o",
+                "definition_of_done": ["d"],
+                "execution_mode": "code",
+                "execution_mode_reason": "files suffice",
+                "reasoning": "medium",
+                "role": "builder",
+                "depends_on": [],
+                "priority": 0,
+                "verification": canonical_verification(),
+                "resources": [{"id": "tree", "kind": "directory", "target": "src", "access": "write"}],
+            }],
+        })))
         initialize_project(root, plan_file, profile="adaptive", skill_path=ADAPTIVE_SKILL, project_id="project-1")
         self.assertEqual(load_config(root).desktop.project_id, "project-1")
         self.assertEqual(StateStore(state_dir).load().project_id, "project-1")

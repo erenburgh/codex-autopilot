@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 from .plan import Plan, Task
+from .plan_verification import require_plan_verified
 from .run_state import RunState
 from .usage import worker_budget
 from .task_state import (
@@ -101,6 +102,7 @@ def reconcile_ready_tasks(plan: Plan, state: RunState) -> tuple[str, ...]:
     repeatable in tests and after process recovery.
     """
 
+    require_plan_verified(plan, state)
     _validate_scheduler_state(plan, state)
     normalized = validate_task_states(plan, state.task_states)
     eligible = compute_ready_task_ids(plan, normalized)
@@ -142,6 +144,7 @@ def schedule(
     """
 
     snapshot = availability or SchedulerAvailability()
+    require_plan_verified(plan, state)
     _validate_availability(plan, snapshot)
     _validate_scheduler_state(plan, state)
     reconcile_ready_tasks(plan, state)

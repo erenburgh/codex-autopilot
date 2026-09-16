@@ -18,8 +18,11 @@ import threading
 import time
 from typing import Any, Iterator, Mapping, Sequence
 
+from .trust import TRUST_POLICY
 
-SCHEMA_VERSION = 2
+
+SCHEMA_VERSION = 3
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, SCHEMA_VERSION}
 CATEGORIES = {"truth", "decision", "constraint", "question", "observation"}
 ORIGINS = {"user", "agent", "project", "environment"}
 EVIDENCE_KINDS = {
@@ -35,9 +38,7 @@ EVIDENCE_KINDS = {
     "migration",
     "external",
 }
-# R18: внешний текст не подпирает истину. Он может быть записан как
-# наблюдение и породить Conflict, но промоушен в Truth отклоняется.
-TRUTH_EVIDENCE_KINDS = EVIDENCE_KINDS - {"migration", "external"}
+TRUTH_EVIDENCE_KINDS = TRUST_POLICY.truth_evidence_kinds(EVIDENCE_KINDS)
 PREFIXES = {
     "truth": "FACT",
     "decision": "DEC",
@@ -193,7 +194,7 @@ class ProjectMemory:
                     current = db.execute(
                         "SELECT value FROM schema_meta WHERE key='schema_version'"
                     ).fetchone()
-                    if current and int(current[0]) not in {1, SCHEMA_VERSION}:
+                    if current and int(current[0]) not in SUPPORTED_SCHEMA_VERSIONS:
                         raise MemoryError(
                             f"unsupported Project Memory schema: {current[0]}"
                         )
@@ -235,6 +236,10 @@ class ProjectMemory:
                 CREATE TABLE IF NOT EXISTS evidence (
                     id TEXT PRIMARY KEY,
                     kind TEXT NOT NULL,
+                    provenance TEXT NOT NULL DEFAULT 'deterministic_tool_output'
+                        CHECK(provenance IN ('external_text','legacy_migration','human_input','deterministic_tool_output','human_verified')),
+                    trust_level TEXT NOT NULL DEFAULT 'deterministic'
+                        CHECK(trust_level IN ('unverified','deterministic','human_verified')),
                     summary TEXT NOT NULL,
                     path TEXT,
                     line_start INTEGER,
@@ -346,6 +351,7 @@ class ProjectMemory:
                 END;
                 """
                     )
+                    TRUST_POLICY.migrate_memory_schema(db)
                     db.execute(
                         "INSERT INTO schema_meta(key,value) VALUES('project_root',?) "
                         "ON CONFLICT(key) DO NOTHING",
@@ -554,14 +560,11 @@ class ProjectMemory:
         summary = self._required(summary, "summary")
         actor = self._required(created_by, "created_by", 256)
         if kind == "external" and not str(provider or "").strip():
-            # R18: происхождение обязательно в момент приёма. Без него
-            # внешний текст неотличим от собственного наблюдения уже
-            # через один шаг, и вся дальнейшая проверка заражения
-            # опирается на ярлык, которого нет.
             raise MemoryValidationError(
                 "R18: external evidence requires a non-empty provider naming "
                 "where the material came from"
             )
+        evidence_trust = TRUST_POLICY.classify_evidence(kind, provider=provider, error_type=MemoryValidationError)
         if line_start is not None and (not isinstance(line_start, int) or line_start < 1):
             raise MemoryValidationError("line_start must be a positive integer")
         if line_end is not None and (line_start is None or not isinstance(line_end, int) or line_end < line_start):
@@ -597,16 +600,28 @@ class ProjectMemory:
             raise MemoryValidationError("user_instruction evidence requires the instruction text")
         if kind == "environment_probe" and not self._optional(environment_probe, "environment_probe"):
             raise MemoryValidationError("environment_probe evidence requires probe details")
+        normalized_milestone_id = None
+        normalized_role = None
+        if milestone_id:
+            normalized_milestone_id = self._required(
+                milestone_id, "milestone_id", 128
+            )
+            normalized_role = self._required(role, "role", 64)
+            self._require_allowed_skill_evidence_role(
+                normalized_milestone_id, normalized_role
+            )
         with self._connect(write=True) as db:
             evidence_id = self._next_id(db, "evidence")
             db.execute(
                 """INSERT INTO evidence(
-                    id,kind,summary,path,line_start,line_end,content_sha256,command,result,exit_code,
+                    id,kind,provenance,trust_level,summary,path,line_start,line_end,content_sha256,command,result,exit_code,
                     tool_name,artifact_path,user_instruction,environment_probe,created_by,provider,
                     provider_thread_id,created_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    evidence_id, kind, summary, relative_path, line_start, line_end, content_hash,
+                    evidence_id, kind, evidence_trust.provenance.value,
+                    evidence_trust.level.value, summary, relative_path, line_start,
+                    line_end, content_hash,
                     self._optional(command, "command"), self._optional(result, "result"), exit_code,
                     self._optional(tool_name, "tool_name", 256), normalized_artifact,
                     self._optional(user_instruction, "user_instruction"),
@@ -615,13 +630,27 @@ class ProjectMemory:
                     self._optional(provider_thread_id, "provider_thread_id", 256), utc_now(),
                 ),
             )
-            if milestone_id:
+            if normalized_milestone_id is not None:
                 db.execute(
                     "INSERT INTO milestone_evidence(milestone_id,evidence_id,role,created_at) VALUES(?,?,?,?)",
-                    (self._required(milestone_id, "milestone_id", 128), evidence_id, self._required(role, "role", 64), utc_now()),
+                    (normalized_milestone_id, evidence_id, normalized_role, utc_now()),
                 )
-            self._audit(db, "record", "evidence", evidence_id, actor, {"kind": kind, "milestone_id": milestone_id})
+            self._audit(
+                db,
+                "record",
+                "evidence",
+                evidence_id,
+                actor,
+                {"kind": kind, "milestone_id": normalized_milestone_id},
+            )
         return self.get_evidence(evidence_id)
+
+    def _require_allowed_skill_evidence_role(
+        self, milestone_id: str, role: str
+    ) -> None:
+        from .skill_packs import require_allowed_skill_evidence_role
+
+        require_allowed_skill_evidence_role(self, milestone_id, role)
 
     def get_evidence(self, evidence_id: str) -> dict[str, Any]:
         self.initialize()
@@ -660,138 +689,66 @@ class ProjectMemory:
         details: Mapping[str, Any] | None = None,
         provider: str | None = None,
     ) -> dict[str, Any]:
-        """Record an evidence-linked verification outcome with causal identity.
+        """Record a caller-reported outcome without runtime authority.
 
-        Verification results are an audit ledger, not Truth records.  Replaying
-        the same task/check/thread/turn is idempotent only when every payload
-        field and evidence link is identical; conflicting replays fail closed.
+        This public API intentionally cannot mint the attestation required by
+        trusted Skill Pack source, promotion, or qualification gates.  The
+        deterministic runner and fresh-verifier lifecycle use the internal
+        companion below after the runtime has observed the real completion.
         """
 
-        self.initialize()
-        task = self._required(task_id, "task_id", 128)
-        check = self._required(check_id, "check_id", 128)
-        if policy not in {"self", "deterministic", "independent", "auto"}:
-            raise MemoryValidationError("unsupported verification policy")
-        outcome = self._required(verdict, "verdict", 16).upper()
-        if outcome not in {"PASS", "REVISE"}:
-            raise MemoryValidationError("verification verdict must be PASS or REVISE")
-        result_summary = self._required(summary, "summary")
-        actor = self._required(created_by, "created_by", 256)
-        thread_id = self._required(provider_thread_id, "provider_thread_id", 256)
-        turn_id = self._required(provider_turn_id, "provider_turn_id", 256)
-        evidence = tuple(str(item).strip() for item in evidence_ids)
-        if not evidence:
-            raise MemoryValidationError(
-                "verification results require at least one existing evidence ID"
-            )
-        if any(not item for item in evidence) or len(set(evidence)) != len(evidence):
-            raise MemoryValidationError("verification evidence IDs must be unique")
-        if details is not None and not isinstance(details, Mapping):
-            raise MemoryValidationError("verification details must be an object")
-        try:
-            details_json = json.dumps(
-                dict(details or {}), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            )
-        except (TypeError, ValueError) as exc:
-            raise MemoryValidationError("verification details must be JSON-serializable") from exc
-        if len(details_json) > MAX_FIELD_CHARS:
-            raise MemoryValidationError(
-                f"verification details exceed {MAX_FIELD_CHARS} characters"
-            )
-        normalized_provider = self._optional(provider, "provider", 128)
-        verification_id: str
-        with self._connect(write=True) as db:
-            rows = db.execute(
-                f"SELECT id,kind FROM evidence WHERE id IN ({','.join('?' for _ in evidence)})",
-                evidence,
-            ).fetchall()
-            found = {str(row["id"]): str(row["kind"]) for row in rows}
-            missing = [item for item in evidence if item not in found]
-            if missing:
-                raise MemoryValidationError(f"unknown evidence: {', '.join(missing)}")
-            weak = [item for item, kind in found.items() if kind not in TRUTH_EVIDENCE_KINDS]
-            if weak:
-                raise MemoryValidationError(
-                    "migration/advisory material cannot support verification outcomes: "
-                    + ", ".join(weak)
-                )
-            existing = db.execute(
-                """SELECT * FROM verification_results
-                   WHERE task_id=? AND check_id=?
-                     AND provider_thread_id=? AND provider_turn_id=?""",
-                (task, check, thread_id, turn_id),
-            ).fetchone()
-            if existing is not None:
-                existing_evidence = {
-                    str(row["evidence_id"])
-                    for row in db.execute(
-                        """SELECT evidence_id FROM verification_result_evidence
-                           WHERE verification_id=?""",
-                        (existing["id"],),
-                    ).fetchall()
-                }
-                expected = {
-                    "policy": policy,
-                    "verdict": outcome,
-                    "summary": result_summary,
-                    "details_json": details_json,
-                    "created_by": actor,
-                    "provider": normalized_provider,
-                }
-                if any(existing[key] != value for key, value in expected.items()) or (
-                    existing_evidence != set(evidence)
-                ):
-                    raise MemoryValidationError(
-                        "verification causal identity already has a different payload"
-                    )
-                verification_id = str(existing["id"])
-            else:
-                verification_id = self._next_id(db, "verification")
-                now = utc_now()
-                db.execute(
-                    """INSERT INTO verification_results(
-                        id,task_id,check_id,policy,verdict,summary,details_json,
-                        created_by,provider,provider_thread_id,provider_turn_id,created_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
-                        verification_id,
-                        task,
-                        check,
-                        policy,
-                        outcome,
-                        result_summary,
-                        details_json,
-                        actor,
-                        normalized_provider,
-                        thread_id,
-                        turn_id,
-                        now,
-                    ),
-                )
-                for evidence_id in evidence:
-                    db.execute(
-                        """INSERT INTO verification_result_evidence(
-                            verification_id,evidence_id,created_at
-                        ) VALUES(?,?,?)""",
-                        (verification_id, evidence_id, now),
-                    )
-                self._audit(
-                    db,
-                    "record",
-                    "verification",
-                    verification_id,
-                    actor,
-                    {
-                        "task_id": task,
-                        "check_id": check,
-                        "policy": policy,
-                        "verdict": outcome,
-                        "evidence_ids": list(evidence),
-                        "provider_thread_id": thread_id,
-                        "provider_turn_id": turn_id,
-                    },
-                )
-        return self.get_verification_result(verification_id)
+        from .memory_verification import record_verification_result
+
+        return record_verification_result(
+            self,
+            task_id=task_id,
+            check_id=check_id,
+            policy=policy,
+            verdict=verdict,
+            summary=summary,
+            evidence_ids=evidence_ids,
+            created_by=created_by,
+            provider_thread_id=provider_thread_id,
+            provider_turn_id=provider_turn_id,
+            details=details,
+            provider=provider,
+            runtime_attested=False,
+        )
+
+    def _record_runtime_verification_result(
+        self,
+        *,
+        task_id: str,
+        check_id: str,
+        policy: str,
+        verdict: str,
+        summary: str,
+        evidence_ids: Sequence[str],
+        created_by: str,
+        provider_thread_id: str,
+        provider_turn_id: str,
+        details: Mapping[str, Any] | None = None,
+        provider: str | None = None,
+    ) -> dict[str, Any]:
+        """Runtime-only sink for observed verifier/runner outcomes."""
+
+        from .memory_verification import record_verification_result
+
+        return record_verification_result(
+            self,
+            task_id=task_id,
+            check_id=check_id,
+            policy=policy,
+            verdict=verdict,
+            summary=summary,
+            evidence_ids=evidence_ids,
+            created_by=created_by,
+            provider_thread_id=provider_thread_id,
+            provider_turn_id=provider_turn_id,
+            details=details,
+            provider=provider,
+            runtime_attested=True,
+        )
 
     def get_verification_result(self, verification_id: str) -> dict[str, Any]:
         self.initialize()
@@ -924,18 +881,17 @@ class ProjectMemory:
         self.initialize()
         with self._connect() as db:
             rows = db.execute(
-                f"SELECT id,kind FROM evidence WHERE id IN ({','.join('?' for _ in evidence_ids)})",
+                f"SELECT id,kind,provenance,trust_level FROM evidence "
+                f"WHERE id IN ({','.join('?' for _ in evidence_ids)})",
                 tuple(evidence_ids),
             ).fetchall()
-            found = {row["id"]: row["kind"] for row in rows}
+            found = {str(row["id"]): row for row in rows}
             missing = [item for item in evidence_ids if item not in found]
             if missing:
                 raise MemoryValidationError(f"unknown evidence: {', '.join(missing)}")
-            weak = [item for item, kind in found.items() if kind not in TRUTH_EVIDENCE_KINDS]
-            if weak:
-                raise MemoryValidationError(
-                "R18: migration/advisory/external material cannot support Truth: "
-                f"{', '.join(weak)}"
+            TRUST_POLICY.require_truth_rows(
+                (found[item] for item in evidence_ids), error_type=MemoryValidationError,
+                message_prefix="R18: evidence below the trust threshold cannot support Truth",
             )
         fact = self._create_record(
             category="truth", statement=statement, origin="project", status="verified",
@@ -971,22 +927,20 @@ class ProjectMemory:
         return self._create_record(category="decision", statement=statement, origin=origin, status=status, created_by=created_by, reason=reason, scope=scope, evidence_ids=evidence_ids, provider=provider, provider_thread_id=provider_thread_id)
 
     def _has_external_evidence(self, evidence_ids: Sequence[str]) -> bool:
-        """R18: опирается ли решение на недоверенный внешний ввод.
-
-        Признак берётся из вида доказательства, а не из свободного поля
-        origin: вид проставляется тем, кто вводит материал в память, и
-        его нельзя обойти выбором другого ярлыка.
-        """
+        """R18: опирается ли решение на evidence ниже порога Truth."""
 
         if not evidence_ids:
             return False
         self.initialize()
         with self._connect() as db:
             rows = db.execute(
-                f"SELECT kind FROM evidence WHERE id IN ({','.join('?' for _ in evidence_ids)})",
+                f"SELECT kind,provenance,trust_level FROM evidence "
+                f"WHERE id IN ({','.join('?' for _ in evidence_ids)})",
                 tuple(evidence_ids),
             ).fetchall()
-        return any(row["kind"] == "external" for row in rows)
+        return TRUST_POLICY.any_row_is_below_truth(
+            rows, error_type=MemoryValidationError
+        )
 
     def accepted_user_decision(self, statement: str) -> dict[str, Any] | None:
         """Принятое решение пользователя с ровно таким текстом, или None.
@@ -1077,12 +1031,15 @@ class ProjectMemory:
     _BINDING_STATUSES = frozenset({"accepted", "active", "verified"})
 
     def _rests_on_external(self, db: sqlite3.Connection, record_id: str) -> bool:
-        row = db.execute(
-            "SELECT 1 FROM record_evidence re JOIN evidence e ON e.id=re.evidence_id "
-            "WHERE re.record_id=? AND re.relation='supports' AND e.kind='external' LIMIT 1",
+        rows = db.execute(
+            "SELECT e.kind,e.provenance,e.trust_level FROM record_evidence re "
+            "JOIN evidence e ON e.id=re.evidence_id "
+            "WHERE re.record_id=? AND re.relation='supports'",
             (record_id,),
-        ).fetchone()
-        return row is not None
+        ).fetchall()
+        return TRUST_POLICY.any_row_is_below_truth(
+            rows, error_type=MemoryValidationError
+        )
 
     def _set_record_status(self, record_id: str, category: str, status: str, actor: str, reason: str | None) -> dict[str, Any]:
         self.initialize()
@@ -1111,23 +1068,25 @@ class ProjectMemory:
         normalized_actor = self._required(actor, "actor", 256)
         with self._connect(write=True) as db:
             record = db.execute("SELECT category,status,origin FROM records WHERE id=?", (record_id,)).fetchone()
-            evidence = db.execute("SELECT kind FROM evidence WHERE id=?", (evidence_id,)).fetchone()
+            evidence = db.execute(
+                "SELECT kind,provenance,trust_level FROM evidence WHERE id=?",
+                (evidence_id,),
+            ).fetchone()
             if not record:
                 raise MemoryValidationError(f"unknown record: {record_id}")
             if not evidence:
                 raise MemoryValidationError(f"unknown evidence: {evidence_id}")
+            evidence_below_truth = TRUST_POLICY.row_is_below_truth(
+                evidence, error_type=MemoryValidationError
+            )
             if (
                 relation == "supports"
-                and evidence["kind"] == "external"
+                and evidence_below_truth
                 and record["status"] in self._BINDING_STATUSES
                 and str(record["origin"] or "") != "user"
             ):
-                # R18, третий обход: запись проводится чистой, а внешний
-                # текст дописывается к ней после. Связь "contradicts"
-                # остаётся открытой всегда - именно так внешний материал
-                # и должен порождать Conflict, а не подпирать решение.
                 raise MemoryValidationError(
-                    f"R18: external evidence cannot be attached in support of "
+                    f"R18: evidence below the trust threshold cannot be attached in support of "
                     f"{record_id} while it is {record['status']}; attach it as "
                     "contradicts, or let the user decide"
                 )
@@ -1228,7 +1187,7 @@ class ProjectMemory:
             row["statement"] = str(row["statement"])[:1_000]
         return SearchPage(page, self._encode_cursor(offset + limit) if has_more else None)
 
-    def list_records(self, *, categories: Sequence[str], statuses: Sequence[str] | None = None, scope: str | None = None, limit: int = 8, cursor: str | None = None) -> SearchPage:
+    def list_records(self, *, categories: Sequence[str], statuses: Sequence[str] | None = None, scope: str | None = None, limit: int = 8, cursor: str | None = None, full_statements: bool = False) -> SearchPage:
         self.initialize()
         if not categories or any(item not in CATEGORIES for item in categories):
             raise MemoryValidationError("categories contain an unsupported value")
@@ -1254,7 +1213,8 @@ class ProjectMemory:
         for row in page:
             row.pop("reason", None)
             row.pop("provider_thread_id", None)
-            row["statement"] = str(row["statement"])[:1_000]
+            if not full_statements:
+                row["statement"] = str(row["statement"])[:1_000]
         return SearchPage(page, self._encode_cursor(offset + limit) if has_more else None)
 
     def milestone_evidence(self, milestone_id: str, *, after_audit_id: int = 0, limit: int = 20) -> list[dict[str, Any]]:

@@ -6,10 +6,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
-from _plan_contract import canonical_verification
+from _plan_contract import TEST_OUTCOME_ID, canonicalize_plan, canonical_verification
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
 from codex_autopilot.lifecycle import (
     reconcile_desktop_runtime,
@@ -23,6 +23,10 @@ from codex_autopilot.plan import (
     plan_to_dict,
     validate_plan,
     validate_plan_change,
+)
+from codex_autopilot.plan_verification import (
+    FULL_PLAN_REVALIDATION,
+    PLAN_VERIFICATION_PREFIX,
 )
 from codex_autopilot.resilience import (
     active_plan_change,
@@ -64,11 +68,13 @@ def task(task_id: str, *, depends_on: tuple[str, ...] = ()) -> dict[str, object]
         "context": {},
         "outputs": [],
         "tags": [],
+        "produces_outcomes": [TEST_OUTCOME_ID],
+        "acceptance_class": "mixed",
     }
 
 
 def graph(tasks: list[dict[str, object]], *, max_workers: int = 2) -> dict[str, object]:
-    return {
+    return canonicalize_plan({
         "schema_version": 3,
         "graph_version": 1,
         "goal": "Exercise durable plan evolution and recovery.",
@@ -85,7 +91,7 @@ def graph(tasks: list[dict[str, object]], *, max_workers: int = 2) -> dict[str, 
             }
         ],
         "tasks": tasks,
-    }
+    })
 
 
 def request_line(task_id: str, *, kind: str = "prerequisite") -> str:
@@ -135,12 +141,49 @@ class PlanEvolutionTests(unittest.TestCase):
     def initialize(self, raw: dict[str, object]):
         plan_file = self.root / "input-plan.json"
         plan_file.write_text(json.dumps(raw), encoding="utf-8")
+        migrating = bool(raw.get("milestones"))
+        if migrating:
+            # План v0.8 впускается только как миграция существующего
+            # прогона: доказательство - его состояние и его план на
+            # диске. Свежий проект этот формат не принимает вовсе.
+            state_dir = self.root / ".codex-autopilot"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "plan.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "goal": "Previous run.",
+                        "model_strategy": "auto",
+                        "milestones": [
+                            {"id": item["id"]} for item in raw["milestones"]
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (state_dir / "run-state.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 4,
+                        "run_id": "existing-v08-run",
+                        "status": "DONE",
+                        "phase": "DONE",
+                        "milestone_index": max(len(raw["milestones"]) - 1, 0),
+                        "milestone_id": (
+                            raw["milestones"][-1]["id"] if raw["milestones"] else None
+                        ),
+                        "worker_history": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
         initialize_project(
             self.root,
             plan_file,
             profile="adaptive",
             skill_path=self.skill,
             desktop_project_id="desktop-project",
+            replace=migrating,
         )
         return load_config(self.root), StateStore(self.root / ".codex-autopilot")
 
@@ -208,14 +251,30 @@ class PlanEvolutionTests(unittest.TestCase):
             },
             separators=(",", ":"),
         )
-        applied = complete_desktop_worker(
+        proposed = complete_desktop_worker(
             cfg,
             thread_id="replanner-PC1",
             turn_id="turn-PC1",
             final_message=result_line,
             hook_gate=lambda _cfg: None,
         )
-        self.assertEqual(applied.worker_status, "PLAN_CHANGE_APPLIED")
+        self.assertEqual(proposed.worker_status, "PLAN_CHANGE_PROPOSED")
+        self.assertEqual(len(proposed.descriptors), 1)
+        plan_verifier = proposed.descriptors[0]
+        self.assertEqual(plan_verifier.kind, "plan_verifier")
+        self.assertIn("PLAN_VERIFICATION_CONTEXT", plan_verifier.prompt)
+        self.mark_active(store, plan_verifier.reservation_token, "plan-verifier-PC1")
+        applied = complete_desktop_worker(
+            cfg,
+            thread_id="plan-verifier-PC1",
+            turn_id="turn-plan-verifier-PC1",
+            final_message=(
+                PLAN_VERIFICATION_PREFIX
+                + ' {"verdict":"PASS","issues":[]}'
+            ),
+            hook_gate=lambda _cfg: None,
+        )
+        self.assertEqual(applied.worker_status, "PLAN_VERIFIED")
         self.assertEqual([item.task_id for item in applied.descriptors], ["P"])
         plan = load_plan(cfg.state_dir, cfg.profile)
         state = store.load()
@@ -226,10 +285,199 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertIsNone(state.active_plan_change_id)
         self.assertEqual(state.plan_changes[0]["status"], "APPLIED")
 
+    def test_t3_plan_verifier_rejects_unnecessary_work_before_graph_commit(self) -> None:
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        worker = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, worker.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, worker.task_id, "Plan change requested.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.mark_active(store, replanner.reservation_token, "replanner-PC1")
+        current = load_plan(cfg.state_dir, cfg.profile)
+        candidate = self.candidate_with_prerequisite(current)
+        proposed = complete_desktop_worker(
+            cfg,
+            thread_id="replanner-PC1",
+            turn_id="turn-PC1",
+            final_message=PLAN_CHANGE_RESULT_PREFIX
+            + " "
+            + json.dumps(
+                {"request_id": "PC1", "base_graph_version": 1, "plan": candidate},
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+        )
+        plan_verifier = proposed.descriptors[0]
+        self.assertEqual(plan_verifier.kind, "plan_verifier")
+        before_plan = (cfg.state_dir / "plan.json").read_bytes()
+        self.mark_active(
+            store, plan_verifier.reservation_token, "plan-verifier-PC1"
+        )
+
+        rejected = complete_desktop_worker(
+            cfg,
+            thread_id="plan-verifier-PC1",
+            turn_id="turn-plan-verifier-PC1",
+            final_message=PLAN_VERIFICATION_PREFIX
+            + " "
+            + json.dumps(
+                {
+                    "verdict": "REVISE",
+                    "issues": [
+                        {
+                            "category": "necessity",
+                            "summary": "Task P is not necessary for the Goal Contract.",
+                            "task_ids": ["P"],
+                            "outcome_ids": [],
+                        }
+                    ],
+                },
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+        )
+
+        self.assertEqual(rejected.worker_status, "PLAN_REVISION_REQUIRED")
+        self.assertEqual((cfg.state_dir / "plan.json").read_bytes(), before_plan)
+        self.assertEqual(load_plan(cfg.state_dir, cfg.profile).graph_version, 1)
+        self.assertEqual(len(rejected.descriptors), 1)
+        self.assertEqual(rejected.descriptors[0].kind, "replanner")
+        state = store.load()
+        change = active_plan_change(state, request_id="PC1")
+        self.assertEqual(change["status"], "REPLANNER_RESERVED")
+        self.assertEqual(
+            change["plan_verification_history"][-1]["issues"][0]["category"],
+            "necessity",
+        )
+        self.assertIn("semantic plan verification rejected", change["rejections"][-1]["reason"])
+
+    def test_t4_accumulated_patches_require_full_revalidation_and_can_be_rejected(self) -> None:
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        state = store.load()
+        state.accepted_plan_patches_since_full_revalidation = 2
+        store.save(state)
+        worker = reserve_ready_frontier(
+            cfg,
+            relay_owner_thread_id="owner",
+            hook_gate=lambda _cfg: None,
+        )[0]
+        self.mark_active(store, worker.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, worker.task_id, "Resource patch requested.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A", kind="resource"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.mark_active(store, replanner.reservation_token, "replanner-PC1")
+        current = load_plan(cfg.state_dir, cfg.profile)
+        candidate = plan_to_dict(current)
+        candidate["graph_version"] = 2
+        candidate["tasks"][0]["resources"].append(
+            {
+                "id": "docs",
+                "kind": "directory",
+                "target": "docs",
+                "access": "write",
+            }
+        )
+        proposed = complete_desktop_worker(
+            cfg,
+            thread_id="replanner-PC1",
+            turn_id="turn-PC1",
+            final_message=PLAN_CHANGE_RESULT_PREFIX
+            + " "
+            + json.dumps(
+                {"request_id": "PC1", "base_graph_version": 1, "plan": candidate},
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+        )
+        plan_verifier = proposed.descriptors[0]
+        self.assertEqual(plan_verifier.kind, "plan_verifier")
+        self.assertIn(
+            f"Verification mode: {FULL_PLAN_REVALIDATION}",
+            plan_verifier.prompt,
+        )
+        before_plan = (cfg.state_dir / "plan.json").read_bytes()
+        self.mark_active(
+            store, plan_verifier.reservation_token, "plan-verifier-PC1"
+        )
+        rejected = complete_desktop_worker(
+            cfg,
+            thread_id="plan-verifier-PC1",
+            turn_id="turn-plan-verifier-PC1",
+            final_message=PLAN_VERIFICATION_PREFIX
+            + " "
+            + json.dumps(
+                {
+                    "verdict": "REVISE",
+                    "issues": [
+                        {
+                            "category": "integration_completeness",
+                            "summary": "The accumulated graph no longer proves integrated acceptance.",
+                            "task_ids": ["A"],
+                            "outcome_ids": [],
+                        }
+                    ],
+                },
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+        )
+
+        self.assertEqual(rejected.worker_status, "PLAN_REVISION_REQUIRED")
+        self.assertEqual((cfg.state_dir / "plan.json").read_bytes(), before_plan)
+        state = store.load()
+        self.assertEqual(
+            state.accepted_plan_patches_since_full_revalidation, 2
+        )
+        change = active_plan_change(state, request_id="PC1")
+        self.assertEqual(
+            change["plan_verification_history"][-1]["mode"],
+            FULL_PLAN_REVALIDATION,
+        )
+        self.assertEqual(rejected.descriptors[0].kind, "replanner")
+
     def test_migrated_serial_run_accepts_resource_replan_and_preserves_provenance(self) -> None:
-        raw = graph([task("A")], max_workers=1)
-        raw["execution_strategy"] = "serial"
-        raw["compatibility"] = {"migrated_from_schema": 2, "legacy_serial": True}
+        # Мигрированный прогон заводится настоящим payload v0.8, а не
+        # schema-3 планом, объявившим себя мигрированным: заявить
+        # происхождение нельзя, его производит только миграция.
+        raw = {
+            "schema_version": 2,
+            "goal": "Exercise durable plan evolution and recovery.",
+            "user_request": "Exercise durable plan evolution and recovery exactly as specified.",
+            "model_strategy": "auto",
+            "roles": [
+                {
+                    "id": "builder",
+                    "name": "Builder",
+                    "responsibilities": ["Implement and replan bounded tasks."],
+                }
+            ],
+            "milestones": [
+                {
+                    "id": "A",
+                    "title": "Task A",
+                    "objective": "Complete A safely.",
+                    "definition_of_done": ["A is verified."],
+                    "execution_mode": "code",
+                    "execution_mode_reason": "Repository files and tests are sufficient.",
+                    "reasoning": "high",
+                    "role": "builder",
+                }
+            ],
+        }
         cfg, store = self.initialize(raw)
         descriptor = reserve_ready_frontier(
             cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None,
@@ -265,7 +513,10 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertEqual(updated.execution_strategy, "serial")
         self.assertEqual(updated.max_parallel_workers, 1)
         self.assertEqual(updated.computer_use_slots, 1)
-        self.assertEqual(plan_to_dict(updated)["compatibility"], raw["compatibility"])
+        self.assertEqual(
+            plan_to_dict(updated)["compatibility"],
+            {"migrated_from_schema": 2, "legacy_serial": True},
+        )
         self.assertEqual(updated.task_map["A"].resources[-1].target, "docs")
         self.assertEqual(store.load().plan_changes[0]["status"], "APPLIED")
 
@@ -282,7 +533,8 @@ class PlanEvolutionTests(unittest.TestCase):
                 "execution_mode_reason", "reasoning", "role",
             )
         }]
-        current = validate_plan(legacy, "adaptive")
+        cfg, _store = self.initialize(legacy)
+        current = load_plan(cfg.state_dir, cfg.profile)
         with self.assertRaisesRegex(ValueError, "canonical v0.9 schema"):
             validate_plan_change(current, legacy, "adaptive")
 
@@ -400,7 +652,7 @@ class PlanEvolutionTests(unittest.TestCase):
             dispatcher_reservation_token=replanner.reservation_token,
             dispatcher_pid=os.getpid(),
         )
-        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_APPLIED")
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_PROPOSED")
         self.assertTrue(outcome.descriptors)
         session = next(
             item

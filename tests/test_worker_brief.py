@@ -21,7 +21,7 @@ import unittest
 
 from codex_autopilot.ai_studio import AIStudioRuntime
 from codex_autopilot.plan import validate_plan
-from _plan_contract import canonical_verification
+from _plan_contract import canonicalize_plan, canonical_verification
 
 
 def _role(role_id: str, name: str) -> dict:
@@ -60,7 +60,7 @@ def _plan():
     """
 
     return validate_plan(
-        {
+        canonicalize_plan({
             "schema_version": 3,
             "graph_version": 1,
             "goal": "Ship the thread tool.",
@@ -82,7 +82,7 @@ def _plan():
                     verifier="reviewer",
                 ),
             ],
-        },
+        }),
         "adaptive",
     )
 

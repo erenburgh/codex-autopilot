@@ -115,6 +115,21 @@ def replanner_thread_title(plan_change_id: str, change_summary: str) -> str:
     return _compose("Planner", identifier, _text(change_summary, "change_summary"))
 
 
+def plan_verifier_thread_title(graph_version: int, mode: str) -> str:
+    if isinstance(graph_version, bool) or not isinstance(graph_version, int) or graph_version < 1:
+        raise ThreadTitleError("graph_version must be a positive integer")
+    summary = (
+        "Full Plan Revalidation"
+        if mode == "FULL_PLAN_REVALIDATION"
+        else "Verify Proposed Plan Patch"
+    )
+    return _compose(
+        "Plan Verification Architect",
+        f"Verify PLAN-v{graph_version}",
+        summary,
+    )
+
+
 def pipeline_engineer_thread_title(incident_id: str, summary: str) -> str:
     """Заголовок ветки дежурного инженера.
 

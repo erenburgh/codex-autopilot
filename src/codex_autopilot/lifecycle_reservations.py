@@ -3,11 +3,13 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 import os
+from pathlib import Path
 import time
 from typing import Any, Callable
 
 from .ai_studio import AIStudioRuntime
-from .config import Config, DESKTOP_OWNED_SURFACE
+from .artifact_staging import ArtifactStagingStore, task_requires_staging
+from .config import Config, DESKTOP_OWNED_SURFACE, STATE_DIR_NAME
 from .department_acceptance import task_department_binding
 from .hook_trust import require_trusted_stop_hook_for_config
 from .lifecycle_prompts import (
@@ -16,7 +18,15 @@ from .lifecycle_prompts import (
 )
 from .memory import ProjectMemory
 from .models import MODEL_IDS, ModelRoutingError, logical_model
-from .plan import Plan, load_plan
+from .plan import Plan, load_plan, validate_plan_change
+from .plan_verification import (
+    FULL_PLAN_REVALIDATION,
+    PLAN_PATCH_VERIFICATION,
+    build_plan_verification_prompt,
+    load_active_memory_constraints,
+    plan_sha256,
+    require_plan_verified,
+)
 from .resilience import (
     active_plan_change,
     append_resilience_event,
@@ -38,6 +48,7 @@ from .task_state import (
     validate_task_states,
 )
 from .thread_titles import (
+    plan_verifier_thread_title,
     pipeline_engineer_thread_title,
     replanner_thread_title,
     task_phase_thread_title,
@@ -222,6 +233,12 @@ def _reserve_in_state(
         raise DesktopLifecycleError(
             "Desktop reservation requires a bound relay owner thread"
         )
+    # This frontier also owns revision, verifier, replanner, and incident
+    # sessions before the normal scheduler call below.  Gate the shared entry
+    # point so none of those branches can reserve work from an unverified
+    # canonical graph.  Persisted pre-v1 plans remain explicitly exempt in
+    # require_plan_verified.
+    require_plan_verified(plan, state)
     if state.status == "DONE" or StateStore(cfg.state_dir).pause_requested():
         return ()
     if not state.prep_app_server_exited_at:
@@ -267,6 +284,18 @@ def _reserve_in_state(
     # идёт как обычно. Дежурный инженер закроет тикет своим ходом.
     paused = tasks_paused_by_incidents(cfg, plan)
     if state.active_plan_change_id is not None:
+        change = active_plan_change(state)
+        if change.get("status") in {
+            "PLAN_VERIFICATION_REQUIRED",
+            "PLAN_VERIFYING",
+        }:
+            return _reserve_plan_verifier_in_state(
+                cfg,
+                plan,
+                state,
+                memory_audit_before=memory_audit_before,
+                relay_owner_thread_id=relay_owner_thread_id,
+            )
         return _reserve_replanner_in_state(
             cfg,
             plan,
@@ -355,8 +384,10 @@ def _reserve_in_state(
             "relay_owner_thread_id": relay_owner_thread_id,
             "created_at": descriptor.created_at,
             "memory_audit_before": memory_audit_before,
-            "checkpoint_before": task_checkpoint(cfg.state_dir, task_id),
-            "scope_baseline": scope_baseline(cfg.root),
+            "checkpoint_before": task_checkpoint(
+                _descriptor_state_dir(cfg, descriptor), task_id
+            ),
+            "scope_baseline": scope_baseline(Path(descriptor.cwd)),
             "descriptor": descriptor.to_dict(),
         }
         fence_superseded_sessions(
@@ -507,8 +538,10 @@ def _reserve_pipeline_engineer_in_state(
         "relay_owner_thread_id": relay_owner_thread_id,
         "created_at": descriptor.created_at,
         "memory_audit_before": memory_audit_before,
-        "checkpoint_before": task_checkpoint(cfg.state_dir, task_id),
-        "scope_baseline": scope_baseline(cfg.root),
+        "checkpoint_before": task_checkpoint(
+            _descriptor_state_dir(cfg, descriptor), task_id
+        ),
+        "scope_baseline": scope_baseline(Path(descriptor.cwd)),
         "descriptor": descriptor.to_dict(),
     }
     state.worker_sessions.append(session)
@@ -521,6 +554,135 @@ def _reserve_pipeline_engineer_in_state(
         utc_now(),
         detail=f"{incident_id} -> {task_id}",
     )
+    return (descriptor,)
+
+
+def _reserve_plan_verifier_in_state(
+    cfg: Config,
+    plan: Plan,
+    state: RunState,
+    *,
+    memory_audit_before: int,
+    relay_owner_thread_id: str,
+) -> tuple[LaunchDescriptor, ...]:
+    """Reserve a fresh semantic judge without committing the proposed graph."""
+
+    record = active_plan_change(state)
+    if state.active_task_ids:
+        state.status = "RUNNING"
+        state.phase = "PLAN_VERIFICATION_DRAINING"
+        return ()
+    if any(
+        item.get("kind") == "plan_verifier"
+        and item.get("plan_change_id") == record["id"]
+        and item.get("status") in PENDING_SESSION_STATUSES
+        for item in state.worker_sessions
+    ):
+        return ()
+    raw_candidate = record.get("proposed_plan")
+    if not isinstance(raw_candidate, dict):
+        raise DesktopLifecycleError(
+            "plan verification requires a complete proposed replacement graph"
+        )
+    candidate = validate_plan_change(
+        plan,
+        raw_candidate,
+        cfg.profile,
+        promotion_evidence_store=ProjectMemory(cfg.root),
+    )
+    if record.get("proposed_plan_sha256") != plan_sha256(candidate):
+        raise DesktopLifecycleError(
+            "proposed plan digest changed before independent verification"
+        )
+    mode = str(record.get("verification_mode") or "")
+    if mode not in {PLAN_PATCH_VERIFICATION, FULL_PLAN_REVALIDATION}:
+        raise DesktopLifecycleError("plan change has no supported verification mode")
+
+    task_id = str(record["requester_task_id"])
+    raw_state = TaskState(state.task_states[task_id])
+    if raw_state is TaskState.RETRY_WAIT:
+        state.status = "WAITING"
+        state.phase = "WAITING_RATE_LIMIT"
+        return ()
+    if raw_state is TaskState.BLOCKED:
+        state.task_states = transition_task(
+            plan, state.task_states, task_id, TaskState.READY
+        )
+        raw_state = TaskState.READY
+    if raw_state is not TaskState.READY:
+        raise DesktopLifecycleError(
+            f"plan verification anchor {task_id} is not ready"
+        )
+
+    previous_attempt = int(state.task_attempts.get(task_id, 0))
+    attempt = previous_attempt + 1
+    state.task_attempts[task_id] = attempt
+    state.worker_sequence += 1
+    token = _stable_id(
+        state,
+        f"reservation:{task_id}:plan-verifier:{record['id']}:{attempt}:{state.worker_sequence}",
+    )
+    operation_id = _stable_id(state, f"operation:{token}")
+    client_id = f"autopilot-{_stable_id(state, f'client:{token}')[:24]}"
+    descriptor = _build_descriptor(
+        cfg,
+        plan,
+        state,
+        task_id=task_id,
+        kind="plan_verifier",
+        attempt=attempt,
+        token=token,
+        operation_id=operation_id,
+        client_id=client_id,
+    )
+    state.task_states = transition_task(
+        plan, state.task_states, task_id, TaskState.RUNNING
+    )
+    state.active_task_ids.append(task_id)
+    session: dict[str, Any] = {
+        "reservation_token": token,
+        "resource_ownership_token": token,
+        "operation_id": operation_id,
+        "client_user_message_id": client_id,
+        "task_id": task_id,
+        "kind": "plan_verifier",
+        "attempt": attempt,
+        "worker_sequence": state.worker_sequence,
+        "plan_change_id": record["id"],
+        "verification_mode": mode,
+        "proposed_plan_sha256": record["proposed_plan_sha256"],
+        "status": "CREATE_REQUESTED",
+        "thread_id": None,
+        "turn_id": None,
+        "host_id": None,
+        "relay_owner_thread_id": relay_owner_thread_id,
+        "created_at": descriptor.created_at,
+        "memory_audit_before": memory_audit_before,
+        "descriptor": descriptor.to_dict(),
+    }
+    state.worker_sessions.append(session)
+    record["status"] = "PLAN_VERIFYING"
+    record["plan_verifier_session_token"] = token
+    record["plan_verification_attempts"] = int(
+        record.get("plan_verification_attempts") or 0
+    ) + 1
+    for event in ("reservation_created", "plan_verifier_started", "create_requested"):
+        _append_event(state, event, session, descriptor.created_at)
+    append_resilience_event(
+        state,
+        "plan_verifier_reserved",
+        at=descriptor.created_at,
+        task_id=task_id,
+        plan_change_id=str(record["id"]),
+        detail={
+            "reservation_token": token,
+            "mode": mode,
+            "proposed_plan_sha256": record["proposed_plan_sha256"],
+        },
+    )
+    state.status = "RUNNING"
+    state.phase = "PLAN_VERIFYING"
+    state.milestone_id = task_id
     return (descriptor,)
 
 
@@ -631,8 +793,10 @@ def _reserve_replanner_in_state(
         "relay_owner_thread_id": relay_owner_thread_id,
         "created_at": descriptor.created_at,
         "memory_audit_before": memory_audit_before,
-        "checkpoint_before": task_checkpoint(cfg.state_dir, task_id),
-        "scope_baseline": scope_baseline(cfg.root),
+        "checkpoint_before": task_checkpoint(
+            _descriptor_state_dir(cfg, descriptor), task_id
+        ),
+        "scope_baseline": scope_baseline(Path(descriptor.cwd)),
         "descriptor": descriptor.to_dict(),
     }
     state.worker_sessions.append(session)
@@ -814,8 +978,10 @@ def _reserve_followup_sessions_in_state(
             "relay_owner_thread_id": relay_owner_thread_id,
             "created_at": descriptor.created_at,
             "memory_audit_before": memory_audit_before,
-            "checkpoint_before": task_checkpoint(cfg.state_dir, task.id),
-            "scope_baseline": scope_baseline(cfg.root),
+            "checkpoint_before": task_checkpoint(
+                _descriptor_state_dir(cfg, descriptor), task.id
+            ),
+            "scope_baseline": scope_baseline(Path(descriptor.cwd)),
             "descriptor": descriptor.to_dict(),
         }
         fence_superseded_sessions(
@@ -1123,7 +1289,7 @@ def _build_descriptor(
         model = route.model_id
         thinking = route.reasoning
         execution_mode = route.execution_mode
-    elif kind in {"replanner", "pipeline_engineer"}:
+    elif kind in {"replanner", "plan_verifier", "pipeline_engineer"}:
         execution_mode = "code"
         if plan.model_strategy == "host-settings":
             model = None
@@ -1131,7 +1297,11 @@ def _build_descriptor(
         else:
             key = logical_model(plan.model_strategy, execution_mode)
             model = MODEL_IDS[key]
-            thinking = task.reasoning or "medium"
+            # Plan verification is a fresh semantic judgment over the whole
+            # bounded graph.  Its effort must not inherit the requester task's
+            # local planning choice merely because that task anchors the
+            # lifecycle reservation.
+            thinking = "high" if kind == "plan_verifier" else task.reasoning or "medium"
     else:
         execution_mode = task.execution_mode
         if plan.model_strategy == "host-settings":
@@ -1162,6 +1332,26 @@ def _build_descriptor(
             str(change["request"]["summary"]),
         )
         prompt = _replanner_prompt(cfg, plan, state, change, token)
+    elif kind == "plan_verifier":
+        change = active_plan_change(state)
+        raw_candidate = change.get("proposed_plan")
+        if not isinstance(raw_candidate, dict):
+            raise DesktopLifecycleError(
+                "plan verifier descriptor has no proposed plan"
+            )
+        candidate = validate_plan_change(
+            plan,
+            raw_candidate,
+            cfg.profile,
+            promotion_evidence_store=ProjectMemory(cfg.root),
+        )
+        mode = str(change.get("verification_mode") or "")
+        title = plan_verifier_thread_title(candidate.graph_version, mode)
+        prompt = build_plan_verification_prompt(
+            candidate,
+            load_active_memory_constraints(cfg.root),
+            mode=mode,
+        )
     else:
         role_id = route.role_id if kind == "verifier" else task.role
         title = task_phase_thread_title(
@@ -1187,6 +1377,29 @@ def _build_descriptor(
             verification_evidence=verification_evidence,
             deterministic_results=deterministic_results,
         )
+    workspace = cfg.root
+    if kind in {"implementation", "worker", "revision", "verifier"} and task_requires_staging(
+        task, legacy_serial=plan.legacy_serial
+    ):
+        staging = ArtifactStagingStore(cfg.root, cfg.state_dir)
+        if kind in {"revision", "verifier"}:
+            # A follow-up may inspect only the exact proposal produced by its
+            # implementation predecessor.  Creating a fresh snapshot here
+            # would silently bless canonical side effects from an older path.
+            staging.load(task.id)
+        staged = staging.prepare(
+            run_id=state.run_id,
+            task_id=task.id,
+            reservation_token=token,
+        )
+        workspace = staged.workspace
+        prompt = _staged_workspace_prompt(
+            prompt,
+            canonical_root=cfg.root,
+            workspace=workspace,
+            task_id=task.id,
+            verifier=(kind == "verifier"),
+        )
     path = cfg.state_dir / "launches" / f"{token}.json"
     return LaunchDescriptor(
         schema_version=DESCRIPTOR_SCHEMA_VERSION,
@@ -1202,7 +1415,7 @@ def _build_descriptor(
         operation_id=operation_id,
         client_user_message_id=client_id,
         desktop_project_id=str(cfg.desktop.desktop_project_id),
-        cwd=str(cfg.root),
+        cwd=str(workspace),
         title=title,
         prompt=prompt,
         model=model,
@@ -1211,4 +1424,31 @@ def _build_descriptor(
         created_at=utc_now(),
         prep_app_server_exited_at=str(state.prep_app_server_exited_at),
         descriptor_path=str(path),
+    )
+
+
+def _descriptor_state_dir(cfg: Config, descriptor: LaunchDescriptor) -> Path:
+    workspace = Path(descriptor.cwd).expanduser().resolve(strict=False)
+    return cfg.state_dir if workspace == cfg.root else workspace / STATE_DIR_NAME
+
+
+def _staged_workspace_prompt(
+    prompt: str,
+    *,
+    canonical_root: Path,
+    workspace: Path,
+    task_id: str,
+    verifier: bool,
+) -> str:
+    """Make the isolation boundary explicit in the worker-visible contract."""
+
+    phase = "verify" if verifier else "edit and test"
+    return (
+        prompt
+        + "\n\nSTAGED_ARTIFACT_GATE: The App Server cwd is the isolated workspace "
+        + f"{workspace}. {phase.capitalize()} only this workspace for task {task_id}. "
+        + f"The canonical project {canonical_root} must remain unchanged until an independent "
+        + "PASS; the runtime alone promotes the verifier-bound manifest. REVISE keeps the "
+        + "workspace isolated. Write the required handoff under this cwd's "
+        + f"{STATE_DIR_NAME}/handoff/{task_id}.md.\n"
     )

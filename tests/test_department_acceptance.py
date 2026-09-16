@@ -11,10 +11,10 @@ from unittest import mock
 from _appserver_fakes import activate_via_app_server
 from _gates import patch_hook_trust_gates
 from _handoff import bump_task_checkpoint
-from _plan_contract import canonical_verification
+from _plan_contract import canonicalize_plan, canonical_verification
 from _relay import reserve_ready_frontier
 from codex_autopilot.ai_studio import AIStudioRuntime, ContextBoundaryError
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import load_config
 from codex_autopilot.department_acceptance import (
     DepartmentAcceptanceError,
@@ -26,6 +26,7 @@ from codex_autopilot.department_acceptance import (
     task_department_binding,
 )
 from codex_autopilot.lifecycle import DesktopLifecycleError, complete_desktop_worker
+from codex_autopilot.lifecycle_base import WorkerProtocolError
 from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.memory_mcp import MemoryMcpServer
 from codex_autopilot.plan import validate_plan
@@ -100,7 +101,7 @@ def _task(
 
 
 def _plan() -> dict[str, object]:
-    return {
+    return canonicalize_plan({
         "schema_version": 3,
         "graph_version": 1,
         "goal": "Exercise department-owned acceptance.",
@@ -127,7 +128,7 @@ def _plan() -> dict[str, object]:
             _task("A", depends_on=("M0R",)),
             _task("B", depends_on=("M0R", "A")),
         ],
-    }
+    })
 
 
 def _with_stale_rubric_guidance(raw: dict[str, object]) -> dict[str, object]:
@@ -668,7 +669,9 @@ class DepartmentAcceptanceTests(unittest.TestCase):
                 ),
             )
             db.commit()
-        with self.assertRaisesRegex(DesktopLifecycleError, "digest changed"):
+        # Ошибка поведения модели, а не поломка машины: иначе отказ
+        # валит диспетчер и останавливает прогон целиком (A3).
+        with self.assertRaisesRegex(WorkerProtocolError, "digest changed"):
             complete_desktop_worker(
                 cfg,
                 thread_id="verifier-thread",
@@ -692,7 +695,9 @@ class DepartmentAcceptanceTests(unittest.TestCase):
                 (original_statement, self.reference.record_id),
             )
             db.commit()
-        with self.assertRaisesRegex(DesktopLifecycleError, "must attest"):
+        # Ошибка поведения модели, а не поломка машины: иначе отказ
+        # валит диспетчер и останавливает прогон целиком (A3).
+        with self.assertRaisesRegex(WorkerProtocolError, "must attest"):
             complete_desktop_worker(
                 cfg,
                 thread_id="verifier-thread",

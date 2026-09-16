@@ -17,6 +17,7 @@ from codex_autopilot.memory import (
     MemoryBusyError,
     MemoryValidationError,
     ProjectMemory,
+    SCHEMA_VERSION,
     utc_now,
 )
 from codex_autopilot.memory_mcp import MemoryMcpServer
@@ -279,7 +280,7 @@ class ConcurrentMemoryTests(unittest.TestCase):
                 raw.execute(
                     "SELECT value FROM schema_meta WHERE key='schema_version'"
                 ).fetchone()[0],
-                "2",
+                str(SCHEMA_VERSION),
             )
             tables = {
                 row[0]

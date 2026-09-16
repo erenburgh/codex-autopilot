@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.run_state import StateStore
 

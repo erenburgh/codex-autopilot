@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
+import tempfile
 import unittest
 
-from codex_autopilot.plan import validate_plan
-import tempfile
+from _plan_contract import canonicalize_plan
+from codex_autopilot.plan import validate_migrating_plan, validate_plan
 
 from codex_autopilot.rules import (
     CHECKED,
@@ -144,7 +146,7 @@ class EnforcedRuleTests(unittest.TestCase):
             ],
         }
         with self.assertRaises(ValueError) as caught:
-            validate_plan(data, "adaptive")
+            validate_plan(canonicalize_plan(data), "adaptive")
         self.assertIn("R8", str(caught.exception))
 
     def test_r8_exempts_a_migrated_v08_plan(self) -> None:
@@ -164,7 +166,28 @@ class EnforcedRuleTests(unittest.TestCase):
                 }
             ],
         }
-        plan = validate_plan(legacy, "adaptive")
+        # Миграцию доказывает прогон, который мигрируют: свежий
+        # проект план v0.8 не впускает вовсе.
+        with tempfile.TemporaryDirectory(prefix="codex-autopilot-v08-input-") as temp:
+            state_dir = Path(temp)
+            (state_dir / "plan.json").write_text(
+                json.dumps(legacy), encoding="utf-8"
+            )
+            (state_dir / "run-state.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 4,
+                        "run_id": "existing-v08-run",
+                        "status": "DONE",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            plan = validate_migrating_plan(
+                legacy,
+                "adaptive",
+                state_dir=state_dir,
+            )
         self.assertTrue(plan.legacy_serial)
         self.assertEqual(plan.tasks[0].verification.policy, "self")
 

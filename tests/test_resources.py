@@ -20,7 +20,7 @@ from codex_autopilot.resources import (
 )
 from codex_autopilot.run_state import RunState, StateStore
 from codex_autopilot.task_state import TaskState
-from _plan_contract import canonical_verification
+from _plan_contract import canonicalize_plan, canonical_verification
 
 
 def raw_task(
@@ -69,7 +69,7 @@ def make_plan(
     computer_use_slots: int = 1,
 ) -> Plan:
     return validate_plan(
-        {
+        canonicalize_plan({
             "schema_version": 3,
             "graph_version": 1,
             "goal": "Exercise durable resource coordination.",
@@ -86,7 +86,7 @@ def make_plan(
                 }
             ],
             "tasks": tasks,
-        },
+        }),
         "adaptive",
     )
 

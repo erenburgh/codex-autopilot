@@ -8,8 +8,8 @@ import sys
 import tempfile
 import unittest
 
-from _plan_contract import canonical_verification
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import canonicalize_plan, canonical_verification
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.memory import MemoryValidationError
 from codex_autopilot.memory_mcp import MemoryMcpServer
 
@@ -91,14 +91,15 @@ class McpTests(unittest.TestCase):
         self.assertEqual(response["error"]["code"], -32602)
         self.assertIn("unknown argument", response["error"]["message"])
 
-    def test_current_can_retrieve_the_canonical_request_for_an_exact_task(self):
+    def _project_with_two_tasks(self):
+        """Проект с двумя задачами и запущенным сервером памяти."""
         root = git_project()
         skill = root / "SKILL.md"
         skill.write_text("test skill\n", encoding="utf-8")
         plan_file = root / "plan.json"
         plan_file.write_text(
             json.dumps(
-                {
+                canonicalize_plan({
                     "schema_version": 3,
                     "graph_version": 1,
                     "goal": "Exercise task-addressed Project Memory retrieval.",
@@ -135,7 +136,7 @@ class McpTests(unittest.TestCase):
                         }
                         for task_id in ("A", "B")
                     ],
-                }
+                })
             ),
             encoding="utf-8",
         )
@@ -146,6 +147,10 @@ class McpTests(unittest.TestCase):
             skill_path=skill,
         )
         server = MemoryMcpServer(root)
+        return root, server
+
+    def test_current_can_retrieve_the_canonical_request_for_an_exact_task(self):
+        root, server = self._project_with_two_tasks()
 
         current = server.actions["current"]({"task_id": "B"})
 
@@ -153,6 +158,50 @@ class McpTests(unittest.TestCase):
         self.assertEqual(current["milestone"]["id"], "B")
         with self.assertRaisesRegex(MemoryValidationError, "unknown task_id"):
             server.actions["current"]({"task_id": "missing"})
+
+    def test_the_runtime_verifies_the_request_so_the_worker_never_hashes_it(self):
+        """Заверение делает сервер, а не тот, кого проверяют.
+
+        Прежде воркер должен был сам сверить длину и sha256 полученного
+        текста с теми, что в его промпте. Это не работало дважды. Изолят
+        постобработки Codex не имеет ни `crypto`, ни `TextEncoder` -
+        посчитать хэш нечем, - а контракт разрешает ровно один вызов и
+        повторить его нельзя: задача честно вставала с
+        ENVIRONMENT_FAILURE, и так встали M4 и M11 живого прогона. И
+        отдельно: проверку, которую делает сам проверяемый, можно молча
+        не сделать.
+        """
+
+        root, server = self._project_with_two_tasks()
+        import hashlib
+
+        request = "canonical original request"
+        digest = hashlib.sha256(request.encode("utf-8")).hexdigest()
+
+        current = server.actions["current"](
+            {"task_id": "B", "expect_user_request_sha256": digest}
+        )
+        self.assertEqual(current["user_request"], request)
+        self.assertEqual(current["user_request_sha256"], digest)
+        self.assertEqual(current["user_request_chars"], len(request))
+        self.assertTrue(current["user_request_verified"])
+
+    def test_a_request_that_changed_underneath_the_task_fails_closed(self):
+        """Расхождение - причина остановиться, а не продолжить."""
+
+        root, server = self._project_with_two_tasks()
+        with self.assertRaisesRegex(MemoryValidationError, "does not match the digest"):
+            server.actions["current"](
+                {"task_id": "B", "expect_user_request_sha256": "0" * 64}
+            )
+
+    def test_the_digest_is_still_reported_without_an_expectation(self):
+        """Без ожидания текст отдаётся, но заверенным не объявляется."""
+
+        root, server = self._project_with_two_tasks()
+        current = server.actions["current"]({"task_id": "B"})
+        self.assertFalse(current["user_request_verified"])
+        self.assertIn("user_request_sha256", current)
 
 
 if __name__ == "__main__":

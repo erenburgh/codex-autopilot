@@ -1,0 +1,132 @@
+"""Кривой ответ модели - неудачная попытка, а не поломка машины.
+
+Разница не косметическая, она измерена на живом прогоне 16.09.2026.
+
+Воркер M8 отработал ход и ошибся оформлением финальной строки. На
+хуковом пути такой отказ возвращается воркеру строкой `decision: block`
+и исправляется в том же ходе - бесплатно. На автоматическом пути
+исключение уходило наверх: диспетчер падал, заводился тикет класса
+PIPELINE, поднимался дежурный инженер. Завершение хода при этом
+принимать стало некому, сессия осталась висеть активной, и **прогон
+встал целиком** - понадобился человек, чтобы отправить `Resume`.
+
+Дежурный инженер, разбирая это, открыл конфликт правила R31: рантайм
+отверг **уже завершённого** воркера на поздней проверке финального
+статуса, то есть выбросил сделанную работу на форматном гейте.
+
+Поэтому ошибки протокола несут отдельный класс: автоматический путь
+отличает «модель оформила ответ криво» от «сломался транспорт» и
+поступает с первым как с неудачной попыткой задачи.
+"""
+
+from __future__ import annotations
+
+import unittest
+
+from codex_autopilot.lifecycle_base import (
+    DesktopLifecycleError,
+    WorkerProtocolError,
+    parse_desktop_worker_status,
+)
+
+
+class ProtocolRetryOutcomeTests(unittest.TestCase):
+    """Ответ протокольной ветки обязан быть собираемым.
+
+    Первая версия этой ветки собирала `CompletionOutcome` без
+    обязательного поля `run_done`. Классификация была верной, тесты
+    зелёными - а при первом же настоящем срабатывании ветка падала
+    `TypeError`, и прогон вставал на ровном месте. Ветку тогда не
+    покрывал ни один тест: её сквозной прогон требует объёмного фейка
+    клиента App Server, и я это знала и всё равно выпустила.
+
+    Этот тест дешёвый и закрывает именно тот промах: он собирает тот же
+    ответ, что и ветка, и падает, если у типа появится новое
+    обязательное поле.
+    """
+
+    def test_a_protocol_retry_outcome_is_constructible(self) -> None:
+        from codex_autopilot.lifecycle_base import CompletionOutcome
+
+        outcome = CompletionOutcome(
+            matched=True,
+            worker_status="PROTOCOL_RETRY",
+            descriptors=(),
+            run_done=False,
+        )
+        self.assertTrue(outcome.matched)
+        self.assertEqual(outcome.worker_status, "PROTOCOL_RETRY")
+        self.assertFalse(outcome.run_done)
+
+    def test_the_dispatch_branch_builds_that_exact_outcome(self) -> None:
+        """Сверяем сборку в ветке с настоящим типом, а не с памятью."""
+
+        import ast
+        import inspect
+
+        from codex_autopilot import lifecycle_base, lifecycle_dispatch
+
+        source = inspect.getsource(lifecycle_dispatch.run_automatic_app_server_turn)
+        tree = ast.parse(source.lstrip())
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "CompletionOutcome"
+            and any(
+                isinstance(kw.value, ast.Constant)
+                and kw.value.value == "PROTOCOL_RETRY"
+                for kw in node.keywords
+            )
+        ]
+        self.assertEqual(len(calls), 1, "протокольная ветка должна собирать ровно один ответ")
+        supplied = {kw.arg for kw in calls[0].keywords}
+        required = {
+            name
+            for name, field in lifecycle_base.CompletionOutcome.__dataclass_fields__.items()
+            if field.default is field.default_factory is __import__("dataclasses").MISSING
+        }
+        self.assertEqual(required - supplied, set(), "ветка не заполняет обязательные поля")
+
+
+class ProtocolErrorClassTests(unittest.TestCase):
+    def test_a_missing_status_line_is_a_protocol_error(self) -> None:
+        with self.assertRaises(WorkerProtocolError):
+            parse_desktop_worker_status("работа сделана, отчёт выше")
+
+    def test_a_status_line_that_is_not_last_is_a_protocol_error(self) -> None:
+        with self.assertRaises(WorkerProtocolError):
+            parse_desktop_worker_status(
+                "AUTOPILOT_STATUS: ROTATE\nещё одна строка после статуса"
+            )
+
+    def test_two_status_lines_are_a_protocol_error(self) -> None:
+        with self.assertRaises(WorkerProtocolError):
+            parse_desktop_worker_status(
+                "AUTOPILOT_STATUS: ROTATE\nAUTOPILOT_STATUS: ROTATE"
+            )
+
+    def test_a_success_status_with_a_reason_code_is_a_protocol_error(self) -> None:
+        with self.assertRaises(WorkerProtocolError):
+            parse_desktop_worker_status("AUTOPILOT_STATUS: ROTATE MISSING_RESOURCE")
+
+    def test_the_hook_path_still_blocks_because_the_class_is_a_lifecycle_error(
+        self,
+    ) -> None:
+        """Хуковый путь ловит DesktopLifecycleError и отвечает `block`.
+
+        Новый класс обязан остаться его наследником: иначе воркер
+        перестал бы получать причину в том же ходе - то есть починка
+        одного пути сломала бы другой.
+        """
+
+        self.assertTrue(issubclass(WorkerProtocolError, DesktopLifecycleError))
+
+    def test_a_well_formed_status_still_parses(self) -> None:
+        status, code = parse_desktop_worker_status("AUTOPILOT_STATUS: ROTATE")
+        self.assertEqual(status, "ROTATE")
+        self.assertFalse(code)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -15,6 +15,7 @@ from .appserver import (
     final_agent_message,
     is_rate_limit_error,
 )
+from .artifact_staging import ArtifactStagingError, ArtifactStagingStore
 from .config import Config
 from .hook_trust import require_trusted_stop_hook_for_config
 from .preflight import installed_plugin_root
@@ -29,6 +30,7 @@ from .lifecycle_base import (
     CompletionOutcome,
     DesktopLifecycleError,
     LaunchDescriptor,
+    WorkerProtocolError,
     _append_event,
     _bind_resource_identity,
     _client_process_exited,
@@ -54,12 +56,14 @@ def app_server_creation_contract(
 ) -> dict[str, Any]:
     """Return the exact project-scoped v0.7-style create contract."""
 
+    workspace = _descriptor_workspace(cfg, descriptor)
     params: dict[str, Any] = {
-        "cwd": str(cfg.root),
+        "cwd": str(workspace),
         "permissions": cfg.desktop.permission_profile,
         "ephemeral": False,
-        "runtimeWorkspaceRoots": [str(cfg.root)],
     }
+    if descriptor.kind != "plan_verifier":
+        params["runtimeWorkspaceRoots"] = [str(workspace)]
     if cfg.desktop.project_id:
         params["projectId"] = cfg.desktop.project_id
     if descriptor.model:
@@ -78,6 +82,25 @@ def app_server_creation_contract(
             },
         }
     return contract
+
+
+def _descriptor_workspace(cfg: Config, descriptor: LaunchDescriptor) -> Path:
+    """Authenticate a descriptor cwd against canonical or staged state."""
+
+    workspace = Path(descriptor.cwd).expanduser().resolve(strict=False)
+    if workspace == cfg.root:
+        return workspace
+    try:
+        staged = ArtifactStagingStore(cfg.root, cfg.state_dir).load(descriptor.task_id)
+    except ArtifactStagingError as exc:
+        raise DesktopLifecycleError(
+            f"descriptor references an unavailable staged workspace: {exc}"
+        ) from exc
+    if workspace != staged.workspace:
+        raise DesktopLifecycleError(
+            "descriptor cwd does not match the task's durable staged workspace"
+        )
+    return workspace
 
 def _project_root_mutation_authorized(cfg: Config) -> bool:
     """R6: разрешена ли правка корней сохранённого проекта в этом прогоне.
@@ -137,6 +160,7 @@ def create_desktop_thread_via_app_server(
                 "App Server create was already claimed or the reservation is not launchable"
             )
         descriptor = LaunchDescriptor.from_dict(dict(session["descriptor"]))
+        workspace = _descriptor_workspace(cfg, descriptor)
         session["status"] = "RELAYING"
         session["creation_transport"] = "app_server_thread_start"
         session["app_server_creation_contract"] = app_server_creation_contract(
@@ -161,7 +185,7 @@ def create_desktop_thread_via_app_server(
     try:
         with client_context as connected:
             client = connected
-            profiles = client.list_permission_profiles(cfg.root)
+            profiles = client.list_permission_profiles(workspace)
             allowed = {
                 str(item.get("id"))
                 for item in profiles
@@ -203,7 +227,7 @@ def create_desktop_thread_via_app_server(
             plugin_root = installed_plugin_root(cfg.skill_path)
             create_invoked = True
             started = client.start_thread(
-                cwd=cfg.root,
+                cwd=workspace,
                 permission_profile=cfg.desktop.permission_profile,
                 # v0.7 invariant: create the task in the saved project, with a
                 # cwd that is already one of that project's durable roots.
@@ -211,6 +235,7 @@ def create_desktop_thread_via_app_server(
                 model=descriptor.model,
                 plugin_root=plugin_root,
                 ephemeral=False,
+                project_memory=(session.get("kind") != "plan_verifier"),
                 # v0.7 не передавала threadSource вовсе, и её задачи
                 # появлялись в сайдбаре проекта обычными ветками.
                 # "agent_created_thread" помечает ветку как созданную
@@ -234,9 +259,9 @@ def create_desktop_thread_via_app_server(
                     "App Server thread/read returned an unexpected created thread"
                 )
             actual_cwd = _thread_cwd(metadata) or _thread_cwd(thread)
-            if actual_cwd != cfg.root:
+            if actual_cwd != workspace:
                 raise DesktopLifecycleError(
-                    "App Server-created task does not use the canonical project cwd"
+                    "App Server-created task does not use its authenticated workspace cwd"
                 )
             actual_name = metadata.get("name")
             if actual_name != descriptor.title:
@@ -300,7 +325,7 @@ def create_desktop_thread_via_app_server(
         session["title_verification"] = "verified by App Server thread/read"
         session["actual_project_id"] = actual_project_id
         session["project_association_verification"] = (
-            "verified project-scoped thread/start App Server projectId and canonical cwd by thread/read; "
+            "verified project-scoped thread/start App Server projectId and authenticated workspace cwd by thread/read; "
             "Desktop rootPaths/sidebar placement require separate verification"
             if cfg.desktop.project_id
             else "App Server projectId not configured"
@@ -800,6 +825,7 @@ def run_automatic_app_server_turn(
     )
     state_after_create = StateStore(cfg.state_dir).load()
     session = _session_by_token(state_after_create, reservation_token)
+    workspace = _descriptor_workspace(cfg, descriptor)
     thread_id = str(session["thread_id"])
     turn_id = ""
     completed_turn: dict[str, Any] | None = None
@@ -831,9 +857,9 @@ def run_automatic_app_server_turn(
             else:
                 resumed = production_client.resume_thread(thread_id)
                 thread = resumed.get("thread") or {}
-            if _thread_cwd(thread) != cfg.root:
+            if _thread_cwd(thread) != workspace:
                 raise DesktopLifecycleError(
-                    "App Server production task is not bound to the canonical cwd"
+                    "App Server production task is not bound to its authenticated workspace cwd"
                 )
             if cfg.desktop.project_id and thread.get("projectId") != cfg.desktop.project_id:
                 raise DesktopLifecycleError(
@@ -848,25 +874,25 @@ def run_automatic_app_server_turn(
                 prompt = _pipeline_engineer_prompt_with_server_view(
                     cfg, production_client, session
                 )
-            started = production_client.start_turn(
-                thread_id=thread_id,
-                prompt=prompt,
-                effort=(
-                    descriptor.thinking
-                    if descriptor.thinking
-                    else None
-                ),
-                client_user_message_id=str(session["client_user_message_id"]),
-                skill_name=cfg.skill_name,
-                skill_path=cfg.skill_path,
-                cwd=cfg.root,
-                permission_profile=cfg.desktop.permission_profile,
-                model=(
-                    descriptor.model
-                    if descriptor.model
-                    else None
-                ),
-            )
+            turn_arguments = {
+                "thread_id": thread_id,
+                "prompt": prompt,
+                "effort": descriptor.thinking if descriptor.thinking else None,
+                "client_user_message_id": str(session["client_user_message_id"]),
+                "cwd": workspace,
+                "permission_profile": cfg.desktop.permission_profile,
+                "model": descriptor.model if descriptor.model else None,
+            }
+            if str(session.get("kind") or "") == "plan_verifier":
+                # T5: no worker skill, planner transcript, or MCP context is
+                # injected into the fresh plan-judgment session.
+                started = production_client.start_plain_turn(**turn_arguments)
+            else:
+                started = production_client.start_turn(
+                    **turn_arguments,
+                    skill_name=cfg.skill_name,
+                    skill_path=cfg.skill_path,
+                )
             turn_id = str((started.get("turn") or {}).get("id") or "")
             if not turn_id:
                 raise DesktopLifecycleError("App Server turn/start returned no turn id")
@@ -952,15 +978,60 @@ def run_automatic_app_server_turn(
 
     # The local dispatcher is authoritative. The worker Stop hook observes an
     # owned automatic turn but never consumes it or starts its successor.
-    return complete_desktop_worker(
-        cfg,
-        thread_id=thread_id,
-        turn_id=turn_id,
-        final_message=final_agent_message(completed_turn),
-        now_epoch=now_epoch,
-        dispatcher_reservation_token=reservation_token,
-        dispatcher_pid=(os.getpid() if dispatcher_authorized else None),
-    )
+    final_message = final_agent_message(completed_turn)
+    if str(session.get("kind") or "") == "plan_verifier":
+        allowed_items = {"agentMessage", "reasoning", "userMessage"}
+        disallowed = sorted(
+            {
+                str(item.get("type") or "unknown")
+                for item in completed_turn.get("items") or []
+                if item.get("type") not in allowed_items
+            }
+        )
+        if disallowed:
+            # Feed an unreadable result to the bounded protocol-retry path.
+            # Code that detects a boundary violation must not silently accept
+            # or repair it and continue (R22).
+            final_message = (
+                "plan verifier used forbidden tool or side-effect items: "
+                + ", ".join(disallowed)
+            )
+    try:
+        return complete_desktop_worker(
+            cfg,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            final_message=final_message,
+            now_epoch=now_epoch,
+            dispatcher_reservation_token=reservation_token,
+            dispatcher_pid=(os.getpid() if dispatcher_authorized else None),
+        )
+    except WorkerProtocolError as exc:
+        # Кривой финальный ответ - ошибка модели, а не поломка машины.
+        # Прежде она уходила наверх: диспетчер падал, заводился тикет
+        # PIPELINE, поднимался инженер, а завершённый ход оставался
+        # непринятым - прогон вставал целиком и ждал человека. R31
+        # запрещает отвергать уже сделанную работу на позднем гейте.
+        # Здесь это обычная неудачная попытка задачи: причина
+        # записывается, задача получает повтор, инфраструктура ни при
+        # чём.
+        descriptors = record_desktop_failure(
+            cfg,
+            reservation_token,
+            reason=f"worker protocol: {exc}",
+            definitive=False,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            now_epoch=now_epoch,
+            reserve_other_ready=False,
+            relay_executor_thread_id=owner,
+        )
+        return CompletionOutcome(
+            matched=True,
+            worker_status="PROTOCOL_RETRY",
+            descriptors=tuple(descriptors),
+            run_done=False,
+        )
 
 def _notify_start(cfg: Config, descriptor: LaunchDescriptor) -> None:
     """Сказать человеку, что задача взята в работу."""
@@ -1132,9 +1203,11 @@ def claim_automatic_app_server_turn(
             raise DesktopLifecycleError(
                 "automatic production requires an App Server-created task"
             )
-        if _thread_cwd({"cwd": session.get("actual_cwd")}) != cfg.root:
+        descriptor = LaunchDescriptor.from_dict(dict(session["descriptor"]))
+        workspace = _descriptor_workspace(cfg, descriptor)
+        if _thread_cwd({"cwd": session.get("actual_cwd")}) != workspace:
             raise DesktopLifecycleError(
-                "automatic production requires the canonical task cwd"
+                "automatic production requires the authenticated task workspace cwd"
             )
         retained_connection = bool(
             _dispatcher_owns_reservation(session, dispatcher_pid=dispatcher_pid)
@@ -1171,4 +1244,4 @@ def claim_automatic_app_server_turn(
         _append_event(state, "start_requested", session, timestamp)
         state.phase = "AWAITING_APP_SERVER_TURN_ACK"
         store.save(state)
-        return LaunchDescriptor.from_dict(dict(session["descriptor"]))
+        return descriptor

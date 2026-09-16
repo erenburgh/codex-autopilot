@@ -25,7 +25,7 @@ from unittest import mock
 from _appserver_fakes import activate_via_app_server
 from _gates import patch_hook_trust_gates
 from _relay import TEST_RELAY_OWNER, reserve_ready_frontier
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from codex_autopilot.control import handle_prompt_hook, handle_stop_hook
 from codex_autopilot.run_state import StateStore

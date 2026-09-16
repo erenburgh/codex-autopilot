@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import load_config
 from codex_autopilot.plan import (
     RESOURCE_KINDS,
@@ -14,6 +14,7 @@ from codex_autopilot.plan import (
     plan_to_dict,
     save_plan,
     topological_order,
+    validate_migrating_plan,
     validate_plan,
     validate_plan_change,
 )
@@ -27,7 +28,7 @@ from codex_autopilot.task_state import (
     transition_task,
     validate_task_states,
 )
-from _plan_contract import canonical_verification
+from _plan_contract import TEST_OUTCOME_ID, canonicalize_plan, canonical_verification
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,11 +91,12 @@ def task(
             }
         ],
         "tags": ["implementation"],
+        "produces_outcomes": [TEST_OUTCOME_ID],
     }
 
 
 def graph() -> dict:
-    return {
+    return canonicalize_plan({
         "schema_version": 3,
         "graph_version": 1,
         "goal": "Ship a dependency-aware runtime.",
@@ -112,7 +114,7 @@ def graph() -> dict:
             task("B"),
             task("C", dependencies=["A", "B"]),
         ],
-    }
+    })
 
 
 def legacy_plan(count: int = 3) -> dict:
@@ -133,6 +135,42 @@ def legacy_plan(count: int = 3) -> dict:
             for index in range(1, count + 1)
         ],
     }
+
+
+def migrate(raw: dict, profile: str = "adaptive"):
+    """Мигрировать план v0.8.
+
+    Происхождение доказывает не формат, а прогон, который мигрируют:
+    свежий проект план v0.8 не впускает вовсе. В тестах этот прогон
+    изображают его же вехи.
+    """
+
+    with tempfile.TemporaryDirectory(prefix="codex-autopilot-v08-input-") as temp:
+        state_dir = Path(temp)
+        (state_dir / "plan.json").write_text(json.dumps(raw), encoding="utf-8")
+        (state_dir / "run-state.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 4,
+                    "run_id": "existing-v08-run",
+                    "status": "DONE",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return validate_migrating_plan(raw, profile, state_dir=state_dir)
+
+
+def write_migrated_run_state(state_dir: Path) -> None:
+    StateStore(state_dir).save(
+        RunState(
+            status="DONE",
+            phase="DONE",
+            execution_strategy="serial",
+            max_parallel_workers=1,
+            migrated_from_schema=4,
+        )
+    )
 
 
 class TaskGraphSchemaTests(unittest.TestCase):
@@ -463,7 +501,7 @@ class TaskStateContractTests(unittest.TestCase):
 
 class V08CompatibilityTests(unittest.TestCase):
     def test_legacy_plan_becomes_an_explicit_serial_dag(self):
-        plan = validate_plan(legacy_plan(), "adaptive")
+        plan = migrate(legacy_plan(), "adaptive")
         self.assertTrue(plan.legacy_serial)
         self.assertEqual(plan.execution_strategy, "serial")
         self.assertEqual(plan.max_parallel_workers, 1)
@@ -472,6 +510,7 @@ class V08CompatibilityTests(unittest.TestCase):
 
         state_dir = Path(tempfile.mkdtemp(prefix="codex-autopilot-v08-plan-"))
         save_plan(state_dir, plan)
+        write_migrated_run_state(state_dir)
         saved = json.loads((state_dir / "plan.json").read_text())
         self.assertEqual(saved["schema_version"], 3)
         self.assertTrue(saved["compatibility"]["legacy_serial"])
@@ -488,7 +527,7 @@ class V08CompatibilityTests(unittest.TestCase):
         raw["milestones"][0]["role"] = "resilience"
         raw["milestones"][1]["role"] = "devops"
 
-        plan = validate_plan(raw, "adaptive")
+        plan = migrate(raw, "adaptive")
 
         self.assertEqual([item.role for item in plan.tasks], ["resilience", "devops"])
         self.assertEqual(
@@ -497,20 +536,25 @@ class V08CompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(plan.user_request, raw["user_request"])
         self.assertNotIn("legacy-worker", plan.role_map)
-        restored = validate_plan(plan_to_dict(plan), "adaptive")
+        # Мигрированный план перечитывается тем же входом, что и в
+        # продакшене: его происхождение написал рантайм, а не отправитель.
+        state_dir = Path(tempfile.mkdtemp(prefix="codex-autopilot-v08-roles-"))
+        save_plan(state_dir, plan)
+        write_migrated_run_state(state_dir)
+        restored = load_plan(state_dir, "adaptive")
         self.assertEqual(restored, plan)
 
     def test_legacy_structured_roles_are_never_inferred_or_collapsed(self):
         raw = legacy_plan(1)
         raw["roles"] = [role("ux", "UX Designer")]
         with self.assertRaisesRegex(ValueError, "role is required"):
-            validate_plan(raw, "adaptive")
+            migrate(raw, "adaptive")
 
         raw["milestones"][0]["role"] = "ux"
         raw["roles"] = [role("legacy-worker", "Legacy serial worker")]
         raw["milestones"][0]["role"] = "legacy-worker"
         with self.assertRaisesRegex(ValueError, "generic legacy-worker"):
-            validate_plan(raw, "adaptive")
+            migrate(raw, "adaptive")
 
     def test_v08_config_without_runtime_section_is_fail_closed_serial(self):
         root = Path(tempfile.mkdtemp(prefix="codex-autopilot-v08-config-"))
@@ -565,7 +609,7 @@ class V08CompatibilityTests(unittest.TestCase):
         self.assertEqual(state.active_task_ids, ["M2"])
 
     def test_legacy_cursor_maps_to_complete_chain_states(self):
-        plan = validate_plan(legacy_plan(), "adaptive")
+        plan = migrate(legacy_plan(), "adaptive")
         states = migrate_v08_task_states(
             plan,
             {

@@ -17,7 +17,7 @@ from codex_autopilot.ai_studio import (
 from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.plan import validate_plan
 from codex_autopilot.verification import VerificationIssue
-from _plan_contract import canonical_verification
+from _plan_contract import TEST_OUTCOME_ID, canonicalize_plan, canonical_verification
 
 
 def role(role_id: str, name: str) -> dict:
@@ -94,12 +94,13 @@ def task(
             }
         ],
         "tags": [role_id, mode],
+        "produces_outcomes": [TEST_OUTCOME_ID],
     }
 
 
 def plan(tasks: list[dict]):
     return validate_plan(
-        {
+        canonicalize_plan({
             "schema_version": 3,
             "goal": "Exercise one AI Studio role/task runtime.",
             "user_request": (
@@ -117,7 +118,7 @@ def plan(tasks: list[dict]):
                 role("reviewer", "Independent Evidence Reviewer"),
             ],
             "tasks": tasks,
-        },
+        }),
         "adaptive",
     )
 
@@ -258,8 +259,15 @@ class AIStudioRuntimeTests(unittest.TestCase):
             {
                 "server": "codex_autopilot_memory",
                 "tool": "memory",
-                "arguments": {"operation": "current", "task_id": "code-a"},
+                "arguments": {
+                    "operation": "current",
+                    "task_id": "code-a",
+                    "expect_user_request_sha256": hashlib.sha256(
+                        runtime.plan.user_request.encode("utf-8")
+                    ).hexdigest(),
+                },
                 "field": "user_request",
+                "verified_by": "runtime",
             },
         )
         self.assertNotIn(request, prompt)
@@ -279,6 +287,92 @@ class AIStudioRuntimeTests(unittest.TestCase):
         self.assertIn("Implementer-authored tests are evidence only", prompt)
         self.assertIn("PASS is allowed only after this independent check", prompt)
 
+    def test_a_recorded_human_decision_reaches_the_worker(self):
+        """Решение, которого никто не читает, ничем не лучше реплики.
+
+        Причина разблокировки ложилась в `user_unblocks` и никуда больше:
+        поле встречалось только там, где записывается. Владелец за сутки
+        сняла шесть остановок, каждый раз объясняя почему, и ни одно
+        объяснение не дошло до воркера, который продолжал задачу. R32
+        требует записанного решения - но решение обязано ещё и дойти.
+        """
+
+        import json as _json
+
+        from codex_autopilot.run_state import StateStore
+
+        store = StateStore(self.root / ".codex-autopilot")
+        state = store.load()
+        state.user_unblocks = [
+            {"task_id": "code-a", "reason": "Вынести путь аттестации отдельной задачей.", "at": "2026-09-16T12:00:00+00:00"},
+            {"task_id": "other", "reason": "Чужое решение.", "at": "2026-09-16T12:01:00+00:00"},
+        ]
+        store.save(state)
+
+        runtime = self.runtime([task("code-a", "integrator")])
+        prompt = runtime.build_prompt(
+            "code-a",
+            phase="implementation",
+            task_states={"code-a": "RUNNING"},
+            reservation_token="fresh-decisions",
+        )
+        payload = context_payload(prompt)
+        decisions = payload["recorded_human_decisions"]
+        self.assertEqual(len(decisions), 1)
+        self.assertIn("отдельной задачей", decisions[0]["decision"])
+        self.assertNotIn("Чужое решение", _json.dumps(payload, ensure_ascii=False))
+
+    def test_no_phase_ever_asks_the_worker_to_hash_the_request(self):
+        """Ни одна фаза не требует считать хэш самому.
+
+        Требование заверить длину и sha256 своими силами останавливало
+        задачи наглухо: в изоляте постобработки Codex нет ни `crypto`, ни
+        `TextEncoder`, а контракт разрешает ровно один вызов Project
+        Memory и повторить его нельзя. На живом прогоне так встали M4,
+        M11 и доработка M11 - последняя уже после того, как я закрыла
+        первое из четырёх мест. Класс держится тестом, а не памятью.
+        """
+
+        raw_task = task("code-a", "integrator", verifier_role="reviewer")
+        raw_plan = {
+            "schema_version": 3,
+            "graph_version": 1,
+            "goal": "Большой запрос не должен решать, может ли задача начаться.",
+            "user_request": "complete request\n" * MAX_INLINE_USER_REQUEST_CHARS,
+            "model_strategy": "auto",
+            "execution_strategy": "auto",
+            "max_parallel_workers": 2,
+            "computer_use_slots": 1,
+            "roles": [
+                role("integrator", "Systems Integrator"),
+                role("reviewer", "Independent Reviewer"),
+            ],
+            "tasks": [raw_task],
+        }
+        runtime = AIStudioRuntime(
+            validate_plan(canonicalize_plan(raw_plan), "adaptive"),
+            self.root,
+            language="en",
+            skill_path=self.skill,
+            memory=self.memory,
+        )
+
+        for phase, states in (
+            ("implementation", {"code-a": "RUNNING"}),
+            ("verification", {"code-a": "VERIFYING"}),
+        ):
+            with self.subTest(phase=phase):
+                prompt = runtime.build_prompt(
+                    "code-a",
+                    phase=phase,
+                    task_states=states,
+                    reservation_token=f"fresh-{phase}",
+                    **({"verification_round": 1} if phase == "verification" else {}),
+                )
+                self.assertNotIn("verify chars and sha256", prompt)
+                self.assertNotIn("chars и sha256", prompt)
+                self.assertIn("Never hash it yourself", prompt)
+
     def test_large_original_request_uses_lossless_canonical_reference(self):
         raw_task = task("code-a", "integrator", verifier_role="reviewer")
         raw_plan = {
@@ -297,7 +391,7 @@ class AIStudioRuntimeTests(unittest.TestCase):
             "tasks": [raw_task],
         }
         runtime = AIStudioRuntime(
-            validate_plan(raw_plan, "adaptive"),
+            validate_plan(canonicalize_plan(raw_plan), "adaptive"),
             self.root,
             language="en",
             skill_path=self.skill,
@@ -327,8 +421,15 @@ class AIStudioRuntimeTests(unittest.TestCase):
             {
                 "server": "codex_autopilot_memory",
                 "tool": "memory",
-                "arguments": {"operation": "current", "task_id": "code-a"},
+                "arguments": {
+                    "operation": "current",
+                    "task_id": "code-a",
+                    "expect_user_request_sha256": hashlib.sha256(
+                        runtime.plan.user_request.encode("utf-8")
+                    ).hexdigest(),
+                },
                 "field": "user_request",
+                "verified_by": "runtime",
             },
         )
         self.assertNotIn(canonical_request, prompt)
@@ -341,7 +442,12 @@ class AIStudioRuntimeTests(unittest.TestCase):
             reservation_token="fresh-large-implementation",
         )
         self.assertIn("exactly one Project Memory call", implementation_prompt)
-        self.assertIn("verify chars and sha256 before use", implementation_prompt)
+        # Заверение делает рантайм: воркер передаёт аргументы дословно и
+        # ничего не хэширует - в изоляте постобработки нет ни crypto, ни
+        # TextEncoder, и требование посчитать хэш останавливало задачи.
+        self.assertIn("the runtime verifies the text for you", implementation_prompt)
+        self.assertIn("Never hash it yourself", implementation_prompt)
+        self.assertNotIn("verify chars and sha256", implementation_prompt)
 
     def test_selective_verified_memory_and_dependency_output_are_bounded(self):
         evidence = self.memory.record_evidence(

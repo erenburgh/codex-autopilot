@@ -10,7 +10,14 @@ from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, durable_skill_path
 from .language import DEFAULT_LANGUAGE, is_russian, normalize_language
 from .memory import ProjectMemory
 from .migration import detect_v07, migrate_v07
-from .plan import Plan, save_plan, validate_plan
+from .plan import Plan, save_plan, validate_migrating_plan
+from .plan_verification import (
+    DEFAULT_FULL_REVALIDATION_PATCHES,
+    PlanVerificationReceipt,
+    PlanVerificationVerdict,
+    record_plan_verification,
+    validate_plan_verification_receipt,
+)
 from .run_state import RunState, StateStore, utc_now
 from .task_state import TaskState, initial_task_states
 
@@ -25,6 +32,7 @@ def initialize_project(
     language: str = DEFAULT_LANGUAGE,
     project_id: str | None = None,
     desktop_project_id: str | None = None,
+    plan_verification: PlanVerificationReceipt | dict[str, object] | None = None,
 ) -> Plan:
     root = root.expanduser().resolve()
     if not root.is_dir():
@@ -44,7 +52,17 @@ def initialize_project(
     if existing_raw and not replace:
         raise RuntimeError("project is already initialized; use resume or pass --replace for a new run")
     raw = json.loads(plan_file.read_text(encoding="utf-8"))
-    plan = validate_plan(raw, profile)
+    plan = validate_migrating_plan(
+        raw,
+        profile,
+        state_dir=state_dir,
+        state_payload=existing_raw,
+    )
+    verification_receipt = validate_plan_verification_receipt(
+        plan,
+        plan_verification,
+        require_evidence=False,
+    )
     state_dir.mkdir(parents=True, exist_ok=True)
     migration = migrate_v07(root, plan) if detect_v07(state_dir) else None
     completed = migration.preserved_completed if migration else 0
@@ -89,6 +107,20 @@ def initialize_project(
     )
     memory = ProjectMemory(root)
     memory.initialize()
+    finalized_plan_verification = None
+    if verification_receipt is not None:
+        finalized, _evidence_id, _verification_id = record_plan_verification(
+            memory,
+            plan,
+            PlanVerificationVerdict("PASS"),
+            mode=verification_receipt.mode,
+            verifier_thread_id=verification_receipt.verifier_thread_id,
+            verifier_turn_id=verification_receipt.verifier_turn_id,
+            receipt=verification_receipt,
+        )
+        if finalized is None:  # pragma: no cover - PASS above makes this impossible
+            raise RuntimeError("PASS plan verification did not produce a receipt")
+        finalized_plan_verification = finalized.to_dict()
     memory.render_views()
     first = plan.milestones[current_index]
     task_states = initial_task_states(plan)
@@ -99,6 +131,17 @@ def initialize_project(
     ready_ids = [
         task.id for task in plan.tasks if task_states[task.id] == TaskState.READY.value
     ]
+    migrated_state_schema: int | None = None
+    if plan.legacy_serial and existing_raw:
+        raw_schema = existing_raw.get("schema_version")
+        inherited_schema = existing_raw.get("migrated_from_schema")
+        if isinstance(inherited_schema, int) and not isinstance(inherited_schema, bool):
+            migrated_state_schema = inherited_schema
+        elif isinstance(raw_schema, int) and not isinstance(raw_schema, bool):
+            # A schema-5 state without the explicit marker was emitted by
+            # early v0.9 builds after converting a v0.8 plan.  Its lineage is
+            # v0.8 run-state schema 4, not schema 5 itself.
+            migrated_state_schema = 4 if raw_schema == 5 else raw_schema
     state = RunState(
         status="DONE" if completed == len(plan.milestones) else "READY",
         phase="DONE" if completed == len(plan.milestones) else "PREFLIGHT_PASSED",
@@ -111,6 +154,7 @@ def initialize_project(
         task_states=task_states,
         task_attempts={task.id: 0 for task in plan.tasks},
         task_revisions={task.id: 0 for task in plan.tasks},
+        migrated_from_schema=migrated_state_schema,
         scheduler_sequence=len(ready_ids),
         task_ready_since={task_id: index for index, task_id in enumerate(ready_ids, 1)},
         planned_execution_mode=first.execution_mode,
@@ -120,6 +164,7 @@ def initialize_project(
         project_id=project_id,
         desktop_project_id=desktop_project_id,
         completed_at=utc_now() if completed == len(plan.milestones) else None,
+        plan_verification=finalized_plan_verification,
     )
     store = StateStore(state_dir)
     store.save(state)
@@ -191,6 +236,7 @@ def _write_config(
         "desktop_notifications = false",
         f"max_parallel_workers = {plan.max_parallel_workers}",
         f"computer_use_slots = {plan.computer_use_slots}",
+        f"full_plan_revalidation_patches = {DEFAULT_FULL_REVALIDATION_PATCHES}",
         # Поверхность одна. Поле пишется явно, чтобы конфиг читался
         # без знания умолчаний, а проверка при чтении отвергает
         # устаревший файл, называющий снятую поверхность.

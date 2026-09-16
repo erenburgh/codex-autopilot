@@ -25,6 +25,19 @@ from .hook_trust import (
 from .memory import MemoryError, probe_sqlite_fts5
 from .models import resolve_selection
 from .plan import DEFAULT_MAX_PARALLEL_WORKERS, Plan
+from .plan_verification import (
+    INITIAL_PLAN_VERIFICATION,
+    PLAN_VERIFICATION_ROLE,
+    PlanVerificationError,
+    PlanVerificationReceipt,
+    build_plan_verification_prompt,
+    deterministic_plan_issues,
+    format_plan_verification_issues,
+    load_active_memory_constraints,
+    make_plan_verification_receipt,
+    parse_plan_verification_result,
+    validate_verdict_references,
+)
 from .usage import capacity_notice
 from .project_association import (
     ProjectAssociationError,
@@ -55,6 +68,9 @@ ANNOUNCEMENT = (
     "ничего не спрашивает и ничего не ждёт от вас молча."
 )
 MEMORY_PREFLIGHT_OK = "MEMORY_PREFLIGHT_OK"
+PLAN_VERIFICATION_TITLE = (
+    "Plan Verification Architect | Verify PLAN | Proposed Graph"
+)
 MEMORY_PREFLIGHT_PROMPT = f"""Codex Autopilot Project Memory trust preflight.
 
 Perform exactly one harmless read-only call to the built-in MCP server
@@ -191,6 +207,7 @@ class PreflightResult:
     project_name: str | None = None
     project_source: str | None = None
     memory_preflight_thread_id: str | None = None
+    plan_verification: PlanVerificationReceipt | None = None
 
     def add(self, name: str, status: str, detail: str) -> None:
         self.checks.append((name, status, detail))
@@ -263,6 +280,18 @@ def run_preflight(
         report("Git", "FAIL", "existing repository required")
         raise PreflightError("Codex Autopilot requires an existing Git repository; it does not run `git init` or create commits automatically")
     report("Git", "OK", "existing repository")
+    deterministic_issues = deterministic_plan_issues(plan)
+    if deterministic_issues:
+        detail = format_plan_verification_issues(deterministic_issues)
+        report("Plan verification admission", "FAIL", detail)
+        raise PreflightError(
+            "proposed plan failed deterministic coverage admission: " + detail
+        )
+    report(
+        "Plan verification admission",
+        "OK",
+        "deterministic coverage admits independent judgment",
+    )
     _reject_unprobed_capabilities(plan, report)
     if not codex_binary:
         report("Runtime", "FAIL", "official Codex CLI not found")
@@ -399,15 +428,28 @@ def run_preflight(
             )
 
         selection = None
+        plan_selection = None
         if profile == "adaptive":
             first = plan.milestones[0]
+            models = client.list_models()
             selection = resolve_selection(
-                client.list_models(),
+                models,
                 strategy=plan.model_strategy,
                 execution_mode=first.execution_mode,
                 requested_reasoning=first.reasoning or "medium",
                 execution_reason=first.execution_mode_reason,
             )
+            if plan.goal_contract is not None:
+                plan_selection = resolve_selection(
+                    models,
+                    strategy=plan.model_strategy,
+                    execution_mode="code",
+                    requested_reasoning="high",
+                    execution_reason=(
+                        "Independent semantic plan verification uses a bounded "
+                        "structured prompt and no GUI interaction."
+                    ),
+                )
             result.routing = "AUTO" if plan.model_strategy == "auto" else plan.model_strategy.upper()
             result.next_model = selection.display_name
             result.next_reasoning = selection.reasoning
@@ -649,6 +691,32 @@ def run_preflight(
             _validate_memory_preflight_result(client, probe_thread_id, completed.turn)
         report("Project Memory MCP", "OK", "real model-to-MCP call completed without a trust interruption")
 
+        if plan.goal_contract is not None:
+            try:
+                result.plan_verification = _run_initial_plan_verification(
+                    client,
+                    project=project,
+                    plan=plan,
+                    project_id=result.project_id,
+                    selection=plan_selection,
+                    thread_ids=probe_thread_ids,
+                )
+            except PlanVerificationError as exc:
+                report("Plan verification", "FAIL", str(exc))
+                raise PreflightError(str(exc)) from exc
+            report(
+                "Plan verification",
+                "PASS",
+                f"fresh verifier bound graph v{plan.graph_version} to "
+                f"{result.plan_verification.plan_sha256}",
+            )
+        else:
+            report(
+                "Plan verification",
+                "COMPATIBILITY",
+                "persisted pre-v1 plan has no Goal Contract",
+            )
+
         if selection:
             report("Model metadata", "OK", f"{selection.model_id} supports {selection.reasoning}")
         else:
@@ -695,6 +763,109 @@ def run_preflight(
                 pass
         client.close()
         log_path.unlink(missing_ok=True)
+
+
+def _run_initial_plan_verification(
+    client: Any,
+    *,
+    project: Path,
+    plan: Plan,
+    project_id: str | None,
+    selection: Any,
+    thread_ids: list[str],
+) -> PlanVerificationReceipt:
+    """Run one fresh, tool-free semantic judgment before run-state exists."""
+
+    constraints = load_active_memory_constraints(project)
+    prompt = build_plan_verification_prompt(
+        plan,
+        constraints,
+        mode=INITIAL_PLAN_VERIFICATION,
+    )
+    created = client.start_thread(
+        cwd=project,
+        permission_profile=":workspace",
+        project_id=project_id,
+        model=selection.model_id if selection else None,
+        plugin_root=None,
+        ephemeral=False,
+        project_memory=False,
+    )
+    active = created.get("activePermissionProfile") or {}
+    thread = created.get("thread") or {}
+    if active.get("id") != ":workspace":
+        raise PlanVerificationError(
+            "App Server did not apply :workspace to the plan verifier"
+        )
+    if Path(str(thread.get("cwd") or "")).resolve() != project:
+        raise PlanVerificationError(
+            "App Server did not preserve canonical cwd for the plan verifier"
+        )
+    thread_id = str(thread.get("id") or "")
+    if not thread_id:
+        raise PlanVerificationError("App Server returned no plan verifier thread id")
+    thread_ids.append(thread_id)
+    client.name_thread(thread_id, PLAN_VERIFICATION_TITLE)
+    if project_id and thread.get("projectId") != project_id:
+        client.assign_thread_to_project(thread_id, project_id)
+        thread = client.read_thread(thread_id)
+    if project_id and thread.get("projectId") != project_id:
+        raise PlanVerificationError(
+            "App Server did not preserve project association for the plan verifier"
+        )
+    started = client.start_plain_turn(
+        thread_id=thread_id,
+        prompt=prompt,
+        effort=selection.reasoning if selection else None,
+        client_user_message_id=str(uuid.uuid4()),
+        cwd=project,
+    )
+    turn_id = str((started.get("turn") or {}).get("id") or "")
+    if not turn_id:
+        raise PlanVerificationError("App Server returned no plan verifier turn id")
+    try:
+        completed = client.wait_for_turn(
+            thread_id,
+            turn_id,
+            timeout=PROBE_TIMEOUT,
+            what="fresh independent plan verification",
+        )
+    except ApprovalRequired as exc:
+        raise PlanVerificationError(
+            "plan verifier requested an approval even though its prompt forbids tools"
+        ) from exc
+    turn = completed.turn
+    if turn.get("status") != "completed":
+        raise PlanVerificationError(
+            f"plan verifier turn ended with status={turn.get('status')!r}"
+        )
+    allowed_items = {"agentMessage", "reasoning", "userMessage"}
+    disallowed = sorted(
+        {
+            str(item.get("type") or "unknown")
+            for item in turn.get("items") or []
+            if item.get("type") not in allowed_items
+        }
+    )
+    if disallowed:
+        raise PlanVerificationError(
+            "plan verifier used forbidden tool or side-effect items: "
+            + ", ".join(disallowed)
+        )
+    verdict = parse_plan_verification_result(final_agent_message(turn))
+    validate_verdict_references(plan, verdict)
+    if verdict.verdict != "PASS":
+        raise PlanVerificationError(
+            "proposed plan was rejected by the fresh verifier: "
+            + format_plan_verification_issues(verdict.issues)
+        )
+    return make_plan_verification_receipt(
+        plan,
+        verdict,
+        mode=INITIAL_PLAN_VERIFICATION,
+        verifier_thread_id=thread_id,
+        verifier_turn_id=turn_id,
+    )
 
 
 def _reject_unprobed_capabilities(

@@ -135,7 +135,7 @@ def _replanner_prompt(
 
 AUTOPILOT_CONTEXT: {payload}
 
-Сначала полностью прочитай {cfg.skill_path}. При необходимости получи только перечисленные evidence ID через Project Memory. Не изменяй файлы, не запускай production и не становись manager: верни один полный schema-3 replacement graph. user_request переносит runtime - его возвращать не нужно. Дословно сохрани goal, model_strategy, контракты VERIFIED задач, структурированные RoleProfile и все существующие task ID; установи graph_version={plan.graph_version + 1}. Runtime заново проверит все ссылки, состояния и циклы и выполнит crash-safe commit. Reservation token: {token}.{workers_ru}{retry_ru}
+Сначала полностью прочитай {cfg.skill_path}. При необходимости получи только перечисленные evidence ID через Project Memory. Не изменяй файлы, не запускай production и не становись manager: верни один полный schema-3 replacement graph. user_request переносит runtime - его возвращать не нужно. Дословно сохрани goal, Goal Contract, model_strategy, контракты VERIFIED задач, структурированные RoleProfile и все существующие task ID; установи graph_version={plan.graph_version + 1}. Runtime заново проверит все ссылки, состояния и циклы и выполнит crash-safe commit. Reservation token: {token}.{workers_ru}{retry_ru}
 
 Последняя непустая строка должна быть единственной protocol line в точном формате:
 {finish}"""
@@ -146,7 +146,7 @@ Perform only the short {change['id']} replan for canonical directory {cfg.root}.
 
 AUTOPILOT_CONTEXT: {payload}
 
-Read {cfg.skill_path} completely first. Retrieve only listed evidence IDs from Project Memory if needed. Do not modify files, start production, or become a manager: return one complete schema-3 replacement graph. The runtime carries user_request over; do not return it. Preserve the goal, model_strategy, VERIFIED task contracts, structured RoleProfiles, and every existing task ID; set graph_version={plan.graph_version + 1}. The runtime will revalidate every reference, state, and cycle and perform the crash-safe commit. Reservation token: {token}.{workers_en}{retry_en}
+Read {cfg.skill_path} completely first. Retrieve only listed evidence IDs from Project Memory if needed. Do not modify files, start production, or become a manager: return one complete schema-3 replacement graph. The runtime carries user_request over; do not return it. Preserve the goal, Goal Contract, model_strategy, VERIFIED task contracts, structured RoleProfiles, and every existing task ID; set graph_version={plan.graph_version + 1}. The runtime will revalidate every reference, state, and cycle and perform the crash-safe commit. Reservation token: {token}.{workers_en}{retry_en}
 
 The final non-empty line must be the only protocol line in this exact format:
 {finish}"""
@@ -241,6 +241,7 @@ def _evidence_selectors(evidence: tuple[dict[str, Any], ...]) -> list[dict[str, 
 def _verification_contract(task: Task) -> dict[str, Any]:
     policy = task.verification
     return {
+        "acceptance_class": task.acceptance_class.value,
         "policy": policy.policy,
         "required": policy.required,
         "deterministic_checks": [

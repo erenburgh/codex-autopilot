@@ -32,6 +32,7 @@ class FakeAppServerCreateClient:
         fail_create: bool = False,
     ) -> None:
         self.canonical_cwd = canonical_cwd
+        self.thread_cwd = canonical_cwd
         self.events = events
         self.thread_id = thread_id
         self.project_id = project_id
@@ -96,11 +97,12 @@ class FakeAppServerCreateClient:
         if self.fail_create:
             raise AppServerRpcError("thread/start", {"message": "known failure"})
         self.project_id = kwargs["project_id"]
+        self.thread_cwd = Path(kwargs["cwd"])
         self.subscribed_thread_ids.add(self.thread_id)
         return {
             "thread": {
                 "id": self.thread_id,
-                "cwd": str(self.canonical_cwd),
+                "cwd": str(self.thread_cwd),
                 "projectId": self.project_id,
             },
             "activePermissionProfile": {"id": ":workspace"},
@@ -115,7 +117,7 @@ class FakeAppServerCreateClient:
         self.project_id = project_id
         return {
             "id": thread_id,
-            "cwd": str(self.canonical_cwd),
+            "cwd": str(self.thread_cwd),
             "name": self.name,
             "projectId": project_id,
         }
@@ -124,7 +126,7 @@ class FakeAppServerCreateClient:
         self.events.append("thread-metadata-read")
         return {
             "id": thread_id,
-            "cwd": str(self.canonical_cwd),
+            "cwd": str(self.thread_cwd),
             "name": self.name,
             "projectId": self.project_id,
             "turns": [],

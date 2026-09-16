@@ -139,7 +139,7 @@ class EngineerIsActuallyReservedTests(unittest.TestCase):
 
         from _gates import patch_hook_trust_gates
         from _relay import reserve_ready_frontier
-        from codex_autopilot.bootstrap import initialize_project
+        from _plan_contract import initialize_verified_project as initialize_project
         from codex_autopilot.config import load_config
         from codex_autopilot.pipeline_engineer import (
             IncidentClass,
@@ -374,7 +374,7 @@ class ResolvedMustHandOverTests(unittest.TestCase):
 
         from _gates import patch_hook_trust_gates
         from _relay import reserve_ready_frontier
-        from codex_autopilot.bootstrap import initialize_project
+        from _plan_contract import initialize_verified_project as initialize_project
         from codex_autopilot.config import load_config
         from codex_autopilot.pipeline_engineer import (
             IncidentClass,
@@ -687,7 +687,7 @@ class ReplaceStartsWithoutInheritedTicketsTests(unittest.TestCase):
         import tempfile
 
         from _gates import patch_hook_trust_gates
-        from codex_autopilot.bootstrap import initialize_project
+        from _plan_contract import initialize_verified_project as initialize_project
         from codex_autopilot.pipeline_engineer import (
             IncidentClass,
             IncidentSignal,

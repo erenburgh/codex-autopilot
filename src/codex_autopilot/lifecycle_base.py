@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import time
 import uuid
 from typing import Any, Callable, Mapping
@@ -67,12 +68,37 @@ SUCCESS_STATUSES = frozenset({"ROTATE", "DONE"})
 ALLOWED_STATUSES = frozenset({"ROTATE", "DONE", "BLOCKED", "ESCALATE"})
 IMPLEMENTATION_SESSION_KINDS = frozenset({"worker", "implementation"})
 SESSION_KINDS = IMPLEMENTATION_SESSION_KINDS | frozenset(
-    {"verifier", "revision", "replanner", "pipeline_engineer"}
+    {"verifier", "revision", "replanner", "plan_verifier", "pipeline_engineer"}
 )
 
 
 class DesktopLifecycleError(RuntimeError):
     pass
+
+
+class WorkerProtocolError(DesktopLifecycleError):
+    """Воркер закончил ход, но оформил ответ не по протоколу.
+
+    Это ошибка модели, а не поломка машины. Разница не косметическая:
+    на хуковом пути такой отказ возвращается воркеру строкой
+    `decision: block`, и он исправляется в том же ходе - бесплатно. На
+    автоматическом пути ход уже завершён, вернуть в него нельзя, и
+    прежде исключение уходило наверх: диспетчер падал, заводился тикет
+    класса PIPELINE, поднимался инженер.
+
+    Замерено 16.09.2026 на живом прогоне: воркер M8 отработал, ошибся
+    финальной строкой - и прогон встал целиком. Завершение хода стало
+    некому принять, сессия осталась висеть активной, и понадобился
+    человек. Дежурный инженер, разбирая это, открыл конфликт правила
+    R31: рантайм отверг уже завершённого воркера на поздней проверке,
+    то есть выбросил сделанную работу на форматном гейте.
+
+    Отдельный класс нужен, чтобы автоматический путь мог отличить
+    «модель оформила ответ криво» от «сломался транспорт» и поступить
+    с первым как с неудачной попыткой задачи - записать причину и дать
+    повтор, - а не как с аварией инфраструктуры.
+    """
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +221,7 @@ def parse_desktop_worker_status(message: str) -> tuple[str, str]:
         (line.strip() for line in reversed(message.splitlines()) if line.strip()), ""
     )
     if len(matches) != 1:
-        raise DesktopLifecycleError(
+        raise WorkerProtocolError(
             "Desktop worker final response must end with exactly one allowed "
             "AUTOPILOT_STATUS line"
         )
@@ -204,13 +230,13 @@ def parse_desktop_worker_status(message: str) -> tuple[str, str]:
     if raw_code:
         expected = f"{expected} {raw_code}"
     if last != expected:
-        raise DesktopLifecycleError(
+        raise WorkerProtocolError(
             "Desktop worker final response must end with exactly one allowed "
             "AUTOPILOT_STATUS line"
         )
     if status in SUCCESS_STATUSES:
         if raw_code:
-            raise DesktopLifecycleError(
+            raise WorkerProtocolError(
                 "AUTOPILOT_STATUS ROTATE and DONE carry no reason code"
             )
         return status, ""
@@ -504,7 +530,7 @@ def _record_deterministic_evidence(
         if result.kind == "command":
             memory.record_evidence(
                 kind="test",
-                command=json.dumps(list(check.argv), ensure_ascii=False),
+                command=shlex.join(check.argv),
                 result=json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True),
                 exit_code=result.exit_code if result.exit_code is not None else -1,
                 **common,
@@ -550,7 +576,7 @@ def _record_deterministic_verification_results(
             raise DesktopLifecycleError(
                 f"deterministic check {result.check_id} has no evidence with its exact check ID role"
             )
-        verification = memory.record_verification_result(
+        verification = memory._record_runtime_verification_result(
             task_id=task_id,
             check_id=result.check_id,
             policy="deterministic",

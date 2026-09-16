@@ -28,6 +28,7 @@ WORKER_SESSION_KINDS = {
     "verifier",
     "revision",
     "replanner",
+    "plan_verifier",
     "pipeline_engineer",
 }
 
@@ -76,6 +77,11 @@ class RunState:
     # Отказы протокола приёмки по задачам: вердикт верифаера, который не
     # удалось прочитать. Копится, чтобы следующий верифаер увидел причину.
     verification_rejections: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # A semantic verifier binds one exact graph digest before the scheduler may
+    # admit production.  The counter drives periodic full revalidation after
+    # accepted replacement-graph patches.
+    plan_verification: dict[str, Any] | None = None
+    accepted_plan_patches_since_full_revalidation: int = 0
     # Решения человека снять остановку задачи: что, почему и когда.
     # Остановка по нарушению правила не самозалечивается, но и не висит
     # вечно - у неё есть названный автор.
@@ -517,6 +523,18 @@ def _validate_state(state: RunState) -> None:
                 isinstance(issue, dict) for issue in issues
             ):
                 raise ValueError("revision sessions require structured verification_issues")
+        if kind == "plan_verifier":
+            if not isinstance(item.get("plan_change_id"), str) or not item.get(
+                "plan_change_id"
+            ):
+                raise ValueError("plan_verifier sessions require plan_change_id")
+            if item.get("verification_mode") not in {
+                "PLAN_PATCH_VERIFICATION",
+                "FULL_PLAN_REVALIDATION",
+            }:
+                raise ValueError(
+                    "plan_verifier sessions require a supported verification_mode"
+                )
         relay_owner = item.get("relay_owner_thread_id")
         if relay_owner is not None and (
             not isinstance(relay_owner, str) or not relay_owner
@@ -584,6 +602,20 @@ def _validate_state(state: RunState) -> None:
         or state.plan_change_sequence < 0
     ):
         raise ValueError("plan_change_sequence must be a non-negative integer")
+    if state.plan_verification is not None and not isinstance(
+        state.plan_verification, dict
+    ):
+        raise ValueError("plan_verification must be an object or null")
+    if (
+        isinstance(state.accepted_plan_patches_since_full_revalidation, bool)
+        or not isinstance(
+            state.accepted_plan_patches_since_full_revalidation, int
+        )
+        or state.accepted_plan_patches_since_full_revalidation < 0
+    ):
+        raise ValueError(
+            "accepted_plan_patches_since_full_revalidation must be non-negative"
+        )
     if not isinstance(state.plan_changes, list) or not all(
         isinstance(item, dict) for item in state.plan_changes
     ):
@@ -608,6 +640,8 @@ def _validate_state(state: RunState) -> None:
             "DRAINING",
             "REPLANNER_RESERVED",
             "REPLANNING",
+            "PLAN_VERIFICATION_REQUIRED",
+            "PLAN_VERIFYING",
             "APPLIED",
             "REJECTED",
             "FAILED",
@@ -621,7 +655,13 @@ def _validate_state(state: RunState) -> None:
         if not isinstance(item.get("request"), dict):
             raise ValueError("plan changes require a structured request")
         plan_change_ids.append(request_id)
-        if status in {"DRAINING", "REPLANNER_RESERVED", "REPLANNING"}:
+        if status in {
+            "DRAINING",
+            "REPLANNER_RESERVED",
+            "REPLANNING",
+            "PLAN_VERIFICATION_REQUIRED",
+            "PLAN_VERIFYING",
+        }:
             active_plan_changes.append(request_id)
     if len(plan_change_ids) != len(set(plan_change_ids)):
         raise ValueError("plan change ids must be unique")

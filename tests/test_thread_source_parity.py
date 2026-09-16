@@ -22,7 +22,7 @@ from unittest import mock
 
 from _gates import patch_hook_trust_gates
 from _relay import reserve_ready_frontier
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from codex_autopilot.lifecycle_dispatch import app_server_creation_contract
 from test_desktop_lifecycle import graph

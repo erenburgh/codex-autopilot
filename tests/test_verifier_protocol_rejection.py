@@ -20,7 +20,7 @@ import unittest
 from _gates import patch_hook_trust_gates
 from _relay import reserve_ready_frontier
 from _handoff import bump_task_checkpoint
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import load_config
 from codex_autopilot.lifecycle_completion import complete_desktop_worker
 from codex_autopilot.memory import ProjectMemory

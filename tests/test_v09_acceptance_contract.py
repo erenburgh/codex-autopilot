@@ -17,7 +17,11 @@ from codex_autopilot.thread_titles import (
     revision_thread_title,
     verifier_thread_title,
 )
-from _plan_contract import canonical_verification
+from _plan_contract import (
+    canonical_plan_verification,
+    canonicalize_plan,
+    canonical_verification,
+)
 
 
 def _role(role_id: str, name: str) -> dict[str, object]:
@@ -95,7 +99,7 @@ def _plan(
                 "computer_use_slots": 1,
             }
         )
-    return validate_plan(payload, "adaptive")
+    return validate_plan(canonicalize_plan(payload), "adaptive")
 
 
 def _state(plan: Plan) -> RunState:
@@ -107,11 +111,21 @@ def _state(plan: Plan) -> RunState:
         task_states=initial_task_states(plan),
         task_attempts={task.id: 0 for task in plan.tasks},
         task_revisions={task.id: 0 for task in plan.tasks},
+        plan_verification=canonical_plan_verification(plan),
     )
 
 
 class V09ContractRegressionTests(unittest.TestCase):
     """Exact source-request contracts that the candidate must satisfy."""
+
+    def test_no_runtime_module_exceeds_the_section_zero_limit(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "src" / "codex_autopilot"
+        oversized = {
+            path.name: len(path.read_text(encoding="utf-8").splitlines())
+            for path in sorted(source.glob("*.py"))
+            if len(path.read_text(encoding="utf-8").splitlines()) > 1_500
+        }
+        self.assertEqual(oversized, {})
 
     def test_auto_is_the_default_product_execution_strategy(self) -> None:
         plan = _plan(

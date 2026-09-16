@@ -13,7 +13,7 @@ from .plan import (
     plan_to_dict,
     save_plan,
     topological_order,
-    validate_plan,
+    validate_persisted_plan,
     validate_plan_change,
 )
 from .resources import release_resources_in_state
@@ -161,6 +161,7 @@ def validate_replanner_result(
     *,
     request_id: str,
     profile: str,
+    promotion_evidence_store: Any | None = None,
 ) -> Plan:
     if result.request_id != request_id:
         raise PlanChangeProtocolError("replanner returned a different plan change request_id")
@@ -169,7 +170,12 @@ def validate_replanner_result(
             "replanner base graph version is stale: "
             f"expected {current.graph_version}, got {result.base_graph_version}"
         )
-    return validate_plan_change(current, result.plan, profile)
+    return validate_plan_change(
+        current,
+        result.plan,
+        profile,
+        promotion_evidence_store=promotion_evidence_store,
+    )
 
 
 def reconcile_plan_change_state(
@@ -324,7 +330,14 @@ def commit_plan_change(
     exact same commit on Resume without inventing or repeating model work.
     """
 
-    validated = validate_plan_change(current, plan_to_dict(candidate), profile)
+    from .memory import ProjectMemory
+
+    validated = validate_plan_change(
+        current,
+        plan_to_dict(candidate),
+        profile,
+        promotion_evidence_store=ProjectMemory(state_dir.resolve().parent),
+    )
     if validated != candidate or state.graph_version != candidate.graph_version:
         raise PlanChangeConflictError("plan/state commit payload is inconsistent")
     base_state_payload = asdict(StateStore(state_dir).load())
@@ -402,7 +415,11 @@ def recover_plan_change_transaction(state_dir: Path, profile: str) -> bool:
         raise PlanChangeConflictError("plan change transaction plan digest mismatch")
     if _state_digest(target_state_raw) != raw["target_state_sha256"]:
         raise PlanChangeConflictError("plan change transaction state digest mismatch")
-    target = validate_plan(target_plan_raw, profile)
+    target = validate_persisted_plan(
+        target_plan_raw,
+        profile,
+        state_dir=state_dir,
+    )
     if target.graph_version != raw["target_graph_version"]:
         raise PlanChangeConflictError("plan change transaction target version mismatch")
     known = RunState.__dataclass_fields__
@@ -495,8 +512,35 @@ def reconcile_running_work(
         if observed == "unknown":
             unresolved.append(task_id)
             continue
+        # Сессия дежурного инженера намеренно создаётся БЕЗ перевода
+        # задачи в активное состояние: инженер чинит инцидент, а не
+        # выполняет задачу. Поэтому её зависший ход снимается сам по
+        # себе и состояния задачи не касается - у той своя жизнь.
+        #
+        # Прежде этого различия не было, и сверка требовала активного
+        # состояния от ЛЮБОЙ pending-сессии. 16.09.2026 прогон встал
+        # намертво: ход инженера завершился, сессия осталась висеть, а
+        # M8 был READY - и каждое возобновление отвечало «pending
+        # session for M8 is not in an active task state». Возобновить
+        # прогон стало нельзя ничем.
+        if str(session.get("kind") or "") == "pipeline_engineer":
+            session["status"] = "RETRY_WAIT"
+            session["failure_reason"] = (
+                f"crash reconciliation observed pipeline engineer {observed}"
+            )
+            if release_resources_in_state(
+                state,
+                token,
+                reason=f"authoritative crash reconciliation: {observed}",
+                now=timestamp,
+            ):
+                released.append(lock_ids.get(token, token))
+            continue
         raw_state = TaskState(state.task_states[task_id])
-        if raw_state not in ACTIVE_TASK_STATES:
+        # Уже в RETRY_WAIT - значит сверка для этой задачи проводилась
+        # раньше: следующая строка ставит ровно это состояние. Повтор
+        # сверки не конфликт, а ничего.
+        if raw_state is not TaskState.RETRY_WAIT and raw_state not in ACTIVE_TASK_STATES:
             raise PlanChangeConflictError(
                 f"pending session for {task_id} is not in an active task state"
             )

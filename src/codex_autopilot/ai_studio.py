@@ -26,6 +26,7 @@ from .pipeline_engineer import (
 )
 from .rules import rules_for_prompt
 from .plan import Plan, RoleProfile, Task
+from .skill_packs import SkillPackError, resolve_skill_stack
 from .task_state import dependency_state_satisfies
 from .verification import VerificationIssue, verifier_route
 
@@ -301,6 +302,18 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             task,
             department_reference,
         )
+        try:
+            implementation_role = self.plan.role_map[task.role]
+            loaded_skills = resolve_skill_stack(
+                self.plan.skill_packs,
+                task.loaded_skills,
+                requirements=implementation_role.skill_requirements,
+                qualification_evidence_store=self.memory,
+            )
+        except SkillPackError as exc:
+            raise ContextBoundaryError(
+                f"task {task.id} skill stack cannot be resolved: {exc}"
+            ) from exc
         envelope = {
             # Правило R17: блок правил идёт ПЕРЕД спецификациями задачи
             # и не подлежит усечению. Если бюджет контекста не вмещает
@@ -308,10 +321,21 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             # запускается - это дефект планирования контекста, а не
             # повод выбросить правила.
             "rules": rules_for_prompt(self.state_dir),
+            **(
+                {"goal_contract": self.plan.goal_contract.to_dict()}
+                if self.plan.goal_contract is not None
+                else {}
+            ),
             "phase": phase,
             "task": self._task_contract(task),
             "role": self._role_contract(role, department_reference),
+            "loaded_skills": [item.to_prompt_dict() for item in loaded_skills],
             "definition_of_done": definition_of_done,
+            **(
+                {"recorded_human_decisions": decisions}
+                if (decisions := self._recorded_human_decisions(task.id))
+                else {}
+            ),
             "acceptance_gate": self._acceptance_gate(task, definition_of_done),
             "resources": [
                 {
@@ -400,24 +424,6 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 f"department verifier cannot launch for task {task.id}: {exc}"
             ) from exc
         return loaded.to_dict()
-
-    def _original_user_request_contract(self, task_id: str) -> str | dict[str, Any]:
-        """Keep large immutable requests in canonical Project Memory."""
-
-        request = self.plan.user_request
-        if len(request) <= MAX_INLINE_USER_REQUEST_CHARS:
-            return request
-        return {
-            "verbatim_in_prompt": False,
-            "chars": len(request),
-            "sha256": hashlib.sha256(request.encode("utf-8")).hexdigest(),
-            "retrieval": {
-                "server": "codex_autopilot_memory",
-                "tool": "memory",
-                "arguments": {"operation": "current", "task_id": task_id},
-                "field": "user_request",
-            },
-        }
 
     def _select_verified_state(
         self,
@@ -588,7 +594,15 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             "priority": task.priority,
             "execution_mode": task.execution_mode,
             "execution_mode_reason": task.execution_mode_reason,
+            "acceptance_class": task.acceptance_class.value,
             "required_capabilities": list(task.required_capabilities),
+            "loaded_skills": [item.to_dict() for item in task.loaded_skills],
+            **(
+                {"skill_attestation": task.skill_attestation.to_dict()}
+                if task.skill_attestation
+                else {}
+            ),
+            "produces_outcomes": list(task.produces_outcomes),
             "tags": list(task.tags),
             "outputs": [
                 {
@@ -658,11 +672,15 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         return {
             "id": role.id,
             "name": role.name,
+            "version": role.version,
             "responsibilities": list(role.responsibilities),
             "domain_focus": list(domain_focus),
             "preferred_tools": list(role.preferred_tools),
             "context_priorities": list(context_priorities),
             "verification_expectations": list(verification_expectations),
+            "skill_requirements": [
+                item.to_dict() for item in role.skill_requirements
+            ],
         }
 
     @staticmethod
@@ -696,6 +714,42 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
     def _bounded_text(value: str, limit: int) -> str:
         return value if len(value) <= limit else value[: limit - 1] + "…"
 
+    def _recorded_human_decisions(self, task_id: str) -> list[dict[str, str]]:
+        """Решения владельца по этой задаче - те, что сняли её остановку.
+
+        Прежде причина разблокировки ложилась в журнал и никуда больше:
+        `user_unblocks` встречался только там, где записывается, и в
+        объявлении поля. Ни один воркер её не читал. Владелец за сутки
+        сняла шесть остановок, каждый раз объясняя почему, - и ни одно
+        объяснение не дошло до того, кто продолжал работу.
+
+        Правило R32 требует, чтобы вмешательство человека было записанным
+        решением, а не репликой. Решение, которого никто не читает, от
+        реплики не отличается: оно ничего не меняет.
+
+        Блок появляется только когда решения есть, и ограничен по объёму:
+        контекст задачи не должен расти от истории вмешательств.
+        """
+
+        from .run_state import StateStore
+
+        try:
+            entries = StateStore(self.state_dir).load().user_unblocks or []
+        except Exception:
+            return []
+        mine = [
+            item
+            for item in entries
+            if isinstance(item, dict) and str(item.get("task_id") or "") == task_id
+        ]
+        return [
+            {
+                "at": str(item.get("at") or ""),
+                "decision": str(item.get("reason") or "")[:600],
+            }
+            for item in mine[-3:]
+        ]
+
     def _acceptance_gate(
         self, task: Task, definition_of_done: list[str] | None = None
     ) -> dict[str, Any]:
@@ -718,8 +772,15 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 "retrieval": {
                     "server": MEMORY_SERVER_NAME,
                     "tool": "memory",
-                    "arguments": {"operation": "current", "task_id": task.id},
+                    "arguments": {
+                        "operation": "current",
+                        "task_id": task.id,
+                        "expect_user_request_sha256": hashlib.sha256(
+                            request.encode("utf-8")
+                        ).hexdigest(),
+                    },
                     "field": "user_request",
+                    "verified_by": "runtime",
                 },
             },
             "run_goal": self.plan.goal,
@@ -751,16 +812,17 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         request_access = ""
         if len(self.plan.user_request) > MAX_INLINE_USER_REQUEST_CHARS:
             request_access = (
-                "Исходный запрос пользователя не вложен в prompt: получи его ровно одним "
-                "вызовом Project Memory из acceptance_gate.original_user_request.retrieval, "
-                "извлеки указанное field и до использования сверь chars и sha256. "
-                "Расхождение означает подмену и запрещает продолжение."
+                "Исходный запрос не вложен в prompt: получи его ровно одним вызовом "
+                "Project Memory из acceptance_gate.original_user_request.retrieval, передав "
+                "аргументы дословно. Заверяет рантайм: успех значит подлинность, отказ "
+                "запрещает продолжение. Хэш сам не считай - в изоляте нет crypto."
                 if russian
                 else "The original user request is not embedded in this prompt: retrieve it "
                 "with exactly one Project Memory call from "
-                "acceptance_gate.original_user_request.retrieval, extract the named field, "
-                "and verify chars and sha256 before use. A mismatch means substitution and "
-                "forbids continuing."
+                "acceptance_gate.original_user_request.retrieval, passing its arguments "
+                "verbatim. The runtime verifies the text for you: success means the request "
+                "is authentic, a refusal forbids continuing. Never hash it yourself - the "
+                "isolate has no crypto."
             )
         if phase == "verification":
             identity = (
@@ -772,8 +834,9 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 'Независимо сопоставь результат с acceptance_gate.original_user_request, '
                 'run_goal, структурированным контрактом задачи и каждым пунктом DoD. Если '
                 'original_user_request является ссылочным объектом, получи точную строку одним '
-                'указанным вызовом Project Memory, извлеки field и проверь chars и sha256; '
-                'несовпадение запрещает PASS. Тесты, '
+                'указанным вызовом Project Memory, передав его аргументы дословно: заверение '
+                'делает рантайм, отказ вызова запрещает PASS. Хэш сам не считай - в изоляте '
+                'постобработки нет ни crypto, ни TextEncoder. Тесты, '
                 'написанные implementer, — только evidence: они не определяют и не отменяют '
                 'критерии приёмки. PASS допустим только после этой независимой проверки. Запиши '
                 'новое evidence с role=independent_verification. Последняя непустая строка: '
@@ -790,8 +853,10 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 else 'Independently compare the result with '
                 'acceptance_gate.original_user_request, run_goal, the structured task contract, '
                 'and every DoD item. If original_user_request is a reference object, retrieve '
-                'the exact string with its single specified Project Memory call, extract field, '
-                'and verify chars and sha256; a mismatch forbids PASS. Implementer-authored tests are evidence only: they neither '
+                'the exact string with its single specified Project Memory call, passing its '
+                'arguments verbatim: the runtime verifies it, and a refused call forbids PASS. '
+                'Never hash it yourself - the post-processing isolate has neither crypto nor '
+                'TextEncoder. Implementer-authored tests are evidence only: they neither '
                 'define nor waive acceptance criteria. PASS is allowed only after this independent '
                 'check. Record new evidence with role=independent_verification. Final non-empty line: '
                 'AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]} or REVISE with a non-empty '
@@ -899,7 +964,7 @@ Resources: <what is held for writing, or "none">
 
 The brief comes only from the task contract above. It carries no time estimate: Autopilot does not know how long the work takes, and a number picked at random is a promise nobody made. Then work as usual.
 
-Read {self.skill_path} completely first. Use only the structured task, role, DoD, verified state, selected dependency outputs, issues, and resources above. Retrieve listed record/evidence IDs directly through Project Memory when needed. The user's original request is not embedded in this prompt: it is a single text for the whole run and is fetched with one Project Memory call - server codex_autopilot_memory, tool memory, arguments {{"operation":"current","task_id":"{task.id}"}}, field user_request. acceptance_gate.original_user_request carries its length and sha256 - check them before relying on the text; a mismatch means the text changed underneath you and is a reason to stop, not to continue. {request_access} NO EVIDENCE -> NO TRUTH. Never run a command that raises a permission dialog: the dispatcher refuses every approval by rule, and the dialog then waits in a task nobody is watching and kills the whole run. This covers network access, external services, directories outside the workspace, and any right beyond the working directory. Instead of running it, finish the turn with AUTOPILOT_STATUS: BLOCKED DANGEROUS_PERMISSION and name the exact command and why it was needed - a stop with an explanation is cheap, a hanging dialog costs the run. Preserve unrelated changes; do not commit, tag, push, publish, reset, or clean. Update your own task handoff file .codex-autopilot/handoff/{task.id}.md - it is the required completion checkpoint and it is yours: another task's write does not satisfy it. The shared HANDOFF.md stays an optional human-facing note. This task remains Desktop-owned; never create, start, or message other tasks. After the final protocol line, the already-running local dispatcher consumes the authoritative App Server completion, closes this task's App Server process, advances deterministic state, and starts the exact successor. The Stop hook is only an observer for an automatically owned turn. If Pipeline Engineer repaired a fault, DevOps only re-arms the causal dispatcher and never creates or starts the destination task. Reservation token: {reservation_token}.
+Read {self.skill_path} completely first. Use only the structured task, role, DoD, verified state, selected dependency outputs, issues, and resources above. Retrieve listed record/evidence IDs directly through Project Memory when needed. The user's original request is not embedded in this prompt: it is a single text for the whole run and is fetched with one Project Memory call - server codex_autopilot_memory, tool memory, arguments {{"operation":"current","task_id":"{task.id}"}}, field user_request. acceptance_gate.original_user_request.retrieval.arguments already carries expect_user_request_sha256: pass them through verbatim and the runtime verifies the text for you - a successful call means the request is authentic, and a failed one means the text changed underneath you and is a reason to stop. Never hash it yourself: the post-processing isolate has neither crypto nor TextEncoder, and a check you cannot run is a task that cannot start. {request_access} NO EVIDENCE -> NO TRUTH. Never run a command that raises a permission dialog: the dispatcher refuses every approval by rule, and the dialog then waits in a task nobody is watching and kills the whole run. This covers network access, external services, directories outside the workspace, and any right beyond the working directory. Instead of running it, finish the turn with AUTOPILOT_STATUS: BLOCKED DANGEROUS_PERMISSION and name the exact command and why it was needed - a stop with an explanation is cheap, a hanging dialog costs the run. Preserve unrelated changes; do not commit, tag, push, publish, reset, or clean. Update your own task handoff file .codex-autopilot/handoff/{task.id}.md - it is the required completion checkpoint and it is yours: another task's write does not satisfy it. The shared HANDOFF.md stays an optional human-facing note. This task remains Desktop-owned; never create, start, or message other tasks. After the final protocol line, the already-running local dispatcher consumes the authoritative App Server completion, closes this task's App Server process, advances deterministic state, and starts the exact successor. The Stop hook is only an observer for an automatically owned turn. If Pipeline Engineer repaired a fault, DevOps only re-arms the causal dispatcher and never creates or starts the destination task. Reservation token: {reservation_token}.
 
 {finish}"""
 

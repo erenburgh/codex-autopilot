@@ -28,7 +28,7 @@ from .lifecycle import (
 )
 from .language import DEFAULT_LANGUAGE, normalize_language
 from .models import MODEL_IDS, PUBLIC_REASONING
-from .plan import validate_plan
+from .plan import validate_migrating_plan
 from .preflight import PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, run_preflight
 from .run_state import StateStore
 
@@ -394,7 +394,15 @@ def main(argv: list[str] | None = None) -> int:
             profile, skill = _profile_and_skill(args)
             language = normalize_language(args.language)
             raw = json.loads(args.plan_file.read_text(encoding="utf-8"))
-            checked_plan = validate_plan(raw, profile)
+            # Тот же вопрос, что и у bootstrap: есть ли прогон, который
+            # мигрируют. План v0.8 впускается только как его миграция, и
+            # проверить это надо здесь тоже - иначе preflight принимал бы
+            # то, что bootstrap следом отвергнет.
+            checked_plan = validate_migrating_plan(
+                raw,
+                profile,
+                state_dir=args.project.resolve() / STATE_DIR_NAME,
+            )
             preflight_result = run_preflight(
                 args.project,
                 plan=checked_plan,
@@ -417,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
                 language=language,
                 project_id=preflight_result.project_id,
                 desktop_project_id=getattr(args, "desktop_project_id", None),
+                plan_verification=preflight_result.plan_verification,
             )
             if args.command == "start-skill":
                 state = StateStore(args.project.resolve() / STATE_DIR_NAME).load()

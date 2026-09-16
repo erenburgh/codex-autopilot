@@ -19,7 +19,7 @@ from codex_autopilot.plan import validate_plan
 from codex_autopilot.resources import build_scheduler_availability
 from codex_autopilot.run_state import RunState
 from codex_autopilot.scheduler import schedule
-from _plan_contract import canonical_verification
+from _plan_contract import canonicalize_plan, canonical_verification
 
 
 def graph() -> dict[str, object]:
@@ -43,7 +43,7 @@ def graph() -> dict[str, object]:
             "tags": [],
         }
 
-    return {
+    return canonicalize_plan({
         "schema_version": 3,
         "graph_version": 1,
         "goal": "Test incident isolation.",
@@ -60,7 +60,7 @@ def graph() -> dict[str, object]:
             }
         ],
         "tasks": [task("A"), task("B")],
-    }
+    })
 
 
 

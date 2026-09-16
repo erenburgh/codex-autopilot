@@ -11,6 +11,7 @@ from .plan import (
     COMPAT_MAX_PARALLEL_WORKERS,
     EXECUTION_STRATEGIES,
 )
+from .plan_verification import DEFAULT_FULL_REVALIDATION_PATCHES
 
 
 CONFIG_NAME = "config.toml"
@@ -67,6 +68,7 @@ class RuntimeConfig:
     # API про непрочитанное, а thread/metadata/update принимает только
     # projectId. См. notify.py.
     desktop_notifications: bool = False
+    full_plan_revalidation_patches: int = DEFAULT_FULL_REVALIDATION_PATCHES
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +222,13 @@ def load_config(root_or_path: Path) -> Config:
             desktop_notifications=_bool(
                 runtime.get("desktop_notifications", False),
                 "runtime.desktop_notifications",
+            ),
+            full_plan_revalidation_patches=_positive_int(
+                runtime.get(
+                    "full_plan_revalidation_patches",
+                    DEFAULT_FULL_REVALIDATION_PATCHES,
+                ),
+                "runtime.full_plan_revalidation_patches",
             ),
         ),
         auto_commit=auto_commit,

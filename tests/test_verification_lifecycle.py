@@ -10,10 +10,10 @@ from unittest import mock
 from _gates import patch_hook_trust_gates
 
 from codex_autopilot.appserver import TurnResult
-from codex_autopilot.bootstrap import initialize_project
+from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
-from _plan_contract import canonical_verification
+from _plan_contract import TEST_OUTCOME_ID, canonicalize_plan, canonical_verification
 from _appserver_fakes import activate_via_app_server
 from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
 from codex_autopilot.lifecycle import (
@@ -146,11 +146,13 @@ def task(
         "context": {},
         "outputs": [],
         "tags": [],
+        "produces_outcomes": [TEST_OUTCOME_ID],
+        "acceptance_class": "mixed",
     }
 
 
 def graph(first: dict[str, object]) -> dict[str, object]:
-    return {
+    return canonicalize_plan({
         "schema_version": 3,
         "graph_version": 1,
         "goal": "Exercise verification and revision lifecycle.",
@@ -176,7 +178,7 @@ def graph(first: dict[str, object]) -> dict[str, object]:
             first,
             task("B", depends_on=("A",)),
         ],
-    }
+    })
 
 
 class VerificationLifecycleTests(unittest.TestCase):

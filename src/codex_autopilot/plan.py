@@ -8,6 +8,8 @@ import re
 import tempfile
 from typing import Any, Iterable
 
+from .acceptance import AcceptanceClass, acceptance_class_from_raw
+from .acceptance_floor import CLEAN_IDENTITY_ASSIGNMENTS, is_clean_suite_command
 from .department_acceptance import (
     DepartmentAcceptanceError,
     DepartmentContract,
@@ -16,8 +18,18 @@ from .department_acceptance import (
     resolve_task_department,
     validate_department_contracts,
 )
+from .goal_contract import (
+    GoalContract,
+    GoalContractError,
+    is_persisted_goal_contract_compatibility,
+    validate_goal_contract,
+    validate_outcome_bindings,
+)
 from .models import EXECUTION_MODES, STRATEGIES
+from .plan_graph import topological_order
 from .reasoning import normalize
+from .role_specification import DEFAULT_ROLE_SPECIFICATION_VERSION, ROLE_SPECIFICATIONS_FILE, RoleProfile, RoleSpecificationError, prepare_role_specifications, role_profile_to_dict, validate_role_specification_transition, validate_role_version
+from .skill_packs import SkillAttestation, SkillPack, SkillPackError, SkillReference, skill_attestation_from_raw, skill_packs_from_raw, skill_references_from_raw, validate_plan_skill_bindings, validate_plan_skill_qualifications, validate_trusted_skill_promotions
 
 
 PLAN_FILE = "plan.json"
@@ -27,62 +39,6 @@ LEGACY_PLAN_SCHEMA_VERSION = 2
 EXECUTION_STRATEGIES = {"serial", "parallel", "auto"}
 VERIFICATION_POLICIES = {"self", "deterministic", "independent", "auto"}
 VERIFICATION_CHECK_KINDS = {"command", "artifact", "evidence"}
-_CLEAN_IDENTITY_ASSIGNMENTS = {
-    "CODEX_THREAD_ID": "",
-    "CODEX_TURN_ID": "",
-    "CODEX_SESSION_ID": "",
-}
-_SHELL_COMMANDS = frozenset(
-    {
-        "bash",
-        "cmd",
-        "cmd.exe",
-        "dash",
-        "fish",
-        "ksh",
-        "powershell",
-        "pwsh",
-        "sh",
-        "zsh",
-    }
-)
-_NOOP_COMMANDS = frozenset({":", "echo", "false", "printf", "true"})
-_DIRECT_TEST_RUNNERS = frozenset(
-    {
-        "cargo",
-        "dotnet",
-        "go",
-        "gradle",
-        "gradlew",
-        "make",
-        "mvn",
-        "mvnw",
-        "py.test",
-        "pytest",
-    }
-)
-_PACKAGE_TEST_RUNNERS = frozenset({"bun", "npm", "pnpm", "yarn"})
-_PYTEST_PARTIAL_SUITE_OPTIONS = frozenset(
-    {
-        "--co",
-        "--collect-only",
-        "--deselect",
-        "--failed-first",
-        "--ff",
-        "--ignore",
-        "--ignore-glob",
-        "--last-failed",
-        "--lf",
-        "--m",
-        "--new-first",
-        "--nf",
-        "--pyargs",
-        "--stepwise",
-        "--sw",
-        "-k",
-        "-m",
-    }
-)
 RESOURCE_KINDS = {
     "path",
     "directory",
@@ -120,19 +76,6 @@ DEFAULT_MAX_MEMORY_RECORDS = 8
 DEFAULT_MAX_DEPENDENCY_OUTPUTS = 8
 
 _IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
-
-
-@dataclass(frozen=True, slots=True)
-class RoleProfile:
-    """Planner-defined specialist behavior; it never selects a model."""
-
-    id: str
-    name: str
-    responsibilities: tuple[str, ...]
-    domain_focus: tuple[str, ...] = ()
-    preferred_tools: tuple[str, ...] = ()
-    context_priorities: tuple[str, ...] = ()
-    verification_expectations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +147,10 @@ class Task:
     context: TaskContext
     outputs: tuple[TaskOutput, ...]
     tags: tuple[str, ...]
+    produces_outcomes: tuple[str, ...] = ()
+    acceptance_class: AcceptanceClass = AcceptanceClass.MIXED
+    loaded_skills: tuple[SkillReference, ...] = ()
+    skill_attestation: SkillAttestation | None = None
 
 
 # v0.8 callers use the old name. A milestone is now a graph task, not a second
@@ -225,6 +172,8 @@ class Plan:
     computer_use_slots: int = DEFAULT_COMPUTER_USE_SLOTS
     source_schema_version: int = PLAN_SCHEMA_VERSION
     legacy_serial: bool = False
+    goal_contract: GoalContract | None = None
+    skill_packs: tuple[SkillPack, ...] = ()
 
     @property
     def milestones(self) -> tuple[Task, ...]:
@@ -241,15 +190,249 @@ class Plan:
         return {item.id: item for item in self.roles}
 
 
-def validate_plan(data: dict[str, Any], profile: str) -> Plan:
-    """Load a canonical schema-3 graph and enforce its acceptance floor.
+def validate_plan(data: dict[str, Any], profile: str, *, promotion_evidence_store: Any | None = None) -> Plan:
+    """Validate a submitted canonical plan.
 
-    A v0.8 plan is represented in memory as a valid chain-shaped DAG. It is
-    explicitly pinned to serial execution with one worker and one Computer Use
-    slot; migration never opts a legacy project into parallel execution.
+    A submitted payload cannot supply its own migration provenance.  Existing
+    v0.8 runs use :func:`validate_migrating_plan`, which derives that provenance
+    from the adjacent durable plan and run-state.
     """
 
-    return _validate_plan_payload(data, profile, inherited=None)
+    if isinstance(data, dict) and data.get("compatibility") is not None:
+        raise ValueError(
+            "plan.compatibility is produced by migration, never declared: a "
+            "submitted schema-3 plan cannot claim migrated provenance"
+        )
+    plan = _validate_plan_payload(
+        data,
+        profile,
+        inherited=None,
+        migrated_milestone_ids=None,
+        require_goal_contract=True,
+        require_acceptance_class=True,
+    )
+    validate_trusted_skill_promotions(plan.skill_packs, evidence_store=promotion_evidence_store)
+    validate_plan_skill_qualifications(plan, evidence_store=promotion_evidence_store)
+    return plan
+
+
+def validate_migrating_plan(
+    data: dict[str, Any],
+    profile: str,
+    *,
+    state_dir: Path,
+    state_payload: dict[str, Any] | None = None,
+) -> Plan:
+    """Validate initial input while preserving a proven existing v0.8 run."""
+
+    if isinstance(data, dict) and data.get("compatibility") is not None:
+        raise ValueError(
+            "plan.compatibility is produced by migration, never declared: a "
+            "submitted schema-3 plan cannot claim migrated provenance"
+        )
+    migrated_ids = persisted_legacy_milestone_ids(
+        state_dir,
+        state_payload=state_payload,
+    )
+    persisted_compatibility = is_persisted_goal_contract_compatibility(
+        data,
+        state_dir=state_dir,
+        schema_version=PLAN_SCHEMA_VERSION,
+        state_payload=state_payload,
+        plan_filename=PLAN_FILE,
+    )
+    plan = _validate_plan_payload(
+        data,
+        profile,
+        inherited=None,
+        migrated_milestone_ids=migrated_ids,
+        require_goal_contract=not persisted_compatibility,
+        require_acceptance_class=not persisted_compatibility,
+    )
+    validate_trusted_skill_promotions(
+        plan.skill_packs, project_root=state_dir.expanduser().resolve().parent
+    )
+    validate_plan_skill_qualifications(plan, project_root=state_dir.expanduser().resolve().parent)
+    return plan
+
+
+def validate_persisted_plan(
+    data: dict[str, Any],
+    profile: str,
+    *,
+    state_dir: Path | None = None,
+) -> Plan:
+    """Проверить план, записанный самим рантаймом.
+
+    Отличается от `validate_plan` одним: здесь `compatibility` допустимо,
+    потому что его сюда написали не снаружи. Мигрированный план v0.8
+    попадает в этот вид только через `_validate_legacy_plan`, а целевой
+    план транзакции смены плана прибит хэшем к кандидату, уже прошедшему
+    `validate_plan_change`.
+
+    Присланный план проходит другим входом и заявить происхождение не
+    может: иначе свежий schema-3 план объявлял бы себя мигрированным и
+    выходил из-под независимой приёмки - это самопринятие (R8).
+    """
+
+    migrated_ids = _legacy_milestone_ids(data)
+    if migrated_ids is not None:
+        if state_dir is None or not _legacy_run_state_proves_migration(state_dir):
+            raise ValueError(
+                "persisted legacy plan requires an adjacent existing v0.8 run-state; "
+                "migration provenance cannot be declared by plan content alone"
+            )
+    elif isinstance(data, dict) and data.get("compatibility") is not None:
+        raise ValueError(
+            "persisted plan.compatibility is valid only for a proven migrated v0.8 run"
+        )
+    persisted_compatibility = is_persisted_goal_contract_compatibility(
+        data,
+        state_dir=state_dir,
+        schema_version=PLAN_SCHEMA_VERSION,
+        plan_filename=PLAN_FILE,
+    )
+    plan = _validate_plan_payload(
+        data,
+        profile,
+        inherited=None,
+        migrated_milestone_ids=(
+            frozenset(migrated_ids) if migrated_ids is not None else None
+        ),
+        require_goal_contract=not persisted_compatibility,
+        require_acceptance_class=not persisted_compatibility,
+    )
+    project_root = state_dir.expanduser().resolve().parent if state_dir is not None else None
+    validate_trusted_skill_promotions(plan.skill_packs, project_root=project_root)
+    validate_plan_skill_qualifications(plan, project_root=project_root)
+    return plan
+
+
+def persisted_legacy_milestone_ids(
+    state_dir: Path,
+    *,
+    state_payload: dict[str, Any] | None = None,
+) -> frozenset[str] | None:
+    """Return task IDs only for an existing persisted legacy run.
+
+    The format of a submitted plan is not provenance.  The compatibility
+    exception exists only for a run that was already present on disk: its
+    run-state must carry the v0.7/v0.8 lineage and its persisted plan must be
+    either the original schema-2 milestones or the exact schema-3
+    ``legacy_serial`` representation produced by this runtime.
+    """
+
+    resolved = state_dir.expanduser().resolve()
+    if not _legacy_run_state_proves_migration(
+        resolved,
+        state_payload=state_payload,
+    ):
+        return None
+    plan_path = resolved / PLAN_FILE
+    if not plan_path.is_file():
+        return None
+    try:
+        previous = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    ids = _legacy_milestone_ids(previous)
+    if ids is not None and previous.get("schema_version") == PLAN_SCHEMA_VERSION:
+        # A migrated graph can later acquire new canonical tasks.  Only the
+        # exact historical v0.8 acceptance signature identifies tasks that
+        # existed before independent verification; a later independent task
+        # must never be downgraded by submitting it again as schema 2.
+        ids = tuple(
+            task_id
+            for task_id, item in zip(ids, previous["tasks"], strict=True)
+            if _is_legacy_verification_payload(item.get("verification"))
+        )
+    return frozenset(ids) if ids is not None else None
+
+
+def _legacy_run_state_proves_migration(
+    state_dir: Path,
+    *,
+    state_payload: dict[str, Any] | None = None,
+) -> bool:
+    if state_payload is None:
+        state_path = state_dir / "run-state.json"
+        if not state_path.is_file():
+            return False
+        try:
+            state_payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+    if not isinstance(state_payload, dict):
+        return False
+    run_id = state_payload.get("run_id")
+    if not isinstance(run_id, str) or not run_id.strip():
+        return False
+    schema = state_payload.get("schema_version")
+    if schema in {3, 4}:
+        return True
+    if schema != 5:
+        return False
+    migrated_from = state_payload.get("migrated_from_schema")
+    if migrated_from in {3, 4}:
+        return True
+    # Early v0.9 builds persisted the converted plan before they acquired a
+    # dedicated lineage marker.  Preserve those real runs only when their
+    # durable scheduler shape is the legacy serial shape; a fresh schema-5
+    # run with ordinary defaults does not qualify.
+    return (
+        state_payload.get("execution_strategy") == "serial"
+        and state_payload.get("max_parallel_workers") == 1
+    )
+
+
+def _legacy_milestone_ids(data: Any) -> tuple[str, ...] | None:
+    if not isinstance(data, dict):
+        return None
+    schema = data.get("schema_version")
+    raw_legacy = schema in {None, LEGACY_PLAN_SCHEMA_VERSION} and isinstance(
+        data.get("milestones"), list
+    )
+    converted_legacy = (
+        schema == PLAN_SCHEMA_VERSION
+        and data.get("compatibility")
+        == {"migrated_from_schema": LEGACY_PLAN_SCHEMA_VERSION, "legacy_serial": True}
+        and data.get("execution_strategy") == "serial"
+        and data.get("max_parallel_workers") == 1
+        and data.get("computer_use_slots", DEFAULT_COMPUTER_USE_SLOTS) == 1
+        and isinstance(data.get("tasks"), list)
+    )
+    if not raw_legacy and not converted_legacy:
+        return None
+    entries = data["milestones" if raw_legacy else "tasks"]
+    if not entries:
+        return None
+    result: list[str] = []
+    for index, item in enumerate(entries, 1):
+        if not isinstance(item, dict):
+            return None
+        value = item.get("id", f"M{index}" if raw_legacy else None)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        result.append(value.strip())
+    return tuple(result)
+
+
+def _is_legacy_verification_payload(raw: Any) -> bool:
+    return raw == {
+        "policy": "self",
+        "required": True,
+        "deterministic_checks": [],
+        "max_revision_attempts": 0,
+    }
+
+
+def _is_legacy_verification(policy: VerificationPolicy) -> bool:
+    return policy == VerificationPolicy(
+        policy="self",
+        required=True,
+        deterministic_checks=(),
+        max_revision_attempts=0,
+    )
 
 
 def _validate_plan_payload(
@@ -257,6 +440,9 @@ def _validate_plan_payload(
     profile: str,
     *,
     inherited: "Plan | None",
+    require_goal_contract: bool,
+    require_acceptance_class: bool,
+    migrated_milestone_ids: frozenset[str] | None = None,
 ) -> Plan:
     if profile not in {"adaptive", "host-settings"}:
         raise ValueError("profile must be adaptive or host-settings")
@@ -266,16 +452,32 @@ def _validate_plan_payload(
     if schema in {None, LEGACY_PLAN_SCHEMA_VERSION} and "milestones" in data:
         if inherited is not None:
             raise ValueError("plan changes must use the canonical v0.9 schema")
-        return _validate_legacy_plan(data, profile)
+        from .plan_legacy import validate_legacy_plan
+
+        return validate_legacy_plan(
+            data, profile, migrated_milestone_ids=migrated_milestone_ids
+        )
     if schema != PLAN_SCHEMA_VERSION:
         raise ValueError(
             f"plan.schema_version must be {PLAN_SCHEMA_VERSION}; "
             f"v0.8 serial plans may use {LEGACY_PLAN_SCHEMA_VERSION} or omit it"
         )
-    return _validate_graph_plan(data, profile, inherited=inherited)
+    return _validate_graph_plan(
+        data,
+        profile,
+        inherited=inherited,
+        require_goal_contract=require_goal_contract,
+        require_acceptance_class=require_acceptance_class,
+    )
 
 
-def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> Plan:
+def validate_plan_change(
+    current: Plan,
+    data: dict[str, Any],
+    profile: str,
+    *,
+    promotion_evidence_store: Any | None = None,
+) -> Plan:
     """Validate a complete replacement graph before any durable write."""
 
     # user_request переносится из текущего плана, а не берётся из ответа
@@ -299,7 +501,13 @@ def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> P
     # Происхождение мигрированного плана наследуется от текущего плана и
     # никогда не заявляется присланным телом: иначе замена «объявила» бы
     # себя legacy и вышла из-под порога приёмки, а это самопринятие (R8).
-    candidate = _validate_plan_payload(data, profile, inherited=current)
+    candidate = _validate_plan_payload(
+        data,
+        profile,
+        inherited=current,
+        require_goal_contract=current.goal_contract is not None,
+        require_acceptance_class=True,
+    )
     if candidate.graph_version != current.graph_version + 1:
         raise ValueError(
             "plan change graph_version must increment exactly once "
@@ -309,6 +517,16 @@ def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> P
         raise ValueError("plan changes must not replace the run goal")
     if candidate.model_strategy != current.model_strategy:
         raise ValueError("plan changes must not replace model_strategy")
+    if candidate.goal_contract != current.goal_contract:
+        raise ValueError("plan changes must not replace the Goal Contract")
+    try:
+        validate_role_specification_transition(current.roles, candidate.roles)
+    except RoleSpecificationError as exc:
+        raise ValueError(str(exc)) from exc
+    existing = set(current.skill_packs)
+    new_promotions = tuple(pack for pack in candidate.skill_packs if pack not in existing)
+    validate_trusted_skill_promotions(new_promotions, evidence_store=promotion_evidence_store)
+    validate_plan_skill_qualifications(candidate, evidence_store=promotion_evidence_store)
     # validate_plan already performs all role, output, dependency, and cycle
     # checks. Keeping this wrapper mandatory prevents a plan-change path from
     # accidentally treating initial-load validation as optional.
@@ -317,11 +535,16 @@ def validate_plan_change(current: Plan, data: dict[str, Any], profile: str) -> P
 
 def load_plan(state_dir: Path, profile: str) -> Plan:
     data = json.loads((state_dir / PLAN_FILE).read_text(encoding="utf-8"))
-    return validate_plan(data, profile)
+    return validate_persisted_plan(data, profile, state_dir=state_dir)
 
 
 def save_plan(state_dir: Path, plan: Plan) -> None:
+    try:
+        role_registry, _hiring = prepare_role_specifications(state_dir, plan.roles)
+    except RoleSpecificationError as exc:
+        raise ValueError(str(exc)) from exc
     atomic_json(state_dir / PLAN_FILE, plan_to_dict(plan))
+    atomic_json(state_dir / ROLE_SPECIFICATIONS_FILE, role_registry)
 
 
 def plan_to_dict(plan: Plan) -> dict[str, Any]:
@@ -330,11 +553,13 @@ def plan_to_dict(plan: Plan) -> dict[str, Any]:
         "graph_version": plan.graph_version,
         "goal": plan.goal,
         "user_request": plan.user_request,
+        **({"goal_contract": plan.goal_contract.to_dict()} if plan.goal_contract is not None else {}),
         "model_strategy": plan.model_strategy,
         "execution_strategy": plan.execution_strategy,
         "max_parallel_workers": plan.max_parallel_workers,
         "computer_use_slots": plan.computer_use_slots,
-        "roles": [_role_to_dict(item) for item in plan.roles],
+        "roles": [role_profile_to_dict(item) for item in plan.roles],
+        **({"skill_packs": [item.to_dict() for item in plan.skill_packs]} if plan.skill_packs else {}),
         "tasks": [_task_to_dict(item) for item in plan.tasks],
     }
     if plan.departments:
@@ -345,128 +570,6 @@ def plan_to_dict(plan: Plan) -> dict[str, Any]:
             "legacy_serial": True,
         }
     return payload
-
-
-def topological_order(plan: Plan) -> tuple[str, ...]:
-    """Return a stable dependency order, using declaration order for ties."""
-
-    rank = {task.id: index for index, task in enumerate(plan.tasks)}
-    indegree = {task.id: len(task.depends_on) for task in plan.tasks}
-    dependents: dict[str, list[str]] = {task.id: [] for task in plan.tasks}
-    for task in plan.tasks:
-        for dependency in task.depends_on:
-            dependents[dependency].append(task.id)
-    ready = sorted((task_id for task_id, count in indegree.items() if count == 0), key=rank.get)
-    result: list[str] = []
-    while ready:
-        current = ready.pop(0)
-        result.append(current)
-        for dependent in sorted(dependents[current], key=rank.get):
-            indegree[dependent] -= 1
-            if indegree[dependent] == 0:
-                ready.append(dependent)
-                ready.sort(key=rank.get)
-    if len(result) != len(plan.tasks):
-        # This is defensive; all Plan instances created by validate_plan have
-        # already passed the more descriptive DFS cycle validator.
-        raise ValueError("plan task graph contains a cycle")
-    return tuple(result)
-
-
-def _validate_legacy_plan(data: dict[str, Any], profile: str) -> Plan:
-    _reject_unknown(
-        data,
-        {"schema_version", "goal", "user_request", "model_strategy", "roles", "milestones"},
-        "plan",
-    )
-    goal, user_request, strategy = _plan_header(data, profile)
-    raw_milestones = data.get("milestones")
-    if not isinstance(raw_milestones, list) or not raw_milestones:
-        raise ValueError("plan.milestones must be a non-empty array")
-    raw_roles = data.get("roles")
-    if raw_roles is None:
-        roles = (
-            RoleProfile(
-                id="legacy-worker",
-                name="Legacy serial worker",
-                responsibilities=("Execute one migrated v0.8 milestone at a time.",),
-                context_priorities=("Current milestone and bounded Project Memory records.",),
-                verification_expectations=("Record new milestone evidence before completion.",),
-            ),
-        )
-    else:
-        if not isinstance(raw_roles, list) or not raw_roles:
-            raise ValueError("plan.roles must be a non-empty array")
-        roles = tuple(_role_from_raw(raw, index) for index, raw in enumerate(raw_roles, 1))
-        _validate_unique((role.id for role in roles), "role id")
-        if any(
-            role.id == "legacy-worker" or role.name.casefold() == "legacy serial worker"
-            for role in roles
-        ):
-            raise ValueError(
-                "structured legacy roles must use a concrete RoleProfile, not generic legacy-worker"
-            )
-    tasks: list[Task] = []
-    previous_id: str | None = None
-    for index, raw in enumerate(raw_milestones, 1):
-        if not isinstance(raw, dict):
-            raise ValueError(f"milestone {index} must be an object")
-        _reject_unknown(
-            raw,
-            {
-                "id",
-                "title",
-                "objective",
-                "definition_of_done",
-                "execution_mode",
-                "execution_mode_reason",
-                "reasoning",
-                "role",
-            },
-            f"milestone {index}",
-        )
-        if raw_roles is None and "role" in raw:
-            raise ValueError(
-                f"milestone {index}.role requires plan.roles; role identity is never inferred"
-            )
-        if raw_roles is not None and "role" not in raw:
-            raise ValueError(
-                f"milestone {index}.role is required when plan.roles preserves structured roles"
-            )
-        task_id = _identifier(raw.get("id", f"M{index}"), f"milestone {index}.id")
-        role_id = (
-            _identifier(raw.get("role"), f"milestone {index}.role")
-            if raw_roles is not None
-            else "legacy-worker"
-        )
-        tasks.append(
-            _task_from_raw(
-                raw,
-                profile,
-                f"milestone {index}",
-                canonical=False,
-                task_id=task_id,
-                role=role_id,
-                depends_on=(previous_id,) if previous_id else (),
-            )
-        )
-        previous_id = task_id
-    _validate_unique((task.id for task in tasks), "milestone id")
-    plan = Plan(
-        goal=goal,
-        user_request=user_request,
-        model_strategy=strategy,
-        tasks=tuple(tasks),
-        roles=roles,
-        graph_version=1,
-        execution_strategy="serial",
-        max_parallel_workers=1,
-        computer_use_slots=1,
-        source_schema_version=LEGACY_PLAN_SCHEMA_VERSION,
-        legacy_serial=True,
-    )
-    _validate_graph(plan)
-    return plan
 
 
 def _validate_canonical_acceptance(
@@ -496,13 +599,40 @@ def _validate_canonical_acceptance(
     if not plan.legacy_serial:
         exempt: frozenset[str] = frozenset()
     elif inherited is None:
-        exempt = frozenset(task.id for task in plan.tasks)
-    else:
-        before = {task.id: task.verification for task in inherited.tasks}
+        # A persisted migrated graph may also contain tasks added after the
+        # migration.  Those tasks were born under the canonical acceptance
+        # floor and remain independent; only the exact synthesized v0.8
+        # verification contract receives the historical exception.
         exempt = frozenset(
             task.id
             for task in plan.tasks
-            if task.id in before and before[task.id] == task.verification
+            if _is_legacy_verification(task.verification)
+        )
+    else:
+        def contract(task: "Task") -> tuple:
+            """Суть задачи: что делаем, когда считаем сделанным, чем принимаем.
+
+            Исключение историческое, поэтому и держится на истории. Прежде
+            сверялась только верификация - и под старым id можно было
+            подменить саму работу, оставив слабый контракт приёмки нетронутым.
+            Новая работа под чужим номером - то же самопринятие (R8).
+
+            Ресурсы и зависимости сюда не входят намеренно: чинить состав
+            мигрированной задачи можно, переписывать её смысл - нет.
+            """
+
+            return (
+                task.objective,
+                tuple(task.definition_of_done),
+                task.execution_mode,
+                task.verification,
+            )
+
+        before = {task.id: contract(task) for task in inherited.tasks}
+        exempt = frozenset(
+            task.id
+            for task in plan.tasks
+            if task.id in before and before[task.id] == contract(task)
         )
 
     for task in plan.tasks:
@@ -529,12 +659,12 @@ def _validate_canonical_acceptance(
             (
                 check
                 for check in verification.deterministic_checks
-                if _is_clean_suite_command(check)
+                if is_clean_suite_command(check)
             ),
             None,
         )
         if suite is None:
-            names = ", ".join(f"{name}=" for name in _CLEAN_IDENTITY_ASSIGNMENTS)
+            names = ", ".join(f"{name}=" for name in CLEAN_IDENTITY_ASSIGNMENTS)
             raise ValueError(
                 "R29: canonical task "
                 f"{task.id} must declare at least one full-suite deterministic "
@@ -542,247 +672,22 @@ def _validate_canonical_acceptance(
                 f"{names}, and invoke the command directly"
             )
 
-
-def _is_clean_suite_command(check: VerificationCheck) -> bool:
-    if (
-        check.kind != "command"
-        or check.expected_exit_code != 0
-        or len(check.argv) < 2
-        or check.argv[0] not in {"env", "/usr/bin/env"}
-    ):
-        return False
-
-    assignments: dict[str, str] = {}
-    command_index = 1
-    while command_index < len(check.argv):
-        token = check.argv[command_index]
-        if "=" not in token:
-            break
-        name, value = token.split("=", 1)
-        if not name or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-            return False
-        assignments[name] = value
-        command_index += 1
-    if command_index >= len(check.argv):
-        return False
-    clean_identity = all(
-        assignments.get(name) == value
-        for name, value in _CLEAN_IDENTITY_ASSIGNMENTS.items()
-    )
-    if not clean_identity:
-        return False
-
-    command = check.argv[command_index:]
-    executable = Path(command[0]).name.lower()
-    if executable in _SHELL_COMMANDS or executable in _NOOP_COMMANDS:
-        return False
-    # A suite command may legitimately be a project script, make target, or
-    # language-specific runner.  Validation cannot prove its semantic
-    # completeness (R25), but an inline interpreter expression is visibly not
-    # a stable repository-wide runner and must not satisfy the declaration.
-    if len(command) > 1 and command[1] in {"-c", "-e", "--eval"}:
-        return False
-    return _invokes_full_test_suite(command)
-
-
-def _invokes_full_test_suite(command: tuple[str, ...]) -> bool:
-    """Recognize direct repository-suite runners, not arbitrary commands.
-
-    This remains a plan lint: execution supplies outcome evidence and the
-    independent verifier judges whether the declared runner really covers the
-    repository (R25/R29).  The lint nevertheless rejects argv that plainly
-    cannot be a suite, such as ``uname`` renamed to check id ``suite``.
-    """
-
-    executable = Path(command[0]).name.lower()
-    args = command[1:]
-    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?", executable):
-        if len(args) >= 3 and args[:3] == ("-m", "unittest", "discover"):
-            return _unittest_discovers_test_root(args[3:])
-        if len(args) >= 2 and args[:2] == ("-m", "pytest"):
-            return _pytest_covers_test_root(args[2:])
-        if args and not args[0].startswith("-"):
-            stem = Path(args[0]).stem.lower()
-            runner_args = args[1:]
-            return "suite" in stem and not any(
-                _unittest_option_selects_subset(arg)
-                or _pytest_option_selects_subset(arg)
-                for arg in runner_args
-            )
-        return False
-    if executable in {"pytest", "py.test"}:
-        return _pytest_covers_test_root(args)
-    if executable in _PACKAGE_TEST_RUNNERS:
-        if not args:
-            return False
-        if args[0] == "test":
-            return not _runner_args_select_subset(args[1:])
-        if len(args) >= 2 and args[0] == "run" and args[1] == "test":
-            return not _runner_args_select_subset(args[2:])
-        return False
-    if executable in _DIRECT_TEST_RUNNERS:
-        if not args or args[0] != "test":
-            return False
-        return not _runner_args_select_subset(args[1:])
-    if "test" in executable and ("all" in executable or "suite" in executable):
-        return True
-    return False
-
-
-# Запускальщики пакетов и языков принимают фильтр так же легко, как и полный
-# набор: `cargo test one_case`, `go test ./pkg/foo`, `npm test -- one_case`.
-# Глагол `test` сам по себе ничего не доказывает - доказывает отсутствие
-# сужения. Позиционный аргумент после глагола выбирает конкретный тест, файл
-# или пакет; исключения - подстановка Go `./...` и присваивание переменной
-# сборки вида `KEY=VALUE`, они набор не сужают.
-_RUNNER_SUBSET_OPTIONS = frozenset(
-    {
-        "--bin",
-        "--bins",
-        "--changed",
-        "--doc",
-        "--example",
-        "--examples",
-        "--exclude",
-        "--filter",
-        "--findRelatedTests",
-        "--grep",
-        "--lastFailed",
-        "--lib",
-        "--onlyChanged",
-        "--only",
-        "--package",
-        "--related",
-        "--run",
-        "--shard",
-        "--spec",
-        "--test",
-        "--test-name-pattern",
-        "--testFile",
-        "--testNamePattern",
-        "--testPathPattern",
-        "--testPathPatterns",
-        "--tests",
-        "-Dit.test",
-        "-Dtest",
-        "-run",
-    }
-)
-_RUNNER_SUBSET_SHORT_OPTIONS = ("-g", "-k", "-m", "-p", "-t")
-_RUNNER_WHOLE_TREE_TOKENS = frozenset({"...", "./...", ".", "./"})
-
-
-def _runner_args_select_subset(args: tuple[str, ...]) -> bool:
-    for arg in args:
-        if arg == "--":
-            continue
-        if arg.startswith("-"):
-            if arg.split("=", 1)[0] in _RUNNER_SUBSET_OPTIONS:
-                return True
-            if any(
-                _attached_short_option(arg, option)
-                for option in _RUNNER_SUBSET_SHORT_OPTIONS
-            ):
-                return True
-            continue
-        if arg in _RUNNER_WHOLE_TREE_TOKENS or arg.endswith("/..."):
-            continue
-        if "=" in arg and not arg.startswith("="):
-            continue
-        return True
-    return False
-
-
-def _unittest_discovers_test_root(args: tuple[str, ...]) -> bool:
-    if any(_unittest_option_selects_subset(arg) for arg in args):
-        return False
-    for flag in ("-p", "--pattern"):
-        if flag in args:
-            try:
-                if args[args.index(flag) + 1] != "test*.py":
-                    return False
-            except IndexError:
-                return False
-    for arg in args:
-        if arg.startswith("-p=") or arg.startswith("--pattern="):
-            if arg.split("=", 1)[1] != "test*.py":
-                return False
-        # Слитная форма argparse: `-ptest_plan*.py` - тот же фильтр, что и
-        # `-p test_plan*.py`, но прежде она проверку не проходила и
-        # «полным прогоном» засчитывался кусок набора. Проверка, которая
-        # принимает подмножество за целое, не доказывает ничего.
-        if _attached_short_option(arg, "-p"):
-            if arg[2:] != "test*.py":
-                return False
-    for flag in ("-s", "--start-directory"):
-        try:
-            root = args[args.index(flag) + 1]
-        except (ValueError, IndexError):
-            continue
-        if Path(root).name.lower() in {"test", "tests"}:
-            return True
-    return False
-
-
-def _pytest_covers_test_root(args: tuple[str, ...]) -> bool:
-    if any(_pytest_option_selects_subset(arg) or "::" in arg for arg in args):
-        return False
-    positional = [arg for arg in args if not arg.startswith("-")]
-    return not positional or all(
-        Path(arg).name.lower() in {"test", "tests"} for arg in positional
-    )
-
-
-def _pytest_option_selects_subset(arg: str) -> bool:
-    name = arg.split("=", 1)[0]
-    return name in _PYTEST_PARTIAL_SUITE_OPTIONS or any(
-        _attached_short_option(arg, option) for option in ("-k", "-m")
-    )
-
-
-def _unittest_option_selects_subset(arg: str) -> bool:
-    return (
-        _attached_short_option(arg, "-k")
-        or arg == "--test-name-patterns"
-        or arg.startswith("--test-name-patterns=")
-    )
-
-
-def _attached_short_option(arg: str, option: str) -> bool:
-    """Match both ``-k value`` and argparse's compact ``-kvalue`` form."""
-
-    return arg == option or (
-        not arg.startswith("--")
-        and len(arg) > len(option)
-        and arg.startswith(option)
-    )
-
-
 # Единственный список допустимых полей плана. Он же называется модели в
 # промпте реплэннера: иначе отказ "plan has unknown fields" не говорит,
 # какие поля вообще существуют, и переделка идёт вслепую.
-GRAPH_PLAN_FIELDS = frozenset(
-    {
-        "schema_version",
-        "graph_version",
-        "goal",
-        "user_request",
-        "model_strategy",
-        "execution_strategy",
-        "max_parallel_workers",
-        "computer_use_slots",
-        "roles",
-        "departments",
-        "tasks",
-        "compatibility",
-    }
-)
+GRAPH_PLAN_FIELDS = frozenset({
+    "schema_version", "graph_version", "goal", "user_request", "goal_contract",
+    "model_strategy", "execution_strategy", "max_parallel_workers", "computer_use_slots",
+    "roles", "departments", "skill_packs", "tasks", "compatibility",
+})
 
 
 def _validate_graph_plan(
     data: dict[str, Any],
     profile: str,
     *,
+    require_goal_contract: bool,
+    require_acceptance_class: bool,
     inherited: "Plan | None" = None,
 ) -> Plan:
     _reject_unknown(data, set(GRAPH_PLAN_FIELDS), "plan")
@@ -791,6 +696,19 @@ def _validate_graph_plan(
         profile,
         require_user_request=True,
     )
+    raw_goal_contract = data.get("goal_contract")
+    if require_goal_contract and raw_goal_contract is None:
+        raise ValueError(
+            "plan.goal_contract must be declared as a structured Goal Contract"
+        )
+    try:
+        goal_contract = (
+            validate_goal_contract(raw_goal_contract, label="plan.goal_contract")
+            if raw_goal_contract is not None
+            else None
+        )
+    except GoalContractError as exc:
+        raise ValueError(str(exc)) from exc
     graph_version = _positive_int(data.get("graph_version", 1), "plan.graph_version")
     execution_strategy = str(data.get("execution_strategy", DEFAULT_EXECUTION_STRATEGY)).strip()
     if execution_strategy not in EXECUTION_STRATEGIES:
@@ -827,10 +745,13 @@ def _validate_graph_plan(
         legacy_serial = inherited.legacy_serial
         source_schema = inherited.source_schema_version
         if legacy_serial and (
-            execution_strategy != "serial" or max_parallel_workers != 1
+            execution_strategy != "serial"
+            or max_parallel_workers != 1
+            or computer_use_slots != 1
         ):
             raise ValueError(
-                "a migrated v0.8 legacy_serial plan must remain serial with max_parallel_workers=1"
+                "a migrated v0.8 legacy_serial plan must remain serial with "
+                "max_parallel_workers=1 and computer_use_slots=1"
             )
     elif compatibility is not None:
         if not isinstance(compatibility, dict):
@@ -848,9 +769,11 @@ def _validate_graph_plan(
             source_schema != LEGACY_PLAN_SCHEMA_VERSION
             or execution_strategy != "serial"
             or max_parallel_workers != 1
+            or computer_use_slots != 1
         ):
             raise ValueError(
-                "a migrated v0.8 legacy_serial plan must remain serial with max_parallel_workers=1"
+                "a migrated v0.8 legacy_serial plan must remain serial with "
+                "max_parallel_workers=1 and computer_use_slots=1"
             )
 
     raw_roles = data.get("roles")
@@ -858,6 +781,11 @@ def _validate_graph_plan(
         raise ValueError("plan.roles must be a non-empty array")
     roles = tuple(_role_from_raw(raw, index) for index, raw in enumerate(raw_roles, 1))
     _validate_unique((role.id for role in roles), "role id")
+
+    try:
+        skill_packs = skill_packs_from_raw(data.get("skill_packs", []))
+    except SkillPackError as exc:
+        raise ValueError(str(exc)) from exc
 
     raw_departments = data.get("departments", [])
     if not isinstance(raw_departments, list):
@@ -881,7 +809,15 @@ def _validate_graph_plan(
     for index, raw in enumerate(raw_tasks, 1):
         if not isinstance(raw, dict):
             raise ValueError(f"task {index} must be an object")
-        tasks.append(_task_from_raw(raw, profile, f"task {index}", canonical=True))
+        tasks.append(
+            _task_from_raw(
+                raw,
+                profile,
+                f"task {index}",
+                canonical=True,
+                require_acceptance_class=require_acceptance_class,
+            )
+        )
     _validate_unique((task.id for task in tasks), "task id")
     plan = Plan(
         goal=goal,
@@ -896,7 +832,27 @@ def _validate_graph_plan(
         computer_use_slots=computer_use_slots,
         source_schema_version=source_schema,
         legacy_serial=legacy_serial,
+        goal_contract=goal_contract,
+        skill_packs=skill_packs,
     )
+    try:
+        if goal_contract is not None:
+            validate_outcome_bindings(
+                goal_contract,
+                {task.id: task.produces_outcomes for task in plan.tasks},
+            )
+        else:
+            orphan = next(
+                (task for task in plan.tasks if task.produces_outcomes),
+                None,
+            )
+            if orphan is not None:
+                raise GoalContractError(
+                    f"task {orphan.id} declares produces_outcomes without "
+                    "plan.goal_contract"
+                )
+    except GoalContractError as exc:
+        raise ValueError(str(exc)) from exc
     _validate_canonical_acceptance(plan, inherited=inherited)
     _validate_graph(plan)
     return plan
@@ -932,11 +888,13 @@ def _role_from_raw(raw: Any, index: int) -> RoleProfile:
         {
             "id",
             "name",
+            "version",
             "responsibilities",
             "domain_focus",
             "preferred_tools",
             "context_priorities",
             "verification_expectations",
+            "skill_requirements",
         },
         label,
     )
@@ -944,12 +902,19 @@ def _role_from_raw(raw: Any, index: int) -> RoleProfile:
         id=_identifier(raw.get("id"), f"{label}.id"),
         name=_required_string(raw.get("name"), f"{label}.name"),
         responsibilities=_nonempty_strings(raw.get("responsibilities"), f"{label}.responsibilities"),
+        version=validate_role_version(
+            raw.get("version", DEFAULT_ROLE_SPECIFICATION_VERSION),
+            f"{label}.version",
+        ),
         domain_focus=_strings(raw.get("domain_focus", []), f"{label}.domain_focus"),
         preferred_tools=_strings(raw.get("preferred_tools", []), f"{label}.preferred_tools"),
         context_priorities=_strings(raw.get("context_priorities", []), f"{label}.context_priorities"),
         verification_expectations=_strings(
             raw.get("verification_expectations", []),
             f"{label}.verification_expectations",
+        ),
+        skill_requirements=skill_references_from_raw(
+            raw.get("skill_requirements", []), f"{label}.skill_requirements"
         ),
     )
 
@@ -960,6 +925,7 @@ def _task_from_raw(
     label: str,
     *,
     canonical: bool,
+    require_acceptance_class: bool = False,
     task_id: str | None = None,
     role: str | None = None,
     depends_on: tuple[str, ...] | None = None,
@@ -984,6 +950,10 @@ def _task_from_raw(
                 "context",
                 "outputs",
                 "tags",
+                "produces_outcomes",
+                "acceptance_class",
+                "loaded_skills",
+                "skill_attestation",
             },
             label,
         )
@@ -1020,6 +990,16 @@ def _task_from_raw(
         for index, item in enumerate(_array(raw.get("outputs", []), f"{label}.outputs"), 1)
     )
     _validate_unique((item.id for item in outputs), f"{label} output id")
+    produces_outcomes = _identifiers(
+        raw.get("produces_outcomes", []),
+        f"{label}.produces_outcomes",
+    )
+    _validate_unique(produces_outcomes, f"{label} produced outcome id")
+    acceptance_class = acceptance_class_from_raw(
+        raw.get("acceptance_class"),
+        f"{label}.acceptance_class",
+        default=None if require_acceptance_class else AcceptanceClass.MIXED,
+    )
     return Task(
         id=resolved_id,
         title=title,
@@ -1040,6 +1020,12 @@ def _task_from_raw(
         context=context,
         outputs=outputs,
         tags=_strings(raw.get("tags", []), f"{label}.tags"),
+        produces_outcomes=produces_outcomes,
+        acceptance_class=acceptance_class,
+        loaded_skills=skill_references_from_raw(
+            raw.get("loaded_skills", []), f"{label}.loaded_skills"
+        ),
+        skill_attestation=skill_attestation_from_raw(raw.get("skill_attestation"), f"{label}.skill_attestation"),
     )
 
 
@@ -1306,6 +1292,10 @@ def _validate_graph(plan: Plan) -> None:
                 f"task {task.id} context.dependency_outputs must be direct dependencies; "
                 f"invalid={sorted(invalid_outputs)}"
             )
+    try:
+        validate_plan_skill_bindings(plan)
+    except SkillPackError as exc:
+        raise ValueError(str(exc)) from exc
     _validate_cycles(plan.tasks)
 
 
@@ -1334,27 +1324,9 @@ def _validate_cycles(tasks: tuple[Task, ...]) -> None:
         visit(task.id)
 
 
-def _role_to_dict(role: RoleProfile) -> dict[str, Any]:
-    return {
-        "id": role.id,
-        "name": role.name,
-        "responsibilities": list(role.responsibilities),
-        **({"domain_focus": list(role.domain_focus)} if role.domain_focus else {}),
-        **({"preferred_tools": list(role.preferred_tools)} if role.preferred_tools else {}),
-        **({"context_priorities": list(role.context_priorities)} if role.context_priorities else {}),
-        **(
-            {"verification_expectations": list(role.verification_expectations)}
-            if role.verification_expectations
-            else {}
-        ),
-    }
-
-
 def _task_to_dict(task: Task) -> dict[str, Any]:
     return {
-        "id": task.id,
-        "title": task.title,
-        "objective": task.objective,
+        "id": task.id, "title": task.title, "objective": task.objective,
         "definition_of_done": list(task.definition_of_done),
         "execution_mode": task.execution_mode,
         "execution_mode_reason": task.execution_mode_reason,
@@ -1368,6 +1340,14 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
         "context": _context_to_dict(task.context),
         "outputs": [_output_to_dict(item) for item in task.outputs],
         "tags": list(task.tags),
+        "acceptance_class": task.acceptance_class.value,
+        **({"loaded_skills": [item.to_dict() for item in task.loaded_skills]} if task.loaded_skills else {}),
+        **({"skill_attestation": task.skill_attestation.to_dict()} if task.skill_attestation else {}),
+        **(
+            {"produces_outcomes": list(task.produces_outcomes)}
+            if task.produces_outcomes
+            else {}
+        ),
     }
 
 

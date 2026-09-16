@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import sys
 from typing import Any, Callable
 
 from . import __version__
+from .artifact_staging import resolve_canonical_project_root
 from .config import STATE_DIR_NAME
 from .department_acceptance import store_department_rubric
 from .memory import CATEGORIES, MAX_PAGE_SIZE, MemoryError, MemoryValidationError, ProjectMemory
@@ -26,10 +28,19 @@ _ACTION_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Get this task's contract, the original user request, critical constraints, "
             "and bounded relevant memory IDs. Pass task_id - it is in your prompt - so the "
-            "answer describes your own task; on a task graph it cannot be inferred."
+            "answer describes your own task; on a task graph it cannot be inferred. Pass "
+            "expect_user_request_sha256 exactly as your prompt supplies it: the runtime "
+            "then verifies the request for you and fails closed if the text changed, so "
+            "you never hash anything yourself."
         ),
         "inputSchema": _schema(
-            {"task_id": {"type": "string", "minLength": 1, "maxLength": 128}}
+            {
+                "task_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                "expect_user_request_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-fA-F]{64}$",
+                },
+            }
         ),
     },
     {
@@ -61,7 +72,8 @@ _ACTION_DEFINITIONS: list[dict[str, Any]] = [
             "\"external\" and a provider naming where it came from. External evidence is kept "
             "and searchable, but it cannot support Truth and cannot carry a non-user Decision "
             "or Constraint into force. Mislabeling it as file/tool/user_instruction defeats that "
-            "boundary and is a defect."
+            "boundary and is a defect. The runtime assigns provenance and trust_level; callers "
+            "cannot supply or raise either classification."
         ),
         "inputSchema": _schema(
             {
@@ -488,7 +500,30 @@ class MemoryMcpServer:
         )
 
     def _current(self, args: dict[str, Any]) -> dict[str, Any]:
-        args = self._validate_keys(args, {"task_id"})
+        """Отдать задачу и заверенный исходный запрос пользователя.
+
+        Текст запроса не вкладывается в промпт копией - он велик и
+        неизменен на весь прогон, - поэтому воркер забирает его отсюда.
+        Прежде заверять его должен был сам воркер: сверить длину и
+        sha256 из своего промпта с полученным текстом. Это не работало
+        дважды.
+
+        Во-первых, изолят постобработки Codex не имеет ни `crypto`, ни
+        `TextEncoder`: посчитать sha256 воркеру нечем. Контракт при этом
+        разрешает ровно один вызов, и повторить его нельзя. Получалась
+        ловушка - заверить нечем, повторить запрещено, - и задача честно
+        вставала с ENVIRONMENT_FAILURE. Так встали M4 и M11.
+
+        Во-вторых, проверку, которую делает сам проверяемый, можно молча
+        не делать, и никто не заметит.
+
+        Теперь заверяет сервер: воркер передаёт ожидаемый хэш из своего
+        промпта, сервер считает хэш текста, который собирается отдать, и
+        либо отдаёт заверенный текст, либо падает закрыто. Считать и
+        сравнивать воркеру не нужно, а пропустить проверку - нельзя.
+        """
+
+        args = self._validate_keys(args, {"task_id", "expect_user_request_sha256"})
         state_dir = self.root / STATE_DIR_NAME
         if not (state_dir / "config.toml").is_file():
             return {
@@ -507,11 +542,29 @@ class MemoryMcpServer:
             query = " ".join([plan.goal, *(t.title for t in plan.tasks[:3])])
         else:
             query = " ".join([item.title, item.objective, *item.definition_of_done])
+        request = plan.user_request
+        digest = hashlib.sha256(request.encode("utf-8")).hexdigest()
+        expected = args.get("expect_user_request_sha256")
+        if expected is not None:
+            if not isinstance(expected, str) or not expected.strip():
+                raise MemoryValidationError(
+                    "expect_user_request_sha256 must be a non-empty string"
+                )
+            if expected.strip().lower() != digest:
+                raise MemoryValidationError(
+                    "user_request does not match the digest this task was dispatched "
+                    f"with: expected {expected.strip().lower()}, plan now has {digest}. "
+                    "Текст изменился под задачей - это причина остановиться, а не "
+                    "продолжать."
+                )
         return {
             "project_root": str(self.root),
             "initialized": True,
             "goal": plan.goal,
-            "user_request": plan.user_request,
+            "user_request": request,
+            "user_request_chars": len(request),
+            "user_request_sha256": digest,
+            "user_request_verified": expected is not None,
             "milestone": None if item is None else {
                 "id": item.id,
                 "title": item.title,
@@ -746,7 +799,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codex-autopilot memory-mcp")
     parser.add_argument("--project", type=Path)
     args = parser.parse_args(argv)
-    root = args.project or Path(os.getcwd())
+    root = args.project or resolve_canonical_project_root(Path(os.getcwd()))
     try:
         return MemoryMcpServer(root).serve()
     except (MemoryError, ValueError, OSError) as exc:
