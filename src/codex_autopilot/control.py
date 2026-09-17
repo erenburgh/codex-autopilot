@@ -25,9 +25,9 @@ from .pipeline_engineer import (
     SideEffectOutcome,
 )
 from .launch_gate import (
+    LaunchCheck,
     LaunchVerdict,
     await_launch,
-    launch_confirmed,
     launch_verdict,
     render_launch_checklist,
     render_launch_timeline,
@@ -569,27 +569,67 @@ def reactivate_desktop_relay_owner(root: Path, *, incident_id: str | None = None
     # Иначе "REARMED" означало бы только "процесс релея порождён" - ровно
     # то заявление вместо наблюдения, ради которого гейт и написан.
     checks = await_launch(cfg, task_ids=[task_id], timeout=15.0)
-    confirmed = launch_confirmed(checks)
-    if not confirmed:
-        # Решение инженера не подтвердилось наблюдением: инцидент не
-        # считается закрытым, иначе починка сертифицирует сама себя.
-        package = incident_store.incident_package(incident_id)["incident"]
-        if package["phase"] == IncidentPhase.RESOLVED.value:
-            incident_store.invalidate_pipeline_engineer_resolution(
-                incident_id,
-                at=utc_now(),
-                reason="re-armed relay did not pass the launch checklist",
-            )
+    settled = _settle_rearmed_launch(incident_store, incident_id, checks, at=utc_now())
     return {
         "incident_id": incident_id,
         "owner_thread_id": owner_thread_id,
         "destination_task_id": task_id,
         "reservation_token": descriptor.reservation_token,
         "destination_title": descriptor.title,
-        "status": "REARMED" if confirmed else "LAUNCH_NOT_CONFIRMED",
-        "launch_confirmed": confirmed,
+        **settled,
         "launch_checklist": render_launch_checklist(checks),
         "automatic_dispatch_pid": pid,
+    }
+
+
+def _settle_rearmed_launch(
+    incident_store: PipelineIncidentStore,
+    incident_id: str,
+    checks: Sequence[LaunchCheck],
+    *,
+    at: str,
+) -> dict[str, Any]:
+    """Что перевзвод говорит о запуске - тремя словами, а не двумя.
+
+    Прежде хвост читал булев ``launch_confirmed`` («все пункты True») и на
+    False аннулировал решение инженера. Но перевзвод взводит прогон так,
+    что ход выполнит предшественник на своём СЛЕДУЮЩЕМ Stop: ветки в
+    окне ожидания быть не может по построению. Замерено на построенном
+    состоянии «только что перевзведён»: трёхзначный вердикт отвечает
+    IN_PROGRESS, булев - False. Гейт, который в своём окне пройти не
+    может, отменял каждую починку.
+
+    У одного гейта было два потребителя с разной семантикой: Stop-хук
+    (:802) различал три вердикта, перевзвод - нет. Теперь решение одно:
+
+    - FAILED - решающий пункт сломан; решение инженера не подтвердилось
+      наблюдением, инцидент открывается снова, иначе починка
+      сертифицирует сама себя;
+    - IN_PROGRESS - отказов нет, часть шагов впереди; не аннулировать и не
+      объявлять подтверждённым. R26: что именно ещё не наблюдаемо -
+      названо в ``pending_checks``, а не проглочено;
+    - CONFIRMED - подтверждено.
+    """
+
+    verdict = launch_verdict(checks)
+    if verdict is LaunchVerdict.FAILED:
+        package = incident_store.incident_package(incident_id)["incident"]
+        if package["phase"] == IncidentPhase.RESOLVED.value:
+            incident_store.invalidate_pipeline_engineer_resolution(
+                incident_id,
+                at=at,
+                reason="re-armed relay failed the launch checklist",
+            )
+    status = {
+        LaunchVerdict.CONFIRMED: "REARMED",
+        LaunchVerdict.IN_PROGRESS: "LAUNCH_IN_PROGRESS",
+        LaunchVerdict.FAILED: "LAUNCH_NOT_CONFIRMED",
+    }[verdict]
+    return {
+        "status": status,
+        "launch_verdict": verdict.value,
+        "launch_confirmed": verdict is LaunchVerdict.CONFIRMED,
+        "pending_checks": [item.id for item in checks if item.passed is not True],
     }
 
 
