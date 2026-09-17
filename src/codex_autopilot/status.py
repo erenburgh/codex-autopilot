@@ -7,7 +7,9 @@ from .config import Config
 from .plan import Plan
 from .lifecycle_base import audit_creation_causality, creation_causality_coverage
 from .pipeline_engineer import PipelineIncidentStore, render_pipeline_status
+from .config import _install_root
 from .run_state import RunState
+from .runtime_patch_log import render_applied_patches
 from .task_state import TaskState, unmet_dependencies
 from .thread_titles import task_phase_thread_title
 
@@ -292,6 +294,9 @@ def render_project_status(
                 f"dispatcher={'running' if dispatcher_running else 'not running'}, "
                 f"phase={state.phase}, last_error={state.last_error or 'none'}"
             ),
+            # Правка кода рантайма молча меняет поведение установки:
+            # пользователь вправе видеть, что она была.
+            render_applied_patches(_install_root() / "runtime"),
         ]
     )
     return "\n".join(lines)

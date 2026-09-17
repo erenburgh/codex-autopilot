@@ -196,6 +196,59 @@ def _definition(text: str, name: str) -> ast.AST | None:
     return None
 
 
+# Что в копию не едет. Свои же прошлые правки копировать незачем, а
+# состояние живого прогона в копии не должно оказаться вовсе: тесты
+# инженера там же и исполняются.
+STAGING_EXCLUDES = frozenset(
+    {".git", ".codex-autopilot", "patches", "__pycache__", ".venv", "venv", "build", "dist"}
+)
+
+
+def _copy_runtime(tree: RuntimeTree, staging: Path) -> None:
+    """Скопировать дерево целиком, а не только исходники с тестами.
+
+    Так уже ошибались здесь: в копию клали src и tests, а трети набора
+    нужен ещё plugins - в копии тесты падали 94 раза подряд, и шлюз
+    отклонял бы ЛЮБУЮ правку, включая верную. Проверка обязана идти на
+    том же дереве, на котором идёт обычный прогон тестов.
+    """
+
+    shutil.copytree(
+        tree.root,
+        staging,
+        ignore=shutil.ignore_patterns(*STAGING_EXCLUDES),
+        symlinks=True,
+    )
+    if not (staging / "src" / "codex_autopilot").is_dir():
+        raise RuntimeRepairError(f"the staged copy has no runtime sources: {staging}")
+    if not (staging / "tests").is_dir():
+        raise RuntimeRepairError(f"the staged copy has no test suite: {staging}")
+    # Копия обязана быть репозиторием: часть набора спрашивает git -
+    # Project Memory требует репозиторий, а проверка релиза смотрит
+    # .gitignore. Без этого шлюз отклонял бы верную правку по причине,
+    # к ней не относящейся. История не нужна, нужен сам репозиторий.
+    subprocess.run(
+        [_git(), "init", "-q"],
+        cwd=staging,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+
+def _git() -> str:
+    """Git ищется в PATH: своей копии у рантайма нет."""
+
+    found = shutil.which("git")
+    if not found:
+        raise RuntimeRepairError(
+            "git is required to prove a repair: part of the suite asks the repository"
+        )
+    return found
+
+
 def apply_runtime_patch(
     *,
     edits: Sequence[Edit],
@@ -218,10 +271,9 @@ def apply_runtime_patch(
     for edit in edits:
         _check_module_name(edit.module)
 
-    staging = Path(tempfile.mkdtemp(prefix="codex-autopilot-repair-"))
+    staging = Path(tempfile.mkdtemp(prefix="codex-autopilot-repair-")) / "tree"
     try:
-        shutil.copytree(tree.src, staging / "src")
-        shutil.copytree(tree.tests, staging / "tests")
+        _copy_runtime(tree, staging)
         (staging / "tests" / f"{test_name}.py").write_text(test_source, encoding="utf-8")
 
         if _run_one_test(staging, test_name).returncode == 0:
@@ -269,7 +321,7 @@ def apply_runtime_patch(
         (tree.tests / f"{test_name}.py").write_text(test_source, encoding="utf-8")
         return record
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(staging.parent, ignore_errors=True)
 
 
 def revert_runtime_patch(patch_id: str, *, tree: RuntimeTree | None = None) -> PatchRecord:
