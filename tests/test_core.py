@@ -70,11 +70,11 @@ def make_project(
     root = Path(tempfile.mkdtemp(prefix="codex-autopilot-test-"))
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / ".codex-autopilot").mkdir()
-    # Канонический schema-3 план, а не формат v0.8. Прежде здесь лежал
-    # v0.8: он не требует ни ролей, ни верификации, и потому был удобным
-    # сокращением - но именно это и было дырой. Формат v0.8 впускается
-    # только как миграция существующего прогона, а свежий проект обязан
-    # объявлять независимую приёмку, как и всякий пользователь.
+    # A canonical schema-3 plan, not the v0.8 format. v0.8 used to lie
+    # here: it requires neither roles nor verification, and so was a handy
+    # shortcut - but exactly that was the hole. The v0.8 format is admitted
+    # only as the migration of an existing run, and a fresh project must
+    # declare independent acceptance like any user.
     tasks = []
     previous: str | None = None
     for index in range(count):
@@ -130,8 +130,8 @@ def make_project(
         profile=profile,
         skill_path=ADAPTIVE_SKILL if profile == "adaptive" else HOST_SKILL,
         language=language,
-        # Поверхность одна - desktop_owned, и она требует проект. Прежде
-        # умолчанием был headless, и фикстура обходилась без него.
+        # There is one surface - desktop_owned, and it requires a project. The
+        # default used to be headless, and the fixture did without one.
         desktop_project_id=desktop_project_id,
     )
     return root

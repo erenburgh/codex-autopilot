@@ -179,7 +179,7 @@ class AppServerTests(unittest.TestCase):
         self.assertEqual(raised.exception.project_id, "project-1")
         self.assertEqual(raised.exception.root, Path("/target"))
         self.assertEqual(raised.exception.existing, (Path("/existing"),))
-        # Ни одной записи: project/update не вызывался.
+        # Not one record: project/update was not called.
         self.assertEqual(
             client.calls, [("project/read", {"projectId": "project-1"})]
         )

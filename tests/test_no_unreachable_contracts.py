@@ -1,48 +1,48 @@
-"""Написанное и никем не вызванное - это обещание без исполнения.
+"""Written and called by nobody is a promise without execution.
 
-Один и тот же дефект за день нашёлся четырежды, и каждый раз дорого:
+The same defect was found four times in one day, each time at a price:
 
-- ``audit_creation_causality`` проверял правило R1 и вызывался только из
-  тестов: утверждение «цепочка причинности проверяется» не подкреплялось
-  ничем;
-- ``build_pipeline_engineer_prompt`` был снят как неиспользуемый, а на
-  деле дорожку дежурного инженера просто не дописали;
-- ``reconcile_desktop_runtime`` - функция восстановления после падения -
-  тоже вызывалась только из тестов, поэтому мёртвая сессия не
-  возвращалась в работу никогда;
-- ``rate_limits``/``rate_limit_reset_at`` добывали время сброса лимита,
-  которого барьер никогда не получал.
+- ``audit_creation_causality`` checked rule R1 and was called only from
+  tests: the claim "the causality chain is checked" rested on nothing;
+- ``build_pipeline_engineer_prompt`` was removed as unused, while in fact
+  the on-call engineer's path had simply never been finished;
+- ``reconcile_desktop_runtime`` - the recovery-after-crash function - was
+  also called only from tests, so a dead session never returned to work;
+- ``rate_limits``/``rate_limit_reset_at`` extracted the rate-limit reset
+  time the barrier never received.
 
-Тест закрывает класс целиком: у каждого публичного определения в
-продакшене обязан быть путь вызова (R19). Исключение допустимо, но
-только именное и с причиной.
+The test closes the whole class: every public definition in production
+must have a call path (R19). An exemption is allowed, but only by name and
+with a reason.
 
-ЧЕМ СЧИТАЕМ И ГДЕ ПРЕДЕЛ
+WHAT WE COUNT AND WHERE THE LIMIT IS
 
-Прежняя редакция считала ссылки подстрокой и обходила только
-``tree.body``. Оба решения были неверны, и оба скрывали мёртвое:
+The previous edition counted references by substring and walked only
+``tree.body``. Both decisions were wrong, and both hid dead code:
 
-- подстрока: ``planner_thread_title`` числился живым, потому что входит
-  в ``replanner_thread_title``. Он был мёртв и снят 16.09. Тем же
-  способом «достижимыми» числились все короткие имена, входящие в
-  длинные: ``rule`` внутри ``rules``, ``schedule`` внутри ``scheduler``.
-  Эти два живы на самом деле, но счётчик не мог этого знать - он видел
-  подстроку, а не вызов, и одинаково молчал бы, умри они завтра;
-- только ``tree.body``: методы классов не проверялись вовсе. Так
-  прожили шесть методов ``ResourceLockCoordinator`` - второй путь к
-  тому, что продакшен делает функциями модуля. Сняты 16.09, 165 строк.
+- substring: ``planner_thread_title`` counted as alive because it is
+  contained in ``replanner_thread_title``. It was dead and removed on
+  16 Sep. In the same way every short name contained in a longer one
+  counted as "reachable": ``rule`` inside ``rules``, ``schedule`` inside
+  ``scheduler``. Those two really are alive, but the counter could not
+  know that - it saw a substring, not a call, and would have stayed just
+  as silent had they died tomorrow;
+- only ``tree.body``: class methods were not checked at all. That is how
+  six methods of ``ResourceLockCoordinator`` survived - the second path
+  to what production does with module functions. Removed on 16 Sep,
+  165 lines.
 
-Теперь имена берутся разбором AST, методы классов включены, а ссылка на
-метод засчитывается по обращению к атрибуту.
+Now names are taken by parsing the AST, class methods are included, and
+a reference to a method counts by attribute access.
 
-Предел проверки объявлен честно: имя метода не говорит о владельце.
-``coordinator.acquire`` и ``threading.Lock.acquire`` для счётчика
-неразличимы, поэтому метод, чьё имя занято ещё кем-то, живым выглядит
-всегда. Проверка поэтому НЕ полна: она не даёт ложных срабатываний, но
-пропускает совпадающие имена. Замерено 16.09: из шести мёртвых методов
-координатора по имени ловились три. Оставшиеся нашлись разбором
-получателя вручную. Точный ответ требует вывода типов; до него счёт
-здесь - нижняя оценка, а не полная.
+The limit of the check is declared honestly: a method name says nothing
+about its owner. ``coordinator.acquire`` and ``threading.Lock.acquire``
+are indistinguishable to the counter, so a method whose name someone else
+also uses always looks alive. The check is therefore NOT complete: it
+gives no false positives but misses coinciding names. Measured on 16 Sep:
+of six dead coordinator methods three were caught by name. The rest were
+found by parsing the receiver by hand. An exact answer needs type
+inference; until then the count here is a lower bound, not the whole.
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ import unittest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "codex_autopilot"
 
-# Точка входа, класс-контракт или сознательно публичный API. Причина
-# обязательна: строка без причины - это возвращение той же болезни.
+# An entry point, a contract class or a deliberately public API. The reason
+# is mandatory: a line without a reason is the same disease returning.
 ALLOWED = {
     "main": "точка входа CLI",
     "handle_stop_hook": "вызывается Codex как хук, не нами",
@@ -64,10 +64,10 @@ ALLOWED = {
     "handle_interrupt_hook": "вызывается Codex как хук, не нами",
 }
 
-# Долг, найденный 16.09 доведённым детектором. Это НЕ исключения: у
-# каждого нет продакшен-вызова, и каждый ждёт решения владелицы - снять
-# или подключить. Список только сокращается: расти ему запрещает тест
-# ниже, а запись, которая перестала быть мёртвой, обязана уйти отсюда.
+# Debt found on 16 Sep by the finished detector. These are NOT exemptions:
+# none has a production call, and each awaits the owner's decision - remove
+# or wire up. The list only shrinks: the test below forbids it to grow,
+# and an entry that stopped being dead must leave here.
 KNOWN_DEBT = {
     "plan.validate_plan": "четвёртая обёртка над _validate_plan_payload; продакшен ходит через validate_migrating_plan, validate_persisted_plan и validate_plan_change",
     "ArtifactStagingStore.abandon": "ни одной ссылки ни в src, ни в тестах",
@@ -144,9 +144,9 @@ def _orphans() -> dict[str, str]:
             continue
         is_method = "." in reported and not reported.startswith(module.removesuffix(".py") + ".")
         used = attributes if is_method else names
-        # Определение верхнего уровня ссылается на себя один раз - самим
-        # def; в набор имён оно от этого не попадает, ast.Name его не
-        # порождает. Поэтому достаточно проверить вхождение.
+        # A top-level definition references itself once - by the def itself;
+        # that does not put it into the name set, ast.Name does not produce
+        # it. So checking membership is enough.
         if short not in used:
             result[reported] = module
     return result
@@ -227,13 +227,13 @@ class EveryCommandHasAConsumerTests(unittest.TestCase):
 
     ROOT = Path(__file__).resolve().parents[1]
 
-    # Машинные входы: их зовёт Codex или сам рантайм, а не человек.
-    # _wake порождает сам диспетчер перед уходом: будильник повтора по
-    # сроку. Человек его не набирает, как и _relay_dispatch.
+    # Machine entry points: Codex or the runtime itself calls them, not a human.
+    # _wake is spawned by the dispatcher itself before it exits: the alarm
+    # for a timed retry. A human never types it, nor _relay_dispatch.
     MACHINE = {"hook", "memory-mcp", "_relay_dispatch", "_dispatch", "_wake", "_wake-sweep"}
-    # Пользовательские команды: описаны в README и GETTING_STARTED.
+    # User commands: described in README and GETTING_STARTED.
     USER = {"status", "stop", "resume", "logs", "doctor", "uninstall"}
-    # Внутренние шаги start-skill, у каждой своя справка в --help.
+    # Internal steps of start-skill, each with its own --help.
     SETUP = {"bootstrap", "preflight", "start-skill", "arm"}
 
     def _commands(self) -> set[str]:

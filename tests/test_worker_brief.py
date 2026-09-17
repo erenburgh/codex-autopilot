@@ -1,15 +1,15 @@
-"""Первое сообщение задачи обязано быть полезным.
+"""A task's first message must be useful.
 
-Ветка становится видимой через ~1.3 секунды после старта хода - значит
-момент появления задачи в интерфейсе и момент, когда воркер начинает
-говорить, это один и тот же момент. Прежде он тратился впустую: превью
-в сайдбаре показывало одинаковую строку "Codex Autopilot AI Studio
-Runtime — свежий implementation worker" на всех задачах, а ответ
-начинался с молчаливой работы инструментами.
+The thread becomes visible ~1.3 seconds after the turn starts - so the
+moment the task appears in the interface and the moment the worker
+starts speaking are one and the same. It used to be wasted: the sidebar
+preview showed the identical line "Codex Autopilot AI Studio Runtime —
+fresh implementation worker" on every task, and the reply began with
+silent tool work.
 
-Теперь то же самое появление несёт две вещи: заголовок, по которому
-задачу видно в списке, и брифинг - что взято, что будет предъявлено,
-каким путём и кто судит.
+Now the same appearance carries two things: a title by which the task is
+seen in the list, and a briefing - what was taken, what will be
+presented, by which path and who judges.
 """
 
 from __future__ import annotations
@@ -104,8 +104,8 @@ class BriefTests(unittest.TestCase):
         )
 
     def _prompt(self, phase: str, task_id: str = "T1", **kwargs) -> str:
-        # Зависимости задачи обязаны быть проверены, иначе контекст
-        # отказывается отдавать их выходы - и это правильный отказ.
+        # The task's dependencies must be verified, otherwise the context
+        # refuses to hand over their outputs - and that is the right refusal.
         states = {task.id: "VERIFIED" for task in self.plan.tasks}
         states[task_id] = "READY"
         return self.runtime.build_prompt(

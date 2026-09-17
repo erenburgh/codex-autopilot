@@ -1,14 +1,15 @@
-"""R31: проверка отказывает там, где ошибку ещё можно исправить.
+"""R31: the check refuses where the error can still be fixed.
 
-Ворота завершения спрашивают свидетельства, связанные с вехой. Запись без
-milestone_id принималась молча, и отказ наступал уже после того, как весь
-ход потрачен.
+The completion gate asks for evidence linked to the milestone. A record
+without milestone_id used to be accepted silently, and the refusal came
+only after the whole turn was spent.
 
-Замерено на живом прогоне: воркер M2 записал четыре свидетельства, положив
-идентификатор вехи в created_by ("M2-FILE-EXISTS", "M2-EXACT-CONTENT")
-вместо milestone_id. В milestone_evidence не легло ничего, завершение
-отклонили с "M2 returned completion without new Project Memory evidence",
-ход пропал целиком, а на M1 завели тикет.
+Measured on a live run: worker M2 recorded four pieces of evidence,
+putting the milestone id into created_by ("M2-FILE-EXISTS",
+"M2-EXACT-CONTENT") instead of milestone_id. Nothing landed in
+milestone_evidence, completion was refused with "M2 returned completion
+without new Project Memory evidence", the turn was lost entirely, and a
+ticket was opened on M1.
 """
 
 from __future__ import annotations

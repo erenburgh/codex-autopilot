@@ -139,9 +139,9 @@ class DependencySchedulerTests(unittest.TestCase):
         implement(self.state, self.plan, "A")
         decision = schedule(self.plan, self.state)
         self.assertEqual(decision.ready_task_ids, ("B",))
-        # Причину ожидания показывает status._waiting_reason: он
-        # называет и незакрытые зависимости, и держателя ресурса.
-        # Второй реализации в планировщике не осталось.
+        # The waiting reason is shown by status._waiting_reason: it
+        # names both the open dependencies and the resource holder.
+        # No second implementation remains in the scheduler.
         from codex_autopilot.task_state import unmet_dependencies
 
         self.assertEqual(
@@ -242,9 +242,9 @@ class CapacityAndStrategyTests(unittest.TestCase):
             max_workers=4,
         )
         decision = schedule(plan, make_state(plan))
-        # Смысл теста - зажим serial до одного воркера при большем лимите.
-        # Значение самой константы дефолта здесь неуместно: M10-REV-004
-        # требует поднять её для новых прогонов.
+        # The point of the test: serial is clamped to one worker under a larger limit.
+        # The default constant's own value does not belong here: M10-REV-004
+        # requires raising it for new runs.
         self.assertEqual(decision.strategy, "serial")
         self.assertEqual(decision.worker_limit, 1)
         self.assertEqual(decision.selected_task_ids, ("A",))

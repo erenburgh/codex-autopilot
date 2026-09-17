@@ -1,28 +1,28 @@
-"""R23: повтор одной и той же неудачи ограничен.
+"""R23: repeating the same failure is bounded.
 
-Правило заявлено ENFORCED, а потолка не было вовсе. ``maximum_attempts``
-стоял в конфиге со значением 96 и не читался никем: три упоминания на
-репозиторий - шаблон, дефолт, разбор - и ни одного потребителя. Работали
-только ``initial_seconds`` и ``maximum_seconds``, то есть повтор шёл
-бесконечно, а не сутки.
+The rule was declared ENFORCED, and there was no ceiling at all.
+``maximum_attempts`` sat in the config at 96 and nobody read it: three
+mentions per repository - template, default, parser - and not one
+consumer. Only ``initial_seconds`` and ``maximum_seconds`` worked, that
+is, the retry ran forever, not for a day.
 
-Стену, которая ограничивала повторы случайно, сняли в этот же день.
-Раньше протокольная ошибка модели роняла диспетчер, и прогон вставал -
-требовал человека. После правки «нечитаемый вердикт возвращается
-верифаеру» тот же отказ штатно уходит в RETRY_WAIT и повторяется. Если
-модель ошибается устойчиво одинаково - а мы видели именно это, один и
-тот же формат финальной строки, - цикл идёт сам по себе, и ограничивать
-его стало нечему.
+The wall that bounded retries by accident was removed the same day. A
+model protocol error used to crash the dispatcher, and the run stood -
+needing a human. After the fix "an unreadable verdict goes back to the
+verifier" the same refusal goes to RETRY_WAIT normally and repeats. If
+the model errs consistently the same way - and that is exactly what we
+saw, the same final-line format - the loop runs by itself, and nothing
+was left to bound it.
 
-Счёт ведётся по СИГНАТУРЕ, а не по задаче: одна поломка у двух задач -
-одна поломка. Вид отказа называет вызывающий (``failure_code``), потому
-что сигнатура в этом проекте отвечает на вопрос «что сломалось», а
-свободный текст ``reason`` на него не отвечает - ровно то основание, по
-которому из ``incident_signature`` выкинуты summary и affected_task_ids.
+The count is by SIGNATURE, not by task: one fault on two tasks is one
+fault. The caller names the kind of failure (``failure_code``), because
+in this project a signature answers "what broke", and the free-text
+``reason`` does not - the very reason summary and affected_task_ids were
+thrown out of ``incident_signature``.
 
-На потолке прогон не встаёт: заводится тикет дежурному инженеру, и пауза
-тикета разрывает цикл. Остановка наступает дальше, когда исчерпан уже
-инженер - этого требует R3.
+At the ceiling the run does not stop: a ticket goes to the on-call
+engineer, and the ticket's pause breaks the loop. The stop comes later,
+when the engineer itself is exhausted - R3 requires that.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def production_failure_shapes() -> dict[str, frozenset[bool]]:
             keywords = {item.arg: item.value for item in node.keywords}
             code = keywords.get("failure_code")
             if not isinstance(code, ast.Constant) or not isinstance(code.value, str):
-                # Код собирается на лету (путь CLI): формы у него нет.
+                # The code is assembled on the fly (the CLI path): it has no form.
                 continue
             declared = keywords.get("definitive")
             if isinstance(declared, ast.Constant):
@@ -119,7 +119,7 @@ class RetryBudgetTests(unittest.TestCase):
         self.cfg = load_config(self.root)
         self.store = StateStore(self.cfg.state_dir)
 
-    # --- инструменты ---------------------------------------------------
+    # --- tools ---------------------------------------------------------
 
     def pending_token(self, task_id: str) -> str | None:
         """Токен уже открытой резервации задачи, если она есть."""
@@ -169,7 +169,7 @@ class RetryBudgetTests(unittest.TestCase):
         raw = PipelineIncidentStore(self.cfg.state_dir).load()
         return [item for item in raw["incidents"] if item.get("code") == code]
 
-    # --- сами проверки -------------------------------------------------
+    # --- the checks themselves -----------------------------------------
 
     def test_the_same_signature_stops_looping_at_the_cap(self) -> None:
         cap = self.cfg.retry.maximum_attempts

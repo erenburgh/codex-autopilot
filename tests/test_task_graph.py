@@ -108,9 +108,9 @@ def graph() -> dict:
         "roles": [role("builder"), role("reviewer")],
         "tasks": [
             task("A"),
-            # R8: даже задача, не гейтящая зависимости, не принимает
-            # сама себя. "Не требует верификации" - тот же самосуд,
-            # объявленный планировщиком заранее.
+            # R8: even a task that gates no dependents does not accept
+            # itself. "Needs no verification" is the same self-judgement,
+            # declared by the planner in advance.
             task("B"),
             task("C", dependencies=["A", "B"]),
         ],
@@ -298,20 +298,20 @@ class TaskGraphSchemaTests(unittest.TestCase):
         self.assertEqual(changed.graph_version, 2)
         self.assertEqual(load_plan(state_dir, "adaptive").graph_version, 2)
 
-        # user_request не берётся из ответа реплэннера, а переносится из
-        # текущего плана. Прежде требовалось дословное эхо - и в живом
-        # прогоне это 35 234 символа, которые модель не воспроизводит:
-        # законная смена плана отклонялась целиком. Перенос строже: эхо
-        # можно было подделать, а поле, которого не спрашивают, изменить
-        # нельзя вовсе.
+        # user_request is not taken from the replanner's reply but carried
+        # over from the current plan. A verbatim echo used to be required -
+        # on the live run that is 35 234 characters the model does not
+        # reproduce: a legitimate plan change was rejected whole. Carrying
+        # over is stricter: an echo could be faked, while a field nobody asks
+        # for cannot be changed at all.
         changed_request = graph()
         changed_request["graph_version"] = 2
         changed_request["user_request"] = "A replacement request"
         carried = validate_plan_change(current, changed_request, "adaptive")
         self.assertEqual(carried.user_request, current.user_request)
 
-        # goal короткий, модель повторяет его надёжно, и расхождение там
-        # означает намерение, а не ошибку копирования.
+        # goal is short, the model repeats it reliably, and a divergence there
+        # means intent, not a copying error.
         changed_goal = graph()
         changed_goal["graph_version"] = 2
         changed_goal["goal"] = "A replacement goal"
@@ -536,8 +536,8 @@ class V08CompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(plan.user_request, raw["user_request"])
         self.assertNotIn("legacy-worker", plan.role_map)
-        # Мигрированный план перечитывается тем же входом, что и в
-        # продакшене: его происхождение написал рантайм, а не отправитель.
+        # The migrated plan is re-read through the same entry as in
+        # production: the runtime wrote its provenance, not the sender.
         state_dir = Path(tempfile.mkdtemp(prefix="codex-autopilot-v08-roles-"))
         save_plan(state_dir, plan)
         write_migrated_run_state(state_dir)

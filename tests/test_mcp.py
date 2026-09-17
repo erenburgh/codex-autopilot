@@ -65,9 +65,9 @@ class McpTests(unittest.TestCase):
         self.assertEqual(Path(identity["project_root"]), root.resolve())
         self.assertFalse(identity["initialized"])
 
-    # Проверка режима разрешения переехала в test_memory_tool_approval.py.
-    # Здесь она утверждала значение "auto" - то самое, которого в
-    # перечислении Codex нет, - и держала опечатку на месте.
+    # The approval-mode check moved to test_memory_tool_approval.py.
+    # Here it asserted the value "auto" - the very one absent from the
+    # Codex enumeration - and kept the typo in place.
 
     def test_server_restarts_cleanly_after_process_exit(self):
         root = git_project()

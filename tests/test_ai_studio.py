@@ -182,10 +182,10 @@ class RunbookIsExecutableTests(unittest.TestCase):
         from codex_autopilot.cli import parser
 
         text = self.prompt()
-        # Флаг ищется ВНУТРИ самой команды, а не где угодно в промпте.
-        # Пояснение рядом с командой тоже называет флаг по имени, и поиск
-        # по всему тексту зеленел бы, даже если из команды флаг убрать -
-        # та же подстрочная слепота, что прятала мёртвый код.
+        # The flag is searched for INSIDE the command itself, not anywhere in the prompt.
+        # The explanation next to the command also names the flag, and a search
+        # over the whole text would stay green even with the flag removed from
+        # the command - the same substring blindness that hid dead code.
         invocations = re.findall(r"`scripts/codex-autopilot (\S+)([^`]*)`", text)
         self.assertTrue(invocations, "рантбук не называет ни одной команды")
 
@@ -324,10 +324,10 @@ class AIStudioRuntimeTests(unittest.TestCase):
         )
         payload = context_payload(prompt)
 
-        # Исходный запрос неизменен на весь прогон и сузить его нельзя.
-        # Дословная копия в каждом промпте съедала бюджет: 51 475 из
-        # 62 635 символов при 395 символах самой задачи. Теперь это
-        # проверяемая ссылка, а текст берётся из Project Memory.
+        # The original request is fixed for the whole run and cannot be narrowed.
+        # A verbatim copy in every prompt ate the budget: 51 475 of
+        # 62 635 characters against 395 for the task itself. Now it is a
+        # verifiable reference, and the text comes from Project Memory.
         request = (
             "Deliver the requested behavior and judge it independently of "
             "implementation-authored tests."
@@ -355,9 +355,9 @@ class AIStudioRuntimeTests(unittest.TestCase):
             },
         )
         self.assertNotIn(request, prompt)
-        # Ссылка бесполезна, если воркеру не сказали, как ею
-        # воспользоваться: до этой правки промпт не упоминал сервер
-        # памяти ни разу.
+        # The reference is useless if the worker was not told how to
+        # use it: before this fix the prompt did not mention the memory
+        # server once.
         self.assertIn("codex_autopilot_memory", prompt)
         self.assertIn('"operation":"current"', prompt)
         self.assertTrue(
@@ -526,9 +526,9 @@ class AIStudioRuntimeTests(unittest.TestCase):
             reservation_token="fresh-large-implementation",
         )
         self.assertIn("exactly one Project Memory call", implementation_prompt)
-        # Заверение делает рантайм: воркер передаёт аргументы дословно и
-        # ничего не хэширует - в изоляте постобработки нет ни crypto, ни
-        # TextEncoder, и требование посчитать хэш останавливало задачи.
+        # The runtime attests: the worker passes the arguments verbatim and
+        # hashes nothing - the post-processing isolate has neither crypto nor
+        # TextEncoder, and the requirement to compute a hash stopped tasks.
         self.assertIn("the runtime verifies the text for you", implementation_prompt)
         self.assertIn("Never hash it yourself", implementation_prompt)
         self.assertNotIn("verify chars and sha256", implementation_prompt)

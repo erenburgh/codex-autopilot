@@ -34,7 +34,7 @@ from _handoff import bump_task_checkpoint
 from _plan_contract import TEST_OUTCOME_ID, canonicalize_plan, canonical_verification
 from codex_autopilot.lifecycle import task_checkpoint_path
 from _appserver_fakes import activate_via_app_server
-from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
+from _relay import reserve_ready_frontier  # R21: no dependency on the environment
 from codex_autopilot.lifecycle import (
     pending_descriptors,
 
@@ -305,17 +305,17 @@ class FakeAppServerCreateClient:
         self.thread_id = thread_id
         self.project_id = project_id
         self.fail_create = fail_create
-        # Корни сохранённого проекта - отдельное состояние: расхождение с
-        # каноническим каталогом и есть предмет проверки R6.
+        # The saved project's roots are separate state: their divergence from
+        # the canonical directory is exactly what R6 checks.
         self.project_roots = (
             tuple(project_roots) if project_roots is not None else (canonical_cwd,)
         )
         self.process_exited = False
         self.name: str | None = None
-        # Настоящий клиент помнит, какие ветки он загрузил: ход стартует
-        # только на загруженной, и по этому множеству диспетчер решает,
-        # нужен ли resume. Подделка без него изображала соединение,
-        # которое якобы загрузило всё на свете.
+        # The real client remembers which threads it loaded: a turn starts
+        # only on a loaded one, and by that set the dispatcher decides
+        # whether a resume is needed. A fake without it played a connection
+        # that had supposedly loaded everything in the world.
         self.subscribed_thread_ids: set[str] = set()
 
     def resume_thread(self, thread_id):
@@ -343,8 +343,8 @@ class FakeAppServerCreateClient:
         }
 
     def ensure_project_root(self, project_id, root, *, authorized=False):
-        # Подделка повторяет контракт настоящего клиента: членство
-        # проверяется, а корень дописывается только по разрешению.
+        # The fake repeats the real client's contract: membership is
+        # checked, and a root is appended only with permission.
         from codex_autopilot.appserver import ProjectRootDrift
 
         self.events.append("app-server-project-root-ensured")
@@ -578,11 +578,11 @@ class DesktopLifecycleTests(unittest.TestCase):
         )
 
     def setUp(self) -> None:
-        # Гейт доверия хукам читает НАСТОЯЩИЙ App Server машины. Без этой
-        # подстановки набор проходил только потому, что у разработчика хуки
-        # оказались доверены, и рушился сразу после переустановки плагина.
-        # Патч ровно один на точку вызова: второй поверх первого сделал бы
-        # проверки мока бессмысленными.
+        # The hook-trust gate reads the machine's REAL App Server. Without this
+        # substitution the suite passed only because the developer's hooks
+        # happened to be trusted, and it collapsed right after reinstalling the plugin.
+        # Exactly one patch per call site: a second on top of the first would
+        # make the mock's checks meaningless.
         self.hook_gate_mock = patch_hook_trust_gates(self)["lifecycle_reservations"]
         self.automatic_dispatch = mock.patch(
             "codex_autopilot.control.spawn_automatic_app_server_relay",
@@ -632,7 +632,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         memory = ProjectMemory(root)
 
         def activate(descriptor, thread_id: str) -> None:
-            # Живой путь вместо выведенного слот-релея.
+            # The live path instead of the removed slot relay.
             activate_via_app_server(cfg, root, descriptor, thread_id)
 
         def complete(descriptor, thread_id: str):
@@ -1058,7 +1058,7 @@ class DesktopLifecycleTests(unittest.TestCase):
 
         self.assertIn("does not contain the canonical root", str(raised.exception))
         self.assertIn("AUTOPILOT_PROJECT_ROOT_AUTHORIZATION", str(raised.exception))
-        # Ничего не создано и ничего не дописано.
+        # Nothing created and nothing appended.
         self.assertNotIn("thread-start-called", events)
         self.assertNotIn("app-server-project-root-added", events)
 
@@ -1138,8 +1138,8 @@ class DesktopLifecycleTests(unittest.TestCase):
         statement = project_root_authorization_statement(
             "app-server-ui-project", self.cfg.root
         )
-        # origin="agent" не может быть принят сразу - это уже запрещено;
-        # проверяем, что и proposed-запись авторизацией не становится.
+        # origin="agent" cannot be accepted outright - that is already forbidden;
+        # we check that a proposed record does not become an authorization either.
         memory.propose_decision(
             statement=statement,
             origin="agent",
@@ -1292,7 +1292,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             for item in state.worker_sessions
             if item["reservation_token"] in {first.reservation_token, second.reservation_token}
         }
-        # Каждая задача несёт СВОЙ чекпойнт, а не общий хэш на всех.
+        # Every task carries ITS OWN checkpoint, not one hash shared by all.
         self.assertEqual(sessions["A"]["checkpoint_before"], "")
         self.assertEqual(sessions["B"]["checkpoint_before"], "")
         self.assertNotEqual(
@@ -1300,13 +1300,13 @@ class DesktopLifecycleTests(unittest.TestCase):
             task_checkpoint_path(self.cfg.state_dir, "B"),
         )
 
-        # Работает только A.
+        # Only A is working.
         self.activate(first, "thread-a")
         self.activate(second, "thread-b")
         self.evidence_and_handoff("A")
 
-        # B не может завершиться за счёт записи A: своё evidence есть,
-        # своего чекпойнта нет.
+        # B cannot complete on A's record: it has its own evidence,
+        # but no checkpoint of its own.
         self.memory.record_evidence(
             kind="test",
             summary="B lifecycle verification passed.",
@@ -1326,7 +1326,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertIn("its own checkpoint file", str(caught.exception))
         self.assertIn("B.md", str(caught.exception))
 
-        # A завершается штатно: его собственный файл изменился.
+        # A completes normally: its own file changed.
         complete_desktop_worker(
             self.cfg,
             thread_id="thread-a",
@@ -1334,10 +1334,10 @@ class DesktopLifecycleTests(unittest.TestCase):
             final_message="AUTOPILOT_STATUS: ROTATE",
         )
 
-        # Запись A не попала в файл B: подмена невозможна.
+        # A's record did not land in B's file: substitution is impossible.
         self.assertFalse(task_checkpoint_path(self.cfg.state_dir, "B").is_file())
 
-        # B завершается только после собственной записи.
+        # B completes only after its own record.
         self.evidence_and_handoff("B")
         complete_desktop_worker(
             self.cfg,
@@ -1369,14 +1369,14 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertEqual(original["status"], "ACTIVE")
         self.assertEqual(original["thread_id"], "thread-a-attempt-1")
 
-        # Прерывание: задача уходит в RETRY_WAIT, тред остаётся живым.
+        # Interruption: the task goes to RETRY_WAIT, the thread stays alive.
         record_desktop_interrupt(
             self.cfg,
             thread_id="thread-a-attempt-1",
             turn_id="turn-a-attempt-1",
         )
 
-        # Замена берёт ту же задачу.
+        # The replacement takes the same task.
         replacement = next(
             item
             for item in reserve_ready_frontier(self.cfg, now_epoch=2_000_000_000)
@@ -1397,8 +1397,8 @@ class DesktopLifecycleTests(unittest.TestCase):
             [event["event"] for event in state.lifecycle_journal],
         )
 
-        # Прерванная Desktop-задача получает ввод и обязана упасть закрыто,
-        # а не продолжить производство рядом с активной попыткой.
+        # The interrupted Desktop task receives input and must fail closed,
+        # not continue production next to the active attempt.
         with self.assertRaises(DesktopLifecycleError) as caught:
             complete_desktop_worker(
                 self.cfg,
@@ -1533,8 +1533,8 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertEqual(len(outcome.descriptors), 1)
         self.assertEqual(outcome.descriptors[0].kind, "verifier")
         verifier_prompt = outcome.descriptors[0].prompt
-        # Дословный запрос в промпт больше не вкладывается; верификатор
-        # получает проверяемую ссылку и забирает текст из Project Memory.
+        # The verbatim request is no longer embedded in the prompt; the verifier
+        # gets a verifiable reference and fetches the text from Project Memory.
         self.assertNotIn(independent_graph["user_request"], verifier_prompt)
         self.assertIn(
             hashlib.sha256(independent_graph["user_request"].encode("utf-8")).hexdigest(),
@@ -1692,9 +1692,9 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.store.save(state)
         with self.assertRaisesRegex(DesktopLifecycleError, "full process exit"):
             reserve_ready_frontier(self.cfg)
-        # Отдельного диспетчера больше нет как функции: заглушка,
-        # которая только отказывала, никем не вызывалась. Инвариант стал
-        # структурным, и это сильнее проверки "не вызвали".
+        # There is no separate dispatcher function any more: the stub that
+        # only refused was called by nobody. The invariant became
+        # structural, which is stronger than checking "it was not called".
         import codex_autopilot.control as control
 
         self.assertFalse(hasattr(control, "spawn_dispatcher"))
@@ -1799,9 +1799,9 @@ class DesktopLifecycleTests(unittest.TestCase):
         ]
         self.assertEqual(len(m8_sessions), 2)
         self.assertEqual(m8_sessions[0]["reservation_token"], first_m8.reservation_token)
-        # M10-REV-006 сюда не применяется: у этой сессии создание не
-        # состоялось и Desktop-треда нет, продолжать производство нечему.
-        # Ограждается только адресуемая задача - см.
+        # M10-REV-006 does not apply here: for this session creation did not
+        # happen and there is no Desktop thread, nothing to continue production with.
+        # Only an addressable task is fenced - see
         # test_superseded_desktop_task_fails_closed_beside_its_replacement.
         self.assertEqual(m8_sessions[0]["status"], "RETRY_WAIT")
         self.assertFalse(str(m8_sessions[0].get("thread_id") or "").strip())

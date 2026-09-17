@@ -1,16 +1,17 @@
-"""Инженер вправе починить сбой и всё равно поднять решение владельцу.
+"""The engineer may repair a fault and still raise a decision to the owner.
 
-Это разные вещи. Тикет он чинит сам; конфликт правила решить не может -
-такого полномочия у него нет, это решение владельца.
+Those are different things. The ticket it repairs itself; a rule
+conflict it cannot resolve - it has no such authority, that is the
+owner's decision.
 
-Прежде эскалация допускалась только из фазы «удерживается инженером», и
-закрытый тикет её отвергал. 16.09.2026 это дважды остановило прогон
-целиком: инженер закрывал сбой, эскалировал конфликт R31, отказ уходил
-наверх, диспетчер падал - и принимать завершение его хода становилось
-некому. Каждый раз требовался человек.
+Escalation used to be allowed only from the "held by the engineer"
+phase, and a closed ticket rejected it. On 16 Sep 2026 that stopped the
+whole run twice: the engineer closed the fault, escalated the R31
+conflict, the refusal went up, the dispatcher crashed - and nobody was
+left to accept the completion of its turn. Each time a human was needed.
 
-Терять такую эскалацию нельзя: решение, которого никто не увидит, ничем
-не отличается от непринятого.
+Such an escalation must not be lost: a decision nobody will see is no
+different from one never made.
 """
 
 from __future__ import annotations

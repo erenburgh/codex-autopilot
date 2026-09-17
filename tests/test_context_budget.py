@@ -1,11 +1,11 @@
-"""Бюджет промпта и адресность Project Memory.
+"""The prompt budget and the addressing of Project Memory.
 
-Один прогон v1.0 упёрся сразу в обе дыры. Промпт M1 занял 62 635
-символов при потолке 64 000, из них 51 475 - дословная копия запроса
-пользователя и 395 - сама задача. Потолок при этом был голой
-константой без обоснования, а окно модели на том же ходе составляло
-258 400 токенов. Одновременно `current` отвечала про веху с индексом
-ноль независимо от того, кто спрашивает.
+One v1.0 run hit both holes at once. The M1 prompt took 62 635
+characters against a 64 000 ceiling, 51 475 of them a verbatim copy of
+the user's request and 395 the task itself. The ceiling was a bare
+constant without justification, while the model window on the same
+turn was 258 400 tokens. At the same time `current` answered about the
+milestone at index zero regardless of who asked.
 """
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ from _plan_contract import canonicalize_plan
 from test_ai_studio import context_payload, role, task
 from test_verification_lifecycle import graph, task as graph_task
 
-# validate_plan нормализует текст, поэтому хвостовой пробел здесь
-# дал бы расхождение длины на единицу.
-HUGE_REQUEST = ("Собери продукт целиком. " * 2_200).strip()  # ~50 000 символов
+# validate_plan normalizes the text, so a trailing space here
+# would give a length mismatch of one.
+HUGE_REQUEST = ("Собери продукт целиком. " * 2_200).strip()  # ~50 000 characters
 
 
 class PromptBudgetTests(unittest.TestCase):
@@ -108,7 +108,7 @@ class PromptBudgetTests(unittest.TestCase):
         self.assertGreater(len(HUGE_REQUEST), 49_000)
         prompt = self.build(HUGE_REQUEST)
         self.assertNotIn(HUGE_REQUEST[:200], prompt)
-        # Промпт не просто пролез - он перестал зависеть от длины ТЗ.
+        # The prompt did not merely squeeze through - it stopped depending on the spec length.
         small = self.build("Сделай ровно то, о чём сказано.")
         self.assertLess(abs(len(prompt) - len(small)), 400)
 
@@ -348,7 +348,7 @@ class EveryCeilingHasOneSourceTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             for name in re.findall(r"raise ([A-Z][A-Za-z]+Error)\(", text):
                 if hasattr(builtins, name):
-                    continue  # встроенные доступны всегда
+                    continue  # built-ins are always available
                 module = importlib.import_module(f"codex_autopilot.{path.stem}")
                 self.assertTrue(
                     hasattr(module, name),
@@ -398,7 +398,7 @@ class SkillPathSurvivesTheNextInstallTests(unittest.TestCase):
 
         current = self.fake_install("0.9.0-beta.local.A")
         dead = self.cache_path("0.9.0-beta.local.OLD")
-        shutil.rmtree(dead.parents[2])  # установка удалила прежний каталог
+        shutil.rmtree(dead.parents[2])  # the install removed the previous directory
         self.assertFalse(dead.is_file())
 
         with mock.patch.object(

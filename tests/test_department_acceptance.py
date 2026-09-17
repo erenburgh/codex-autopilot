@@ -669,8 +669,8 @@ class DepartmentAcceptanceTests(unittest.TestCase):
                 ),
             )
             db.commit()
-        # Ошибка поведения модели, а не поломка машины: иначе отказ
-        # валит диспетчер и останавливает прогон целиком (A3).
+        # A model behaviour error, not a machine breakdown: otherwise the
+        # refusal crashes the dispatcher and stops the whole run (A3).
         with self.assertRaisesRegex(WorkerProtocolError, "digest changed"):
             complete_desktop_worker(
                 cfg,
@@ -695,8 +695,8 @@ class DepartmentAcceptanceTests(unittest.TestCase):
                 (original_statement, self.reference.record_id),
             )
             db.commit()
-        # Ошибка поведения модели, а не поломка машины: иначе отказ
-        # валит диспетчер и останавливает прогон целиком (A3).
+        # A model behaviour error, not a machine breakdown: otherwise the
+        # refusal crashes the dispatcher and stops the whole run (A3).
         with self.assertRaisesRegex(WorkerProtocolError, "must attest"):
             complete_desktop_worker(
                 cfg,

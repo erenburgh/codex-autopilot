@@ -15,7 +15,7 @@ from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
 from _plan_contract import TEST_OUTCOME_ID, canonicalize_plan, canonical_verification
 from _appserver_fakes import activate_via_app_server
-from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
+from _relay import reserve_ready_frontier  # R21: no dependency on the environment
 from codex_autopilot.lifecycle import (
     DESKTOP_SLOT_READY,
     WORKSPACE_HANDOFF_OK,
@@ -193,9 +193,9 @@ class VerificationLifecycleTests(unittest.TestCase):
         )
         self.hook_gate.start()
         self.addCleanup(self.hook_gate.stop)
-        # Гейт доверия хукам читает НАСТОЯЩИЙ App Server машины. Без этой
-        # подстановки набор проходил только потому, что у разработчика хуки
-        # оказались доверены, и рушился сразу после переустановки плагина.
+        # The hook-trust gate reads the machine's REAL App Server. Without this
+        # substitution the suite passed only because the developer's hooks
+        # happened to be trusted, and it collapsed right after reinstalling the plugin.
         patch_hook_trust_gates(self)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -635,9 +635,9 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.initialize(
             task("A", policy="independent", verifier_role="reviewer", max_revisions=2)
         )
-        # Бюджет ревизий - две попытки: перенайм наступает на третьем
-        # отказе, а не на первом. Раньше тест ставил бюджет в ноль, но
-        # канонический контракт приёмки требует минимум двух.
+        # The revision budget is two attempts: the re-hire comes on the third
+        # refusal, not the first. The test used to set the budget to zero, but
+        # the canonical acceptance contract requires at least two.
         descriptor = reserve_ready_frontier(self.cfg)[0]
         for index in range(3):
             outcome = self._reject_once(descriptor, index)
@@ -685,8 +685,8 @@ class VerificationLifecycleTests(unittest.TestCase):
             task("A", policy="independent", verifier_role="reviewer", max_revisions=2)
         )
         descriptor = reserve_ready_frontier(self.cfg)[0]
-        # Каждая ступень лестницы стоит трёх отказов: две ревизии по
-        # бюджету плюс тот, на котором бюджет исчерпан.
+        # Every ladder step costs three refusals: two revisions within the
+        # budget plus the one on which the budget is exhausted.
         efforts: list[str] = []
         for index in range(16):
             outcome = self._reject_once(descriptor, index)
@@ -698,8 +698,8 @@ class VerificationLifecycleTests(unittest.TestCase):
         else:
             self.fail("лестница найма не закончилась")
 
-        # Первые круги идут на собственном усилии задачи, и только
-        # исчерпанный бюджет поднимает на ступень выше.
+        # The first laps run at the task's own effort, and only an
+        # exhausted budget raises it one step.
         self.assertEqual(efforts, ["medium", "high", "xhigh", "max"])
         state = self.store.load()
         self.assertEqual(state.task_states["A"], TaskState.BLOCKED.value)
@@ -710,8 +710,8 @@ class VerificationLifecycleTests(unittest.TestCase):
         )
         self.assertIn("hiring ladder", state.last_error)
 
-        # Владелец продукта должен увидеть, что именно отвергла приёмка и
-        # сколько исполнителей уже сменилось - иначе решать ему нечем.
+        # The product owner must see exactly what acceptance rejected and
+        # how many executors have already changed - otherwise they have nothing to decide with.
         from codex_autopilot.plan import load_plan
         from codex_autopilot.status import _waiting_reason
 
@@ -749,8 +749,8 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertEqual(sorted(frontier), ["A", "C"])
 
         descriptor = frontier["A"]
-        # Каждая ступень лестницы стоит трёх отказов: две ревизии по
-        # бюджету плюс тот, на котором бюджет исчерпан.
+        # Every ladder step costs three refusals: two revisions within the
+        # budget plus the one on which the budget is exhausted.
         for index in range(16):
             outcome = self._reject_once(descriptor, index)
             if not outcome.descriptors:
@@ -765,11 +765,11 @@ class VerificationLifecycleTests(unittest.TestCase):
 
         state = self.store.load()
         self.assertEqual(state.task_states["A"], TaskState.BLOCKED.value)
-        # Прогон не объявляет себя BLOCKED, пока живая работа идёт: статус
-        # BLOCKED поднимается только когда активных задач не осталось.
+        # The run does not declare itself BLOCKED while live work goes on: the
+        # BLOCKED status rises only when no active task is left.
         self.assertEqual(state.status, "RUNNING")
 
-        # Главное: прогон со вставшей A продолжает двигать C.
+        # The point: a run with A stalled keeps moving C.
         self.activate(frontier["C"], "c-thread")
         self.evidence("C", "c implementation")
         outcome = complete_desktop_worker(

@@ -1,13 +1,13 @@
-"""Ёмкость прогона считается по реальным лимитам аккаунта.
+"""Run capacity is computed from the account's real limits.
 
-Заявленное пользователем число - его решение и потолок. Понижать его
-можно только когда лимит действительно рядом, и только с названной
-причиной. Человеку с автосписанием урезать нечего: он платит по факту,
-и «тебе положено десять» было бы наглостью, а не заботой.
+The number the user declared is their decision and the ceiling. It may
+be lowered only when the limit is really near, and only with a named
+reason. Someone on auto-billing has nothing to cut: they pay as they go,
+and "you get ten" would be impertinence, not care.
 
-Данные настоящие: App Server шлёт account/rateLimits/updated с
-usedPercent, длиной окна, признаком безлимита, кредитами и отметкой о
-достигнутом пределе расходов.
+The data is real: App Server sends account/rateLimits/updated with
+usedPercent, the window length, the unlimited flag, credits and a mark
+that the spending limit was reached.
 """
 
 from __future__ import annotations

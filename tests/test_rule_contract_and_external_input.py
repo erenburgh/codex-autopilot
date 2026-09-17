@@ -1,4 +1,4 @@
-"""R16: правила применяются как контракт. R18: внешний ввод не переопределяет Truth."""
+"""R16: rules apply as a contract. R18: external input does not override Truth."""
 
 from __future__ import annotations
 
@@ -343,8 +343,8 @@ class WorkerReasonCodeTests(unittest.TestCase):
         for code in WORKER_REASON_CODES - {"UNSPECIFIED"}:
             with self.subTest(code=code):
                 self.assertIn(code, source)
-        # UNSPECIFIED - запись о том, что кода не было, а не код,
-        # который воркеру предлагают выбрать.
+        # UNSPECIFIED is a record that there was no code, not a code
+        # the worker is offered to choose.
         self.assertNotIn("UNSPECIFIED", source)
 
     def test_the_failure_record_names_the_code(self) -> None:

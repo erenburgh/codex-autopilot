@@ -1,16 +1,16 @@
-"""Сквозной путь возобновления: от фразы пользователя до начала работы.
+"""The end-to-end resume path: from the user's phrase to the start of work.
 
-Каждый шаг этой цепочки был сломан по отдельности, и каждый вскрывался
-только живым запуском - по одному за круг, с участием человека и
-переустановкой рантайма. Ни один не был покрыт тестом.
+Every step of this chain was broken separately, and each surfaced only
+on a live launch - one per lap, with a human involved and the runtime
+reinstalled. None was covered by a test.
 
-Цепочка целиком:
+The whole chain:
 
-    фраза -> вооружение -> Stop-хук изымает запрос -> резервация
-    -> создание ветки -> размещение в проекте -> взятие хода -> старт
+    phrase -> arming -> the Stop hook takes the request -> reservation
+    -> thread creation -> project placement -> taking the turn -> start
 
-Каждый тест ниже закрывает один из семи найденных дефектов, чтобы
-следующий такой же ловился здесь, а не на живом прогоне.
+Each test below closes one of the seven defects found, so the next one
+like it is caught here and not on a live run.
 """
 
 from __future__ import annotations
@@ -51,9 +51,9 @@ class ResumeChainTests(unittest.TestCase):
             desktop_project_id="desktop-project",
         )
         self.cfg = load_config(self.root)
-        # Реестр взведённых стартов один на пользователя и живёт в TMPDIR.
-        # Без изоляции этот набор оставлял в нём запись про свой временный
-        # каталог, и живой Stop-хук потом отказывался запускать что-либо:
+        # The registry of armed starts is one per user and lives in TMPDIR.
+        # Without isolation this suite left a record about its temporary
+        # directory in it, and the live Stop hook then refused to launch anything:
         # "multiple Autopilot starts are armed".
         registry = Path(tempfile.mkdtemp(prefix="codex-autopilot-launch-registry-")) / "requests"
         launch_dir = mock.patch.dict(
@@ -73,8 +73,8 @@ class ResumeChainTests(unittest.TestCase):
         spawn.start()
         self.addCleanup(spawn.stop)
 
-        # Гейт размещения читает настоящий каталог Codex: в тесте он обязан
-        # смотреть в свой, иначе результат зависит от машины.
+        # The placement gate reads the real Codex directory: in a test it must
+        # look at its own, otherwise the result depends on the machine.
         self.codex_home = self.root / "codex-home"
         self.codex_home.mkdir()
         self.write_desktop_state()
@@ -103,8 +103,8 @@ class ResumeChainTests(unittest.TestCase):
         payload = {
             "hook_event_name": "Stop",
             "cwd": str(self.root),
-            # Хук приходит от того же владельца, что держит резервацию:
-            # именно так это выглядит на живом пути.
+            # The hook comes from the same owner that holds the reservation:
+            # that is exactly how it looks on the live path.
             "session_id": TEST_RELAY_OWNER,
             "turn_id": "owner-turn",
             "last_assistant_message": "готово",
@@ -113,7 +113,7 @@ class ResumeChainTests(unittest.TestCase):
         payload.update(overrides)
         return handle_stop_hook(payload)
 
-    # --- 1. фраза доходит до вооружения -------------------------------
+    # --- 1. the phrase reaches arming ---------------------------------
 
     def test_the_russian_phrase_arms_the_resume(self) -> None:
         """Кириллица в названии продукта не должна ломать команду."""
@@ -122,7 +122,7 @@ class ResumeChainTests(unittest.TestCase):
         state = self.store.load()
         self.assertEqual((state.status, state.phase), ("READY", "ARMED"))
 
-    # --- 2. Stop-хук изымает запрос и заводит работу ------------------
+    # --- 2. the Stop hook takes the request and starts the work -------
 
     def test_stop_hook_reserves_and_spawns_after_arming(self) -> None:
         self.resume()
@@ -130,7 +130,7 @@ class ResumeChainTests(unittest.TestCase):
         self.assertTrue(self.spawned, "ни одна резервация не поднята")
         self.assertIn("reason", result)
 
-    # --- 3. изъятый запрос не исчезает, если состояние ушло вперёд ----
+    # --- 3. a taken request does not vanish when the state moved on ---
 
     def test_an_advanced_state_does_not_swallow_the_armed_request(self) -> None:
         """Дефект, из-за которого возобновление пропадало без следа.
@@ -150,7 +150,7 @@ class ResumeChainTests(unittest.TestCase):
         self.assertIn(descriptor.reservation_token, self.spawned)
         self.assertIn("reason", result)
 
-    # --- 4. висящая резервация без живого диспетчера поднимается ------
+    # --- 4. a hanging reservation with no live dispatcher is raised ----
 
     def test_a_reservation_whose_dispatcher_died_is_revived(self) -> None:
         descriptor = reserve_ready_frontier(self.cfg)[0]
@@ -160,14 +160,14 @@ class ResumeChainTests(unittest.TestCase):
             for item in state.worker_sessions
             if item["reservation_token"] == descriptor.reservation_token
         )
-        session["automatic_dispatch_pid"] = 999999  # заведомо мёртвый
+        session["automatic_dispatch_pid"] = 999999  # known to be dead
         self.store.save(state)
 
         self.resume()
         self.stop()
         self.assertIn(descriptor.reservation_token, self.spawned)
 
-    # --- 5. создание, размещение и старт ------------------------------
+    # --- 5. creation, placement and start -----------------------------
 
     def test_dispatcher_creates_places_and_starts_the_task(self) -> None:
         """Вторая половина цепочки: то, что делает отсоединённый процесс."""
@@ -183,7 +183,7 @@ class ResumeChainTests(unittest.TestCase):
         self.assertEqual(session["status"], "ACTIVE")
         self.assertEqual(session["thread_id"], "thread-a")
 
-    # --- 6. отчёт содержит лестницу шагов -----------------------------
+    # --- 6. the report contains the ladder of steps -------------------
 
     def test_the_report_shows_the_ladder_of_steps(self) -> None:
         self.resume()
@@ -192,7 +192,7 @@ class ResumeChainTests(unittest.TestCase):
         self.assertIn("slot reserved", report)
         self.assertIn("LAUNCH", report)
 
-    # --- 7. снятая причина остановки не возвращается с диска ----------
+    # --- 7. a cleared stop reason does not come back from disk --------
 
     def _escalate(self) -> str:
         """Завести тикет, ждущий пользователя, и остановить прогон по нему."""
@@ -363,8 +363,8 @@ class PlanChangePredecessorIsAcceptedTests(unittest.TestCase):
         return SimpleNamespace(worker_sessions=[session], lifecycle_journal=entries)
 
     def accepts(self, state) -> bool:
-        # Настоящая функция из рантайма, а не её копия в тесте: первая
-        # версия этих проверок повторяла логику у себя и мутацию не ловила.
+        # The real function from the runtime, not a copy in the test: the first
+        # version of these checks repeated the logic locally and caught no mutation.
         from codex_autopilot.lifecycle_dispatch import causal_predecessor
 
         return causal_predecessor(state, "owner") is not None

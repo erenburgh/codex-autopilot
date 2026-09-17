@@ -34,8 +34,8 @@ def project() -> Path:
 
 
 def plan(profile: str = "adaptive"):
-    # Канонический schema-3 план. Формат v0.8 здесь был сокращением, а
-    # сокращение это и была дыра: он не требует независимой приёмки.
+    # A canonical schema-3 plan. The v0.8 format was a shortcut here, and
+    # the shortcut was the hole: it requires no independent acceptance.
     item: dict = {
         "id": "M1",
         "title": "Build UI",
@@ -532,15 +532,15 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(client.archived, ["preflight-thread"])
         self.assertEqual(len(client.plain_turns), 1)
         self.assertFalse((root / ".codex-autopilot").exists())
-        # Проводка, а не помощник: мутационная проверка показала, что
-        # тесты на сам approval_command проходят и с оборванной связкой.
+        # The wiring, not the helper: mutation testing showed that the tests
+        # on approval_command itself pass even with the link cut.
         message = str(caught.exception)
         self.assertIn("--approve-project-memory-always", message)
         self.assertIn(str(root.resolve()), message)
         self.assertIsNotNone(caught.exception.command)
-        # Команда без идентификаторов проекта падает раньше разрешения -
-        # на проверке размещения. Первая выданная пользователю команда
-        # была именно такой.
+        # A command without project identifiers fails before permission -
+        # on the placement check. The first command handed to the user
+        # was exactly that.
         self.assertIn("--desktop-project-id", caught.exception.command)
 
     def test_untrusted_raw_mcp_without_advertised_always_is_rejected(self):
@@ -767,7 +767,7 @@ class TargetMustBelongToAProjectTests(unittest.TestCase):
             message = str(caught.exception)
             self.assertIn("belongs to no Codex project", message)
             self.assertIn("Open a Codex project", message)
-            # Состояния нет: отказ наступил до его создания.
+            # There is no state: the refusal came before it was created.
             self.assertFalse((root / ".codex-autopilot").exists())
 
 
@@ -798,9 +798,9 @@ class TrustProbeTests(unittest.TestCase):
         self.assertEqual(len(turns), 2)
         self.assertEqual(turns[0]["effort"], PROBE_REASONING)
         self.assertEqual(turns[1]["effort"], "high")
-        # Лестница воркеров начинается с medium. Проба воркером не
-        # является, и её усилие не должно в эту лестницу попадать:
-        # иначе правка маршрутизации молча вернёт xhigh.
+        # The worker ladder starts at medium. The probe is not a worker,
+        # and its effort must not enter that ladder: otherwise a routing
+        # change would silently bring back xhigh.
         self.assertNotIn(PROBE_REASONING, PUBLIC_REASONING)
 
     def test_a_timed_out_probe_is_retried_instead_of_failing_the_launch(self):
@@ -824,7 +824,7 @@ class TrustProbeTests(unittest.TestCase):
         client = FlakyProbeClient.instances[-1]
         self.assertEqual(client.attempts, 3)
         self.assertEqual(len(client.plain_turns), 3)
-        # Зависший ход прерывается, иначе он продолжает занимать тред.
+        # A hung turn is interrupted, otherwise it keeps occupying the thread.
         self.assertEqual(len(client.interrupted), 1)
 
     def test_exhausted_attempts_name_the_model_turn_and_not_the_transport(self):

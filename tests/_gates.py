@@ -1,13 +1,13 @@
-"""Подстановка гейтов доверия хукам для тестов жизненного цикла.
+"""Substituting the hook-trust gates for the lifecycle tests.
 
-Гейт доверия обращается к НАСТОЯЩЕМУ App Server машины разработчика.
-Пока тесты подставляли его лишь в части модулей, набор проходил только
-потому, что на ноутбуке хуки оказались доверены, и падал двумя десятками
-ошибок сразу после переустановки плагина.
+The trust gate talks to the developer machine's REAL App Server. While
+tests substituted it in only some modules, the suite passed only because
+the hooks on the laptop happened to be trusted, and failed with two
+dozen errors right after reinstalling the plugin.
 
-Список модулей не зашит: он выводится из исходников. Появится шестая
-точка вызова - она будет подставлена сама, а не обнаружится в виде
-внезапно покрасневшего набора.
+The module list is not hard-coded: it is derived from the sources. A
+sixth call site will be substituted by itself instead of showing up as a
+suddenly red suite.
 """
 
 from __future__ import annotations

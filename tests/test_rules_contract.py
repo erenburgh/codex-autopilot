@@ -1,8 +1,8 @@
-"""Правила как исполняемый контракт.
+"""The rules as an executable contract.
 
-Файл правил сам по себе ничего не удерживает. Здесь проверяется,
-что заявленный режим контроля соответствует действительности,
-и что нереализованные правила видны, а не молчат.
+The rules file by itself holds nothing. What is checked here is that the
+declared enforcement mode matches reality, and that unimplemented rules
+are visible rather than silent.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ from codex_autopilot.rules import (
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "codex_autopilot"
 
-# Правило -> тест, который падает при его нарушении.
-# Запись сюда означает: проверка существует и доказана.
+# Rule -> the test that fails when it is violated.
+# An entry here means: the check exists and is proven.
 IMPLEMENTED = {
     "R2": "test_r2_codex_app_task_api_is_absent_from_production",
     "R8": "test_r8_self_acceptance_is_rejected_by_plan_validation",
@@ -47,8 +47,8 @@ IMPLEMENTED = {
     "R31": "test_early_gate.py::EarlyMilestoneLinkTests",
 }
 
-# Правила, проверка которых ещё не написана. Список намеренно явный:
-# пустая строка здесь означала бы, что всё покрыто, а это неправда.
+# Rules whose check is not yet written. The list is deliberately explicit:
+# an empty line here would mean everything is covered, which is untrue.
 PENDING = {
     "R3", "R4", "R10", "R11", "R12",
     "R14", "R15", "R19", "R20", "R22", "R23",
@@ -100,8 +100,8 @@ class EnforcedRuleTests(unittest.TestCase):
         for path in sorted(SRC.glob("*.py")):
             text = path.read_text(encoding="utf-8")
             for name in forbidden:
-                # Разрешён только App Server thread/start; ищем именно
-                # вызовы инструментов Codex App.
+                # Only App Server thread/start is allowed; we look specifically for
+                # Codex App tool calls.
                 for match in re.finditer(rf"\b(codex_app[^\n]*\b{name}|{name}\s*\()", text):
                     line = text[: match.start()].count("\n") + 1
                     if name == "create_thread" and "thread/start" in text.splitlines()[line - 1]:
@@ -166,8 +166,8 @@ class EnforcedRuleTests(unittest.TestCase):
                 }
             ],
         }
-        # Миграцию доказывает прогон, который мигрируют: свежий
-        # проект план v0.8 не впускает вовсе.
+        # Migration is proven by the run being migrated: a fresh
+        # project does not admit a v0.8 plan at all.
         with tempfile.TemporaryDirectory(prefix="codex-autopilot-v08-input-") as temp:
             state_dir = Path(temp)
             (state_dir / "plan.json").write_text(
@@ -197,10 +197,10 @@ class ContextOrderTests(unittest.TestCase):
         """R17: правила грузятся раньше спецификаций и не усекаются."""
         block = rules_for_prompt()
         self.assertEqual(len(block), len(RULES))
-        # ENFORCED идут первыми.
+        # ENFORCED come first.
         modes = [item["mode"] for item in block]
         self.assertEqual(modes, sorted(modes, key=lambda m: 0 if m == ENFORCED else 1))
-        # Каждая запись несёт id, режим и формулировку.
+        # Every entry carries an id, a mode and a statement.
         for item in block:
             self.assertTrue(item["id"] and item["mode"] and item["rule"])
 
@@ -221,7 +221,7 @@ class ContextOrderTests(unittest.TestCase):
         self.assertEqual(
             checked_after[0], target, "нарушенное правило поднимается в своём режиме"
         )
-        # Режимы при этом не перемешиваются: ENFORCED остаются выше.
+        # The modes do not mix: ENFORCED stay above.
         modes = [item["mode"] for item in rules_for_prompt(state_dir)]
         self.assertEqual(modes, sorted(modes, key=lambda m: 0 if m == ENFORCED else 1))
 
@@ -230,7 +230,7 @@ class ContextOrderTests(unittest.TestCase):
         from codex_autopilot.ai_studio import AIStudioRuntime
 
         order = list(AIStudioRuntime.build_prompt.__code__.co_consts)
-        # Конверт строится литералом: "rules" обязан идти раньше "task".
+        # The envelope is built as a literal: "rules" must come before "task".
         source = (SRC / "ai_studio.py").read_text(encoding="utf-8")
         envelope = source.split("envelope = {", 1)[1]
         self.assertLess(
@@ -312,7 +312,7 @@ class ProjectPlacementTests(unittest.TestCase):
         with self.assertRaises(ProjectAssociationError) as caught:
             require_desktop_project_root(home, "proj-1", target)
         message = str(caught.exception)
-        # Сообщение обязано называть ОБА пути: иначе диагноз бесполезен.
+        # The message must name BOTH paths: otherwise the diagnosis is useless.
         self.assertIn(str(target.resolve()), message)
         self.assertIn(str(other.resolve()), message)
 
@@ -331,7 +331,7 @@ class ProjectPlacementTests(unittest.TestCase):
         source = (SRC / "preflight.py").read_text(encoding="utf-8")
         self.assertIn("require_desktop_project_root(", source)
         self.assertIn("PreflightError", source)
-        # Отказ обязан наступать ДО создания задачи.
+        # The refusal must happen BEFORE the task is created.
         checked = source.index("require_desktop_project_root(")
         created = source.index("start_thread(")
         self.assertLess(

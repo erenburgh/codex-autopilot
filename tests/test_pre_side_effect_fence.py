@@ -1,12 +1,13 @@
-"""M11-PRE-SIDE-EFFECT-FENCE: в отставленную задачу писать нечего.
+"""M11-PRE-SIDE-EFFECT-FENCE: nothing is written into a retired task.
 
-Отставленная сессия падала закрыто и раньше - но на завершении хода,
-то есть после того, как модель отработала воркером по резервации,
-которой уже нет. Замерено на прогоне M11: пока рядом шла замена той же
-задачи, у исходников менялись mtime.
+A retired session failed closed before too - but on turn completion,
+that is, after the model had worked as a worker on a reservation that no
+longer existed. Measured on the M11 run: while the same task's
+replacement ran next door, the sources' mtimes changed.
 
-Заслон ставится на UserPromptSubmit, до единого вызова модели или
-инструмента, и проверяется именно повтором: та же ветка, тот же ввод.
+The fence is placed on UserPromptSubmit, before a single model or tool
+call, and is checked precisely by a repeat: the same thread, the same
+input.
 """
 
 from __future__ import annotations

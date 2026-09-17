@@ -1,9 +1,9 @@
-"""DevOps правит код рантайма, но не объявляет починку сам.
+"""DevOps edits the runtime's code but does not declare the repair itself.
 
-Право чинить даётся вместе со шлюзом, и проверяется здесь именно шлюз:
-что он пропускает доказанную правку и что он отклоняет каждую из
-недоказанных. Тест, который не падал до правки, ничего не доказывает;
-патч, задевший охранника, не спасают зелёные тесты.
+The right to repair comes together with the gateway, and it is the
+gateway that is checked here: that it admits a proven edit and refuses
+every unproven one. A test that did not fail before the edit proves
+nothing; green tests do not save a patch that touched a guard.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from codex_autopilot.runtime_repair import (
     revert_runtime_patch,
 )
 
-# Модуль с поломкой: складывает на единицу больше, чем следует.
+# The broken module: it adds one more than it should.
 ARITH = '''"""Счёт, на котором показываем починку."""
 
 
@@ -38,8 +38,8 @@ def summary(items):
     return "total: " + str(total(items)) + " (approx)"
 '''
 
-# Заглушки охраняемых определений: шлюз сверяет их текст, и без них
-# поддельное дерево не пройдёт проверку целостности.
+# Stubs of the guarded definitions: the gateway compares their text, and
+# without them the fake tree fails the integrity check.
 ENGINEER = '''
 def classify_incident(signal):
     return signal
@@ -78,9 +78,9 @@ def _dispatcher_owns_reservation(state, token):
     return token in state
 '''
 
-# Имя переменной здесь нарочно не настоящее: тесты не читают окружение
-# живой Codex-сессии, и проверка чистого окружения следит за этим по
-# тексту файла - включая строки-заготовки вроде этой.
+# The variable name here is deliberately not the real one: tests do not
+# read a live Codex session's environment, and the clean-environment
+# check watches for that by file text - template strings like this included.
 GUARD_CLI = '''
 import os
 
@@ -160,7 +160,7 @@ class RuntimeRepairTests(unittest.TestCase):
         kwargs.update(overrides)
         return apply_runtime_patch(**kwargs)
 
-    # --- что шлюз пропускает ------------------------------------------
+    # --- what the gateway admits --------------------------------------
 
     def test_a_proven_repair_reaches_the_installation(self) -> None:
         record = self.repair()
@@ -196,7 +196,7 @@ class RuntimeRepairTests(unittest.TestCase):
             revert_runtime_patch(record.patch_id, tree=self.tree)
         self.assertIn("changed after this patch", str(refusal.exception))
 
-    # --- что шлюз отклоняет -------------------------------------------
+    # --- what the gateway refuses -------------------------------------
 
     def test_a_test_that_passes_without_the_patch_proves_nothing(self) -> None:
         passing = REPRO.replace("total([1, 2]), 3", "total([1, 2]), 4")
@@ -373,7 +373,7 @@ class ActionTests(unittest.TestCase):
             )
         self.assertIn("guarded definitions", str(refusal.exception))
 
-    # --- находки проверяющей: дубликат, декоратор, регистр, набор ------
+    # --- the reviewer's findings: duplicate, decorator, case, set ------
 
     def test_a_duplicate_of_a_guard_appended_after_it_is_refused(self) -> None:
         """Python исполняет последнее определение; первое - лишь текст."""
@@ -509,8 +509,8 @@ class InstalledLayoutTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         script = (root / "install.sh").read_text(encoding="utf-8")
-        # Рантайм копируется деревом формы репозитория одним циклом; в нём
-        # обязаны быть и исходники, и тесты, и всё, чем тесты доказывают.
+        # The runtime is copied as a repository-shaped tree in one loop; it
+        # must hold the sources, the tests and everything the tests prove with.
         loop = re.search(r"for item in ([^;\n]+); do\n\s*\[ -e \"\$source_dir/\$item\" \] && cp -R \"\$source_dir/\$item\" \"\$target/runtime/\$item\"", script)
         self.assertIsNotNone(loop, "установщик не копирует дерево рантайма циклом по элементам")
         items = loop.group(1).split()
@@ -580,7 +580,7 @@ class RepairCommandTests(unittest.TestCase):
             at="t1",
         )
         self.incident_id = incident["incident_id"]
-        # Патч-набор с одной правкой существующего модуля и одним новым.
+        # A patch set with one edit of an existing module and one new module.
         (self.tmp / "old.txt").write_text("OLD FRAGMENT", encoding="utf-8")
         (self.tmp / "new.txt").write_text("NEW FRAGMENT", encoding="utf-8")
         (self.tmp / "fresh.py").write_text("X = 1\n", encoding="utf-8")
@@ -630,7 +630,7 @@ class RepairCommandTests(unittest.TestCase):
     def test_a_ticket_not_held_by_the_engineer_stops_the_repair_before_it_is_applied(self) -> None:
         """Тикет проверяется до правки: чужой тикет ничего не меняет."""
 
-        # main переводит отказ в код 2 и строку в stderr, а не в исключение.
+        # main turns a refusal into exit code 2 and a line on stderr, not an exception.
         self.assertEqual(self.run_command(), 2)
         self.assertEqual(self.applied, [], "правка применилась до проверки тикета")
 

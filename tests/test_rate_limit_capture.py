@@ -1,9 +1,9 @@
-"""Снимок лимитов должен попадать в состояние по ходу прогона.
+"""The rate-limit snapshot must reach the state during the run.
 
-Ёмкость считается планировщиком от последнего снимка. Пока событие
-`account/rateLimits/updated` никуда не записывалось, планировщик видел
-только то, что было известно на старте, и сужение по ходу работы не
-срабатывало никогда.
+The scheduler computes capacity from the last snapshot. While the
+`account/rateLimits/updated` event was recorded nowhere, the scheduler
+saw only what was known at start, and narrowing during the work never
+kicked in.
 """
 
 from __future__ import annotations

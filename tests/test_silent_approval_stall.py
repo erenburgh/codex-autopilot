@@ -1,25 +1,27 @@
-"""Прогон не имеет права молча стоять на approval, который никто не закроет.
+"""A run may not stand silently on an approval nobody will close.
 
-Замеренный случай. Первый `start-skill` упал на "Timed out waiting for App
-Server": холодный старт App Server грузил каждый установленный плагин, один из
-них - чужой, со сломанным YAML, - и штатных 60 секунд не хватило. Модель
-приняла таймаут за отказ в правах, как ей и велел скилл ("If the approval
-instead names CODEX_HOME, request only normal read/write access"), и запустила
-ту же команду повторно, приложив к ней запрос доступа к `~/.codex`.
+The measured case. The first `start-skill` failed with "Timed out waiting
+for App Server": a cold App Server start loaded every installed plugin,
+one of them foreign with broken YAML, and the standard 60 seconds were
+not enough. The model took the timeout for a permission refusal, as the
+skill told it to ("If the approval instead names CODEX_HOME, request only
+normal read/write access"), and ran the same command again, attaching a
+request for access to `~/.codex`.
 
-Codex поднял нативный диалог на саму команду `start-skill`. Диспетчер по
-своему правилу не отвечает на approvals - preflight вышел с кодом 2. Диалог
-остался висеть в задаче, на которую пользователь не смотрел, инициирующий ход
-показывал "думаю", и так полчаса.
+Codex raised a native dialog on the `start-skill` command itself. By its
+own rule the dispatcher does not answer approvals - preflight exited with
+code 2. The dialog stayed hanging in a task the user was not looking at,
+the initiating turn showed "thinking", and so for half an hour.
 
-Три места, где это чинится, и их проверки здесь:
+Three places where this is fixed, and their checks are here:
 
-1. рукопожатие получает собственный бюджет и говорит, чем оно не является;
-2. скилл больше не велит отвечать на сбой запросом прав;
-3. preflight называет единственный возможный вопрос до первой долгой проверки,
-   а чужой approval объясняет словами, а не сырым JSON.
+1. the handshake gets its own budget and says what it is not;
+2. the skill no longer tells the model to answer a failure with a
+   permission request;
+3. preflight names the only possible question before the first long
+   check, and explains a foreign approval in words, not raw JSON.
 
-Плюс правило execpolicy, которое снимает сам повод спрашивать.
+Plus the execpolicy rule that removes the very reason to ask.
 """
 
 from __future__ import annotations

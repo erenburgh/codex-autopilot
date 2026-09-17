@@ -1,4 +1,4 @@
-"""Правило R7: работа не выходит за объявленную область."""
+"""Rule R7: work stays inside the declared scope."""
 
 from __future__ import annotations
 
@@ -151,9 +151,9 @@ class ScopeIsCheckedOnCompletionTests(unittest.TestCase):
         )
         gate.start()
         self.addCleanup(gate.stop)
-        # Гейт доверия хукам читает НАСТОЯЩИЙ App Server машины. Без этой
-        # подстановки набор проходил только потому, что у разработчика хуки
-        # оказались доверены, и рушился сразу после переустановки плагина.
+        # The hook-trust gate reads the machine's REAL App Server. Without this
+        # substitution the suite passed only because the developer's hooks
+        # happened to be trusted, and it collapsed right after reinstalling the plugin.
         patch_hook_trust_gates(self)
         dispatch = mock.patch(
             "codex_autopilot.control.spawn_automatic_app_server_relay", return_value=4242
@@ -178,8 +178,8 @@ class ScopeIsCheckedOnCompletionTests(unittest.TestCase):
             skill_path=skill,
             desktop_project_id="desktop-project",
         )
-        # Всё, что существует до старта задачи, обязано быть в истории:
-        # иначе чужие файлы попадут в диф и подтвердят правило ложно.
+        # Everything that exists before the task starts must be in history:
+        # otherwise foreign files enter the diff and confirm the rule falsely.
         git(self.root, "add", "-A")
         git(self.root, "commit", "-m", "project")
         self.cfg = load_config(self.root)

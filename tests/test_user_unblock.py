@@ -1,13 +1,13 @@
-"""Остановку по правилу снимает человек - и только с названной причиной.
+"""A stop under a rule is lifted by a human - and only with a named reason.
 
-Эскалация без обратного пути - тупик, а не исключение. Прогон вставал по
-нарушению правила, «продолжи» его намеренно не снимало (и правильно: это
-не кнопка, стирающая неразобранную поломку), а другого пути не
-существовало вовсе. Задача висела BLOCKED навсегда.
+An escalation with no way back is a dead end, not an exception. The run
+stopped on a rule violation, "resume" deliberately did not lift it (and
+rightly: it is not a button that erases an unexamined fault), and no
+other path existed at all. The task hung BLOCKED forever.
 
-Замерено: задача M0 остановилась с BLOCKED DANGEROUS_PERMISSION, отказавшись
-перезаписать рантайм, который её же и исполнял. Решение тут человеческое,
-но принять его было нечем.
+Measured: task M0 stopped with BLOCKED DANGEROUS_PERMISSION, refusing to
+overwrite the runtime that was executing it. The decision here is a
+human one, but there was nothing to make it with.
 """
 
 from __future__ import annotations

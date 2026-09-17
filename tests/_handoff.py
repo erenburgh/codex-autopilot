@@ -1,9 +1,9 @@
-"""Тестовый помощник: задачный чекпойнт (M10-REV-005).
+"""A test helper: the per-task checkpoint (M10-REV-005).
 
-Гейт завершения больше не смотрит на общий HANDOFF.md. У каждой задачи
-свой файл, и воркер обязан обновить именно свой. Раньше все параллельно
-зарезервированные задачи несли один хэш общего файла, поэтому первый
-записавший закрывал гейт всем остальным.
+The completion gate no longer looks at the shared HANDOFF.md. Every task
+has its own file, and the worker must update exactly its own. All
+concurrently reserved tasks used to carry one hash of the shared file,
+so the first writer closed the gate for everyone else.
 """
 
 from __future__ import annotations

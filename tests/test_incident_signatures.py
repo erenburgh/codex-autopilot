@@ -1,4 +1,4 @@
-"""P3: тикеты с нормализованной подписью, два уровня восстановления, раннбуки."""
+"""P3: tickets with a normalized signature, two recovery levels, runbooks."""
 
 from __future__ import annotations
 
@@ -305,7 +305,7 @@ class KnownRecoveryTests(TwoLevelRecoveryTests):
             ),
             at="t20",
         )
-        # Неоднозначный побочный эффект - отдельный класс, не инфраструктура.
+        # An ambiguous side effect is a separate class, not infrastructure.
         self.assertEqual(
             self.store.route_incident(ambiguous["incident_id"], at="t21"),
             IncidentPhase.ESCALATE_TO_USER,
@@ -344,8 +344,8 @@ class KnownRecoveryTests(TwoLevelRecoveryTests):
 class PromotionSafetyTests(StoreTestCase):
     def resolve_with(self, actions: list[str], *, times: int) -> None:
         for _ in range(times):
-            # Сквозной счётчик: один signal_id - один тикет, повторное
-            # открытие вернуло бы уже решённый инцидент.
+            # An end-to-end counter: one signal_id - one ticket; reopening
+            # would bring back an already resolved incident.
             self.issued = getattr(self, "issued", 0) + 1
             index = self.issued
             incident = self.store.open_incident(signal(f"s-{index}"), at=f"t{index}")

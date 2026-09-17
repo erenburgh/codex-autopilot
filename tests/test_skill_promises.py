@@ -1,13 +1,14 @@
-"""Скилл не вправе обещать того, чего рантайм не делает.
+"""The skill may not promise what the runtime does not do.
 
-Два обещания стоили дорого. Первое: раздел отчёта велел держать ход
-открытым и стримить лестницу, пока не стартует задача, - а диспетчер ждёт
-именно завершения этого хода, и запуск не наступал никогда. Второе: после
-починки там же осталось "the [✓] lines the user already sees come from
-there", хотя хук перешёл на continue и его сообщение не показывается.
+Two promises were costly. First: the report section told the model to
+keep the turn open and stream the ladder until the task started - while
+the dispatcher waits for exactly that turn to complete, and the launch
+never came. Second: after the fix the same place kept "the [✓] lines the
+user already sees come from there", though the hook moved to continue
+and its message is not shown.
 
-Третье обещание - дорожка девопса: семь абзацев про то, как DevOps чинит
-и перезаводит, при полном отсутствии кода, который создаёт инженера.
+The third promise was the DevOps path: seven paragraphs on how DevOps
+repairs and restarts, with no code at all that creates the engineer.
 """
 
 from __future__ import annotations

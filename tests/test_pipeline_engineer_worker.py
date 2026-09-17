@@ -1,12 +1,12 @@
-"""Дежурный инженер создаётся как воркер, а не остаётся ярлыком в JSON.
+"""The on-call engineer is created as a worker, not left as a label in JSON.
 
-Фаза PIPELINE_ENGINEER существовала как поле: ensure_pipeline_engineer
-меняла строку и дописывала событие, а ветку инженера не создавало ничто.
-Прогон, упёршийся в неё, вставал молча.
+The PIPELINE_ENGINEER phase existed as a field: ensure_pipeline_engineer
+changed a string and appended an event, and nothing created the
+engineer's thread. A run that hit it stood silently.
 
-R13: DevOps решает инфраструктурные баги от имени пользователя, и
-пользователь не участвует в выборе способа фикса. Поэтому эскалация - не
-второй равноправный выход, а исключение с кодом причины.
+R13: DevOps resolves infrastructure bugs on the user's behalf, and the
+user takes no part in choosing the fix. So escalation is not a second
+equal exit but an exception with a reason code.
 """
 
 from __future__ import annotations
@@ -393,9 +393,9 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         skill = self.root / "SKILL.md"
         skill.write_text("# test skill\n", encoding="utf-8")
         plan_file = self.root / "input-plan.json"
-        # Граф, где B зависит от A: готовой остаётся ровно одна задача,
-        # как в живом инциденте. На графе с двумя независимыми задачами
-        # вторая занимает слот планировщика, и проверка меряла бы не то.
+        # A graph where B depends on A: exactly one task stays ready,
+        # as in the live incident. On a graph with two independent tasks
+        # the second takes a scheduler slot, and the check would measure the wrong thing.
         plan_file.write_text(_json.dumps(graph(task("A"))), encoding="utf-8")
         initialize_project(
             self.root,
@@ -449,11 +449,11 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         )
         from codex_autopilot.run_state import utc_now
 
-        # Живая картина инцидента: сессия задачи мертва - именно её смерть
-        # и была инцидентом, - а задача вернулась в READY. Провал
-        # оформляется настоящим путём: он же снимает блокировки ресурсов
-        # и ведёт журнал. Правка состояния руками ломала сверку замков с
-        # журналом, и это правильно, что ломала.
+        # The live picture of the incident: the task's session is dead - its
+        # death was the incident - and the task returned to READY. The failure
+        # is recorded through the real path: it also releases the resource
+        # locks and keeps the journal. Editing the state by hand broke the
+        # lock-journal reconciliation, and it was right that it did.
         record_desktop_failure(
             self.cfg,
             self.failed_token,
@@ -464,8 +464,8 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         )
 
         self.future = int(time.time()) + 3_600
-        # Инженер заводится в момент срыва, а не через час после него:
-        # окно повтора сорвавшейся задачи на этот момент ещё открыто.
+        # The engineer is reserved at the moment of the failure, not an hour later:
+        # the failed task's retry window is still open at that point.
         reserve_epoch = int(time.time()) if reserve_before_retry else self.future
         descriptor = self.reserve(
             self.cfg, relay_owner_thread_id="owner-2", now_epoch=reserve_epoch
@@ -489,9 +489,9 @@ class ResolvedMustHandOverTests(unittest.TestCase):
                 observed_at=utc_now(),
             ),
         )
-        # К моменту, когда инженер закрывает инцидент, окно повтора
-        # сорвавшейся задачи уже истекло - в живом прогоне M1 стояла
-        # именно в READY, а не в RETRY_WAIT.
+        # By the time the engineer closes the incident, the failed task's
+        # retry window has already expired - on the live run M1 stood
+        # exactly in READY, not in RETRY_WAIT.
         extra = {}
         if dispatcher_authorized:
             session = next(
@@ -547,12 +547,12 @@ class ResolvedMustHandOverTests(unittest.TestCase):
             "инцидент закрыт\nPIPELINE_ENGINEER_STATUS: RESOLVED"
         )
         self.assertEqual(outcome.worker_status, "RESOLVED")
-        # Прежде здесь был пустой кортеж, и прогон вставал навсегда.
+        # This used to be an empty tuple, and the run stood forever.
         self.assertTrue(outcome.descriptors)
         self.assertEqual(outcome.descriptors[0].task_id, self.task_id)
         state = self.store.load()
-        # Прогон не просто "не встал" - он поехал: назначенный преемник
-        # переводит задачу в работу, а не оставляет её ждать.
+        # The run did not merely "not stop" - it moved: the appointed successor
+        # moves the task into work instead of leaving it waiting.
         self.assertEqual(state.status, "RUNNING")
         self.assertEqual(state.task_states[self.task_id], "RUNNING")
         self.assertNotEqual(state.phase, "PIPELINE_ENGINEER_NO_SUCCESSOR")
@@ -629,8 +629,8 @@ class FailureBeforeTheRequestIsNotAmbiguousTests(unittest.TestCase):
 
         from codex_autopilot import lifecycle_dispatch
 
-        # Только код: в комментарии рядом обе строки упомянуты нарочно,
-        # и текстовый поиск по ним ловил бы объяснение вместо реализации.
+        # Code only: the nearby comment mentions both lines on purpose,
+        # and a text search for them would catch the explanation instead of the implementation.
         code = "\n".join(
             line
             for line in inspect.getsource(lifecycle_dispatch).splitlines()
@@ -734,8 +734,8 @@ class ReplaceStartsWithoutInheritedTicketsTests(unittest.TestCase):
         self.store_cls = PipelineIncidentStore
 
     def replace_run(self) -> None:
-        # Первый запуск потребляет файл плана, поэтому повтор пишет его
-        # заново - ровно как это делает скилл на новом прогоне.
+        # The first launch consumes the plan file, so the repeat writes it
+        # again - exactly as the skill does on a new run.
         import json as _json
 
         from test_verification_lifecycle import graph, task
@@ -856,8 +856,8 @@ class RepeatedFailureIsNotACrashTests(unittest.TestCase):
         from codex_autopilot.task_state import TaskState
 
         self.park_in_retry_wait()
-        # Прежде здесь падало IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT,
-        # релей умирал, и поверх настоящей поломки открывался второй тикет.
+        # This used to raise IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT,
+        # the relay died, and a second ticket opened on top of the real fault.
         self.fail_once(self.failed_token)
         self.assertEqual(
             self.store.load().task_states[self.task_id], TaskState.RETRY_WAIT.value

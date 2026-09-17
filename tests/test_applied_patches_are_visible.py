@@ -1,4 +1,4 @@
-"""Пользователь видит, что рантайм чинил сам себя."""
+"""The user sees that the runtime repaired itself."""
 
 from __future__ import annotations
 

@@ -1,13 +1,13 @@
-"""Правило R21: приёмка выполняется в чистом окружении.
+"""Rule R21: acceptance runs in a clean environment.
 
-Результат, воспроизводимый только в окружении автора, не является
-подтверждением. Эти тесты падают, если сьют снова начнёт зависеть
-от переменных, которых нет в заявленном CI.
+A result reproducible only in the author's environment is not a
+confirmation. These tests fail if the suite again starts depending on
+variables absent from the declared CI.
 
-История: 260 тестов проходили при выставленном CODEX_THREAD_ID и давали
-31 ошибку без него. Ни один тест переменную не выставлял, а CI
-запускается в чистом окружении. Восемь самопринятых задач этого
-не заметили, потому что каждая прогоняла тесты у себя.
+History: 260 tests passed with CODEX_THREAD_ID set and gave 31 errors
+without it. No test set the variable, and CI runs in a clean
+environment. Eight self-accepted tasks did not notice, because each ran
+the tests locally.
 """
 
 from __future__ import annotations
@@ -20,25 +20,25 @@ import unittest
 TESTS_DIR = Path(__file__).resolve().parent
 SRC_DIR = TESTS_DIR.parent / "src" / "codex_autopilot"
 
-# Переменные, существующие только внутри живой Codex-сессии.
+# Variables that exist only inside a live Codex session.
 SESSION_SCOPED_ENV = ("CODEX_THREAD_ID", "CODEX_TURN_ID", "CODEX_SESSION_ID")
 
-# tests/_relay.py - санкционированный помощник: он существует именно
-# затем, чтобы identity передавалась явно, и сам ничего не читает.
+# tests/_relay.py is the sanctioned helper: it exists precisely so
+# that identity is passed explicitly, and reads nothing itself.
 SANCTIONED_HELPERS = {"_relay.py"}
 
-# Точки, где продакшену законно читать identity из окружения.
-# Список намеренно точный: рост числа точек должен быть заметен.
-# lifecycle.py -> lifecycle_reservations.py: чтение переехало вместе
-# с reserve_ready_frontier при разрезе lifecycle на модули.
-# Число мест не изменилось, изменилось одно имя файла.
+# The points where production may legitimately read identity from the environment.
+# The list is deliberately exact: growth in the number of points must be visible.
+# lifecycle.py -> lifecycle_reservations.py: the read moved together
+# with reserve_ready_frontier when lifecycle was split into modules.
+# The number of places did not change, one file name did.
 DECLARED_PRODUCTION_READS = {
     ("cli.py", 'os.environ.get("CODEX_THREAD_ID")'),
     ("lifecycle_reservations.py", 'os.environ.get("CODEX_THREAD_ID")'),
 }
 
-# Только identity живой сессии. Собственные переменные продукта
-# (CODEX_AUTOPILOT_*) к делу не относятся и законны.
+# Only the live session's identity. The product's own variables
+# (CODEX_AUTOPILOT_*) are unrelated and legitimate.
 _ENV_READ = re.compile(
     r"""os\.environ(?:\.get\(|\[)\s*["'](""" + "|".join(SESSION_SCOPED_ENV) + r""")["']"""
 )

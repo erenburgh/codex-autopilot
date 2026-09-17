@@ -1,13 +1,14 @@
-"""Нечитаемый вердикт возвращается верифаеру, а не убивает диспетчер.
+"""An unreadable verdict goes back to the verifier instead of killing the dispatcher.
 
-Замерено на живом прогоне: верифаер приложил к вердикту поле `rubric` -
-рубрику отдела, которую предыдущая задача сама же и создала. Ход
-завершился успешно, 107 элементов, а диспетчер умер на разборе ответа.
-Работа осталась сделанной, приёмка не записана, поверх неё открылся
-тикет о падении диспетчера, и прогон простоял полтора часа.
+Measured on a live run: the verifier attached a `rubric` field to the
+verdict - the department rubric the previous task itself had created.
+The turn completed successfully, 107 items, and the dispatcher died
+parsing the reply. The work stayed done, acceptance was not recorded, a
+ticket about the dispatcher crash opened on top, and the run stood for
+an hour and a half.
 
-Тот же класс уже закрыт для реплэннера: негодный ответ модели - это
-ошибка модели, а не поломка рантайма.
+The same class is already closed for the replanner: an invalid model
+reply is a model error, not a runtime breakdown.
 """
 
 from __future__ import annotations
@@ -106,9 +107,9 @@ class VerifierProtocolRejectionTests(unittest.TestCase):
         )
         self.assertEqual(outcome.worker_status, "VERIFICATION_REJECTED")
         state = self.store.load()
-        # Приёмка не засчитана ни в какую сторону: задача не принята и не
-        # отправлена на доработку. Свежий верифаер поднялся тут же, поэтому
-        # состояние снова VERIFYING - но уже с новой сессией.
+        # Acceptance counted in no direction: the task is neither accepted nor
+        # sent for revision. A fresh verifier rose at once, so the state
+        # is VERIFYING again - but with a new session.
         self.assertNotEqual(state.task_states["A"], "VERIFIED")
         self.assertNotEqual(state.task_states["A"], "REVISION_REQUIRED")
         self.assertEqual(state.task_states["A"], "VERIFYING")

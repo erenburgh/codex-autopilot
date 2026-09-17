@@ -1,14 +1,15 @@
-"""M11-R16-R17-PHASE-CONTRACT: контракт правил одинаков для всех фаз.
+"""M11-R16-R17-PHASE-CONTRACT: the rules contract is the same for every phase.
 
-Блок правил уходил всем, а требование отчитаться о применённых id
-стояло только в промптах исполнителя и доработки. Проверяющий и
-реплэннер получали правила и обязаны были отчитаться - при том, что их
-об этом не просили: аудит на завершении общий. Дежурный инженер не
-получал ни блока правил, ни аудита вовсе.
+The rules block went to everyone, but the requirement to report the
+applied ids stood only in the implementer and revision prompts. The
+verifier and the replanner received the rules and were obliged to
+report - though nobody asked them to: the completion audit is shared.
+The on-call engineer received neither the rules block nor the audit at
+all.
 
-И вторая половина R16, которой не было нигде: расхождение с записанной
-формулировкой оформляется Conflict и не разрешается тем, кто его
-заявил.
+And the second half of R16, which existed nowhere: a divergence from the
+recorded statement is filed as a Conflict and is not resolved by the one
+who raised it.
 """
 
 from __future__ import annotations
@@ -69,8 +70,8 @@ class ConflictIsNotResolvedByTheWorkerTests(unittest.TestCase):
         first = _rule_statement_record(memory, "R7", canonical.statement)
         self.assertEqual(first["category"], "truth")
         again = _rule_statement_record(memory, "R7", canonical.statement)
-        # Формулировка правила заводится один раз на проект: иначе
-        # история расхождений по правилу рассыпается на копии.
+        # A rule's statement is recorded once per project: otherwise the
+        # history of divergences on the rule scatters across copies.
         self.assertEqual(first["id"], again["id"])
 
         reading = memory.add_observation(
@@ -83,8 +84,8 @@ class ConflictIsNotResolvedByTheWorkerTests(unittest.TestCase):
             statement="R7: расхождение",
             created_by="task:T1",
         )
-        # Память открывает конфликт в needs_review: он ждёт разбора, и
-        # заявивший его воркер разбирать не вправе.
+        # Memory opens the conflict in needs_review: it awaits review, and
+        # the worker that raised it may not review it.
         self.assertEqual(
             memory.get_conflict(str(conflict["id"]))["status"], "needs_review"
         )

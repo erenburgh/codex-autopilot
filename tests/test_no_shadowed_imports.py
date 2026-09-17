@@ -1,15 +1,16 @@
-"""Локальный импорт не повторяет имя, уже импортированное в модуле.
+"""A local import does not repeat a name the module already imported.
 
-`from .run_state import StateStore` внутри функции делает `StateStore`
-локальным именем для ВСЕЙ функции, а не только после этой строки. Любое
-использование того же имени выше по функции - в другой ветке `if`, в
-другой команде CLI - падает `UnboundLocalError` уже в рантайме, и падает
-у пользователя: так сломалась команда `timeline`, хотя импорт добавляли
-совсем в другую команду.
+`from .run_state import StateStore` inside a function makes `StateStore`
+a local name for the WHOLE function, not only after that line. Any use
+of the same name higher in the function - in another `if` branch, in
+another CLI command - fails with `UnboundLocalError` at runtime, and
+fails for the user: that is how the `timeline` command broke, though the
+import was added to a completely different command.
 
-Обычной проверки неопределённых имён тут мало: имя определено на уровне
-модуля, дефект именно в затенении. Поэтому правило простое - локальный
-импорт имени, которое модуль уже импортировал, запрещён.
+The ordinary undefined-name check is not enough here: the name is
+defined at module level, the defect is in the shadowing. So the rule is
+simple - a local import of a name the module already imported is
+forbidden.
 """
 
 from __future__ import annotations

@@ -1,22 +1,23 @@
-"""Кривой ответ модели - неудачная попытка, а не поломка машины.
+"""A malformed model reply is a failed attempt, not a machine breakdown.
 
-Разница не косметическая, она измерена на живом прогоне 16.09.2026.
+The difference is not cosmetic; it was measured on the live run of
+16 Sep 2026.
 
-Воркер M8 отработал ход и ошибся оформлением финальной строки. На
-хуковом пути такой отказ возвращается воркеру строкой `decision: block`
-и исправляется в том же ходе - бесплатно. На автоматическом пути
-исключение уходило наверх: диспетчер падал, заводился тикет класса
-PIPELINE, поднимался дежурный инженер. Завершение хода при этом
-принимать стало некому, сессия осталась висеть активной, и **прогон
-встал целиком** - понадобился человек, чтобы отправить `Resume`.
+Worker M8 finished its turn and got the final line's format wrong. On
+the hook path such a refusal returns to the worker as `decision: block`
+and is fixed in the same turn - for free. On the automatic path the
+exception went up: the dispatcher crashed, a PIPELINE-class ticket was
+opened, the on-call engineer was raised. Nobody was left to accept the
+turn's completion, the session stayed hanging active, and **the whole
+run stopped** - a human was needed to send `Resume`.
 
-Дежурный инженер, разбирая это, открыл конфликт правила R31: рантайм
-отверг **уже завершённого** воркера на поздней проверке финального
-статуса, то есть выбросил сделанную работу на форматном гейте.
+The on-call engineer, analysing this, opened an R31 rule conflict: the
+runtime rejected an **already completed** worker at a late final-status
+check, that is, threw away done work at a format gate.
 
-Поэтому ошибки протокола несут отдельный класс: автоматический путь
-отличает «модель оформила ответ криво» от «сломался транспорт» и
-поступает с первым как с неудачной попыткой задачи.
+So protocol errors carry a separate class: the automatic path tells
+"the model formatted its reply wrong" from "the transport broke" and
+treats the former as a failed task attempt.
 """
 
 from __future__ import annotations

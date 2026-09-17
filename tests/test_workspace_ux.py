@@ -263,8 +263,8 @@ class SemanticStatusTests(unittest.TestCase):
                 "recovery_slot": None,
                 "incidents": [],
                 "pending_transport": [],
-                # R23: отчёт о повторах читается из реестра подписей.
-                # На чистом прогоне повторов нет.
+                # R23: the retry report is read from the signature registry.
+                # A clean run has no retries.
                 "repeat_breakages": [],
             },
         )
@@ -325,7 +325,7 @@ class SemanticStatusTests(unittest.TestCase):
         self.assertNotIn("Host default", runtime)
         self.assertNotIn("model=", runtime)
         self.assertNotIn("reasoning=", runtime)
-        # Измеренное остаётся на месте: оно приходит из плана и состояния.
+        # The measured part stays: it comes from the plan and the state.
         self.assertIn("execution_mode=", runtime)
         self.assertIn("strategy=", runtime)
 
@@ -532,7 +532,7 @@ class ShortStatusTests(SemanticStatusTests):
                 normalized = _normalized_prompt(phrase)
                 self.assertIn(normalized, DETAILED_STATUS_PROMPTS)
                 self.assertIn(normalized, STATUS_PROMPTS)
-        # Обычное слово остаётся коротким ответом.
+        # An ordinary word stays a short answer.
         self.assertNotIn(_normalized_prompt("статус"), DETAILED_STATUS_PROMPTS)
 
     def test_the_hook_chooses_the_form_by_the_phrase(self) -> None:

@@ -1,14 +1,14 @@
-"""Исчезнувшая ветка - повод создать новую, а не повод встать навсегда.
+"""A vanished thread is a reason to create a new one, not to stand forever.
 
-v0.7 создавала ветку и тут же ею пользовалась, одним соединением. v0.8
-создаёт ветку в одном процессе, требует его полного выхода и стартует ход
-другим процессом позже. В этом промежутке ветка живёт без подписчика, и
-после перезапуска её может уже не быть.
+v0.7 created a thread and used it at once, on one connection. v0.8
+creates the thread in one process, requires that process to exit fully,
+and starts the turn from another process later. In that gap the thread
+lives without a subscriber, and after a restart it may no longer exist.
 
-В живом прогоне так и вышло: резервация планировщика осталась привязанной
-к ветке 01a0970c, а через два часа turn/start ответил
-"thread not found". Резервация оказалась навечно привязана к мёртвому
-идентификатору, и прогон стоял.
+On the live run that is what happened: the planner's reservation stayed
+bound to thread 01a0970c, and two hours later turn/start answered
+"thread not found". The reservation was forever bound to a dead
+identifier, and the run stood.
 """
 
 from __future__ import annotations

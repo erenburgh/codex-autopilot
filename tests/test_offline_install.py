@@ -1,12 +1,12 @@
-"""Свежая установка исходников обязана проходить без сети.
+"""A fresh install of the sources must pass without network.
 
-Сборка требовала setuptools из индекса, и в пустом venv без сети
-`pip install .` падал ещё до того, как доходило до тестов: новый
-пользователь не мог поставить продукт вообще. Пакет при этом - чистый
-Python на стандартной библиотеке, и внешнего сборщика ему не нужно.
+The build required setuptools from the index, and in an empty offline
+venv `pip install .` failed before it even got to the tests: a new user
+could not install the product at all. Yet the package is pure Python on
+the standard library and needs no external builder.
 
-Тест ставит дерево так, как его поставит новый пользователь: из
-исходников, с закрытым индексом.
+The test installs the tree the way a new user will: from the sources,
+with the index closed.
 """
 
 from __future__ import annotations

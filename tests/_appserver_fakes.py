@@ -1,10 +1,10 @@
-"""Активация резервации по ЖИВОМУ пути.
+"""Activating a reservation through the LIVE path.
 
-Прежде тесты доводили резервацию до ACTIVE выведенным слот-релеем.
-Этого пути в продакшене нет, и держать на нём тесты означало проверять
-то, чем система не пользуется. Здесь то же состояние достигается так,
-как это делает диспетчер: create_desktop_thread_via_app_server,
-затем claim_automatic_app_server_turn.
+Tests used to bring a reservation to ACTIVE through the removed slot
+relay. That path does not exist in production, and keeping tests on it
+meant checking what the system does not use. Here the same state is
+reached the way the dispatcher does it: create_desktop_thread_via_app_server,
+then claim_automatic_app_server_turn.
 """
 
 from __future__ import annotations
@@ -39,10 +39,10 @@ class FakeAppServerCreateClient:
         self.fail_create = fail_create
         self.process_exited = False
         self.name: str | None = None
-        # Настоящий клиент ведёт учёт загруженных им веток: ход стартует
-        # только на загруженной, и по этому множеству диспетчер решает,
-        # нужен ли resume. Подделка без него моделировала соединение,
-        # которое якобы загрузило всё на свете.
+        # The real client keeps track of the threads it loaded: a turn starts
+        # only on a loaded one, and by that set the dispatcher decides
+        # whether a resume is needed. A fake without it modelled a connection
+        # that had supposedly loaded everything in the world.
         self.subscribed_thread_ids: set[str] = set()
 
     def __enter__(self):
@@ -65,8 +65,8 @@ class FakeAppServerCreateClient:
         }
 
     def ensure_project_root(self, project_id, root, *, authorized=False):
-        # Подделка повторяет контракт настоящего клиента: членство
-        # проверяется, а корень дописывается только по разрешению.
+        # The fake repeats the real client's contract: membership is
+        # checked, and a root is appended only with permission.
         from codex_autopilot.appserver import ProjectRootDrift
 
         self.events.append("app-server-project-root-ensured")
@@ -136,8 +136,8 @@ class FakeAppServerCreateClient:
 def activate_via_app_server(cfg, root, descriptor, thread_id, *, owner=None):
     """Довести резервацию до ACTIVE тем же путём, что и продакшен."""
     if owner is None:
-        # Владелец берётся из самой резервации: тесты создают её
-        # с разными идентификаторами, и угадывать его нельзя.
+        # The owner comes from the reservation itself: tests create it
+        # with different identifiers, and it must not be guessed.
         state = StateStore(cfg.state_dir).load()
         session = next(
             item
@@ -162,8 +162,8 @@ def activate_via_app_server(cfg, root, descriptor, thread_id, *, owner=None):
         descriptor.reservation_token,
         relay_executor_thread_id=owner,
     )
-    # SEND_RELAYING -> ACTIVE: на живом пути это делает
-    # run_automatic_app_server_turn после старта production-хода.
+    # SEND_RELAYING -> ACTIVE: on the live path this is done by
+    # run_automatic_app_server_turn after the production turn starts.
     acknowledge_desktop_send(cfg, descriptor.reservation_token, thread_id=thread_id)
     return client, events
 

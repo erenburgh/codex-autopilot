@@ -1,13 +1,13 @@
-"""Имя, которого нет в модуле, не должно доезжать до пользователя.
+"""A name absent from the module must not reach the user.
 
-Дважды подряд одно и то же: строка обращалась к имени, которое забыли
-импортировать, тесты были зелёными, а NameError случался у человека -
-один раз в самом конце успешного preflight, сразу после выданного
-разрешения, второй раз в пути восстановления девопса.
+The same thing twice in a row: a line referred to a name someone forgot
+to import, the tests were green, and the NameError happened to a human -
+once at the very end of a successful preflight, right after permission
+was granted, and once on the DevOps recovery path.
 
-Тесты покрывают не каждую ветку и покрывать не обязаны. Но имя,
-которого в модуле нет, находится без запуска - разбором, - и такой
-проверке место в наборе.
+Tests do not cover every branch and need not. But a name absent from the
+module is found without running - by parsing - and such a check belongs
+in the suite.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import unittest
 
 
 SOURCE = Path(__file__).resolve().parent.parent / "src" / "codex_autopilot"
-# Имена, которые интерпретатор кладёт в модуль сам.
+# Names the interpreter puts into the module by itself.
 MODULE_DUNDERS = {"__file__", "__name__", "__doc__", "__package__", "__spec__"}
 
 

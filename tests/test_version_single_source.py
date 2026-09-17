@@ -1,15 +1,15 @@
-"""Версия объявляется в одном месте, остальные с ней сверяются.
+"""The version is declared in one place; the rest are checked against it.
 
-За день одна и та же болезнь нашлась трижды, и каждый раз это была
-отдельная прибитая строка, разошедшаяся с пакетом:
+The same disease was found three times in one day, each time a separate
+hard-coded string that had diverged from the package:
 
-- версия MCP-сервера памяти (снято в 0.8.1);
-- версия клиента в рукопожатии App Server: сервер слышал
-  "codex-autopilot; 0.8.0-beta", когда установлена была 0.8.2;
-- VERSION в scripts/build_release.py: сборка релиза назвала бы архив
-  двумя версиями назад.
+- the memory MCP server version (removed in 0.8.1);
+- the client version in the App Server handshake: the server heard
+  "codex-autopilot; 0.8.0-beta" while 0.8.2 was installed;
+- VERSION in scripts/build_release.py: the release build would have
+  named the archive two versions back.
 
-Тест не даёт появиться четвёртой.
+The test does not let a fourth appear.
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ class VersionSingleSourceTests(unittest.TestCase):
         for manifest in sorted(ROOT.glob("plugins/*/.codex-plugin/plugin.json")):
             with self.subTest(manifest=manifest.parent.parent.name):
                 payload = json.loads(manifest.read_text(encoding="utf-8"))
-                # Установщик дописывает cachebuster уже в установленную
-                # копию; в исходнике версия голая.
+                # The installer appends the cachebuster to the installed
+                # copy; in the source the version is bare.
                 self.assertEqual(str(payload["version"]), __version__)
 
     def test_the_release_script_reads_the_package(self) -> None:
@@ -64,9 +64,9 @@ class VersionSingleSourceTests(unittest.TestCase):
         дороже: он срабатывает ровно в момент релиза.
         """
 
-        # Ищется именно ТЕКУЩАЯ версия: старые номера в фикстурах
-        # законны - они изображают прежние установки, которые
-        # установщик обязан сохранить, и при подъёме не ломаются.
+        # The CURRENT version is what is searched for: old numbers in
+        # fixtures are legitimate - they depict previous installations
+        # the installer must keep, and they do not break on a bump.
         current = {__version__, _pep440(__version__)}
         offenders = []
         for path in sorted((ROOT / "tests").glob("*.py")):

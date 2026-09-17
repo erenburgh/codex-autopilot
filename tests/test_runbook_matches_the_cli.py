@@ -1,10 +1,11 @@
-"""Инструкция дежурного инженера не расходится с самим CLI.
+"""The on-call engineer's instructions do not diverge from the CLI itself.
 
-Так уже ломалось. `--failure-code` сделали обязательным у `relay-fail`,
-а строку в рантбуке не поправили: инженер выполнил бы её дословно и
-получил бы отказ argparse с кодом 2 - ход сгорает, тикет остаётся, а
-прогон стоит. Проверка ловит не тот случай, а класс: любой обязательный
-флаг любой команды, названной в рантбуке, обязан быть в её строке.
+This has broken before. `--failure-code` was made mandatory on
+`relay-fail`, and the runbook line was not updated: the engineer would
+have run it verbatim and got an argparse refusal with exit code 2 - the
+turn burns, the ticket remains, the run stands. The check catches not
+that case but the class: any mandatory flag of any command named in the
+runbook must be in its line.
 """
 
 from __future__ import annotations

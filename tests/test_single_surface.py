@@ -1,11 +1,13 @@
-"""Поверхность одна, и устаревший конфиг обязан отвергаться при чтении.
+"""There is one surface, and a stale config must be rejected on read.
 
-В 0.8.1 снят headless_app_server вместе с путём, который не мог
-выполниться. В 0.8.2 снят и параметр worker_surface у initialize_project:
-аргумент с единственным допустимым значением - ложный выбор.
+0.8.1 removed headless_app_server together with the path that could not
+execute. 0.8.2 also removed the worker_surface parameter of
+initialize_project: an argument with a single allowed value is a false
+choice.
 
-После этого единственное, что защищает от конфига, оставшегося от 0.8.0 и
-называющего снятую поверхность, - проверка при чтении. Набор её стережёт.
+After that the only thing protecting against a config left over from
+0.8.0 that names the removed surface is the read-time check. The suite
+guards it.
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@ from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
 from _plan_contract import TEST_OUTCOME_ID, canonicalize_plan, canonical_verification
-from _relay import reserve_ready_frontier  # R21: без зависимости от окружения
+from _relay import reserve_ready_frontier  # R21: no dependency on the environment
 from codex_autopilot.lifecycle import (
     reconcile_desktop_runtime,
     DesktopLifecycleError,
@@ -143,9 +143,9 @@ class PlanEvolutionTests(unittest.TestCase):
         plan_file.write_text(json.dumps(raw), encoding="utf-8")
         migrating = bool(raw.get("milestones"))
         if migrating:
-            # План v0.8 впускается только как миграция существующего
-            # прогона: доказательство - его состояние и его план на
-            # диске. Свежий проект этот формат не принимает вовсе.
+            # A v0.8 plan is admitted only as the migration of an existing
+            # run: the proof is its state and its plan on disk. A fresh
+            # project does not accept this format at all.
             state_dir = self.root / ".codex-autopilot"
             state_dir.mkdir(parents=True, exist_ok=True)
             (state_dir / "plan.json").write_text(
@@ -450,9 +450,9 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertEqual(rejected.descriptors[0].kind, "replanner")
 
     def test_migrated_serial_run_accepts_resource_replan_and_preserves_provenance(self) -> None:
-        # Мигрированный прогон заводится настоящим payload v0.8, а не
-        # schema-3 планом, объявившим себя мигрированным: заявить
-        # происхождение нельзя, его производит только миграция.
+        # A migrated run is created with a real v0.8 payload, not a
+        # schema-3 plan that declared itself migrated: provenance cannot
+        # be claimed, only migration produces it.
         raw = {
             "schema_version": 2,
             "goal": "Exercise durable plan evolution and recovery.",
@@ -575,9 +575,9 @@ class PlanEvolutionTests(unittest.TestCase):
             ),
             hook_gate=lambda _cfg: None,
         )
-        # Негодный граф не применяется никогда - это и было содержанием
-        # прежней проверки. Изменилось одно: отказ больше не валит
-        # диспетчер, а возвращается реплэннеру с причиной.
+        # An invalid graph is never applied - that was the substance of the
+        # previous check. One thing changed: the refusal no longer crashes
+        # the dispatcher but returns to the replanner with a reason.
         self.assertEqual((cfg.state_dir / "plan.json").read_bytes(), before_plan)
         self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
         state = store.load()
@@ -628,7 +628,7 @@ class PlanEvolutionTests(unittest.TestCase):
         ).descriptors[0]
         self.mark_active(store, replanner.reservation_token, "replanner-PC1")
 
-        # Живая картина: ход реплэннера ведёт этот же процесс-диспетчер.
+        # The live picture: the same dispatcher process drives the replanner's turn.
         state = store.load()
         for item in state.worker_sessions:
             if item.get("reservation_token") == replanner.reservation_token:
@@ -699,9 +699,9 @@ class PlanEvolutionTests(unittest.TestCase):
         )
         self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
         prompt = outcome.descriptors[0].prompt
-        # Причина отказа должна дойти до модели двумя путями: машинным -
-        # в конверте, и словами - в самой инструкции. Иначе переделка
-        # идёт вслепую и возвращает ту же ошибку.
+        # The refusal reason must reach the model two ways: by machine -
+        # in the envelope, and in words - in the instruction itself. Otherwise
+        # the redo goes blind and returns the same error.
         self.assertIn("rejected_attempts", prompt)
         self.assertIn("allowed_plan_fields", prompt)
         self.assertIn("The previous attempt was rejected by the runtime", prompt)
@@ -838,8 +838,8 @@ class PlanEvolutionTests(unittest.TestCase):
             if not outcome.descriptors:
                 break
             pending = outcome.descriptors[0]
-        # Бесконечно возвращать одну и ту же ошибку значит жечь лимиты.
-        # Прогон обязан встать и назвать причину человеку.
+        # Returning the same error forever means burning limits.
+        # The run must stop and name the reason to the human.
         self.assertEqual(outcome.descriptors, ())
         state = store.load()
         self.assertEqual(state.status, "BLOCKED")
@@ -848,7 +848,7 @@ class PlanEvolutionTests(unittest.TestCase):
         record = next(item for item in state.plan_changes if item["id"] == "PC1")
         self.assertEqual(record["status"], "REJECTED")
         self.assertEqual(len(record["rejections"]), 3)
-        # Остановка обязана называть причину там, куда человек смотрит.
+        # The stop must name the reason where the human looks.
         from codex_autopilot.control import status_text
 
         text = status_text(self.root)

@@ -1,16 +1,16 @@
-"""Инструмент памяти не спрашивает разрешение на каждом ходе.
+"""The memory tool does not ask permission on every turn.
 
-Манифест объявлял `approval_mode: "auto"`. Такого значения в
-перечислении Codex нет - официальный плагин codex-app-tools пишет
-`approve` там, где спрашивать не нужно, и `prompt` там, где нужно.
-Непонятое значение откатывалось к запросу, и разрешение требовалось
-заново: после каждого обновления, а внутри прогона - на каждом свежем
-воркере, потому что воркер по построению свежий.
+The manifest declared `approval_mode: "auto"`. No such value exists in
+the Codex enumeration - the official codex-app-tools plugin writes
+`approve` where no asking is needed and `prompt` where it is. An
+unrecognized value fell back to prompting, and permission was required
+anew: after every update, and inside a run on every fresh worker,
+because a worker is fresh by construction.
 
-Цена измерена на живом прогоне: ход реплэннера упёрся в запрос,
-диспетчер на approvals не отвечает, ход остался прерванным навсегда,
-дежурный инженер не смог стартовать из-за мёртвого предшественника, и
-прогон из 24 задач встал с нулём выполненных.
+The price was measured on a live run: the replanner's turn hit the
+prompt, the dispatcher does not answer approvals, the turn stayed
+interrupted forever, the on-call engineer could not start because of the
+dead predecessor, and a 24-task run stood with zero done.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import unittest
 
 
 PLUGINS = Path(__file__).resolve().parent.parent / "plugins"
-# Значения, которые Codex понимает для инструмента MCP-сервера плагина.
+# The values Codex understands for a plugin MCP server tool.
 ACCEPTED = {"approve", "prompt", "writes"}
 
 
@@ -109,8 +109,8 @@ class PluginCacheConsistencyTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"CODEX_HOME": str(self.home)}):
             return self.preflight.plugin_cache_state(plugin_root)
 
-    # Версии здесь синтетические и намеренно не совпадают с настоящей:
-    # проверяется правило, а не номер выпуска.
+    # The versions here are synthetic and deliberately differ from the real one:
+    # the rule is checked, not the release number.
     INSTALLED = "7.7.7-beta.local.20260101.000000"
 
     def test_one_matching_copy_passes(self) -> None:

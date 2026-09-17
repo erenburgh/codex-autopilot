@@ -25,9 +25,9 @@ class InstallerTests(unittest.TestCase):
         preserved_v07 = install_root / "0.7.0-beta" / "preserved-marker"
         preserved_v07.parent.mkdir(parents=True)
         preserved_v07.write_text("keep v0.7", encoding="utf-8")
-        # Посторонний каталог внутри дерева кэша Codex: именно из такого
-        # "отложенного в сторонку" Codex восстановил копию 0.9.0 и снова
-        # начал переписывать определение хуков.
+        # A stray directory inside the Codex cache tree: from exactly such a
+        # copy "set aside" Codex restored 0.9.0 and again
+        # started rewriting the hook definition.
         stray = home / ".codex/plugins/cache/codex-autopilot-local/.stale-backup-20260101/0.9.0-beta"
         stray.mkdir(parents=True)
         (stray / "marker").write_text("stale", encoding="utf-8")
@@ -54,13 +54,13 @@ class InstallerTests(unittest.TestCase):
                 (install_root / "current/plugins/codex-autopilot-adaptive/.codex-plugin/plugin.json").read_text(encoding="utf-8")
             )["version"])
         self.assertTrue((install_root / "current/bin/codex-autopilot").is_file())
-        # Рантайм установлен деревом формы репозитория: без этого набор
-        # тестов на установленной копии красный, и инженер не докажет ни
-        # одной починки.
+        # The runtime is installed as a repository-shaped tree: without it the
+        # suite on the installed copy is red, and the engineer cannot prove
+        # a single repair.
         for item in ("src", "tests", "scripts", "plugins", "docs", "pyproject.toml", "install.sh"):
             self.assertTrue((install_root / "current/runtime" / item).exists(), item)
-        # Агент будильника пишется под подменённый HOME и зовёт стабильный
-        # путь рантайма - тот, что переживает обновление версии.
+        # The wake-up agent is written under the substituted HOME and calls the
+        # stable runtime path - the one that survives a version upgrade.
         import plistlib
 
         plist = home / "Library/LaunchAgents/com.codex-autopilot.wake.plist"
@@ -87,8 +87,8 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertNotIn("/0.8.2-beta/bin/codex-autopilot", hook_commands[0])
         self.assertNotIn("plugins/cache", hook_commands[0])
-        # Версия берётся из пакета: прибитая строка разошлась бы при
-        # первом же подъёме версии - ровно так и случилось дважды.
+        # The version comes from the package: a hard-coded string would diverge
+        # at the first version bump - exactly what happened twice.
         self.assertTrue(
             all(value.startswith(f"{__version__}.local.") for value in installed_versions)
         )
@@ -105,12 +105,12 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("plugin marketplace add", command_text)
         self.assertIn("plugin add codex-autopilot-adaptive@codex-autopilot-local", command_text)
         self.assertNotIn("plugin marketplace remove", command_text)
-        # Активный профиль теперь именно снимается и ставится заново, а его
-        # кэш вычищается. Прежде плагин оставляли установленным, и Codex
-        # продолжал грузить прежнюю копию: у пользователя стоял 0.9.7, а
-        # работал 0.9.0 - с Interrupt на 30 секунд, который Codex зажимает
-        # до 3 и переписывает файл. Хэш менялся, доверие Stop-хука слетало
-        # на каждой загрузке, и выглядело это как "хуки слетают сами".
+        # The active profile is now really removed and installed anew, and its
+        # cache is cleared. The plugin used to be left installed, and Codex
+        # kept loading the old copy: the user had 0.9.7 installed while
+        # 0.9.0 ran - with the 30-second Interrupt that Codex clamps
+        # to 3, rewriting the file. The hash changed, Stop-hook trust dropped
+        # on every load, and it looked like "the hooks drop by themselves".
         self.assertIn(
             "plugin remove codex-autopilot-adaptive@codex-autopilot-local", command_text
         )
@@ -126,10 +126,10 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((install_root / __version__).exists())
         self.assertFalse((install_root / "current").exists())
-        # Прежние установки больше не лежат рядом с текущей: пока их было
-        # тринадцать, любая могла стать источником чужой копии плагина, а
-        # разница между "установлено" и "работает" стоила пользователю
-        # целой ночи. Они не теряются - складываются в архив.
+        # Previous installations no longer lie next to the current one: while
+        # there were thirteen, any could become the source of a foreign plugin
+        # copy, and the gap between "installed" and "running" cost the user
+        # a whole night. They are not lost - they go into an archive.
         self.assertFalse(preserved_v06.exists())
         self.assertFalse(preserved_v07.exists())
         self.assertFalse(

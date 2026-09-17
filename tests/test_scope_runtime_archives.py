@@ -1,13 +1,13 @@
-"""Архивы рантайма не предъявляются воркеру как чужая запись.
+"""Runtime archives are not charged to the worker as a foreign write.
 
-Рантайм сам кладёт рядом со своим состоянием архивы прежних прогонов:
-`.codex-autopilot.stuck-<время>` появляется при --replace. Исключение
-сравнивало имя точно, поэтому архивы под него не попадали.
+The runtime itself places archives of earlier runs next to its state:
+`.codex-autopilot.stuck-<time>` appears on --replace. The exclusion
+compared the name exactly, so the archives did not fall under it.
 
-Замерено на живом прогоне: задача M0 заблокирована по R7 за 37 путей,
-все до одного внутри .codex-autopilot.stuck-20260914T184420. Работы она
-там не вела - каталог создал сам рантайм. Прогон встал на правиле за то,
-чего задача не делала.
+Measured on a live run: task M0 was blocked under R7 for 37 paths, every
+one inside .codex-autopilot.stuck-20260914T184420. It did no work there -
+the runtime itself created the directory. The run stopped on a rule for
+something the task did not do.
 """
 
 from __future__ import annotations

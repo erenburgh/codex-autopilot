@@ -1,16 +1,16 @@
-"""Пауза доигрывает ход, а не убивает его.
+"""A pause plays the turn out, it does not kill it.
 
-`pause_desktop_run` объявляет дренаж: в журнал ложится
-`semantics: drain`, статус показывает `Pause: drain`, и обещано, что
-идущие ходы Desktop продолжаются и сохраняют свои блокировки.
+`pause_desktop_run` declares a drain: `semantics: drain` goes into the
+journal, status shows `Pause: drain`, and it is promised that running
+Desktop turns continue and keep their locks.
 
-Реализация обещание нарушала: ожидание хода, увидев паузу, слало
-`turn/interrupt`. Нажатие паузы за мгновение до конца шестиминутной
-приёмки убивало её целиком - задача уходила в RETRY_WAIT, попытка
-терялась, поверх открывался инцидент. Пользователь при этом делал ровно
-то, что написано в интерфейсе.
+The implementation broke the promise: the turn wait, on seeing the
+pause, sent `turn/interrupt`. Pressing pause a moment before the end of
+a six-minute acceptance killed it entirely - the task went to
+RETRY_WAIT, the attempt was lost, an incident opened on top. The user
+was doing exactly what the interface said.
 
-Тест держит настоящий `wait_for_turn`, а не копию его логики.
+The test holds the real `wait_for_turn`, not a copy of its logic.
 """
 
 from __future__ import annotations
@@ -42,8 +42,8 @@ class _RecordingClient(AppServerClient):
         return "in_progress"
 
     def _get(self, deadline, maximum_wait=1):  # type: ignore[override]
-        # Транспорт ограничен: иначе ожидание крутилось бы вечно, ведь
-        # срок жизни запроса живёт внутри настоящего `_get`.
+        # The transport is bounded: otherwise the wait would spin forever, since
+        # the request lifetime lives inside the real `_get`.
         self.polls += 1
         if self.polls > 2:
             raise _TransportExhausted

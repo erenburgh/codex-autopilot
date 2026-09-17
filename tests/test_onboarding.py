@@ -1,9 +1,9 @@
-"""Первый запуск - единственный момент, когда пользователь смотрит.
+"""The first launch is the only moment the user is looking.
 
-Всё, что ему нужно знать, чтобы прогон шёл без него, скилл обязан
-сказать до первого воркера: как смотреть, что значит идущая задача,
-как менять план, что случается на поломке. И ни один обещанный способ
-посмотреть не должен быть словом, которого хук не знает.
+Everything they need to know for the run to go on without them, the
+skill must say before the first worker: how to look, what a running task
+means, how to change the plan, what happens on a fault. And no promised
+way of looking may be a word the hook does not know.
 """
 
 from __future__ import annotations
@@ -41,15 +41,15 @@ class OnboardingTests(unittest.TestCase):
         for path in SKILLS:
             block = onboarding_block(path.read_text(encoding="utf-8"))
             for needle in (
-                "/hooks",            # где дать доверие хуку
-                "Always",            # что ответить на memory-tool
-                "sidebar",           # почему задач не видно до "статус"
-                "held by",           # задача удерживается до конца
-                "correct the result by hand",  # правки руками после
-                "plan change",       # как добавить незапланированное
-                "Never hand-edit",   # чего не трогать
-                "Pipeline Engineer", # кто чинит
-                "resumes by itself", # лимит кончился - продолжит сам
+                "/hooks",            # where to trust the hook
+                "Always",            # what to answer the memory tool
+                "sidebar",           # why tasks are not visible before "status"
+                "held by",           # a task is held to the end
+                "correct the result by hand",  # manual edits afterwards
+                "plan change",       # how to add unplanned work
+                "Never hand-edit",   # what not to touch
+                "Pipeline Engineer", # who repairs
+                "resumes by itself", # limit ran out - continues by itself
             ):
                 self.assertIn(needle, block, f"{path.name}: в онбординге нет «{needle}»")
 

@@ -1,15 +1,15 @@
-"""Битый dispatcher_pid - отказ, а не догадка в любую сторону.
+"""A corrupt dispatcher_pid is a refusal, not a guess in either direction.
 
-Обе проверки живости диспетчера охранные: они не дают работать, пока он
-жив. Поэтому ошибка дорога в обе стороны.
+Both dispatcher liveness checks are guards: they prevent work while it
+is alive. So an error is costly both ways.
 
-Отрицательный pid уходил в os.kill(-N, 0) - сигнал группе процессов.
-Посторонний живой процесс в группе давал "диспетчер жив", и прогон вставал
-навсегда, ровно как вставали прогоны этой ночи. Нецелое значение роняло
-TypeError, который в этой функции не ловится.
+A negative pid went into os.kill(-N, 0) - a signal to a process group. A
+stray live process in the group gave "the dispatcher is alive", and the
+run stood forever, exactly as that night's runs stood. A non-integer
+value raised a TypeError this function does not catch.
 
-Считать испорченное значение мёртвым тоже нельзя: тогда поверх живого
-диспетчера поднялся бы второй.
+Treating a corrupt value as dead is not allowed either: a second
+dispatcher would then rise on top of a live one.
 """
 
 from __future__ import annotations

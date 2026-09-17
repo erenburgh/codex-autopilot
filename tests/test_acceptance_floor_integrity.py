@@ -1,17 +1,17 @@
-"""Порог приёмки нельзя обойти ни заявлением, ни куском набора.
+"""The acceptance floor cannot be bypassed by a claim or by a slice of the suite.
 
-Два обхода закрываются здесь, и оба про одно: задача не должна принимать
-собственную работу (R8/R29).
+Two bypasses are closed here, and both are about one thing: a task must
+not accept its own work (R8/R29).
 
-1. Происхождение. Мигрированный план v0.8 - единственное исключение из
-   порога приёмки, потому что переписывать контракт уже идущего прогона
-   нельзя. Исключение обязано доставаться по происхождению, а не по
-   заявлению: иначе замена плана пишет себе ``compatibility`` и выходит
-   из-под независимой верификации.
-2. Полнота прогона. Порог требует полного набора тестов. Запускальщики
-   пакетов и языков принимают фильтр так же легко, как и весь набор:
-   ``cargo test one_case`` выглядит как ``cargo test``. Проверка, которая
-   принимает подмножество за целое, не доказывает ничего.
+1. Provenance. A migrated v0.8 plan is the only exemption from the
+   acceptance floor, because the contract of a run already under way
+   cannot be rewritten. The exemption must come by provenance, not by
+   claim: otherwise a plan replacement writes itself ``compatibility``
+   and slips out of independent verification.
+2. Completeness of the run. The floor requires the full test suite.
+   Package and language runners accept a filter as easily as the whole
+   suite: ``cargo test one_case`` looks like ``cargo test``. A check that
+   takes a subset for the whole proves nothing.
 """
 
 from __future__ import annotations

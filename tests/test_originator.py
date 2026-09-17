@@ -1,11 +1,12 @@
-"""Ветку создаёт тот же originator, которым работает само приложение.
+"""The thread is created by the same originator the application itself runs as.
 
-Ветка, созданная под чужим originator, принадлежит "другому приложению":
-она видна в сайдбаре, но требует ручного перехвата кнопкой. Пайплайн эту
-кнопку нажать не может, поэтому работа встаёт.
+A thread created under a foreign originator belongs to "another
+application": it is visible in the sidebar but requires a manual
+takeover by button. The pipeline cannot press that button, so the work
+stops.
 
-Значение взято из самого Codex Desktop: там CODEX_INTERNAL_ORIGINATOR_OVERRIDE
-по умолчанию равен "Codex Desktop".
+The value is taken from Codex Desktop itself: there
+CODEX_INTERNAL_ORIGINATOR_OVERRIDE defaults to "Codex Desktop".
 """
 
 from __future__ import annotations

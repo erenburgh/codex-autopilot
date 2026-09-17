@@ -1,11 +1,10 @@
-"""Документы пользователя обещают то, что код делает.
+"""The user documents promise what the code does.
 
-Это те же грабли, что и в скилле: текст переживает код. README нёс
-предупреждение «кандидат не готов к выпуску» с перечнем дефектов,
-снятых ещё в 0.8.1, GETTING_STARTED обещал каталог установки
-0.8.0-beta и предупреждал об умолчании start-skill, исправленном
-сегодня. Человек, скачавший сборку, первым делом читал бы, что она
-не готова.
+The same rake as in the skill: text outlives code. The README carried a
+"candidate not ready for release" warning with a list of defects removed
+back in 0.8.1, GETTING_STARTED promised a 0.8.0-beta install directory
+and warned about a start-skill default fixed today. Someone who
+downloaded the build would first read that it is not ready.
 """
 
 from __future__ import annotations

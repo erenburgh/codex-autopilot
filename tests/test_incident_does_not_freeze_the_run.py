@@ -1,13 +1,12 @@
-"""Незакрытый инцидент держит свои задачи, а не весь прогон.
+"""An open incident holds its own tasks, not the whole run.
 
-Прежде любой открытый тикет останавливал всё: пока дежурный инженер
-разбирался с одной задачей, не двигалась ни одна другая - даже
-независимая, при полностью свободных слотах. Один сорвавшийся транспорт
-держал двадцать три чужие задачи, и прогон стоял часами, показывая
-"идёт".
+Any open ticket used to stop everything: while the on-call engineer
+dealt with one task, no other moved - not even an independent one with
+all slots free. One failed transport held twenty-three other tasks, and
+the run stood for hours showing "running".
 
-Инцидент называет свои задачи сам, полем affected_task_ids. Пауза
-распространяется ровно на них.
+The incident names its own tasks, in the affected_task_ids field. The
+pause covers exactly those.
 """
 
 from __future__ import annotations
@@ -36,8 +35,8 @@ class IncidentScopeTests(unittest.TestCase):
         skill = self.root / "SKILL.md"
         skill.write_text("# test skill\n", encoding="utf-8")
         raw = graph(max_workers=2)
-        # Три независимые задачи: две занимают слоты, третья ждёт своей
-        # очереди. Именно она обязана пойти, когда слот освободится.
+        # Three independent tasks: two take the slots, the third waits its
+        # turn. It is the one that must go when a slot frees up.
         raw["tasks"] = [
             task("A", path="src/a"),
             task("B", path="src/b"),
@@ -62,7 +61,7 @@ class IncidentScopeTests(unittest.TestCase):
         stuck = sorted(busy)[0]
         token = next(item.reservation_token for item in first if item.task_id == stuck)
 
-        # Настоящий путь отказа: он же заводит тикет и снимает замки.
+        # The real failure path: it also opens the ticket and releases the locks.
         record_desktop_failure(
             self.cfg,
             token,
@@ -97,14 +96,14 @@ class IncidentScopeTests(unittest.TestCase):
         incidents.route_incident(incident_id, at=utc_now())
         incidents.ensure_pipeline_engineer(incident_id, at=utc_now())
 
-        # Инженер выходит первым - починка старше любой работы.
+        # The engineer goes first - repair outranks any work.
         engineer = reserve_ready_frontier(
             self.cfg, relay_owner_thread_id="owner-2", now_epoch=2_000_000_000
         )
         self.assertEqual(
             [item.to_dict()["kind"] for item in engineer], ["pipeline_engineer"]
         )
-        # А следом прогон обязан продолжиться, не дожидаясь закрытия тикета.
+        # And then the run must continue without waiting for the ticket to close.
         later = reserve_ready_frontier(
             self.cfg, relay_owner_thread_id="owner-3", now_epoch=2_000_000_000
         )
@@ -164,7 +163,7 @@ class IncidentScopeTests(unittest.TestCase):
                 observed_at=utc_now(),
             ),
         )
-        # Закрытый тикет никого не держит.
+        # A closed ticket holds nobody.
         self.assertEqual(tasks_paused_by_incidents(self.cfg, plan), set())
 
 
@@ -194,8 +193,8 @@ class RecoverySlotStatusTests(unittest.TestCase):
         )
         self.assertIn("inc-1", full)
         self.assertIn("own-1", full)
-        # Слот прежней записи владельца не несёт. Статус обязан читаться и
-        # на нём: иначе команда `status` перестаёт работать навсегда.
+        # The old record's slot carries no owner. Status must still read
+        # on it: otherwise the `status` command stops working forever.
         legacy = render_pipeline_status(
             base | {"recovery_slot": {"incident_id": "inc-1", "token": "t"}}
         )

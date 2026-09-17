@@ -1,11 +1,12 @@
-"""Маршрутизация моделей — напрямую, без мёртвого оркестратора.
+"""Model routing - directly, without the dead orchestrator.
 
-Эти свойства проверялись через HeadlessAppServerOrchestrator, снятый в
-0.8.1 как недостижимый. Сама resolve_selection живая: её зовёт префлайт
-(preflight.py). Проверяется то же самое, но на самой функции.
+These properties were checked through HeadlessAppServerOrchestrator,
+removed in 0.8.1 as unreachable. resolve_selection itself is alive:
+preflight calls it (preflight.py). The same is checked, but on the
+function itself.
 
-Ключевое правило, ради которого набор существует: подмены модели нет.
-Недоступная модель — это отказ, а не тихий переход на другую.
+The key rule the suite exists for: there is no model substitution. An
+unavailable model is a refusal, not a silent switch to another.
 """
 
 from __future__ import annotations

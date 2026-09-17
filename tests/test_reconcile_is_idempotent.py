@@ -1,16 +1,16 @@
-"""Повторная сверка - не конфликт.
+"""Repeated reconciliation is not a conflict.
 
-`reconcile_running_work` снимает зависшие сессии: задачу, чей ход уже
-не идёт, она переводит в RETRY_WAIT. Но перед этим требовала, чтобы
-задача была в активном состоянии, - и отказывала, если задача **уже**
-в RETRY_WAIT, то есть ровно в том состоянии, которое сама же ставит
-следующей строкой.
+`reconcile_running_work` clears hung sessions: a task whose turn no
+longer runs it moves to RETRY_WAIT. But before that it required the task
+to be in an active state - and refused if the task was **already** in
+RETRY_WAIT, that is, exactly the state it sets on the next line.
 
-Замерено 16.09.2026: прогон встал намертво. Ход инженера завершился,
-сессия осталась висеть, M8 был переведён в RETRY_WAIT предыдущей
-сверкой - и каждая попытка возобновления отвечала «pending session for
-M8 is not in an active task state». Возобновить прогон стало нельзя
-ничем: единственный путь запуска упирался в отказ сделать уже сделанное.
+Measured on 16 Sep 2026: the run stopped dead. The engineer's turn
+completed, the session stayed hanging, M8 had been moved to RETRY_WAIT
+by the previous reconciliation - and every resume attempt answered
+«pending session for M8 is not in an active task state». Nothing could
+resume the run: the only launch path ran into a refusal to do what was
+already done.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Управляющие фразы: диктовка по-русски не должна ломать команду."""
+"""Control phrases: Russian dictation must not break a command."""
 
 from __future__ import annotations
 

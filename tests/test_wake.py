@@ -1,13 +1,14 @@
-"""Повтор по сроку поднимается сам, а не по слову человека.
+"""A timed retry rises by itself, not on a human's word.
 
-Замерено на прогоне v1.0: задача упиралась в лимит, рантайм записывал
-срок повтора, последний диспетчер выходил - и живого процесса не
-оставалось. Прогон стоял, пока хозяйка не писала "Resume", каждые
-несколько часов, ради действия, которое рантайм умел сам.
+Measured on the v1.0 run: a task hit the rate limit, the runtime recorded
+the retry time, the last dispatcher exited - and no live process was
+left. The run stood until the owner typed "Resume", every few hours, for
+an action the runtime could do itself.
 
-Будильник - отложенный преемник диспетчера. Проверяется и то, что он
-делает, и то, чего не делает: не будит остановленный человеком прогон,
-не толкается с живым диспетчером, не стреляет раньше продлённого лимита.
+The alarm is the dispatcher's deferred successor. Both what it does and
+what it does not do are checked: it does not wake a run stopped by a
+human, does not jostle a live dispatcher, does not fire before an
+extended limit.
 """
 
 from __future__ import annotations
@@ -82,7 +83,7 @@ class WakeTests(unittest.TestCase):
         self.store = StateStore(self.cfg.state_dir)
         self.spawned: list[dict] = []
 
-    # --- инструменты ---------------------------------------------------
+    # --- tools ---------------------------------------------------------
 
     def pending_token(self, task_id: str) -> str:
         for item in self.store.load().worker_sessions:
@@ -132,10 +133,10 @@ class WakeTests(unittest.TestCase):
     def record_completed_owner_turn(self) -> None:
         """Причинный владелец записал завершённый ход - как в живом прогоне."""
 
-        # Форма записи - та, которую требует _validate_state: сессия и
-        # запись журнала со всеми обязательными полями, иначе состояние
-        # не сохранится вовсе. Это и есть след, который оставляет
-        # настоящий завершённый ход.
+        # The record shape is the one _validate_state requires: a session and
+        # a journal entry with every mandatory field, otherwise the state
+        # is not saved at all. That is exactly the trace a real
+        # completed turn leaves.
         state = self.store.load()
         state.worker_sessions.append(
             {
@@ -168,7 +169,7 @@ class WakeTests(unittest.TestCase):
         )
         self.store.save(state)
 
-    # --- что будильник делает ------------------------------------------
+    # --- what the alarm does -------------------------------------------
 
     def test_the_wake_sleeps_until_the_retry_and_then_dispatches(self) -> None:
         due = self.hit_the_limit()
@@ -203,13 +204,13 @@ class WakeTests(unittest.TestCase):
         """Будильник заведён на срок, а лимит продлили: стрелять рано нельзя."""
 
         due = self.hit_the_limit(reset_at=RESET_AT + 5_000)
-        # Будильник думал, что срок раньше, чем говорит состояние.
+        # The alarm thought the time was earlier than the state says.
         clock = _Clock(RESET_AT - 100)
         self.wake(at_epoch=RESET_AT, clock=clock)
         self.assertGreaterEqual(clock.now, due)
         self.assertEqual(len(self.spawned), 1)
 
-    # --- чего будильник не делает --------------------------------------
+    # --- what the alarm does not do ------------------------------------
 
     def test_a_paused_run_is_left_alone(self) -> None:
         due = self.hit_the_limit()
@@ -222,7 +223,7 @@ class WakeTests(unittest.TestCase):
     def test_a_live_dispatcher_is_not_raced(self) -> None:
         due = self.hit_the_limit()
         state = self.store.load()
-        # Чужой диспетчер жив: его pid - наш собственный процесс.
+        # Someone else's dispatcher is alive: its pid is our own process.
         state.dispatcher_pid = os.getpid()
         self.store.save(state)
         clock = _Clock(due + 1)
@@ -236,7 +237,7 @@ class WakeTests(unittest.TestCase):
         self.assertEqual(self.spawned, [])
         self.assertEqual(clock.naps, [])
 
-    # --- как будильник заводится ---------------------------------------
+    # --- how the alarm is armed ----------------------------------------
 
     def test_ensure_wake_spawns_once_and_reuses_a_live_sleeper(self) -> None:
         due = self.hit_the_limit()
@@ -244,7 +245,7 @@ class WakeTests(unittest.TestCase):
 
         def fake_spawn(cfg, **kwargs) -> int:
             calls.append(kwargs)
-            return os.getpid()  # живой процесс: наш собственный
+            return os.getpid()  # a live process: our own
 
         first = ensure_wake(
             self.cfg, owner=TEST_RELAY_OWNER, owner_turn=OWNER_TURN, spawn=fake_spawn
@@ -300,7 +301,7 @@ class WakeTests(unittest.TestCase):
         trace = (self.cfg.state_dir / "logs" / "wake-errors.log").read_text(encoding="utf-8")
         self.assertIn("no fork for you", trace)
 
-    # --- то, что нашла проверяющая --------------------------------------
+    # --- what the reviewer found ---------------------------------------
 
     def test_revoked_hook_trust_stops_the_wake(self) -> None:
         """Будильник проходит тот же гейт, что и запуск от хука.
@@ -479,7 +480,7 @@ class TheLastProcessLeavesAWakeTests(WakeTests):
                 inner.closed = True
 
         self.record_completed_owner_turn()
-        # Две резервации-преемника, у которых владелец - завершённый ход.
+        # Two successor reservations whose owner is a completed turn.
         state = self.store.load()
         for token, task_id in (("succ-1", "A"), ("succ-2", "B")):
             state.worker_sessions.append(

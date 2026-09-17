@@ -1,15 +1,17 @@
-"""Ветка создаётся как обычная, а не как созданная агентом.
+"""The thread is created as an ordinary one, not as agent-created.
 
-v0.7 не передавала threadSource вовсе, и её задачи появлялись в сайдбаре
-проекта обычными ветками - пользователь мог их открыть и продолжить.
+v0.7 did not pass threadSource at all, and its tasks appeared in the
+project sidebar as ordinary threads - the user could open and continue
+them.
 
-v0.8 стала передавать "agent_created_thread". Приложение знает это
-значение и обращается с такой веткой иначе: показывает её как созданную
-в другом приложении и требует ручного перехвата. Автоматический перехват
-недоступен, поэтому задача оставалась недостижимой, сколько бы раз её ни
-привязывали к проекту на стороне App Server.
+v0.8 started passing "agent_created_thread". The application knows that
+value and treats such a thread differently: it shows it as created in
+another application and requires a manual takeover. An automatic
+takeover is unavailable, so the task stayed unreachable however many
+times it was attached to the project on the App Server side.
 
-Этот параметр и был единственным отличием создания от работавшей версии.
+That parameter was the only difference in creation from the version that
+worked.
 """
 
 from __future__ import annotations

@@ -261,13 +261,13 @@ class AIStudioAcceptanceShapeTests(unittest.TestCase):
         deferred = next(
             item for item in decision.deferred if item.task_id == "gui-b"
         )
-        # reasons_for снят как вторая дорога к тому же полю: продакшен
-        # везде читает решение по deferred.
+        # reasons_for was removed as a second road to the same field:
+        # production reads the decision via deferred everywhere.
         self.assertIn("capability_capacity:computer_use", deferred.reasons)
 
-        # Project Memory требует репозиторий. Path.cwd() был им только в
-        # рабочем дереве; на установленной копии рантайма - нет, и тест
-        # падал по причине, к маршрутизации не относящейся.
+        # Project Memory requires a repository. Path.cwd() was one only in
+        # the working tree; on the installed runtime copy it is not, and the
+        # test failed for a reason unrelated to routing.
         import tempfile
 
         with tempfile.TemporaryDirectory() as temp:

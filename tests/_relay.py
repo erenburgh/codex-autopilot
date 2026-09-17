@@ -1,12 +1,13 @@
-"""Тестовый помощник для резервации фронтира.
+"""A test helper for frontier reservation.
 
-Правило R21: приёмка выполняется в чистом окружении. Сьют не имеет права
-зависеть от переменных, специфичных для сессии автора.
+Rule R21: acceptance runs in a clean environment. The suite may not
+depend on variables specific to the author's session.
 
-reserve_ready_frontier требует identity владельца relay и, если её не
-передали, читает CODEX_THREAD_ID из окружения. Внутри Codex-сессии
-переменная есть всегда, поэтому 31 тест проходил у автора и падал
-в заявленном CI. Здесь identity передаётся явно и детерминированно.
+reserve_ready_frontier requires the relay owner's identity and, if none
+is passed, reads CODEX_THREAD_ID from the environment. Inside a Codex
+session the variable is always there, so 31 tests passed for the author
+and failed in the declared CI. Here identity is passed explicitly and
+deterministically.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Гейт запуска: подтверждение вместо заявления, и тикет вместо самодеятельности."""
+"""The launch gate: confirmation instead of a claim, and a ticket instead of improvisation."""
 
 from __future__ import annotations
 
@@ -68,9 +68,9 @@ class ChecklistTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.cfg = Cfg(Path(self.temp.name))
-        # Проверка видимости читает НАСТОЯЩИЙ каталог Codex. Тест обязан
-        # смотреть в свой, иначе результат зависит от того, что сейчас
-        # открыто у разработчика в сайдбаре.
+        # The visibility check reads the REAL Codex directory. The test must
+        # look at its own, otherwise the result depends on what the developer
+        # currently has open in the sidebar.
         self.codex_home = Path(self.temp.name) / "codex-home"
         self.codex_home.mkdir()
         import unittest.mock as _mock
@@ -326,9 +326,9 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
         )
         gate.start()
         self.addCleanup(gate.stop)
-        # Гейт доверия хукам читает НАСТОЯЩИЙ App Server машины. Без этой
-        # подстановки набор проходил только потому, что у разработчика хуки
-        # оказались доверены, и рушился сразу после переустановки плагина.
+        # The hook-trust gate reads the machine's REAL App Server. Without this
+        # substitution the suite passed only because the developer's hooks
+        # happened to be trusted, and it collapsed right after reinstalling the plugin.
         patch_hook_trust_gates(self)
 
         self.temp = tempfile.TemporaryDirectory()
@@ -369,11 +369,11 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
             ).LaunchVerdict.IN_PROGRESS,
         ):
             result = self.report()
-        # Отчёт приходит и на идущем запуске.
+        # The report arrives on a running launch too.
         self.assertIn("systemMessage", result)
-        # Идущий запуск обязан отвечать continue: блокирующий ответ
-        # оставляет инициирующий ход в "interrupted", а диспетчер ждёт
-        # устойчивого "completed" и не создаёт ветку никогда.
+        # A running launch must answer continue: a blocking answer
+        # leaves the initiating turn "interrupted", while the dispatcher waits
+        # for a stable "completed" and never creates the thread.
         self.assertTrue(result.get("continue"))
         self.assertNotIn("decision", result)
         self.assertNotIn("Ticket", result["systemMessage"])
@@ -578,9 +578,9 @@ class CausalPredecessorTests(unittest.TestCase):
         state.lifecycle_journal = [
             {"event": "turn_identity_bound", "thread_id": "owner", "turn_id": "turn-1"}
         ]
-        # Вторым свидетельством служит закрытая сессия с тем же ходом,
-        # поэтому заглушке нужен явно пустой список - иначе проверяется
-        # поведение Mock, а не правила.
+        # The second piece of evidence is a closed session with the same turn,
+        # so the stub needs an explicitly empty list - otherwise Mock's
+        # behaviour is tested, not the rules.
         state.worker_sessions = []
         self.assertFalse(_turn_is_completed(state, "owner", "turn-1"))
 

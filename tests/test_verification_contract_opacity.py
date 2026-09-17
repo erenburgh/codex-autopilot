@@ -1,13 +1,14 @@
-"""R31 для вердикта проверяющего: закрытая схема обязана быть названа.
+"""R31 for the verifier's verdict: a closed schema must be named.
 
-Замерено на чистом прогоне Thread Tools. Проверяющий M4 вернул issues
-с полями finding, requirement, required_fix, severity, id, evidence_ids
-- все шесть правдоподобны, ни одного ему не называли. Промпт просил
-"непустой массив структурированных issues" и на этом заканчивался.
-Парсер отверг вердикт целиком, ход встал, открылся тикет.
+Measured on the clean Thread Tools run. Verifier M4 returned issues with
+the fields finding, requirement, required_fix, severity, id,
+evidence_ids - all six plausible, none of them ever named to it. The
+prompt asked for "a non-empty array of structured issues" and stopped
+there. The parser rejected the whole verdict, the turn stopped, a ticket
+opened.
 
-Это тот же дефект, что и непрозрачный контракт памяти: схема есть,
-знания о ней нет.
+The same defect as the opaque memory contract: the schema exists, the
+knowledge of it does not.
 """
 
 from __future__ import annotations

@@ -10,13 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseTests(unittest.TestCase):
-    # Единственное исключение из запрета на AppleScript. Запрет защищает
-    # от прежней архитектуры - управления самим Codex через Accessibility
-    # и подставные клики. Системный банер к ней отношения не имеет: он
-    # ничего не автоматизирует и ни в какое приложение не стучится, а
-    # другого способа показать уведомление на macOS без внешней
-    # зависимости нет. Границу проверяет отдельный тест ниже, поэтому
-    # исключение именное, а не дыра в списке.
+    # The only exemption from the AppleScript ban. The ban protects against
+    # the old architecture - driving Codex itself through Accessibility
+    # and staged clicks. The system banner has nothing to do with it: it
+    # automates nothing and knocks on no application, and there is no
+    # other way to show a notification on macOS without an external
+    # dependency. A separate test below checks the boundary, so the
+    # exemption is by name, not a hole in the list.
     NOTIFICATION_EXEMPT = ROOT / "src/codex_autopilot/notify.py"
 
     def test_production_has_no_preview_architecture(self):
@@ -116,15 +116,15 @@ class ReleaseTests(unittest.TestCase):
         spec.loader.exec_module(module)
         self.assertIn("docs/V1_TARGET.md", module.INTERNAL_DOCS)
         self.assertIn("docs/V1_RUN.md", module.INTERNAL_DOCS)
-        # Решение пользователя от 14 сентября 2026: внутренние документы
-        # линии v1.0 не лежат в публичном репозитории. Прежде они были в
-        # git ради воркеров, которым их называет каждый промпт прогона, -
-        # цена решения в том, что свежий клон их не получает. Исключение
-        # из архива и отсутствие в git - разные механизмы, и нужны оба.
+        # The user's decision of 14 September 2026: the internal documents of
+        # the v1.0 line do not live in the public repository. They used to be
+        # in git for the workers, to whom every run prompt names them - the
+        # price of the decision is that a fresh clone does not get them.
+        # Exclusion from the archive and absence from git are different mechanisms, and both are needed.
         import subprocess
 
-        # Про git можно спрашивать только репозиторий. Установленная копия
-        # рантайма - не он: там проверяется состав архива, а не история.
+        # Only the repository can be asked about git. The installed copy of
+        # the runtime is not it: there the archive contents are checked, not history.
         repository = (ROOT / ".git").exists() and (ROOT / ".gitignore").is_file()
         for internal in ("docs/V1_TARGET.md", "docs/V1_RUN.md") if repository else ():
             tracked = subprocess.run(
@@ -137,9 +137,9 @@ class ReleaseTests(unittest.TestCase):
                 cwd=ROOT, capture_output=True, text=True,
             ).returncode
             self.assertEqual(ignored, 0, f"{internal} не защищён .gitignore")
-        # Записи о разработке самого скилла: аудиты наших прогонов и
-        # отчёты о починке вех. Тысяча строк внутренней истории, которую
-        # пользователь скачивал вместе со скиллом.
+        # Records of developing the skill itself: audits of our runs and
+        # reports on repairing milestones. A thousand lines of internal history
+        # the user downloaded together with the skill.
         for record in (
             "docs/RELEASE_VERIFICATION_0.9.0-beta.md",
             "docs/M11_COMPLETION.md",
@@ -151,16 +151,16 @@ class ReleaseTests(unittest.TestCase):
         for internal in module.INTERNAL_DOCS:
             with self.subTest(internal=internal):
                 self.assertNotIn(internal.split("/")[-1], module.USER_ITEMS)
-        # Прежде здесь требовалось, чтобы каждый внутренний документ лежал
-        # в дереве: спецификация была в git ради воркеров прогона. Решение
-        # отменено - в публичный репозиторий она не уходит вовсе. Тест
-        # остался и падал в чистом клоне: пользователь, склонировавший тег,
-        # получал красный набор тестов на ровном месте. Проверяется теперь
-        # то, что решено: целевой спецификации в публичном дереве нет.
-        # Проверяется отслеживание, а не наличие: у разработчика файл
-        # лежит на диске под .gitignore, а в публичный репозиторий не
-        # уходит. Первая версия этой проверки смотрела на диск и потому
-        # падала у того, кто с ним и работает.
+        # This used to require every internal document to be in the tree:
+        # the specification was in git for the run's workers. That decision
+        # is reversed - it does not go to the public repository at all. The
+        # test remained and failed in a clean clone: a user who cloned the tag
+        # got a red test suite out of nowhere. What is checked now is what
+        # was decided: the target specification is not in the public tree.
+        # Tracking is checked, not presence: on the developer's machine the
+        # file is on disk under .gitignore and does not go to the public
+        # repository. The first version of this check looked at the disk and
+        # so failed for the very person working with it.
         for secret in ("docs/V1_TARGET.md", "docs/V1_RUN.md"):
             with self.subTest(secret=secret):
                 self.assertIn(secret, module.INTERNAL_DOCS)
@@ -212,8 +212,8 @@ class ReleaseTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         self.assertIn(".codex-autopilot", module.SOURCE_EXCLUDES)
-        # Исходный ZIP висит в том же публичном релизе, что и
-        # пользовательский: внутреннее исключается из обоих.
+        # The source ZIP hangs in the same public release as the
+        # user one: internal material is excluded from both.
         source = (ROOT / "scripts/build_release.py").read_text(encoding="utf-8")
         self.assertIn("INTERNAL_DOCS | GENERATED_FILES", source)
         self.assertIn("ROADMAP.md", module.GENERATED_FILES)
