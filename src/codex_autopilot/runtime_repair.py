@@ -11,6 +11,13 @@
 обязан остаться зелёным, а охранные функции - побайтно теми же. Если
 что-то из этого не так, живой установки правка не касается вовсе.
 
+Правка - это НАБОР изменений, а не одно. Так устроены настоящие
+починки: разделение ошибки модели и поломки машины на прогоне v1.0
+тронуло три модуля сразу, и по одному их не применить - после первого
+набор тестов красный, и шлюз справедливо отказал бы. По той же причине
+разрешено заводить новый модуль: снятие формата v0.8 потребовало вынести
+код в отдельный файл, потому что прежний упёрся в потолок размера.
+
 Почему это работает без перезапуска: каждый ход диспетчера - отдельный
 процесс `python -m codex_autopilot.cli`, он читает исходники заново.
 Правка действует со следующего хода, и ничего не переустанавливается
@@ -29,6 +36,7 @@ import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Sequence
 
 
 class RuntimeRepairError(Exception):
@@ -40,7 +48,7 @@ class RuntimeRepairError(Exception):
 # иначе первая же правка снимает все остальные проверки.
 UNPATCHABLE_MODULES = frozenset(
     {
-        "pipeline_engineer.py",
+        "engineer_authority.py",
         "runtime_repair.py",
         "hook_trust.py",
     }
@@ -55,6 +63,16 @@ GUARDED_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("lifecycle_base.py", "_require_relay_executor"),
     ("lifecycle_base.py", "_dispatcher_owns_reservation"),
     ("cli.py", "_relay_executor_thread_id"),
+    # Бухгалтерию инцидентов инженер чинить вправе - там и случаются
+    # настоящие дефекты, один такой мы чинили руками на прогоне v1.0.
+    # Но не то, чем меряется его собственная работа: класс поломки,
+    # тождество тикета, словарь действий и обязательность проверки
+    # здоровья остаются как есть.
+    ("pipeline_engineer.py", "classify_incident"),
+    ("pipeline_engineer.py", "incident_signature"),
+    ("pipeline_engineer.py", "escalate_to_user"),
+    ("pipeline_engineer.py", "_require_named_actions"),
+    ("pipeline_engineer.py", "_require_passing_healthcheck"),
 )
 
 TEST_TIMEOUT_SECONDS = 900
@@ -77,16 +95,62 @@ class RuntimeTree:
 
 
 @dataclass(frozen=True, slots=True)
+class Edit:
+    """Одно изменение внутри набора.
+
+    ``old`` - точный фрагмент, который заменяется, и он обязан
+    встречаться в модуле ровно один раз. ``old`` равный None означает
+    новый модуль: тогда ``new`` - всё его содержимое, а модуль не должен
+    существовать. Перезаписать существующий файл целиком нельзя: правка
+    называет место, а не подменяет файл.
+    """
+
+    module: str
+    new: str
+    old: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleChange:
+    module: str
+    sha256_before: str | None
+    sha256_after: str
+
+    def to_dict(self) -> dict[str, str | None]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class PatchRecord:
     patch_id: str
-    module: str
-    sha256_before: str
-    sha256_after: str
+    changes: tuple[ModuleChange, ...]
     test_name: str
     at: str
 
-    def to_dict(self) -> dict[str, str]:
-        return asdict(self)
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "patch_id": self.patch_id,
+            "test_name": self.test_name,
+            "at": self.at,
+            "changes": [item.to_dict() for item in self.changes],
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, object]) -> "PatchRecord":
+        changes = tuple(
+            ModuleChange(
+                module=str(item["module"]),
+                sha256_before=item["sha256_before"],  # type: ignore[arg-type]
+                sha256_after=str(item["sha256_after"]),
+            )
+            for item in raw["changes"]  # type: ignore[union-attr]
+        )
+        return cls(
+            patch_id=str(raw["patch_id"]),
+            changes=changes,
+            test_name=str(raw["test_name"]),
+            at=str(raw["at"]),
+        )
 
 
 def resolve_runtime_tree(*, module_file: str | None = None) -> RuntimeTree:
@@ -134,26 +198,25 @@ def _definition(text: str, name: str) -> ast.AST | None:
 
 def apply_runtime_patch(
     *,
-    module: str,
-    old: str,
-    new: str,
+    edits: Sequence[Edit],
     test_name: str,
     test_source: str,
     at: str,
     tree: RuntimeTree | None = None,
 ) -> PatchRecord:
-    """Провести правку через шлюз и применить её к живой установке."""
+    """Провести набор правок через шлюз и применить его целиком."""
 
     tree = tree or resolve_runtime_tree()
-    target = _target_path(tree, module)
-    before = target.read_text(encoding="utf-8")
-    patched = _replace_once(before, old, new, module=module)
+    if not edits:
+        raise RuntimeRepairError("a repair changes at least one module")
     _validate_test_name(test_name)
     if (tree.tests / f"{test_name}.py").exists():
         raise RuntimeRepairError(
             f"{test_name}.py already exists: a repair proves itself with its own test, "
             "it does not overwrite someone else's"
         )
+    for edit in edits:
+        _check_module_name(edit.module)
 
     staging = Path(tempfile.mkdtemp(prefix="codex-autopilot-repair-"))
     try:
@@ -167,12 +230,9 @@ def apply_runtime_patch(
                 "a repair is accepted only for a failure that can be shown first"
             )
 
-        staged_module = staging / "src" / "codex_autopilot" / module
-        try:
-            ast.parse(patched)
-        except SyntaxError as exc:
-            raise RuntimeRepairError(f"the patched module does not parse: {exc}") from exc
-        staged_module.write_text(patched, encoding="utf-8")
+        # Набор применяется целиком и только в копии: пока он не доказан,
+        # живая установка о нём не знает.
+        changes = _apply_edits(staging / "src" / "codex_autopilot", edits)
 
         after = _run_one_test(staging, test_name)
         if after.returncode != 0:
@@ -195,15 +255,17 @@ def apply_runtime_patch(
             )
 
         record = PatchRecord(
-            patch_id=_patch_id(module, old, new, at),
-            module=module,
-            sha256_before=_sha256(before),
-            sha256_after=_sha256(patched),
+            patch_id=_patch_id(edits, at),
+            changes=changes,
             test_name=test_name,
             at=at,
         )
-        _store_backup(tree, record, original=before)
-        target.write_text(patched, encoding="utf-8")
+        _store_backup(tree, record)
+        for change in changes:
+            source = (staging / "src" / "codex_autopilot" / change.module).read_text(
+                encoding="utf-8"
+            )
+            (tree.package / change.module).write_text(source, encoding="utf-8")
         (tree.tests / f"{test_name}.py").write_text(test_source, encoding="utf-8")
         return record
     finally:
@@ -211,46 +273,91 @@ def apply_runtime_patch(
 
 
 def revert_runtime_patch(patch_id: str, *, tree: RuntimeTree | None = None) -> PatchRecord:
-    """Вернуть модуль к тексту до правки вместе с её тестом."""
+    """Снять набор правок целиком вместе с его тестом."""
 
     tree = tree or resolve_runtime_tree()
     folder = tree.root / "patches" / patch_id
     manifest = folder / "patch.json"
     if not manifest.is_file():
         raise RuntimeRepairError(f"unknown patch {patch_id}")
-    record = PatchRecord(**json.loads(manifest.read_text(encoding="utf-8")))
-    target = _target_path(tree, record.module)
-    if _sha256(target.read_text(encoding="utf-8")) != record.sha256_after:
-        raise RuntimeRepairError(
-            "the module changed after this patch was applied; reverting would silently "
-            "discard that later change"
+    record = PatchRecord.from_dict(json.loads(manifest.read_text(encoding="utf-8")))
+    for change in record.changes:
+        target = tree.package / change.module
+        if not target.is_file():
+            raise RuntimeRepairError(f"{change.module} is gone; refusing a partial revert")
+        if _sha256(target.read_text(encoding="utf-8")) != change.sha256_after:
+            raise RuntimeRepairError(
+                f"{change.module} changed after this patch was applied; reverting would "
+                "silently discard that later change"
+            )
+    for change in record.changes:
+        target = tree.package / change.module
+        if change.sha256_before is None:
+            target.unlink()
+            continue
+        target.write_text(
+            (folder / f"{change.module}.orig").read_text(encoding="utf-8"), encoding="utf-8"
         )
-    target.write_text(
-        (folder / f"{record.module}.orig").read_text(encoding="utf-8"), encoding="utf-8"
-    )
     (tree.tests / f"{record.test_name}.py").unlink(missing_ok=True)
     return record
 
 
-def _target_path(tree: RuntimeTree, module: str) -> Path:
+def _apply_edits(package: Path, edits: Sequence[Edit]) -> tuple[ModuleChange, ...]:
+    """Наложить набор в копии и вернуть, что с чем стало."""
+
+    originals: dict[str, str | None] = {}
+    for edit in edits:
+        target = package / edit.module
+        if edit.module not in originals:
+            originals[edit.module] = (
+                target.read_text(encoding="utf-8") if target.is_file() else None
+            )
+        if edit.old is None:
+            if originals[edit.module] is not None or target.is_file():
+                raise RuntimeRepairError(
+                    f"{edit.module} already exists: name the fragment to replace instead of "
+                    "handing over a whole file"
+                )
+            text = edit.new
+        else:
+            if not target.is_file():
+                raise RuntimeRepairError(f"no such runtime module: {edit.module}")
+            text = _replace_once(
+                target.read_text(encoding="utf-8"), edit.old, edit.new, module=edit.module
+            )
+        try:
+            ast.parse(text)
+        except SyntaxError as exc:
+            raise RuntimeRepairError(
+                f"the patched module {edit.module} does not parse: {exc}"
+            ) from exc
+        target.write_text(text, encoding="utf-8")
+
+    return tuple(
+        ModuleChange(
+            module=module,
+            sha256_before=None if original is None else _sha256(original),
+            sha256_after=_sha256((package / module).read_text(encoding="utf-8")),
+        )
+        for module, original in originals.items()
+    )
+
+
+def _check_module_name(module: str) -> None:
     if module != Path(module).name or not module.endswith(".py"):
-        raise RuntimeRepairError(f"a repair names one module of the runtime, not {module!r}")
+        raise RuntimeRepairError(f"a repair names modules of the runtime, not {module!r}")
     if module in UNPATCHABLE_MODULES:
         raise RuntimeRepairError(
             f"{module} is out of reach for a repair: authority, trust and this gateway "
             "are not rewritten by the one who uses them"
         )
-    target = tree.package / module
-    if not target.is_file():
-        raise RuntimeRepairError(f"no such runtime module: {module}")
-    return target
 
 
 def _replace_once(text: str, old: str, new: str, *, module: str) -> str:
     if not old.strip():
         raise RuntimeRepairError("the replaced fragment must not be empty")
     if old == new:
-        raise RuntimeRepairError("the patch changes nothing")
+        raise RuntimeRepairError(f"the patch changes nothing in {module}")
     found = text.count(old)
     if found == 0:
         raise RuntimeRepairError(f"the fragment does not occur in {module}")
@@ -283,7 +390,7 @@ def _run(command: list[str], staging: Path) -> subprocess.CompletedProcess[str]:
     """Прогон в копии и без прав на живой прогон.
 
     Тест пишет инженер, то есть это его код. Он выполняется в копии, а
-    окружение чистится от CODEX_*: без CODEX_THREAD_ID любая попытка
+    окружение чистится от CODEX_*: без владеющей ветки любая попытка
     тронуть живой прогон упрётся в того же охранника, что и всегда.
     """
 
@@ -308,18 +415,28 @@ def _run(command: list[str], staging: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _store_backup(tree: RuntimeTree, record: PatchRecord, *, original: str) -> None:
+def _store_backup(tree: RuntimeTree, record: PatchRecord) -> None:
     folder = tree.root / "patches" / record.patch_id
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{record.module}.orig").write_text(original, encoding="utf-8")
+    for change in record.changes:
+        if change.sha256_before is None:
+            continue
+        (folder / f"{change.module}.orig").write_text(
+            (tree.package / change.module).read_text(encoding="utf-8"), encoding="utf-8"
+        )
     (folder / "patch.json").write_text(
         json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True, indent=2),
         encoding="utf-8",
     )
 
 
-def _patch_id(module: str, old: str, new: str, at: str) -> str:
-    digest = hashlib.sha256("\n".join((module, old, new, at)).encode("utf-8")).hexdigest()
+def _patch_id(edits: Sequence[Edit], at: str) -> str:
+    material = "\n".join(
+        part
+        for edit in edits
+        for part in (edit.module, edit.old or "", edit.new)
+    )
+    digest = hashlib.sha256((material + "\n" + at).encode("utf-8")).hexdigest()
     return f"patch-{digest[:16]}"
 
 

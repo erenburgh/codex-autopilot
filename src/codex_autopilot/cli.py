@@ -31,6 +31,9 @@ from .models import MODEL_IDS, PUBLIC_REASONING
 from .plan import validate_migrating_plan
 from .preflight import PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, run_preflight
 from .run_state import StateStore
+# Отказ шлюза поднимается прямо здесь, поэтому и импортируется здесь:
+# NameError вместо отказа однажды стоил прогону часа.
+from .runtime_repair import RuntimeRepairError
 
 
 def parser() -> argparse.ArgumentParser:
@@ -107,15 +110,14 @@ def parser() -> argparse.ArgumentParser:
     relay_rearm = sub.add_parser("devops-rearm-relay-owner", help=argparse.SUPPRESS)
     relay_rearm.add_argument("--project", type=Path, default=Path.cwd())
     relay_rearm.add_argument("--incident-id")
-    # Починка кода рантайма. Фрагменты и тест передаются файлами, а не
-    # строками: правка бывает многострочной, и через аргументы командной
-    # строки она приезжала бы искажённой кавычками и переносами.
+    # Починка кода рантайма. Набор правок и тест передаются файлами, а
+    # не строками: правка бывает многострочной и охватывает несколько
+    # модулей, и через аргументы командной строки она приезжала бы
+    # искажённой кавычками и переносами.
     devops_repair = sub.add_parser("devops-repair-runtime", help=argparse.SUPPRESS)
     devops_repair.add_argument("--project", type=Path, default=Path.cwd())
     devops_repair.add_argument("--incident-id", required=True)
-    devops_repair.add_argument("--module", required=True)
-    devops_repair.add_argument("--old-file", type=Path, required=True)
-    devops_repair.add_argument("--new-file", type=Path, required=True)
+    devops_repair.add_argument("--patch-file", type=Path, required=True)
     devops_repair.add_argument("--test-file", type=Path, required=True)
     devops_repair.add_argument("--test-name", required=True)
     devops_revert = sub.add_parser("devops-revert-runtime-patch", help=argparse.SUPPRESS)
@@ -535,15 +537,32 @@ def main(argv: list[str] | None = None) -> int:
             # восстановления: владеющая ветка и собственный тикет.
             from .pipeline_engineer import PipelineIncidentStore
             from .run_state import utc_now
-            from .runtime_repair import apply_runtime_patch
+            from .runtime_repair import Edit, apply_runtime_patch
 
             _relay_executor_thread_id()
             cfg = load_config(args.project)
             timestamp = utc_now()
+            raw = json.loads(args.patch_file.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict) or not isinstance(raw.get("edits"), list):
+                raise RuntimeRepairError(
+                    'the patch file is an object with an "edits" array: '
+                    '{"edits": [{"module": "<file.py>", "old_file": "<path>", '
+                    '"new_file": "<path>"}]}; omit old_file to add a new module'
+                )
+            edits = tuple(
+                Edit(
+                    module=str(item["module"]),
+                    new=Path(str(item["new_file"])).read_text(encoding="utf-8"),
+                    old=(
+                        None
+                        if not item.get("old_file")
+                        else Path(str(item["old_file"])).read_text(encoding="utf-8")
+                    ),
+                )
+                for item in raw["edits"]
+            )
             record = apply_runtime_patch(
-                module=args.module,
-                old=args.old_file.read_text(encoding="utf-8"),
-                new=args.new_file.read_text(encoding="utf-8"),
+                edits=edits,
                 test_name=args.test_name,
                 test_source=args.test_file.read_text(encoding="utf-8"),
                 at=timestamp,

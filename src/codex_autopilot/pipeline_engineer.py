@@ -11,34 +11,28 @@ from pathlib import Path
 import tempfile
 from typing import Any, Iterator, Mapping, Sequence
 
+# Полномочия инженера объявлены отдельно и правке не подлежат: он
+# чинит рантайм, но не переписывает границы того, что ему можно.
+from .engineer_authority import (
+    AUTO_REPLAYABLE_ACTIONS,
+    FORBIDDEN_ACTIONS,
+    INFRASTRUCTURE_INCIDENT_CLASSES,
+    MUTATING_TRANSPORT_OPERATIONS,
+    PROMOTION_THRESHOLD,
+    READ_ONLY_DIAGNOSTIC_ACTIONS,
+    RECOVERY_ACTIONS,
+    REPAIR_ACTIONS,
+    IncidentClass,
+    SideEffectOutcome,
+)
+
 
 INCIDENT_STATE_SCHEMA_VERSION = 1
 INCIDENT_STATE_FILE = "pipeline-incidents.json"
 RECOVERY_LOCK_FILE = "pipeline-recovery.lock"
 MAX_RECENT_EVENTS = 20
 MAX_EVENT_CHARS = 2_000
-MUTATING_TRANSPORT_OPERATIONS = frozenset({"create_thread", "send_message_to_thread"})
 LEGACY_PERSISTED_AUTHORITY_KINDS = frozenset({"PIPELINE_RECOVERY_MANDATE"})
-
-
-class IncidentClass(str, Enum):
-    PRODUCTION = "PRODUCTION"
-    PIPELINE = "PIPELINE"
-    RUNTIME = "RUNTIME"
-    INTEGRATION = "INTEGRATION"
-    TOOLING = "TOOLING"
-    POLICY = "POLICY"
-    AMBIGUOUS_SIDE_EFFECT = "AMBIGUOUS_SIDE_EFFECT"
-
-
-INFRASTRUCTURE_INCIDENT_CLASSES = frozenset(
-    {
-        IncidentClass.PIPELINE,
-        IncidentClass.RUNTIME,
-        IncidentClass.INTEGRATION,
-        IncidentClass.TOOLING,
-    }
-)
 
 
 class IncidentPhase(str, Enum):
@@ -127,13 +121,6 @@ class AuthorityKind(str, Enum):
     USER_AUTHORIZED_TASK = "USER_AUTHORIZED_TASK"
 
 
-class SideEffectOutcome(str, Enum):
-    NONE = "NONE"
-    KNOWN_SUCCEEDED = "KNOWN_SUCCEEDED"
-    KNOWN_FAILED = "KNOWN_FAILED"
-    UNKNOWN = "UNKNOWN"
-
-
 class PipelineIncidentError(RuntimeError):
     pass
 
@@ -163,53 +150,6 @@ class HealthcheckResult:
     observed_at: str
 
 
-READ_ONLY_DIAGNOSTIC_ACTIONS = (
-    "inspect_bounded_system_state",
-    "inspect_recent_events",
-    "reconcile_durable_journal",
-    "run_declared_healthcheck",
-)
-
-# Действия, которые меняют состояние, а не только читают его. Каждое
-# отвечает ровно одной команде восстановления, и у каждой из них свой
-# отказ, когда предпосылки не выполнены. Называть их можно только так,
-# как они называются: пересказ прозой не сходится ни с чем.
-REPAIR_ACTIONS = (
-    "rearm_relay_owner",
-    "rearm_run",
-    "reconcile_thread_identity",
-    "recreate_archived_retry",
-    "record_definitive_transport_failure",
-    "record_completed_worker_turn",
-    "repair_runtime_code",
-)
-
-# Весь словарь: чем инженер вправе отчитаться о починке.
-RECOVERY_ACTIONS = READ_ONLY_DIAGNOSTIC_ACTIONS + REPAIR_ACTIONS
-
-# Что уровень 1 вправе повторить сам, без человека. Диагностика - вся;
-# из чинящих только те две команды, что сами отказывают, когда их
-# предпосылки не выполнены, и потому безопасны при слепом повторе.
-# Правка кода не повторяется никогда: патч, снявший поломку здесь, на
-# другой машине и в другом состоянии - не лечение, а совпадение.
-AUTO_REPLAYABLE_ACTIONS = READ_ONLY_DIAGNOSTIC_ACTIONS + (
-    "rearm_relay_owner",
-    "rearm_run",
-)
-
-FORBIDDEN_ACTIONS = (
-    "fix_production_quality_failures",
-    "bypass_trust_or_permission_checks",
-    "impersonate_or_speak_for_the_user",
-    "change_global_codex_settings",
-    "authorize_project_root_mutation_on_behalf_of_the_user",
-    "delete_project_state",
-    "perform_destructive_or_unbounded_repairs",
-    "repeat_ambiguous_create_thread_or_send_message_to_thread",
-    "create_or_message_codex_tasks_without_real_user_authority_or_an_official_platform_capability",
-)
-
-
 def classify_incident(signal: IncidentSignal) -> IncidentClass:
     """Classify only structured fields; free-form prose never changes routing."""
 
@@ -224,9 +164,6 @@ def classify_incident(signal: IncidentSignal) -> IncidentClass:
 
 SIGNATURE_VERSION = "v1"
 
-# Сколько одинаковых успешных решений одной подписи нужно, чтобы способ
-# перестал требовать инженера и стал детерминированным раннбуком.
-PROMOTION_THRESHOLD = 2
 
 
 def incident_signature(signal: IncidentSignal) -> str:

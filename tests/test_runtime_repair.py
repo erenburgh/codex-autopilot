@@ -14,6 +14,7 @@ import unittest
 
 from codex_autopilot.runtime_repair import (
     GUARDED_DEFINITIONS,
+    Edit,
     RuntimeRepairError,
     RuntimeTree,
     apply_runtime_patch,
@@ -28,6 +29,38 @@ ARITH = '''"""Счёт, на котором показываем починку.
 
 def total(items):
     return sum(items) + 1
+'''
+
+REPORT = '''from codex_autopilot.arith import total
+
+
+def summary(items):
+    return "total: " + str(total(items)) + " (approx)"
+'''
+
+# Заглушки охраняемых определений: шлюз сверяет их текст, и без них
+# поддельное дерево не пройдёт проверку целостности.
+ENGINEER = '''
+def classify_incident(signal):
+    return signal
+
+
+def incident_signature(signal):
+    return "signature"
+
+
+def escalate_to_user(incident, reason):
+    return reason
+
+
+def _require_named_actions(actions):
+    if not actions:
+        raise RuntimeError("named action required")
+
+
+def _require_passing_healthcheck(result):
+    if result is None:
+        raise RuntimeError("healthcheck required")
 '''
 
 GUARDS_BASE = '''
@@ -92,7 +125,10 @@ class RuntimeRepairTests(unittest.TestCase):
         (package / "arith.py").write_text(ARITH, encoding="utf-8")
         (package / "lifecycle_base.py").write_text(GUARDS_BASE, encoding="utf-8")
         (package / "cli.py").write_text(GUARD_CLI, encoding="utf-8")
-        (package / "pipeline_engineer.py").write_text("", encoding="utf-8")
+        (package / "report.py").write_text(REPORT, encoding="utf-8")
+        (package / "pipeline_engineer.py").write_text(ENGINEER, encoding="utf-8")
+        (package / "engineer_authority.py").write_text("", encoding="utf-8")
+        (package / "hook_trust.py").write_text("", encoding="utf-8")
         tests = self.tmp / "tests"
         tests.mkdir()
         (tests / "test_baseline.py").write_text(BASELINE, encoding="utf-8")
@@ -103,11 +139,19 @@ class RuntimeRepairTests(unittest.TestCase):
 
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def repair(self, **overrides):
+    def repair(
+        self,
+        *,
+        module: str = "arith.py",
+        old: str | None = "return sum(items) + 1",
+        new: str = "return sum(items)",
+        edits=None,
+        **overrides,
+    ):
         kwargs = {
-            "module": "arith.py",
-            "old": "return sum(items) + 1",
-            "new": "return sum(items)",
+            "edits": edits
+            if edits is not None
+            else (Edit(module=module, old=old, new=new),),
             "test_name": "test_total_adds_up",
             "test_source": REPRO,
             "at": "2026-09-17T00:00:00+00:00",
@@ -127,7 +171,9 @@ class RuntimeRepairTests(unittest.TestCase):
             (self.tree.tests / "test_total_adds_up.py").is_file(),
             "тест-воспроизведение остаётся в наборе: это и есть доказательство",
         )
-        self.assertNotEqual(record.sha256_before, record.sha256_after)
+        change = record.changes[0]
+        self.assertEqual(change.module, "arith.py")
+        self.assertNotEqual(change.sha256_before, change.sha256_after)
 
     def test_the_repair_can_be_taken_back(self) -> None:
         record = self.repair()
@@ -199,10 +245,133 @@ class GuardTests(unittest.TestCase):
         )
 
     def test_authority_and_the_gateway_itself_are_out_of_reach(self) -> None:
-        for module in ("pipeline_engineer.py", "runtime_repair.py", "hook_trust.py"):
+        for module in ("engineer_authority.py", "runtime_repair.py", "hook_trust.py"):
             with self.assertRaises(RuntimeRepairError) as refusal:
                 self.repair(module=module)
             self.assertIn("out of reach", str(refusal.exception))
+
+    def test_a_repair_may_span_several_modules_at_once(self) -> None:
+        """Настоящая починка бывает набором, и по частям её не применить.
+
+        Так выглядело разделение ошибки модели и поломки машины на
+        прогоне v1.0: три модуля, и после любого одного из них набор
+        тестов красный. Шлюз принимает набор целиком или не принимает
+        вовсе.
+        """
+
+        repro = REPRO.replace(
+            "from codex_autopilot.arith import total",
+            "from codex_autopilot.report import summary",
+        ).replace("total([1, 2]), 3", 'summary([1, 2]), "total: 3"')
+        edits = (
+            Edit(module="arith.py", old="return sum(items) + 1", new="return sum(items)"),
+            Edit(module="report.py", old=' + " (approx)"', new=""),
+        )
+        record = self.repair(edits=edits, test_source=repro)
+        self.assertEqual(
+            sorted(change.module for change in record.changes),
+            ["arith.py", "report.py"],
+        )
+        self.assertNotIn(
+            "approx", (self.tree.package / "report.py").read_text(encoding="utf-8")
+        )
+
+    def test_half_of_a_set_is_not_applied(self) -> None:
+        """Если набор не доказан, живая установка не меняется ни в чём."""
+
+        repro = REPRO.replace(
+            "from codex_autopilot.arith import total",
+            "from codex_autopilot.report import summary",
+        ).replace("total([1, 2]), 3", 'summary([1, 2]), "total: 3"')
+        edits = (
+            Edit(module="arith.py", old="return sum(items) + 1", new="return sum(items)"),
+        )
+        with self.assertRaises(RuntimeRepairError) as refusal:
+            self.repair(edits=edits, test_source=repro)
+        self.assertIn("still fails with the patch applied", str(refusal.exception))
+        self.assertIn("+ 1", (self.tree.package / "arith.py").read_text(encoding="utf-8"))
+
+    def test_a_repair_may_add_a_new_module(self) -> None:
+        """Иногда починка - это вынести код в новый файл.
+
+        Так снимали формат v0.8: прежний модуль упёрся в потолок
+        размера, и правка потребовала отдельного файла.
+        """
+
+        edits = (
+            Edit(module="helpers.py", old=None, new="def exact(items):\n    return sum(items)\n"),
+            Edit(
+                module="arith.py",
+                old="return sum(items) + 1",
+                new="from codex_autopilot.helpers import exact\n\n    return exact(items)",
+            ),
+        )
+        record = self.repair(edits=edits)
+        created = next(item for item in record.changes if item.module == "helpers.py")
+        self.assertIsNone(created.sha256_before, "новый модуль не имеет прошлого текста")
+        self.assertTrue((self.tree.package / "helpers.py").is_file())
+
+    def test_a_reverted_set_takes_the_new_module_with_it(self) -> None:
+        edits = (
+            Edit(module="helpers.py", old=None, new="def exact(items):\n    return sum(items)\n"),
+            Edit(
+                module="arith.py",
+                old="return sum(items) + 1",
+                new="from codex_autopilot.helpers import exact\n\n    return exact(items)",
+            ),
+        )
+        record = self.repair(edits=edits)
+        revert_runtime_patch(record.patch_id, tree=self.tree)
+        self.assertFalse((self.tree.package / "helpers.py").exists())
+        self.assertIn("+ 1", (self.tree.package / "arith.py").read_text(encoding="utf-8"))
+
+    def test_a_new_module_never_overwrites_an_existing_one(self) -> None:
+        with self.assertRaises(RuntimeRepairError) as refusal:
+            self.repair(module="report.py", old=None, new="# подменяю целиком\n")
+        self.assertIn("already exists", str(refusal.exception))
+
+    def test_the_bookkeeping_of_incidents_is_repairable(self) -> None:
+        """Инженер вправе чинить свой же модуль - кроме своих полномочий."""
+
+        repro = '''
+import unittest
+
+from codex_autopilot.pipeline_engineer import incident_note
+
+
+class NoteTests(unittest.TestCase):
+    def test_a_note_is_returned(self) -> None:
+        self.assertEqual(incident_note(), "noted")
+'''
+        record = self.repair(
+            module="pipeline_engineer.py",
+            old="def classify_incident(signal):",
+            new='def incident_note():\n    return "noted"\n\n\ndef classify_incident(signal):',
+            test_name="test_incident_note",
+            test_source=repro,
+        )
+        self.assertEqual(record.changes[0].module, "pipeline_engineer.py")
+
+    def test_a_guarded_definition_inside_that_module_is_still_untouchable(self) -> None:
+        repro = '''
+import unittest
+
+from codex_autopilot.pipeline_engineer import _require_named_actions
+
+
+class ActionTests(unittest.TestCase):
+    def test_no_action_is_fine_now(self) -> None:
+        self.assertIsNone(_require_named_actions([]))
+'''
+        with self.assertRaises(RuntimeRepairError) as refusal:
+            self.repair(
+                module="pipeline_engineer.py",
+                old='        raise RuntimeError("named action required")',
+                new="        return None",
+                test_name="test_actions_are_optional",
+                test_source=repro,
+            )
+        self.assertIn("guarded definitions", str(refusal.exception))
 
     def test_a_fragment_that_occurs_twice_is_refused(self) -> None:
         target = self.tree.package / "arith.py"
