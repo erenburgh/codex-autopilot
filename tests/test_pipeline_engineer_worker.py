@@ -664,14 +664,8 @@ class EscalationAlwaysHasAWayBackTests(unittest.TestCase):
     прежней фазе - и возобновление молча ничего не закрывало.
     """
 
-    def test_resume_does_not_gate_on_the_run_phase(self) -> None:
-        import inspect
-
-        from codex_autopilot import control
-
-        body = inspect.getsource(control._answer_escalation)
-        self.assertNotIn('state.phase != "PIPELINE_ENGINEER_ESCALATED"', body)
-        self.assertIn("incident_ids_awaiting_the_user", body)
+    # Независимость возобновления от фазы прогона проверяется исполнением:
+    # test_resume_end_to_end.test_resume_answers_the_escalation_whatever_phase_the_run_is_in.
 
 
 class ReplaceStartsWithoutInheritedTicketsTests(unittest.TestCase):

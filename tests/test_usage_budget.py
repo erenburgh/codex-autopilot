@@ -96,13 +96,25 @@ class AStatedStopIsObeyedTests(unittest.TestCase):
 
 class TheSchedulerUsesTheBudgetTests(unittest.TestCase):
     def test_the_scheduler_asks_for_a_budget(self) -> None:
-        """Иначе правило живёт в тестах, а не в прогоне."""
+        """Иначе правило живёт в тестах, а не в прогоне - проверено исполнением.
 
-        import inspect
+        Прежде здесь искалась подстрока ``worker_budget(`` в исходнике
+        планировщика: она зелена и под ``if False:``. Теперь один и тот же
+        план планируется дважды - без снимка лимитов и с безлимитом - и
+        предел воркеров обязан измениться. Изменился - значит бюджет
+        спрошен на самом деле.
+        """
 
-        from codex_autopilot import scheduler
+        from codex_autopilot.scheduler import schedule
+        from test_scheduler import make_plan, make_state, raw_task
 
-        self.assertIn("worker_budget(", inspect.getsource(scheduler))
+        plan = make_plan([raw_task("A"), raw_task("B"), raw_task("C")], max_workers=2)
+        without = schedule(plan, make_state(plan))
+        unlimited_state = make_state(plan)
+        unlimited_state.rate_limits = {"credits": {"hasCredits": True}}
+        unlimited = schedule(plan, unlimited_state)
+        self.assertEqual(without.worker_limit, 2)
+        self.assertEqual(unlimited.worker_limit, len(plan.tasks), "бюджет не спрошен: безлимит не снял потолок")
 
 
 if __name__ == "__main__":
@@ -157,14 +169,9 @@ class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
         self.assertIn("4", text)
         self.assertIn("как вы указали", text)
 
-    def test_preflight_prints_it(self) -> None:
-        """Иначе вопрос живёт в тестах, а не перед стартом прогона."""
-
-        import inspect
-
-        from codex_autopilot import preflight
-
-        self.assertIn("capacity_notice(", inspect.getsource(preflight))
+    # «Preflight печатает ёмкость» проверяется исполнением всего отчёта:
+    # test_preflight.test_the_printed_report_runs_end_to_end ждёт строку
+    # «Ёмкость:» в том, что emit действительно вывел.
 
     def test_the_skill_tells_the_model_to_show_it(self) -> None:
         from pathlib import Path

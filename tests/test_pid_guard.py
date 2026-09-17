@@ -106,10 +106,20 @@ class OrphanedThreadIsLoadedBeforeTheTurnTests(unittest.TestCase):
         self.assertIn("thread-a", client.subscribed_thread_ids)
 
     def test_the_client_forgets_a_thread_it_unsubscribed(self) -> None:
-        """После unsubscribe ветка снова требует загрузки."""
+        """После unsubscribe ветка снова требует загрузки - исполнением.
+
+        Прежде искалась подстрока ``subscribed_thread_ids.discard`` в
+        исходнике метода. Здесь настоящий ``unsubscribe_thread`` зовётся
+        на клиенте с заглушенным транспортом, и ветка обязана исчезнуть
+        из подписок.
+        """
 
         from codex_autopilot.appserver import AppServerClient
-        import inspect
 
-        source = inspect.getsource(AppServerClient.unsubscribe_thread)
-        self.assertIn("subscribed_thread_ids.discard", source)
+        client = AppServerClient.__new__(AppServerClient)
+        client.subscribed_thread_ids = {"thread-a", "thread-b"}
+        sent: list[tuple[str, dict]] = []
+        client.request = lambda method, params, **_kw: sent.append((method, params)) or {}
+        client.unsubscribe_thread("thread-a")
+        self.assertEqual(sent, [("thread/unsubscribe", {"threadId": "thread-a"})])
+        self.assertEqual(client.subscribed_thread_ids, {"thread-b"})

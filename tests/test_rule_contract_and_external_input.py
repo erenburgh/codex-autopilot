@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 
@@ -38,14 +39,41 @@ class AppliedRulesReportTests(unittest.TestCase):
         self.assertEqual(parse_applied_rules(message), ("R7",))
 
     def test_prompt_asks_for_the_list_in_both_languages(self) -> None:
-        source = (
-            Path(__file__).resolve().parents[1]
-            / "src"
-            / "codex_autopilot"
-            / "ai_studio.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("строку AUTOPILOT_RULES с id правил", source)
-        self.assertIn("an AUTOPILOT_RULES line with the ids", source)
+        """Промпт воркера просит перечень правил - в обоих языках, исполнением.
+
+        Прежде искались две фразы в исходнике ai_studio.py. Строка в
+        файле - ещё не строка в промпте: она может стоять в ветке, до
+        которой сборка не доходит. Здесь настоящий промпт собирается
+        дважды, по языку прогона, и фраза обязана оказаться в результате.
+        """
+
+        from codex_autopilot.ai_studio import AIStudioRuntime
+        from test_ai_studio import plan, task
+
+        expected = {
+            "ru": "строку AUTOPILOT_RULES с id правил",
+            "en": "an AUTOPILOT_RULES line with the ids",
+        }
+        for language, phrase in expected.items():
+            with self.subTest(language=language):
+                root = Path(tempfile.mkdtemp()).resolve()
+                self.addCleanup(shutil.rmtree, root, True)
+                (root / ".git").mkdir()
+                skill = root / "SKILL.md"
+                skill.write_text("# test skill\n", encoding="utf-8")
+                runtime = AIStudioRuntime(
+                    plan([task("code-a", "integrator")]),
+                    root,
+                    language=language,
+                    skill_path=skill,
+                )
+                prompt = runtime.build_prompt(
+                    "code-a",
+                    phase="implementation",
+                    task_states={"code-a": "READY"},
+                    reservation_token="fresh-relay",
+                )
+                self.assertIn(phrase, prompt)
 
     def test_every_prompt_variant_asks_for_the_list(self) -> None:
         """Счёт вхождений здесь не годится: вариантов финальной строки

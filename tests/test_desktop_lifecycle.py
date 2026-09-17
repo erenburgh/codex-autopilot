@@ -1239,6 +1239,21 @@ class DesktopLifecycleTests(unittest.TestCase):
                 == descriptor.reservation_token
             ],
         )
+        # Барьер обязан спрашивать ОБЩИЙ предикат causal_predecessor, а не
+        # держать свою копию: две копии уже чинились дважды. Прежде это
+        # проверялось подстрокой в исходнике - и было бы зелено под
+        # `if False:`. Здесь предикат подменён отказом, и барьер обязан
+        # отказать тем же словом; состояние при этом не меняется - отказ
+        # стоит до store.save.
+        with mock.patch(
+            "codex_autopilot.lifecycle_dispatch.causal_predecessor", return_value=None
+        ):
+            with self.assertRaisesRegex(DesktopLifecycleError, "no completed causal predecessor"):
+                adopt_automatic_dispatcher_successor(
+                    self.cfg,
+                    completed_reservation_token=descriptor.reservation_token,
+                    successor_reservation_token=outcome.descriptors[0].reservation_token,
+                )
         owner, owner_turn = adopt_automatic_dispatcher_successor(
             self.cfg,
             completed_reservation_token=descriptor.reservation_token,
