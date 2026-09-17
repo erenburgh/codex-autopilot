@@ -61,6 +61,7 @@ from .lifecycle_failures import (  # noqa: F401
 
 from .lifecycle_dispatch import (  # noqa: F401
     adopt_automatic_dispatcher_successor,
+    causal_predecessor,
     claim_automatic_app_server_turn,
     create_desktop_thread_via_app_server,
     record_automatic_app_server_exit,
@@ -78,6 +79,7 @@ __all__ = [
     "WORKSPACE_HANDOFF_OK",
     "acknowledge_desktop_send",
     "adopt_automatic_dispatcher_successor",
+    "causal_predecessor",
     "audit_creation_causality",
     "claim_automatic_app_server_turn",
     "complete_desktop_worker",

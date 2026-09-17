@@ -18,6 +18,7 @@ from .control import arm, find_project_root, handle_interrupt_hook, handle_post_
 from .hook_trust import HookPreflightError, HookTrustApprovalRequired
 from .lifecycle import (
     adopt_automatic_dispatcher_successor,
+    causal_predecessor,
     complete_desktop_worker,
     pause_desktop_run,
     record_automatic_app_server_exit,
@@ -373,13 +374,16 @@ def _automatic_relay_loop(
                 if item.get("reservation_token") == descriptor.reservation_token
             )
             relay_owner = str(session.get("relay_owner_thread_id") or "")
-            predecessor = next(
-                item
-                for item in reversed(state.worker_sessions)
-                if item.get("thread_id") == relay_owner
-                and item.get("status") == "COMPLETED"
-                and item.get("turn_id")
-            )
+            # Тот же предикат, что у одиночной ветки выше и у Stop-хука.
+            # Прежде здесь стояла своя выборка по status == "COMPLETED":
+            # владелец, кончивший ход с BLOCKED/ESCALATE, статус COMPLETED
+            # не получает (lifecycle_completion оставляет worker_status), а
+            # turn_completed пишет - и веер из его преемников падал голым
+            # StopIteration. Замерено 18.09 разбором пяти кандидатов на
+            # «ход закончен»: дрейф был здесь один, остальные - другие вопросы.
+            predecessor = causal_predecessor(state, relay_owner)
+            if predecessor is None:
+                raise RuntimeError("automatic relay has no completed causal predecessor")
             spawn_automatic_app_server_relay(
                 cfg.root,
                 reservation_token=descriptor.reservation_token,
