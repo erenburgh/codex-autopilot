@@ -320,6 +320,20 @@ class CapacityAndStrategyTests(unittest.TestCase):
         self.assertEqual(detail.get("to"), len(plan.tasks))
         self.assertIn("списание без ограничений", detail.get("reason", ""))
 
+    def test_the_effective_limit_is_one_function_for_every_reader(self):
+        """B6: у предела воркеров был три расчёта; теперь один, и он равен решению."""
+
+        from codex_autopilot.scheduler import effective_worker_limit
+
+        plan = make_plan([raw_task("A"), raw_task("B"), raw_task("C")], max_workers=2)
+        for limits in ({}, {"credits": {"hasCredits": True}}, {"primary": {"usedPercent": 80.0}}):
+            with self.subTest(limits=limits):
+                state = make_state(plan); state.rate_limits = limits
+                expected = effective_worker_limit(plan, state)
+                self.assertEqual(schedule(plan, state).worker_limit, expected)
+        serial = make_state(plan); serial.execution_strategy = "serial"
+        self.assertEqual(effective_worker_limit(plan, serial), 1)
+
     def test_a_budget_that_keeps_a_cap_never_exceeds_the_state_cap(self):
         """Инвариант, на котором держится подъём потолка.
 

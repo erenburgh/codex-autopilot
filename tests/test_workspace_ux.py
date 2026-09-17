@@ -297,6 +297,13 @@ class SemanticStatusTests(unittest.TestCase):
         ):
             self.assertIn(expected, rendered)
 
+    def test_worker_slots_follow_the_budget_on_an_unlimited_account(self) -> None:
+        """B6: карточка считала предел как min(plan, state) и на безлимите показывала «3/2»."""
+
+        self.state.rate_limits = {"credits": {"hasCredits": True}}
+        snapshot = project_status_snapshot(self.cfg, self.state, self.plan)
+        self.assertEqual(snapshot["worker_slots"]["total"], len(self.plan.tasks))
+
     def test_the_runtime_line_does_not_invent_a_model_it_never_recorded(self) -> None:
         """R26: отображается только измеренное.
 

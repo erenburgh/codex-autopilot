@@ -8,6 +8,7 @@ from .plan import Plan
 from .lifecycle_base import audit_creation_causality, creation_causality_coverage
 from .pipeline_engineer import PipelineIncidentStore, render_pipeline_status
 from .run_state import RunState
+from .scheduler import effective_worker_limit
 from .task_state import TaskState, unmet_dependencies
 from .thread_titles import task_phase_thread_title
 
@@ -67,12 +68,9 @@ def project_status_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[st
     verified = sum(
         value == TaskState.VERIFIED.value for value in state.task_states.values()
     )
-    worker_limit = min(plan.max_parallel_workers, state.max_parallel_workers)
-    if plan.legacy_serial or "serial" in {
-        plan.execution_strategy,
-        state.execution_strategy,
-    }:
-        worker_limit = 1
+    # Тот же расчёт, что у планировщика: иначе на безлимите карточка
+    # показывала «3/2», считая предел как min(plan, state).
+    worker_limit = effective_worker_limit(plan, state)
     worker_used = len(state.active_task_ids)
     computer_use_limit = min(plan.computer_use_slots, state.computer_use_slots)
     computer_use_used = _computer_use_used(state, sessions)

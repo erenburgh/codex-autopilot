@@ -1152,6 +1152,51 @@ class DesktopLifecycleTests(unittest.TestCase):
             )
         )
 
+    def test_followups_on_an_unlimited_account_are_not_capped_by_the_declared_number(self) -> None:
+        """B6: три формулы предела - и на безлимите две из них лгут.
+
+        После A2 планировщик на безлимитном аккаунте берёт столько задач,
+        сколько открыл граф, а потолок в состоянии идёт за бюджетом. Но
+        гейт followups считал предел как min(plan, state): три реализации
+        идут, первая завершилась - а верифаера ей не резервировали, потому
+        что «две активные уже упёрлись в заявленные две». Замерено: на
+        безлимите планировщик даёт 3, min(plan, state) даёт 2.
+        """
+
+        raw = graph(max_workers=2)
+        raw["tasks"] = [task("A", path="src/a"), task("B", path="src/b"), task("D", path="src/d")]
+        root = self.root / "unlimited"
+        root.mkdir()
+        (root / ".git").mkdir()
+        plan_file = root / "input-plan.json"
+        plan_file.write_text(json.dumps(raw), encoding="utf-8")
+        initialize_project(root, plan_file, profile="adaptive", skill_path=self.skill, desktop_project_id="desktop-project")
+        cfg = load_config(root)
+        store = StateStore(cfg.state_dir)
+        state = store.load()
+        state.rate_limits = {"credits": {"hasCredits": True}}
+        store.save(state)
+
+        descriptors = reserve_ready_frontier(cfg)
+        self.assertEqual(sorted(item.task_id for item in descriptors), ["A", "B", "D"], "A2: безлимит открывает весь граф")
+        for item in descriptors:
+            activate_via_app_server(cfg, root, item, f"thread-{item.task_id}")
+
+        first = next(item for item in descriptors if item.task_id == "A")
+        bump_task_checkpoint(root, "A", "Completed: A")
+        ProjectMemory(root).record_evidence(
+            kind="test", summary="A passed.", created_by="desktop-lifecycle-test",
+            milestone_id="A", command="verify A", result="PASS", exit_code=0,
+        )
+        outcome = complete_desktop_worker(
+            cfg, thread_id="thread-A", turn_id="turn-thread-A", final_message="AUTOPILOT_STATUS: ROTATE"
+        )
+        self.assertEqual(
+            [item.kind for item in outcome.descriptors],
+            ["verifier"],
+            "две реализации ещё идут, и гейт followups счёл предел заявленной двойкой",
+        )
+
     def test_authorized_dispatcher_survives_modified_hook_without_chat_relay(self) -> None:
         descriptor = reserve_ready_frontier(
             self.cfg,

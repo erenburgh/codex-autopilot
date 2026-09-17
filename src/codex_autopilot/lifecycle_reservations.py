@@ -40,7 +40,7 @@ from .resources import (
 )
 from .scope import scope_baseline
 from .run_state import RunState, StateStore, utc_now
-from .scheduler import schedule
+from .scheduler import effective_worker_limit, schedule
 from .task_state import (
     TaskState,
     migrate_v08_task_states,
@@ -830,12 +830,10 @@ def _reserve_followup_sessions_in_state(
 
     paused_task_ids = paused_task_ids or set()
 
-    worker_limit = min(plan.max_parallel_workers, state.max_parallel_workers)
-    if plan.legacy_serial or "serial" in {
-        plan.execution_strategy,
-        state.execution_strategy,
-    }:
-        worker_limit = 1
+    # Тот же расчёт, что у планировщика: гейт followups идёт ДО schedule(),
+    # потолок в состоянии ещё заявленный, и min(plan, state) на безлимите
+    # отказывал завершённой реализации в верифаере.
+    worker_limit = effective_worker_limit(plan, state)
     descriptors: list[LaunchDescriptor] = []
     memory = ProjectMemory(cfg.root)
     for task in plan.tasks:

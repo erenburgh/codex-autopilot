@@ -146,18 +146,10 @@ def schedule(
     reconcile_ready_tasks(plan, state)
 
     strategy = _effective_strategy(plan, state)
-    # Заявленное число - потолок и решение пользователя. Адаптация может
-    # только понижать его, и только когда лимит действительно рядом:
-    # человеку с автосписанием урезать нечего, он платит по факту.
-    declared = min(plan.max_parallel_workers, state.max_parallel_workers)
-    budget = worker_budget(declared, getattr(state, "rate_limits", None))
-    # None означает отсутствие потолка: на безлимитном аккаунте
-    # одновременность задаёт сам граф, а не выдуманное число.
-    worker_limit = len(plan.tasks) if budget.workers is None else budget.workers
-    if strategy == "serial":
-        worker_limit = 1
-        if len(state.active_task_ids) > 1:
-            raise ValueError("serial scheduler cannot contain more than one active task")
+    budget = _worker_budget_for(plan, state)
+    worker_limit = effective_worker_limit(plan, state)
+    if strategy == "serial" and len(state.active_task_ids) > 1:
+        raise ValueError("serial scheduler cannot contain more than one active task")
     if budget.workers is None and worker_limit > state.max_parallel_workers:
         # Потолок в состоянии идёт ЗА бюджетом. Прежде фронтир брал
         # столько задач, сколько открыл граф, а потолок оставался
@@ -291,6 +283,36 @@ def _graph_relevance(plan: Plan) -> tuple[dict[str, int], dict[str, int]]:
     for task in reversed(plan.tasks):
         visit(task.id)
     return critical_paths, {task_id: len(items) for task_id, items in descendants.items()}
+
+
+def _worker_budget_for(plan: Plan, state: RunState):
+    # Заявленное число - потолок и решение пользователя. Адаптация может
+    # только понижать его, и только когда лимит действительно рядом:
+    # человеку с автосписанием урезать нечего, он платит по факту.
+    declared = min(plan.max_parallel_workers, state.max_parallel_workers)
+    return worker_budget(declared, getattr(state, "rate_limits", None))
+
+
+def effective_worker_limit(plan: Plan, state: RunState) -> int:
+    """Сколько воркеров вправе идти сейчас - один ответ для всех читателей.
+
+    Прежде ответов было три: этот расчёт здесь, min(plan, state) в
+    карточке статуса и тот же min в гейте followups резервации. После
+    A2 потолок в состоянии идёт за бюджетом, и два последних на
+    безлимитном аккаунте расходились с первым. Замерено 17.09: планировщик
+    берёт 3 задачи, min(plan, state) даёт 2 - статус показывал «3/2», а
+    завершённой реализации не резервировали верифаера, потому что «две
+    активные уже упёрлись в заявленные две».
+
+    None у бюджета означает отсутствие потолка: на безлимитном аккаунте
+    одновременность задаёт сам граф, а не выдуманное число. Серийная
+    стратегия сильнее любого бюджета.
+    """
+
+    if _effective_strategy(plan, state) == "serial":
+        return 1
+    budget = _worker_budget_for(plan, state)
+    return len(plan.tasks) if budget.workers is None else budget.workers
 
 
 def _effective_strategy(plan: Plan, state: RunState) -> str:
