@@ -155,11 +155,11 @@ def launch_checklist(
                     "reserved",
                     task_id,
                     False,
-                    "резервирование не найдено: задача не бралась в работу",
+                    "no reservation found: the task was never taken up",
                 )
             )
             continue
-        checks.append(LaunchCheck("reserved", task_id, True, "резервирование есть"))
+        checks.append(LaunchCheck("reserved", task_id, True, "reservation present"))
 
         thread_id = str(session.get("thread_id") or "")
         checks.append(
@@ -167,7 +167,7 @@ def launch_checklist(
                 "thread_bound",
                 task_id,
                 bool(thread_id),
-                f"ветка {thread_id}" if thread_id else "ветка не привязана",
+                f"thread {thread_id}" if thread_id else "no thread bound",
             )
         )
 
@@ -176,8 +176,8 @@ def launch_checklist(
         checks.append(
             _event_check(
                 "created_in_project", task_id, events, CREATED_EVENTS,
-                ok="ветка создана через App Server в проекте прогона",
-                bad="нет записи о создании ветки",
+                ok="thread created through App Server in the run's project",
+                bad="no record of the thread being created",
             )
         )
         # Отправка подтверждается durable-записью, а не мгновенным
@@ -191,15 +191,15 @@ def launch_checklist(
                 "send_acknowledged",
                 task_id,
                 acknowledged,
-                f"статус сессии {session.get('status')!r}"
-                + ("" if acknowledged else "; отправка не подтверждена"),
+                f"session status {session.get('status')!r}"
+                + ("" if acknowledged else "; the send was not acknowledged"),
             )
         )
         checks.append(
             _event_check(
                 "launch_report_written", task_id, events, REPORT_EVENTS,
-                ok="рантайм дошёл до отчёта о запуске",
-                bad="рантайм до отчёта о запуске не дошёл",
+                ok="the runtime reached the launch report",
+                bad="the runtime did not reach the launch report",
             )
         )
         checks.append(
@@ -225,9 +225,9 @@ def launch_checklist(
                 "dispatcher_alive",
                 task_id,
                 True if finished else (alive(pid) if pid is not None else None),
-                "ход завершён, диспетчер больше не нужен"
+                "turn completed, the dispatcher is no longer needed"
                 if finished
-                else (f"диспетчер pid {pid}" if pid is not None else "pid диспетчера не записан"),
+                else (f"dispatcher pid {pid}" if pid is not None else "dispatcher pid not recorded"),
             )
         )
 
@@ -237,9 +237,9 @@ def launch_checklist(
                 "no_failure_after_launch",
                 task_id,
                 failure is None,
-                "отказов после запуска нет"
+                "no failures after launch"
                 if failure is None
-                else f"после запуска записан отказ: {failure}",
+                else f"a failure was recorded after launch: {failure}",
             )
         )
     return tuple(checks)
@@ -274,7 +274,7 @@ def launch_confirmed(checks: Iterable[LaunchCheck]) -> bool:
 
 def render_launch_checklist(checks: Sequence[LaunchCheck]) -> str:
     if not checks:
-        return "Чек-лист запуска: проверять нечего — ни одна задача не названа."
+        return "Launch checklist: nothing to check — no task was named."
     lines: list[str] = []
     for task_id in dict.fromkeys(item.task_id for item in checks):
         lines.append(f"{task_id}:")
@@ -282,11 +282,11 @@ def render_launch_checklist(checks: Sequence[LaunchCheck]) -> str:
             if item.task_id == task_id:
                 lines.append(f"  [{item.mark}] {item.id}: {item.detail}")
     verdict = {
-        LaunchVerdict.CONFIRMED: "ЗАПУСК ПОДТВЕРЖДЁН",
+        LaunchVerdict.CONFIRMED: "LAUNCH CONFIRMED",
         LaunchVerdict.IN_PROGRESS: (
-            "ЗАПУСК ИДЁТ — диспетчер жив, отказов нет, часть шагов ещё впереди"
+            "LAUNCH IN PROGRESS — dispatcher alive, no failures, some steps still ahead"
         ),
-        LaunchVerdict.FAILED: "ЗАПУСК ОТКАЗАЛ — это отказ, а не успех",
+        LaunchVerdict.FAILED: "LAUNCH FAILED — this is a failure, not a success",
     }[launch_verdict(checks)]
     return verdict + "\n" + "\n".join(lines)
 
@@ -294,29 +294,29 @@ def render_launch_checklist(checks: Sequence[LaunchCheck]) -> str:
 # Шаги запуска человеческим языком. Порядок берётся из журнала, а не
 # отсюда: журнал и есть настоящая последовательность.
 TIMELINE_STEPS = {
-    "reservation_created": "слот зарезервирован",
-    "create_requested": "запрошено создание ветки",
-    "app_server_create_claimed": "создание начато",
-    "app_server_thread_created": "ветка создана",
-    "app_server_project_scoped_create": "создана в пространстве проекта",
-    "prep_completed": "рабочий каталог подготовлен",
-    "automatic_turn_claimed": "ход взят",
-    "start_acknowledged": "работа начата",
-    "turn_completed": "ход завершён",
-    "implementation_completed": "реализация завершена",
-    "verification_started": "проверка начата",
-    "verification_passed": "проверка пройдена",
+    "reservation_created": "slot reserved",
+    "create_requested": "thread creation requested",
+    "app_server_create_claimed": "creation started",
+    "app_server_thread_created": "thread created",
+    "app_server_project_scoped_create": "created in the project's space",
+    "prep_completed": "working directory prepared",
+    "automatic_turn_claimed": "turn claimed",
+    "start_acknowledged": "work started",
+    "turn_completed": "turn completed",
+    "implementation_completed": "implementation completed",
+    "verification_started": "verification started",
+    "verification_passed": "verification passed",
 }
 
 TIMELINE_FAILURES = {
-    "create_failed": "создание ветки не удалось",
-    "start_failed": "старт не удался",
-    "prep_failed": "подготовка каталога не удалась",
-    "interrupt_observed": "работа прервана",
-    "retry_scheduled": "назначен повтор",
-    "scope_violation_recorded": "выход за объявленную область",
-    "rule_declaration_missing": "в отчёте нет применённых правил",
-    "scope_not_observed": "область проверить не удалось",
+    "create_failed": "thread creation failed",
+    "start_failed": "start failed",
+    "prep_failed": "directory preparation failed",
+    "interrupt_observed": "work interrupted",
+    "retry_scheduled": "retry scheduled",
+    "scope_violation_recorded": "outside the declared scope",
+    "rule_declaration_missing": "the report lists no applied rules",
+    "scope_not_observed": "the scope could not be checked",
 }
 
 
@@ -334,7 +334,7 @@ def render_launch_timeline(state: RunState, task_ids: Sequence[str]) -> str:
         session = _latest_session(state, task_id)
         if session is None:
             lines.append(f"{task_id}:")
-            lines.append("  [✗] слот не зарезервирован — задача не бралась в работу")
+            lines.append("  [✗] slot not reserved — the task was never taken up")
             continue
         lines.append(f"{task_id}:")
         for event in _current_attempt(
@@ -384,18 +384,18 @@ def _placement_lines(detail: str) -> list[str]:
     before, _, after = detail.partition(" -> ")
     before, after = before.strip(), after.strip()
     names = {
-        INSIDE: "в проекте",
-        OUTSIDE: "видна, но вне проекта",
-        ABSENT: "Desktop о ней не знает",
+        INSIDE: "in the project",
+        OUTSIDE: "visible, but outside the project",
+        ABSENT: "unknown to Desktop",
     }
     if before == after == INSIDE:
-        return ["  [✓] размещение в проекте подтверждено"]
-    lines = [f"  [✗] размещение: {names.get(before, before)}"]
+        return ["  [✓] placement in the project confirmed"]
+    lines = [f"  [✗] placement: {names.get(before, before)}"]
     if after == INSIDE:
-        lines.append("  [→] перенесена в проект")
-        lines.append("  [✓] размещение в проекте подтверждено")
+        lines.append("  [→] moved into the project")
+        lines.append("  [✓] placement in the project confirmed")
     else:
-        lines.append(f"  [✗] перенос не помог: {names.get(after, after)}")
+        lines.append(f"  [✗] the move did not help: {names.get(after, after)}")
     return lines
 
 
@@ -459,16 +459,16 @@ def _desktop_visibility(
 
     if not thread_id:
         return LaunchCheck(
-            "visible_in_desktop", task_id, None, "нечего искать: ветка не привязана"
+            "visible_in_desktop", task_id, None, "nothing to look for: no thread bound"
         )
     if required == "any":
         return LaunchCheck(
-            "visible_in_desktop", task_id, None, "размещение не требуется конфигом"
+            "visible_in_desktop", task_id, None, "placement not required by the config"
         )
     placement = str(session.get("desktop_placement") or "")
     if placement == INSIDE:
         return LaunchCheck(
-            "visible_in_desktop", task_id, True, "ветка в проекте и видна в сайдбаре"
+            "visible_in_desktop", task_id, True, "thread in the project and visible in the sidebar"
         )
     if placement == OUTSIDE:
         # При required="visible" вне проекта - всё ещё видимая ветка, и
@@ -479,14 +479,14 @@ def _desktop_visibility(
                 "visible_in_desktop",
                 task_id,
                 True,
-                "ветка видна; вне проекта, что конфиг допускает",
+                "thread visible; outside the project, which the config allows",
             )
         return LaunchCheck(
-            "visible_in_desktop", task_id, False, "сервер знает ветку, но она вне проекта"
+            "visible_in_desktop", task_id, False, "the server knows the thread, but it is outside the project"
         )
     if placement == ABSENT:
         return LaunchCheck(
-            "visible_in_desktop", task_id, False, "сервер ветку не знает: она не сохранилась"
+            "visible_in_desktop", task_id, False, "the server does not know the thread: it was not persisted"
         )
     waited = _seconds_since_create(session, now=now)
     if waited is not None and waited > PLACEMENT_MEASUREMENT_DEADLINE_SECONDS:
@@ -494,11 +494,11 @@ def _desktop_visibility(
             "visible_in_desktop",
             task_id,
             False,
-            f"размещение не измерено спустя {int(waited)} с после создания ветки: "
-            "мерить стало некому",
+            f"placement not measured {int(waited)} s after the thread was created: "
+            "nobody is left to measure it",
         )
     return LaunchCheck(
-        "visible_in_desktop", task_id, None, "размещение ещё не измерено"
+        "visible_in_desktop", task_id, None, "placement not measured yet"
     )
 
 

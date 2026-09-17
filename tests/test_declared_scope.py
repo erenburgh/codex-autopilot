@@ -107,7 +107,7 @@ class DeclaredScopeTests(unittest.TestCase):
         violations = self.audit((), [str(self.root / "src/a.py")])
         self.assertEqual(len(violations), 1)
         self.assertIn("R7", violations[0])
-        self.assertIn("не объявила ни одной файловой заявки", violations[0])
+        self.assertIn("declared no file write claim", violations[0])
 
     def test_change_inside_declared_directory_is_clean(self) -> None:
         claim = ResourceClaim(id="c1", kind="directory", target="src", access="write")
@@ -117,7 +117,7 @@ class DeclaredScopeTests(unittest.TestCase):
         claim = ResourceClaim(id="c1", kind="directory", target="src", access="write")
         violations = self.audit((claim,), [str(self.root / "docs/readme.md")])
         self.assertEqual(len(violations), 1)
-        self.assertIn("вне объявленной", violations[0])
+        self.assertIn("outside the declared", violations[0])
         self.assertIn("PLAN_CHANGE_REQUEST", violations[0])
 
     def test_read_access_does_not_authorize_a_change(self) -> None:

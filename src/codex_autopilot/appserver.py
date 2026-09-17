@@ -166,11 +166,11 @@ class AppServerClient:
                 raise
             raise AppServerError(
                 f"App Server did not answer `initialize` within {INITIALIZE_TIMEOUT:.0f} s. "
-                "Это отказ рукопожатия, а не отказ в правах: запрашивать доступ к "
-                "CODEX_HOME и повторять команду бесполезно. Обычная причина - "
-                "установленный плагин или skill, который App Server не может "
-                "загрузить; его жалобы видны в stderr ниже. "
-                f"Исходный текст: {exc}"
+                "This is a handshake failure, not a permission failure: asking for access to "
+                "CODEX_HOME and repeating the command is useless. The usual cause is "
+                "an installed plugin or skill that App Server cannot "
+                "load; its complaints are visible in stderr below. "
+                f"Original text: {exc}"
             ) from exc
         self.notify("initialized")
         return result

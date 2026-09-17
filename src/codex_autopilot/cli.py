@@ -144,7 +144,7 @@ def parser() -> argparse.ArgumentParser:
     devops_resolve.add_argument(
         "--note",
         default="",
-        help="обстоятельства прозой: объясняют починку и ни на что не влияют",
+        help="circumstances in prose: they explain the repair and change nothing",
     )
     # Задача, остановленная нарушением правила, снимается только
     # человеком и только с записанной причиной. Прежде снять её было
@@ -153,7 +153,7 @@ def parser() -> argparse.ArgumentParser:
     # существовало, и прогон стоял навсегда.
     unblock = sub.add_parser(
         "unblock",
-        help="снять остановку задачи решением пользователя, с записанной причиной",
+        help="lift a task's stop by the user's decision, with a recorded reason",
     )
     unblock.add_argument("--project", type=Path, default=Path.cwd())
     unblock.add_argument("--task", required=True)
@@ -259,9 +259,9 @@ def _record_detached_dispatch_failure(cfg, token: str, error: BaseException) -> 
             )
         if phase is IncidentPhase.AUTO_RECOVERY_FAILED:
             store.ensure_pipeline_engineer(incident_id, at=now)
-        print(f"codex-autopilot: тикет {incident_id} открыт по отказу диспетчера")
+        print(f"codex-autopilot: ticket {incident_id} opened for the dispatcher failure")
     except PipelineIncidentError as incident_error:
-        print(f"codex-autopilot: тикет завести не удалось: {incident_error}")
+        print(f"codex-autopilot: the ticket could not be opened: {incident_error}")
 
 
 
@@ -297,7 +297,7 @@ def _run_automatic_relay_dispatch(
             cfg, token=token, owner=owner, owner_turn=owner_turn, cursor=cursor
         )
     except BaseException as error:
-        _print_relay_timeline(cfg, cursor.token, "на отказе")
+        _print_relay_timeline(cfg, cursor.token, "on failure")
         _record_detached_dispatch_failure(cfg, cursor.token, error)
         raise
 
@@ -348,7 +348,7 @@ def _print_relay_timeline(cfg, token: str, headline: str) -> None:
         print(f"\n=== {headline} ===")
         print(render_launch_timeline(state, [task_id]), flush=True)
     except Exception as error:  # отчёт не вправе ронять работу
-        print(f"codex-autopilot: лента недоступна: {error}", flush=True)
+        print(f"codex-autopilot: the timeline is unavailable: {error}", flush=True)
 
 
 @dataclass
@@ -369,7 +369,7 @@ def _automatic_relay_loop(
     cursor = cursor or _RelayCursor(token)
     while True:
         cursor.token = token
-        _print_relay_timeline(cfg, token, "перед запуском задачи")
+        _print_relay_timeline(cfg, token, "before launching the task")
         dispatcher_log = (
             cfg.state_dir / "logs" / f"app-server-dispatcher-{token}.jsonl"
         )
@@ -390,7 +390,7 @@ def _automatic_relay_loop(
                 initiator_turn_id=owner_turn,
                 connected_client=client,
             )
-        _print_relay_timeline(cfg, token, "после хода задачи")
+        _print_relay_timeline(cfg, token, "after the task's turn")
         proc = client.proc
         if proc is None or proc.poll() is None:
             raise RuntimeError("per-task App Server process did not fully exit")
@@ -546,15 +546,15 @@ def main(argv: list[str] | None = None) -> int:
             plan = load_plan(cfg.state_dir, cfg.profile)
             task_id = str(args.task).strip()
             if task_id not in plan.task_map:
-                raise SystemExit(f"в плане нет задачи {task_id!r}")
+                raise SystemExit(f"the plan has no task {task_id!r}")
             if state.task_states.get(task_id) != TaskState.BLOCKED.value:
                 raise SystemExit(
-                    f"{task_id} не остановлена: сейчас "
+                    f"{task_id} is not stopped: it is now "
                     f"{state.task_states.get(task_id)}"
                 )
             reason = str(args.reason).strip()
             if not reason:
-                raise SystemExit("нужна причина: --reason")
+                raise SystemExit("a reason is required: --reason")
             state.task_states = transition_task(
                 plan, state.task_states, task_id, TaskState.READY
             )
@@ -567,8 +567,8 @@ def main(argv: list[str] | None = None) -> int:
                 state.last_error = None
             store.save(state)
             print(
-                f"{task_id}: остановка снята решением пользователя — {reason}\n"
-                "Продолжи прогон фразой «Resume Codex Autopilot.» в задаче Codex."
+                f"{task_id}: the stop was lifted by the user's decision — {reason}\n"
+                "Continue the run with the phrase «Resume Codex Autopilot.» in a Codex task."
             )
             return 0
         if args.command == "devops-repair-runtime":
@@ -722,7 +722,7 @@ def main(argv: list[str] | None = None) -> int:
             state = StateStore(cfg.state_dir).load()
             tasks = list(args.task) or list(state.active_task_ids or ())
             if not tasks:
-                print("активных задач нет")
+                print("no active tasks")
                 return 0
             print(render_launch_timeline(state, tasks))
             return 0

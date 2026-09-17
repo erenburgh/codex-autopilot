@@ -98,7 +98,7 @@ class ChecklistTests(unittest.TestCase):
             pid_alive=lambda pid: True,
         )
         self.assertTrue(launch_confirmed(checks))
-        self.assertIn("ЗАПУСК ПОДТВЕРЖДЁН", render_launch_checklist(checks))
+        self.assertIn("LAUNCH CONFIRMED", render_launch_checklist(checks))
 
     def test_a_task_that_was_never_reserved_is_not_confirmed(self) -> None:
         checks = launch_checklist(
@@ -180,8 +180,8 @@ class ChecklistTests(unittest.TestCase):
             self.cfg, self.state(sessions=[], events=[]), task_ids=["A"]
         )
         rendered = render_launch_checklist(checks)
-        self.assertIn("ЗАПУСК ОТКАЗАЛ", rendered)
-        self.assertIn("это отказ, а не успех", rendered)
+        self.assertIn("LAUNCH FAILED", rendered)
+        self.assertIn("this is a failure, not a success", rendered)
 
 
 class DesktopVisibilityTests(ChecklistTests):
@@ -209,14 +209,14 @@ class DesktopVisibilityTests(ChecklistTests):
 
         check = self.visibility(self.checks_now("OUTSIDE"))
         self.assertFalse(check.passed)
-        self.assertIn("вне проекта", check.detail)
+        self.assertIn("outside the project", check.detail)
 
     def test_a_vanished_thread_is_reported(self) -> None:
         """Ветка без хода на сервере не сохраняется - замерено на пробах."""
 
         check = self.visibility(self.checks_now("ABSENT"))
         self.assertFalse(check.passed)
-        self.assertIn("не сохранилась", check.detail)
+        self.assertIn("not persisted", check.detail)
 
     def test_an_unmeasured_placement_is_unassessable_not_invisible(self) -> None:
         self.assertIsNone(self.visibility(self.checks_now("")).passed)
@@ -273,7 +273,7 @@ class VerdictTests(ChecklistTests):
             pid_alive=lambda pid: True,
         )
         self.assertIs(launch_verdict(checks), LaunchVerdict.IN_PROGRESS)
-        self.assertIn("ЗАПУСК ИДЁТ", render_launch_checklist(checks))
+        self.assertIn("LAUNCH IN PROGRESS", render_launch_checklist(checks))
 
     def test_a_dead_dispatcher_is_a_failure_not_progress(self) -> None:
         checks = launch_checklist(
@@ -376,7 +376,7 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
         # устойчивого "completed" и не создаёт ветку никогда.
         self.assertTrue(result.get("continue"))
         self.assertNotIn("decision", result)
-        self.assertNotIn("Тикет", result["systemMessage"])
+        self.assertNotIn("Ticket", result["systemMessage"])
         self.assertEqual(PipelineIncidentStore(self.cfg.state_dir).load()["incidents"], [])
 
     def test_a_launch_in_progress_is_reported_without_a_ticket(self) -> None:
@@ -390,33 +390,33 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
         ):
             result = self.report()
         self.assertTrue(result.get("continue"))
-        self.assertNotIn("Тикет", result["systemMessage"])
+        self.assertNotIn("Ticket", result["systemMessage"])
         self.assertEqual(PipelineIncidentStore(self.cfg.state_dir).load()["incidents"], [])
 
     def test_an_unconfirmed_launch_blocks_instead_of_claiming_success(self) -> None:
         result = self.report()
         self.assertEqual(result.get("decision"), "block")
         self.assertNotIn("continue", result)
-        self.assertIn("ЗАПУСК ОТКАЗАЛ", result["reason"])
+        self.assertIn("LAUNCH FAILED", result["reason"])
 
     def test_an_unconfirmed_launch_opens_a_devops_ticket(self) -> None:
         from codex_autopilot.pipeline_engineer import PipelineIncidentStore
 
         result = self.report()
-        self.assertIn("Тикет", result["reason"])
+        self.assertIn("Ticket", result["reason"])
         incidents = PipelineIncidentStore(self.cfg.state_dir).load()["incidents"]
         self.assertEqual(len(incidents), 1)
         self.assertEqual(incidents[0]["code"], "launch_not_confirmed")
         self.assertEqual(incidents[0]["affected_task_ids"], ["A"])
 
     def test_the_session_is_told_not_to_repair_the_pipeline_itself(self) -> None:
-        self.assertIn("Не чини запуск в этом ходе", self.report()["reason"])
+        self.assertIn("Do not repair the launch in this turn", self.report()["reason"])
 
     def test_the_ticket_does_not_claim_an_owner_that_does_not_exist(self) -> None:
         """Ссылка на несуществующего девопса - ложь, а не маршрутизация."""
 
         reason = self.report()["reason"]
-        self.assertIn("Автоматический исполнитель не поднят", reason)
+        self.assertIn("No automatic executor was raised", reason)
         self.assertNotIn("владелец — DevOps", reason)
 
     def test_the_same_failure_twice_is_one_signature(self) -> None:

@@ -487,11 +487,11 @@ def relay_success_report(
     if is_russian(language):
         return "\n".join(
             (
-                "Codex Autopilot: следующая задача запущена.",
-                f"Следующая задача: {descriptor.task_id}",
-                f"Название: {descriptor.title}",
+                "Codex Autopilot: the next task has been launched.",
+                f"Next task: {descriptor.task_id}",
+                f"Title: {descriptor.title}",
                 f"Thread ID: {current_thread}",
-                f"Статус запуска: {status}",
+                f"Launch status: {status}",
             )
         )
     return "\n".join(
@@ -1175,7 +1175,7 @@ def _pid_alive(pid: int | None) -> bool:
         return False
     if not isinstance(pid, int) or isinstance(pid, bool) or pid < 0:
         raise DesktopLifecycleError(
-            f"состояние прогона содержит непригодный dispatcher_pid: {pid!r}"
+            f"the run state holds an unusable dispatcher_pid: {pid!r}"
         )
     try:
         os.kill(pid, 0)

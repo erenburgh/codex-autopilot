@@ -80,8 +80,8 @@ def escalate_to_user(
     value = reason.value if isinstance(reason, EscalationReason) else str(reason)
     if value not in ESCALATION_REASONS:
         raise AuthorizationTopologyError(
-            f"R13: эскалация требует код причины из закрытого списка "
-            f"{sorted(ESCALATION_REASONS)}; получено {value!r}"
+            f"R13: an escalation requires a reason code from the closed list "
+            f"{sorted(ESCALATION_REASONS)}; got {value!r}"
         )
     incident["phase"] = IncidentPhase.ESCALATE_TO_USER.value
     incident["escalation_reason"] = value
@@ -623,9 +623,9 @@ class PipelineIncidentStore:
                     at,
                     incident=incident,
                     detail=(
-                        f"{promoted}: один и тот же способ решил подпись "
-                        f"{incident.get('signature')} {PROMOTION_THRESHOLD} раза; "
-                        "дальше он применяется без инженера"
+                        f"{promoted}: the same repair resolved signature "
+                        f"{incident.get('signature')} {PROMOTION_THRESHOLD} times; "
+                        "from now on it is applied without the engineer"
                     ),
                 )
             return IncidentPhase(str(incident["phase"]))
@@ -955,10 +955,10 @@ def render_pipeline_status(snapshot: Mapping[str, Any]) -> str:
             f"- {incident['incident_id']}: {incident['classification']} / {incident['phase']} — {incident['summary']}"
         )
     for repeat in snapshot.get("repeat_breakages") or []:
-        tried = ", ".join(repeat["tried"]) if repeat["tried"] else "ничего не записано"
+        tried = ", ".join(repeat["tried"]) if repeat["tried"] else "nothing recorded"
         lines.append(
-            f"- повтор {repeat['code']} ({repeat['signature']}): "
-            f"{repeat['occurrences']} раз; пробовали: {tried}"
+            f"- repeat {repeat['code']} ({repeat['signature']}): "
+            f"{repeat['occurrences']} times; tried: {tried}"
         )
     return "\n".join(lines)
 

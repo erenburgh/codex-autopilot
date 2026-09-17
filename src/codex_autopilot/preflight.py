@@ -62,10 +62,10 @@ PROBE_TIMEOUT = 300.0
 PROBE_ATTEMPTS = 3
 
 ANNOUNCEMENT = (
-    "За весь запуск у вас могут спросить один раз, и только про одно: доверие "
-    f"инструменту памяти `codex_autopilot_memory.memory` в отдельной задаче "
-    f"«{MEMORY_PREFLIGHT_TITLE}». Ответ — кнопкой в этой задаче. Больше preflight "
-    "ничего не спрашивает и ничего не ждёт от вас молча."
+    "Across the whole launch you may be asked once, and about one thing only: trust "
+    f"for the memory tool `codex_autopilot_memory.memory` in a separate task "
+    f"«{MEMORY_PREFLIGHT_TITLE}». Answer with the button in that task. Preflight asks "
+    "nothing else and silently waits for nothing else from you."
 )
 MEMORY_PREFLIGHT_OK = "MEMORY_PREFLIGHT_OK"
 PLAN_VERIFICATION_TITLE = (
@@ -179,17 +179,17 @@ class ProjectMemoryApprovalRequired(PreflightError):
         self.title = title
         self.command = command
         ready = (
-            f"\n\nЗапусти эту команду в терминале - её запуск и есть твоё согласие:\n\n{command}\n"
+            f"\n\nRun this command in the terminal - running it is your consent:\n\n{command}\n"
             if command
             else ""
         )
         super().__init__(
             "Project Memory MCP: APPROVAL REQUIRED\n\n"
-            f"Никакой воркер и никакое состояние прогона не созданы. Диагностическая задача: `{title}` (тред {thread_id}).\n"
-            "Нужно одно разрешение - инструменту памяти `codex_autopilot_memory.memory`, с ответом Always. "
-            "Всплывающего окна не будет: запрос уходит на соединение диспетчера, а тот на approvals не отвечает."
+            f"No worker and no run state have been created. Diagnostic task: `{title}` (thread {thread_id}).\n"
+            "One permission is needed - for the memory tool `codex_autopilot_memory.memory`, answered Always. "
+            "There will be no pop-up: the request goes to the dispatcher's connection, and it never answers approvals."
             f"{ready}"
-            "Autopilot не выдаёт, не выводит и не обходит это разрешение сам."
+            "Autopilot neither grants, derives nor bypasses this permission itself."
         )
 
 
@@ -309,8 +309,8 @@ def run_preflight(
     report("Plugin cache", cache_status, cache_detail)
     if cache_status == "FAIL":
         raise PreflightError(
-            "Codex грузит не ту копию плагина: " + cache_detail
-            + ". Переустанови Autopilot - установщик чистит кэш и сверяет результат."
+            "Codex is loading the wrong copy of the plugin: " + cache_detail
+            + ". Reinstall Autopilot - the installer clears the cache and verifies the result."
         )
 
     log_path = Path(tempfile.gettempdir()) / f"codex-autopilot-preflight-{os.getpid()}.jsonl"
@@ -332,9 +332,9 @@ def run_preflight(
 
         if not desktop_project_id:
             detail = (
-                f"каталог {project} не принадлежит ни одному проекту Codex. "
-                "Открой проект Codex и запусти Autopilot в нём: каждая "
-                "задача создаётся внутри проекта, и без него её не видно."
+                f"the directory {project} belongs to no Codex project. "
+                "Open a Codex project and start Autopilot inside it: every "
+                "task is created inside a project, and without one it cannot be seen."
             )
             report("Desktop project", "FAIL", detail)
             raise PreflightError(detail)
@@ -539,8 +539,8 @@ def run_preflight(
             # Пять минут молчания без единого признака жизни - это то,
             # что человек видит как "ветка думает" и не знает, чего ждать.
             emit(
-                f"Project Memory MCP: проверяю доверие в задаче «{MEMORY_PREFLIGHT_TITLE}» "
-                f"(до {int(PROBE_TIMEOUT)} с на попытку, попыток {PROBE_ATTEMPTS})"
+                f"Project Memory MCP: checking trust in the task «{MEMORY_PREFLIGHT_TITLE}» "
+                f"(up to {int(PROBE_TIMEOUT)} s per attempt, {PROBE_ATTEMPTS} attempts)"
             )
         started_turn = None
         completed = None
@@ -746,7 +746,7 @@ def run_preflight(
                 else None
             )
             emit(
-                "Ёмкость: "
+                "Capacity: "
                 + capacity_notice(limits, declared_workers)
             )
             emit("")
@@ -911,19 +911,19 @@ def _unexpected_approval_message(exc: BaseException) -> str:
     kind = str(params.get("kind") or "unknown")
     reason = str(params.get("reason") or "").strip()
     lines = [
-        "preflight остановлен: во время проверки памяти пришёл approval, "
-        f"который диспетчер не имеет права закрывать (kind={kind}).",
+        "preflight stopped: an approval arrived during the memory check, "
+        f"and the dispatcher has no right to close it (kind={kind}).",
         "",
-        "Диспетчер не отвечает на approvals никогда. Этот запрос не будет "
-        "закрыт сам и прогон с ним не начнётся.",
+        "The dispatcher never answers approvals. This request will not close "
+        "by itself and the run will not start with it pending.",
     ]
     if reason:
-        lines += ["", f"Текст запроса: {reason}"]
+        lines += ["", f"Request text: {reason}"]
     lines += [
         "",
-        "Что делать: не прикладывайте запрос прав к `start-skill` и не "
-        "запускайте её повторно ради доступа. Отмените висящий запрос в "
-        "интерфейсе и устраните причину, названную предыдущей строкой вывода "
+        "What to do: do not attach the permission request to `start-skill` and do "
+        "not rerun it for access. Cancel the pending request in the "
+        "interface and remove the cause named by the previous output line "
         "preflight.",
     ]
     return "\n".join(lines)
@@ -1026,13 +1026,13 @@ def plugin_cache_state(plugin_root: Path) -> tuple[str, str]:
     if ".local." not in installed:
         # Метку ставит установщик. Без неё перед нами исходное дерево, а
         # не установка: сверять его с чужим кэшем бессмысленно.
-        return "WARN", f"плагин {name} не из установки ({installed}) - сверять нечего"
+        return "WARN", f"plugin {name} is not from the installation ({installed}) - nothing to compare"
     cached = plugin_cache_dirs(name)
     if not cached:
-        return "WARN", f"Codex ещё не забрал плагин {name} в свой кэш"
+        return "WARN", f"Codex has not yet taken plugin {name} into its cache"
     if len(cached) > 1:
         versions = ", ".join(item.name for item in cached)
-        return "FAIL", f"в кэше Codex несколько копий {name}: {versions}"
+        return "FAIL", f"several copies of {name} in the Codex cache: {versions}"
     cached_version = str(
         json.loads(
             (cached[0] / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
@@ -1040,8 +1040,8 @@ def plugin_cache_state(plugin_root: Path) -> tuple[str, str]:
         or ""
     )
     if cached_version != installed:
-        return "FAIL", f"Codex грузит {cached_version}, установлено {installed}"
-    return "OK", f"{installed} - одна копия, та же, что установлена"
+        return "FAIL", f"Codex loads {cached_version}, installed is {installed}"
+    return "OK", f"{installed} - one copy, the same as installed"
 
 
 def installed_plugin_root(skill_path: Path) -> Path:

@@ -407,7 +407,7 @@ class PreflightTests(unittest.TestCase):
         report = "\n".join(lines)
         self.assertIn("Routing:", report)
         self.assertIn("Next worker:", report)
-        self.assertIn("Ёмкость:", report)
+        self.assertIn("Capacity:", report)
         self.assertIn("Preflight: PASS", report)
 
     def test_clean_first_run_checks_target_without_creating_state(self):
@@ -765,8 +765,8 @@ class TargetMustBelongToAProjectTests(unittest.TestCase):
                     emit=None,
                 )
             message = str(caught.exception)
-            self.assertIn("не принадлежит ни одному проекту Codex", message)
-            self.assertIn("Открой проект Codex", message)
+            self.assertIn("belongs to no Codex project", message)
+            self.assertIn("Open a Codex project", message)
             # Состояния нет: отказ наступил до его создания.
             self.assertFalse((root / ".codex-autopilot").exists())
 
@@ -909,7 +909,7 @@ class ApprovalArrivesAsACommandTests(unittest.TestCase):
         from codex_autopilot.preflight import ProjectMemoryApprovalRequired
 
         message = str(ProjectMemoryApprovalRequired("t", "T", "cmd"))
-        self.assertIn("окна не будет", message)
+        self.assertIn("no pop-up", message)
 
 
 class TheCommandPointsAtTheRealRuntimeTests(unittest.TestCase):

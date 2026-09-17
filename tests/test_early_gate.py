@@ -95,7 +95,7 @@ class FailureNamesTheFailingTaskTests(unittest.TestCase):
     Цикл диспетчера переходит от задачи к задаче, переприсваивая свой
     token. Обработчик отказа снаружи держал исходный, и отказ на поздней
     задаче приписывался первой. Замерено: тикет incident-78e67b38680498f1
-    по отказу M2 назвал affected_task_ids=['M1'], а лестница "на отказе"
+    по отказу M2 назвал affected_task_ids=['M1'], а лестница "on failure"
     напечатала шаги уже проверенной M1.
     """
 
@@ -112,7 +112,7 @@ class FailureNamesTheFailingTaskTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         head = source[source.index("def _run_automatic_relay_dispatch") :]
         body = head[: head.index("\ndef ", 1)]
-        self.assertIn('_print_relay_timeline(cfg, cursor.token, "на отказе")', body)
+        self.assertIn('_print_relay_timeline(cfg, cursor.token, "on failure")', body)
         self.assertIn("_record_detached_dispatch_failure(cfg, cursor.token, error)", body)
 
     def test_the_loop_updates_the_cursor_each_iteration(self) -> None:
@@ -186,7 +186,7 @@ class PlacementDeadlineTests(unittest.TestCase):
     """M11-R5: неизмеренное размещение не остаётся неопределённым вечно.
 
     OUTSIDE и ABSENT уже были решающими и уходили в один нормализованный
-    тикет. А вот случай "мерить стало некому" - диспетчер умер между
+    тикет. А вот случай "nobody is left to measure it" - диспетчер умер между
     созданием ветки и гейтом размещения - держал вердикт в IN_PROGRESS
     навсегда: тикет не заводился, задача не двигалась, и снаружи это
     выглядело как будто запуск всё ещё идёт.
@@ -220,7 +220,7 @@ class PlacementDeadlineTests(unittest.TestCase):
             ),
         )
         self.assertIs(check.passed, False)
-        self.assertIn("мерить стало некому", check.detail)
+        self.assertIn("nobody is left to measure it", check.detail)
 
     def test_without_a_creation_stamp_nothing_is_declared_overdue(self) -> None:
         """Нет отметки - нет срока. Подменять одно другим здесь нельзя."""
@@ -239,7 +239,7 @@ class PlacementDeadlineTests(unittest.TestCase):
 
         checks = (
             LaunchCheck("reserved", "T1", True, ""),
-            LaunchCheck("visible_in_desktop", "T1", False, "мерить стало некому"),
+            LaunchCheck("visible_in_desktop", "T1", False, "nobody is left to measure it"),
         )
         self.assertIs(launch_verdict(checks), LaunchVerdict.FAILED)
 

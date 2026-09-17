@@ -493,8 +493,8 @@ class ShortStatusTests(SemanticStatusTests):
         card = render_short_status(
             self.cfg, verifying_only, self.plan, dispatcher_running=False
         )
-        self.assertIn("Проверяется", card)
-        self.assertNotIn("Диспетчер не работает", card)
+        self.assertIn("Verifying", card)
+        self.assertNotIn("dispatcher is not running", card)
 
     def test_the_card_says_plainly_when_nobody_is_working(self) -> None:
         """Тишина должна быть названа тишиной, а не скрыта."""
@@ -510,7 +510,7 @@ class ShortStatusTests(SemanticStatusTests):
             worker_sessions=[],
         )
         card = render_short_status(self.cfg, idle, self.plan, dispatcher_running=False)
-        self.assertIn("Никто не работает", card)
+        self.assertIn("Nobody is working", card)
 
     def test_the_short_form_points_at_the_full_one(self) -> None:
         """Сокращение без выхода к полному - потеря, а не краткость."""

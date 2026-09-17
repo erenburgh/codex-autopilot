@@ -65,7 +65,7 @@ class HandshakeBudgetTests(unittest.TestCase):
 
         message = str(caught.exception)
         self.assertIn("CODEX_HOME", message)
-        self.assertIn("бесполезно", message)
+        self.assertIn("useless", message)
 
 
 class SkillNoLongerEscalatesTests(unittest.TestCase):
@@ -116,7 +116,7 @@ class PreflightSpeaksBeforeItWaitsTests(unittest.TestCase):
         message = preflight._unexpected_approval_message(Approval())
         self.assertIn("kind=command", message)
         self.assertIn("Разрешить доступ к /Users/x/.codex", message)
-        self.assertIn("не запускайте её повторно ради доступа", message)
+        self.assertIn("not rerun it for access", message)
         self.assertNotIn('"method"', message)
 
 

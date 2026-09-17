@@ -104,9 +104,9 @@ def _replanner_prompt(
     workers_en = ""
     if declared_workers is not None:
         workers_ru = (
-            f"\n\nПользователь задал число параллельных воркеров: "
-            f"{declared_workers}. Установи max_parallel_workers={declared_workers} "
-            f"в возвращаемом графе; сейчас там {plan.max_parallel_workers}."
+            f"\n\nThe user set the number of parallel workers: "
+            f"{declared_workers}. Set max_parallel_workers={declared_workers} "
+            f"in the returned graph; it currently holds {plan.max_parallel_workers}."
         )
         workers_en = (
             f"\n\nThe user set the parallel worker count to {declared_workers}. "
@@ -117,10 +117,10 @@ def _replanner_prompt(
         last = rejections[-1]["reason"]
         allowed = ", ".join(sorted(GRAPH_PLAN_FIELDS))
         retry_ru = (
-            f"\n\nПредыдущая попытка отклонена runtime: {last}. "
-            f"Граф не изменён. Верхнеуровневые поля плана ограничены этим "
-            f"списком и расширять его нельзя: {allowed}. Всё, что не входит "
-            f"в него, выражается внутри tasks и roles."
+            f"\n\nThe previous attempt was rejected by the runtime: {last}. "
+            f"The graph is unchanged. The top-level plan fields are limited to this "
+            f"list and it cannot be extended: {allowed}. Anything outside it "
+            f"is expressed inside tasks and roles."
         )
         retry_en = (
             f"\n\nThe previous attempt was rejected by the runtime: {last}. "
@@ -129,7 +129,7 @@ def _replanner_prompt(
             f"inside tasks and roles."
         )
     if is_russian(cfg.language):
-        prompt = f"""Codex Autopilot AI Studio Runtime — свежий replanner.
+        prompt = f"""Codex Autopilot AI Studio Runtime — fresh replanner.
 
 Выполни только короткую перепланировку {change['id']} для канонического каталога {cfg.root}. Ниже расположен полный разрешённый контекст: текущий валидный граф, структурированный запрос и селекторы подтверждённого состояния. Не запрашивай транскрипты, HANDOFF prose или параллельные разговоры.
 
@@ -210,10 +210,10 @@ def _worker_prompt(
     if phase == "verification" and rejections:
         last = str(rejections[-1].get("reason") or "")
         note = (
-            f"\n\nПредыдущий вердикт отклонён runtime: {last}. Приёмка не "
-            "засчитана ни в какую сторону - вердикт не прочитан. Верни "
+            f"\n\nThe previous verdict was rejected by the runtime: {last}. The acceptance "
+            "counted in no direction - the verdict was not read. Return "
             'AUTOPILOT_VERIFICATION ровно с двумя полями верхнего уровня: '
-            '"verdict" и "issues". Любое другое поле отвергает вердикт целиком.'
+            '"verdict" and "issues". Any other field rejects the verdict entirely.'
             if is_russian(cfg.language)
             else f"\n\nThe previous verdict was rejected by the runtime: {last}. "
             "Acceptance was not recorded either way - the verdict was not read. "

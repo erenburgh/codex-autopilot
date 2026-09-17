@@ -118,16 +118,16 @@ def _audit_rule_declaration(
     known = {item.id for item in RULES}
     if not declared:
         detail = (
-            f"R16: отчёт задачи {session.get('task_id')} не перечислил применённые "
-            "правила; ожидается строка AUTOPILOT_RULES перед AUTOPILOT_STATUS"
+            f"R16: the report of task {session.get('task_id')} did not list the applied "
+            "rules; an AUTOPILOT_RULES line is expected before AUTOPILOT_STATUS"
         )
     else:
         unknown = [item for item in declared if item not in known]
         if not unknown:
             return
         detail = (
-            f"R16: отчёт задачи {session.get('task_id')} ссылается на несуществующие "
-            f"правила: {', '.join(unknown)}"
+            f"R16: the report of task {session.get('task_id')} references rules that do "
+            f"not exist: {', '.join(unknown)}"
         )
     record_violation(cfg.state_dir, "R16", detail=detail)
     _append_event(state, "rule_declaration_missing", session, at, detail=detail)
@@ -168,13 +168,13 @@ def _record_rule_conflicts(
             record_violation(
                 cfg.state_dir,
                 "R16",
-                detail=f"R16: {task_id} оспорил несуществующее правило {rule_id}",
+                detail=f"R16: {task_id} disputed a rule that does not exist: {rule_id}",
             )
             continue
         try:
             recorded = _rule_statement_record(memory, rule_id, canonical.statement)
             reading = memory.add_observation(
-                statement=f"{rule_id}: исполнитель {task_id} прочитал правило иначе — {detail}",
+                statement=f"{rule_id}: executor {task_id} read the rule differently — {detail}",
                 created_by=f"task:{task_id}",
                 confidence="medium",
             )
@@ -182,8 +182,8 @@ def _record_rule_conflicts(
                 existing_record_id=str(recorded["id"]),
                 incoming_record_id=str(reading["id"]),
                 statement=(
-                    f"{rule_id}: записанная формулировка и прочтение задачи "
-                    f"{task_id} расходятся; разрешает не исполнитель"
+                    f"{rule_id}: the recorded wording and the reading of task "
+                    f"{task_id} disagree; the executor does not resolve it"
                 ),
                 created_by=f"task:{task_id}",
             )
@@ -215,14 +215,14 @@ def _rule_statement_record(memory, rule_id: str, statement: str) -> dict[str, An
     rules.py лежит в автопилоте, а не в проекте пользователя.
     """
 
-    marker = f"{rule_id} (записанная формулировка)"
+    marker = f"{rule_id} (recorded wording)"
     page = memory.search(query=rule_id, categories=["truth"], limit=20)
     for record in page.records:
         if str(record.get("statement", "")).startswith(marker):
             return record
     evidence = memory.record_evidence(
         kind="environment_probe",
-        summary=f"Формулировка {rule_id}, прочитанная из установленного рантайма.",
+        summary=f"The wording of {rule_id}, read from the installed runtime.",
         created_by="codex-autopilot",
         environment_probe=statement,
         role="rule_statement",
@@ -230,7 +230,7 @@ def _rule_statement_record(memory, rule_id: str, statement: str) -> dict[str, An
     return memory.record_verified_fact(
         statement=f"{marker}: {statement}",
         created_by="codex-autopilot",
-        verification_method="прочитано из блока правил установленного рантайма",
+        verification_method="read from the rules block of the installed runtime",
         evidence_ids=[str(evidence["id"])],
     )
 
@@ -821,12 +821,12 @@ def _notify_completion(cfg, plan, task_id: str, *, state_after: str, done: bool)
     from .notify import notify
 
     if done:
-        notify(cfg, "Codex Autopilot", cfg.root.name, "Прогон завершён.")
+        notify(cfg, "Codex Autopilot", cfg.root.name, "Run finished.")
         return
     if state_after not in {TaskState.VERIFIED.value, TaskState.BLOCKED.value}:
         return
     title = next((item.title for item in plan.tasks if item.id == task_id), task_id)
-    word = "проверена" if state_after == TaskState.VERIFIED.value else "встала"
+    word = "verified" if state_after == TaskState.VERIFIED.value else "stopped"
     notify(cfg, "Codex Autopilot", cfg.root.name, f"{task_id} {word}: {title}")
 
 # R13: DevOps решает инфраструктурные баги от имени пользователя, и
@@ -856,16 +856,16 @@ def parse_pipeline_engineer_status(message: str) -> tuple[str, str]:
     )
     if len(matches) != 1 or last != f"PIPELINE_ENGINEER_STATUS: {matches[0]}":
         raise DesktopLifecycleError(
-            "дежурный инженер обязан закончить ровно одной строкой "
-            "PIPELINE_ENGINEER_STATUS: RESOLVED или "
-            "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <КОД>"
+            "the on-call engineer must finish with exactly one line "
+            "PIPELINE_ENGINEER_STATUS: RESOLVED or "
+            "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"
         )
     parts = matches[0].split()
     if parts[0] == "RESOLVED":
         return "RESOLVED", ""
     if len(parts) != 2 or parts[1] not in ESCALATION_CODES:
         raise DesktopLifecycleError(
-            "эскалация требует кода причины из закрытого списка (R13): "
+            "an escalation requires a reason code from the closed list (R13): "
             + ", ".join(sorted(ESCALATION_CODES))
         )
     return "ESCALATE_TO_USER", parts[1]
@@ -948,14 +948,14 @@ def _complete_pipeline_engineer(
     )
     if incident is None:
         raise DesktopLifecycleError(
-            f"инцидент {incident_id} дежурного инженера не найден"
+            f"the on-call engineer's incident {incident_id} was not found"
         )
     resolved = str(incident.get("phase")) == IncidentPhase.RESOLVED.value
     if status == "RESOLVED" and not resolved:
         raise DesktopLifecycleError(
-            f"инженер объявил RESOLVED, а тикет {incident_id} остался в фазе "
-            f"{incident.get('phase')}: закрытие выполняется devops-resolve-incident "
-            "с пройденной проверкой здоровья"
+            f"the engineer declared RESOLVED, but ticket {incident_id} stayed in phase "
+            f"{incident.get('phase')}: closing is done by devops-resolve-incident "
+            "with a passing healthcheck"
         )
 
     store = StateStore(cfg.state_dir)
@@ -1008,7 +1008,7 @@ def _complete_pipeline_engineer(
             state.status = "BLOCKED"
             state.phase = "PIPELINE_ENGINEER_ESCALATED"
             state.last_error = (
-                f"дежурный инженер передал инцидент {incident_id} пользователю: "
+                f"the on-call engineer handed incident {incident_id} to the user: "
                 f"{escalation_code}"
             )
         else:
@@ -1060,8 +1060,8 @@ def _complete_pipeline_engineer(
                 state.status = "BLOCKED"
                 state.phase = "PIPELINE_ENGINEER_NO_SUCCESSOR"
                 state.last_error = (
-                    f"инженер закрыл инцидент {incident_id}, но преемник не назначен: "
-                    "есть готовая задача и ни одной активной сессии"
+                    f"the engineer closed incident {incident_id}, but no successor was assigned: "
+                    "there is a ready task and not one active session"
                 )
                 _append_event(
                     state,
@@ -1286,7 +1286,7 @@ def _reject_verifier_result(
             state.status = "BLOCKED"
             state.phase = "VERIFICATION_PROTOCOL_BLOCKED"
             state.last_error = (
-                f"верифаер {task_id} трижды вернул нечитаемый вердикт: {reason}"
+                f"the verifier of {task_id} returned an unreadable verdict three times: {reason}"
             )
             if dispatcher_authorized:
                 current["automatic_successor_tokens"] = []

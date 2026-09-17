@@ -814,9 +814,9 @@ def _launch_report(
     checks = await_launch(cfg, task_ids=task_ids, timeout=timeout)
     verdict = launch_verdict(checks)
     headline = {
-        LaunchVerdict.CONFIRMED: "ЗАПУСК ПОДТВЕРЖДЁН",
-        LaunchVerdict.IN_PROGRESS: "ЗАПУСК ИДЁТ — отказов нет, часть шагов впереди",
-        LaunchVerdict.FAILED: "ЗАПУСК ОТКАЗАЛ",
+        LaunchVerdict.CONFIRMED: "LAUNCH CONFIRMED",
+        LaunchVerdict.IN_PROGRESS: "LAUNCH IN PROGRESS — no failures, some steps ahead",
+        LaunchVerdict.FAILED: "LAUNCH FAILED",
     }[verdict]
     # Лента шагов вместо снимка: по снимку нельзя понять, понадобилась ли
     # починка по дороге. Итог отдельной строкой сверху, чтобы вывод читался
@@ -851,8 +851,8 @@ def _launch_report(
             report
             + "\n\n"
             + ticket
-            + "\nНе чини запуск в этом ходе: починка пайплайна идёт по тикету, "
-            "а не правками из этой сессии."
+            + "\nDo not repair the launch in this turn: the pipeline is repaired through "
+            "its ticket, not by edits from this session."
         ),
     }
 
@@ -876,7 +876,7 @@ def _open_launch_incident(
         code="launch_not_confirmed",
         surface=IncidentClass.PIPELINE,
         summary=(
-            "Запуск не подтверждён чек-листом: "
+            "Launch not confirmed by the checklist: "
             + ", ".join(sorted(set(failed)))
         ),
         affected_task_ids=tuple(task_ids),
@@ -897,12 +897,12 @@ def _open_launch_incident(
             store.ensure_pipeline_engineer(incident_id, at=now)
             phase = IncidentPhase.PIPELINE_ENGINEER
     except PipelineIncidentError as error:
-        return f"Тикет завести не удалось: {error}"
+        return f"The ticket could not be opened: {error}"
     # Владельца не выдумываем: автоматического исполнителя у тикета нет,
     # пока его не поднимет живой Pipeline Engineer.
     return (
-        f"Тикет {incident_id} открыт (фаза {phase.value}). "
-        "Автоматический исполнитель не поднят — тикет ждёт разбора."
+        f"Ticket {incident_id} opened (phase {phase.value}). "
+        "No automatic executor was raised — the ticket awaits triage."
     )
 
 
@@ -1082,7 +1082,7 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
             cfg,
             [item.task_id for item in stalled],
             started=(
-                "Codex Autopilot поднял зависшую резервацию: "
+                "Codex Autopilot revived a stalled reservation: "
                 + ", ".join(str(pid) for pid in pids)
             ),
             timeout=15.0,
@@ -1253,15 +1253,15 @@ def _retired_task_fence(payload: dict[str, Any]) -> dict[str, Any]:
     reason = str(
         retired.get("retired_reason") or retired.get("failure_reason") or ""
     ).strip()
-    detail = f" Причина отставки: {reason}" if reason else ""
+    detail = f" Reason for retirement: {reason}" if reason else ""
     return {
         "decision": "block",
         "reason": (
-            f"Эта задача отставлена ({retired.get('status')}) и больше не "
-            f"ведёт работу по {task_id}. Продолжать в ней нельзя: её "
-            f"резервации у пайплайна уже нет, и всё сделанное здесь пойдёт "
-            f"мимо прогона.{detail} Скажи «статус», чтобы увидеть, какая "
-            "задача сейчас действующая."
+            f"This task has been retired ({retired.get('status')}) and no longer "
+            f"carries the work on {task_id}. Continuing here is not possible: the "
+            f"pipeline no longer holds its reservation, and anything done here "
+            f"would bypass the run.{detail} Say «status» to see which task is "
+            "the active one."
         ),
     }
 
@@ -1316,7 +1316,7 @@ def _answer_escalation(cfg, state) -> tuple[str, ...]:
         store.resolve_escalation_by_user(
             incident_id,
             at=utc_now(),
-            note="пользователь возобновил прогон, ответив на эскалацию",
+            note="the user resumed the run, answering the escalation",
         )
         closed.append(incident_id)
     return tuple(closed)
@@ -1483,4 +1483,4 @@ def status_text(root: Path, *, detailed: bool = True) -> str:
     if not active:
         return summary
     timeline = render_launch_timeline(state, active)
-    return f"{summary}\n\nШаги активных задач:\n{timeline}"
+    return f"{summary}\n\nSteps of the active tasks:\n{timeline}"

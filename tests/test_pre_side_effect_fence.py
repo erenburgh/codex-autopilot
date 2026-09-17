@@ -68,7 +68,7 @@ class RetiredTaskFenceTests(unittest.TestCase):
         root = _project(self.tmp, [_session()])
         result = self._hook(root, thread_id="thread-old")
         self.assertEqual(result["decision"], "block")
-        self.assertIn("отставлена", result["reason"])
+        self.assertIn("retired", result["reason"])
         self.assertIn("T2", result["reason"])
         self.assertIn("replaced by a fresh attempt", result["reason"])
 

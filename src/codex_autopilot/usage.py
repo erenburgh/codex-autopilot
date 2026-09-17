@@ -62,7 +62,7 @@ def worker_budget(
         # Нет данных - нет и повода урезать. Молчаливое понижение по
         # незнанию было бы худшим из вариантов: пользователь не поймёт,
         # почему прогон идёт медленнее, чем он попросил.
-        return WorkerBudget(declared, "данных о лимитах нет", False)
+        return WorkerBudget(declared, "no rate-limit data", False)
 
     credits = snapshot.get("credits")
     credits = credits if isinstance(credits, Mapping) else {}
@@ -71,33 +71,33 @@ def worker_budget(
     # ПОСЛЕ кредитов и потому не срабатывала вовсе у тех, ради кого была
     # написана - у аккаунтов с автосписанием.
     if snapshot.get("spendControlReached"):
-        return WorkerBudget(1, "достигнут предел расходов, заданный пользователем", True)
+        return WorkerBudget(1, "the spending cap set by the user has been reached", True)
     if snapshot.get("rateLimitReachedType"):
-        return WorkerBudget(1, "лимит уже упёрт", True)
+        return WorkerBudget(1, "the limit is already exhausted", True)
 
     if _burns_without_a_wall(credits):
         # Автосписание и есть безлимит: окно лимита такому аккаунту не
         # стена, списание идёт дальше. Потолка нет - сколько задач граф
         # откроет одновременно, столько и пойдёт.
         if declared_by_user:
-            return WorkerBudget(declared, "списание без ограничений, число задал пользователь", False)
-        return WorkerBudget(None, "списание без ограничений: потолка нет", False)
+            return WorkerBudget(declared, "unlimited billing, the number was set by the user", False)
+        return WorkerBudget(None, "unlimited billing: no ceiling", False)
 
     primary = snapshot.get("primary")
     primary = primary if isinstance(primary, Mapping) else {}
     used = primary.get("usedPercent")
     if not isinstance(used, (int, float)):
-        return WorkerBudget(declared, "расход окна неизвестен", False)
+        return WorkerBudget(declared, "window usage unknown", False)
 
     remaining = max(0.0, 100.0 - float(used))
     if remaining >= 50:
-        return WorkerBudget(declared, f"израсходовано {used:.0f}% окна", False)
+        return WorkerBudget(declared, f"{used:.0f}% of the window used", False)
     if remaining >= 25:
         workers = max(2, declared // 2)
-        return WorkerBudget(min(declared, workers), f"израсходовано {used:.0f}% окна", True)
+        return WorkerBudget(min(declared, workers), f"{used:.0f}% of the window used", True)
     if remaining >= 10:
-        return WorkerBudget(min(declared, 2), f"израсходовано {used:.0f}% окна", True)
-    return WorkerBudget(1, f"израсходовано {used:.0f}% окна", True)
+        return WorkerBudget(min(declared, 2), f"{used:.0f}% of the window used", True)
+    return WorkerBudget(1, f"{used:.0f}% of the window used", True)
 
 
 def capacity_notice(limits: Mapping[str, Any] | None, declared: int | None) -> str:
@@ -116,31 +116,31 @@ def capacity_notice(limits: Mapping[str, Any] | None, declared: int | None) -> s
 
     if declared is not None:
         return (
-            f"Параллельных воркеров: {declared} - как вы указали. "
-            "Изменить можно в любой момент, сказав другое число."
+            f"Parallel workers: {declared} - as you specified. "
+            "You can change it at any time by naming another number."
         )
     if _burns_without_a_wall(credits):
         return (
-            "У вас списание без ограничений, поэтому потолка параллельных воркеров нет: "
-            "одновременно пойдёт столько задач, сколько откроет план. "
-            "Если хотите ограничить - скажите число."
+            "Your billing is unlimited, so there is no ceiling on parallel workers: "
+            "as many tasks run at once as the plan opens. "
+            "To cap it, name a number."
         )
     fallback = default_workers(limits)
     if _is_plus(snapshot.get("planType")):
         return (
-            f"Тариф {plan_type}: по умолчанию {fallback} параллельных воркера - "
-            "окно лимита здесь узкое, и десяток сжёг бы его за один прогон. "
-            "Можно задать своё число."
+            f"Plan {plan_type}: {fallback} parallel workers by default - "
+            "the limit window is narrow here, and ten would burn it in one run. "
+            "You can set your own number."
         )
     if plan_type:
         return (
-            f"Тариф {plan_type}: по умолчанию {fallback} параллельных воркеров, "
-            "и они сами сузятся, когда окно лимита будет подходить к концу. "
-            "Можно задать своё число."
+            f"Plan {plan_type}: {fallback} parallel workers by default, "
+            "and they narrow by themselves as the limit window runs low. "
+            "You can set your own number."
         )
     return (
-        f"По умолчанию {fallback} параллельных воркеров. Можно задать своё "
-        "число; при подходе к лимиту они сузятся сами."
+        f"{fallback} parallel workers by default. You can set your own "
+        "number; as the limit approaches they narrow by themselves."
     )
 
 

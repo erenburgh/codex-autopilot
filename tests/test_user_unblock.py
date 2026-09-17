@@ -112,7 +112,7 @@ class UserUnblockTests(unittest.TestCase):
             "--reason", "просто так",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("не остановлена", result.stderr + result.stdout)
+        self.assertIn("is not stopped", result.stderr + result.stdout)
 
 
 if __name__ == "__main__":
@@ -138,7 +138,7 @@ class R32InterventionIsRecorded(unittest.TestCase):
         rule = next(item for item in RULES if item.id == "R32")
         self.assertEqual(rule.mode, "CHECKED")
         self.assertTrue(rule.check.strip())
-        self.assertIn("причин", rule.check)
+        self.assertIn("reason", rule.check)
 
     def test_every_recorded_intervention_carries_author_time_and_reason(self) -> None:
         import json

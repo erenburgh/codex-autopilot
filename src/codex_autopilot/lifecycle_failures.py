@@ -365,9 +365,9 @@ def record_desktop_failure(
                 code=failure_code,
                 surface=IncidentClass.PIPELINE,
                 summary=(
-                    f"{task_id}: {attempts} попыток с одной сигнатурой "
-                    f"{failure_code}, потолок {cfg.retry.maximum_attempts}. "
-                    f"Последняя причина: {reason}"
+                    f"{task_id}: {attempts} attempts with the same signature "
+                    f"{failure_code}, ceiling {cfg.retry.maximum_attempts}. "
+                    f"Last reason: {reason}"
                 ),
                 affected_task_ids=(task_id,),
                 # operation описывает мутирующую операцию транспорта и

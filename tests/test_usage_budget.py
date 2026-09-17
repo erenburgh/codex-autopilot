@@ -33,7 +33,7 @@ class TheUserNumberIsTheCeilingTests(unittest.TestCase):
         )
         self.assertIsNone(budget.workers)
         self.assertFalse(budget.limited)
-        self.assertIn("потолка нет", budget.reason)
+        self.assertIn("no ceiling", budget.reason)
 
     def test_a_number_the_user_named_is_kept_even_on_unlimited(self) -> None:
         """Попросил три - значит три, безлимит этого не отменяет."""
@@ -78,7 +78,7 @@ class AStatedStopIsObeyedTests(unittest.TestCase):
 
         budget = worker_budget(10, {"spendControlReached": True})
         self.assertEqual(budget.workers, 1)
-        self.assertIn("предел расходов", budget.reason)
+        self.assertIn("spending cap", budget.reason)
 
     def test_a_reached_rate_limit_drops_to_one(self) -> None:
         budget = worker_budget(10, {"rateLimitReachedType": "primary"})
@@ -123,15 +123,15 @@ class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
 
     def test_unlimited_is_told_it_has_no_ceiling(self) -> None:
         text = self.notice({"credits": {"unlimited": True}})
-        self.assertIn("потолка", text)
-        self.assertIn("скажите число", text)
+        self.assertIn("ceiling", text)
+        self.assertIn("name a number", text)
 
     def test_auto_topup_is_told_it_has_no_ceiling(self) -> None:
         """Автосписание и есть безлимит - это одно положение, не два."""
 
         text = self.notice({"credits": {"hasCredits": True}})
-        self.assertIn("потолка", text)
-        self.assertIn("скажите число", text)
+        self.assertIn("ceiling", text)
+        self.assertIn("name a number", text)
 
     def test_a_plan_tier_is_named_as_the_user_knows_it(self) -> None:
         """App Server зовёт его prolite, человек читает свой план как Pro."""
@@ -150,12 +150,12 @@ class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
         text = self.notice({"planType": "plus", "credits": {}})
         self.assertIn("Plus", text)
         self.assertIn("3", text)
-        self.assertIn("узкое", text)
+        self.assertIn("narrow", text)
 
     def test_a_number_the_user_named_is_confirmed_not_questioned(self) -> None:
         text = self.notice({"planType": "pro", "credits": {}}, 4)
         self.assertIn("4", text)
-        self.assertIn("как вы указали", text)
+        self.assertIn("as you specified", text)
 
     def test_preflight_prints_it(self) -> None:
         """Иначе вопрос живёт в тестах, а не перед стартом прогона."""
@@ -172,7 +172,7 @@ class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         for skill in root.glob("plugins/*/skills/*/SKILL.md"):
             with self.subTest(skill=skill.parts[-3]):
-                self.assertIn("Ёмкость:", skill.read_text(encoding="utf-8"))
+                self.assertIn("Capacity:", skill.read_text(encoding="utf-8"))
 
 
 class AStatedSpendCapOutranksCreditsTests(unittest.TestCase):
@@ -187,7 +187,7 @@ class AStatedSpendCapOutranksCreditsTests(unittest.TestCase):
             10, {"credits": {"hasCredits": True}, "spendControlReached": True}
         )
         self.assertEqual(budget.workers, 1)
-        self.assertIn("предел расходов", budget.reason)
+        self.assertIn("spending cap", budget.reason)
 
     def test_a_reached_rate_limit_stops_even_with_credits(self) -> None:
         budget = worker_budget(

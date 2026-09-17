@@ -226,7 +226,7 @@ def _write_config(
         "[retry]",
         "initial_seconds = 30",
         "maximum_seconds = 900",
-        "# попыток на одну сигнатуру отказа, не на задачу",
+        "# attempts per failure signature, not per task",
         "maximum_attempts = 5",
         "",
         "[runtime]",

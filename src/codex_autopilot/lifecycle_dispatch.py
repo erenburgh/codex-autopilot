@@ -540,9 +540,9 @@ def _require_thread_placement(
     satisfied = after == INSIDE or (required == "visible" and after in {INSIDE, OUTSIDE})
     if not satisfied:
         raise DesktopLifecycleError(
-            f"задача не начата: ветка {thread_id} в состоянии {after}, "
-            f"а требуется {required}. Невидимую задачу нельзя открыть; "
-            "смягчить требование можно через runtime.required_thread_placement"
+            f"task not started: thread {thread_id} is in state {after}, "
+            f"while {required} is required. An invisible task cannot be opened; "
+            "the requirement can be relaxed through runtime.required_thread_placement"
         )
     return after
 
@@ -771,7 +771,7 @@ def run_automatic_app_server_turn(
             if time.monotonic() >= deadline:
                 raise DesktopLifecycleError(
                     "causal predecessor did not reach durable completed state; "
-                    f"последний статус хода: {(turn or {}).get('status')!r}"
+                    f"last turn status: {(turn or {}).get('status')!r}"
                 )
             # Раз в секунду, а не четыре: read_thread тянет всю историю
             # ветки целиком. На живом прогоне это дало 42 МБ журнала за
@@ -1046,7 +1046,7 @@ def _notify_start(cfg: Config, descriptor: LaunchDescriptor) -> None:
         cfg,
         "Codex Autopilot",
         cfg.root.name,
-        f"{descriptor.task_id} взята в работу: {descriptor.task_title}",
+        f"{descriptor.task_id} taken up: {descriptor.task_title}",
     )
 
 

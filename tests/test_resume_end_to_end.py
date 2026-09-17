@@ -189,8 +189,8 @@ class ResumeChainTests(unittest.TestCase):
         self.resume()
         result = self.stop()
         report = result.get("reason") or result.get("systemMessage") or ""
-        self.assertIn("слот зарезервирован", report)
-        self.assertIn("ЗАПУСК", report)
+        self.assertIn("slot reserved", report)
+        self.assertIn("LAUNCH", report)
 
     # --- 7. снятая причина остановки не возвращается с диска ----------
 

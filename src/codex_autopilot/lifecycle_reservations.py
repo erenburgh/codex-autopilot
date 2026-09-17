@@ -452,7 +452,7 @@ def pipeline_engineer_package(cfg: Config, state: RunState) -> dict[str, Any]:
     incident = open_pipeline_engineer_incident(cfg)
     if incident is None:
         raise DesktopLifecycleError(
-            "дежурный инженер запрашивается без инцидента в фазе PIPELINE_ENGINEER"
+            "the on-call engineer is requested without an incident in phase PIPELINE_ENGINEER"
         )
     return PipelineIncidentStore(cfg.state_dir).incident_package(
         str(incident["incident_id"])
@@ -497,8 +497,8 @@ def _reserve_pipeline_engineer_in_state(
     ]
     if not affected:
         raise DesktopLifecycleError(
-            f"инцидент {incident_id} не называет задачи из текущего плана; "
-            "дежурного инженера не к чему привязать"
+            f"incident {incident_id} names no task of the current plan; "
+            "there is nothing to bind the on-call engineer to"
         )
     task_id = affected[0]
 
@@ -1317,7 +1317,7 @@ def _build_descriptor(
         incident = package["incident"]
         title = pipeline_engineer_thread_title(
             str(incident["incident_id"]),
-            str(incident.get("summary") or incident.get("code") or "инцидент"),
+            str(incident.get("summary") or incident.get("code") or "incident"),
         )
         prompt = AIStudioRuntime(
             plan,

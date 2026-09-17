@@ -151,6 +151,37 @@ def _creation_causality(state: RunState) -> dict[str, Any]:
     return {"assessed": assessed, "total": total, "violations": violations}
 
 
+
+_CARD_WORDS = {
+    "en": {
+        "verified": "verified",
+        "running": "Running",
+        "verifying": "Verifying",
+        "ticket": "Ticket",
+        "paused": "Pause requested: no new tasks are launched.",
+        "idle": "Nobody is working: the dispatcher is not running.",
+        "causality": "Creation causality breaks",
+        "more": "Details: say «detailed status».",
+    },
+    "ru": {
+        "verified": "проверено",
+        "running": "Идёт",
+        "verifying": "Проверяется",
+        "ticket": "Тикет",
+        "paused": "Пауза запрошена: новых задач не запускается.",
+        "idle": "Никто не работает: диспетчер не запущен.",
+        "causality": "Разрывов причинности создания",
+        "more": "Подробно: скажи «подробный статус».",
+    },
+}
+
+
+def _card_words(language: str) -> dict[str, str]:
+    from .language import is_russian
+
+    return _CARD_WORDS["ru" if is_russian(language) else "en"]
+
+
 def render_short_status(
     cfg: Config,
     state: RunState,
@@ -172,11 +203,15 @@ def render_short_status(
 
     snapshot = project_status_snapshot(cfg, state, plan)
     progress = snapshot["progress"]
+    # The card is the one thing the user reads in chat, so it speaks the run
+    # language. Everything else the runtime prints is harness output in
+    # English; the model relays it in the user's language.
+    words = _card_words(cfg.language)
     lines = [
         f"Codex Autopilot — {snapshot['status']}: "
-        f"{progress['verified']}/{progress['total']} проверено"
+        f"{progress['verified']}/{progress['total']} {words['verified']}"
     ]
-    for heading, key in (("Идёт", "running"), ("Проверяется", "verifying")):
+    for heading, key in ((words["running"], "running"), (words["verifying"], "verifying")):
         for item in snapshot[key]:
             lines.append(f"{heading}: {item['id']} — {item['title']}")
     blocked = [
@@ -186,30 +221,30 @@ def render_short_status(
     ]
     for incident in blocked:
         lines.append(
-            f"Тикет {incident['incident_id']}: {incident['phase']} — "
+            f"{words['ticket']} {incident['incident_id']}: {incident['phase']} — "
             f"{_clip(incident['summary'], 120)}"
         )
     if snapshot["pause"]["requested"]:
-        lines.append("Пауза запрошена: новых задач не запускается.")
-    # Диспетчер - короткоживущий процесс: он поднимается на переход между
-    # задачами и гаснет, пока воркер или верификатор ведёт ход. Прежде
-    # условие смотрело только на "идёт" и забывало про "проверяется",
-    # поэтому карточка объявляла диспетчер мёртвым посреди идущей приёмки,
-    # противореча собственной строке "Проверяется" двумя выше. Единственное
-    # место, куда пользователь смотрит за правдой, врало ему.
+        lines.append(words["paused"])
+    # The dispatcher is a short-lived process: it rises on the transition
+    # between tasks and goes away while a worker or verifier holds the turn.
+    # The condition once looked only at "running" and forgot "verifying", so
+    # the card declared the dispatcher dead in the middle of an acceptance,
+    # contradicting its own "Verifying" line two rows above. The one place
+    # the user looks for the truth was lying to them.
     if (
         not dispatcher_running
         and not snapshot["running"]
         and not snapshot["verifying"]
         and not blocked
     ):
-        lines.append("Никто не работает: диспетчер не запущен.")
+        lines.append(words["idle"])
     audit = snapshot["creation_causality"]
     if audit["violations"]:
         lines.append(
-            f"Причинность создания (R1): {len(audit['violations'])} разрыв(ов)."
+            f"{words['causality']} (R1): {len(audit['violations'])}."
         )
-    lines.append("Подробно: скажи «подробный статус».")
+    lines.append(words["more"])
     return "\n".join(lines)
 
 
@@ -242,7 +277,7 @@ def render_project_status(
         (
             f"Plan change: {snapshot['plan_change']['id']} / {snapshot['plan_change']['status']}"
             + (
-                f" — отклонён runtime ({snapshot['plan_change']['rejection_count']}): "
+                f" — rejected by the runtime ({snapshot['plan_change']['rejection_count']}): "
                 f"{snapshot['plan_change']['rejection']}"
                 if snapshot["plan_change"].get("rejection")
                 else ""

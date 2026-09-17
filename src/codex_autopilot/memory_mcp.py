@@ -554,8 +554,8 @@ class MemoryMcpServer:
                 raise MemoryValidationError(
                     "user_request does not match the digest this task was dispatched "
                     f"with: expected {expected.strip().lower()}, plan now has {digest}. "
-                    "Текст изменился под задачей - это причина остановиться, а не "
-                    "продолжать."
+                    "The text changed under the task - that is a reason to stop, not to "
+                    "continue."
                 )
         return {
             "project_root": str(self.root),

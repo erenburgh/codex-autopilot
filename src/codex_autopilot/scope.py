@@ -125,16 +125,16 @@ def audit_declared_scope(
         return []
     listed = ", ".join(offenders[:10])
     if len(offenders) > 10:
-        listed += f" (и ещё {len(offenders) - 10})"
+        listed += f" (and {len(offenders) - 10} more)"
     if not writable:
         return [
-            f"R7: задача {task.id} не объявила ни одной файловой заявки на запись, "
-            f"но изменила {len(offenders)} путей: {listed}. "
-            "Область задаётся ResourceClaim с kind path/directory/glob и access write"
+            f"R7: task {task.id} declared no file write claim, "
+            f"yet changed {len(offenders)} paths: {listed}. "
+            "The scope is declared with a ResourceClaim of kind path/directory/glob and access write"
         ]
     return [
-        f"R7: задача {task.id} изменила {len(offenders)} путей вне объявленной "
-        f"области: {listed}. Для работы вне области нужен PLAN_CHANGE_REQUEST"
+        f"R7: task {task.id} changed {len(offenders)} paths outside the declared "
+        f"scope: {listed}. Work outside the scope needs a PLAN_CHANGE_REQUEST"
     ]
 
 
