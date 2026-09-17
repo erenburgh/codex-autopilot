@@ -1,219 +1,289 @@
 # Changelog
 
+## 0.10.0-beta
+
+The first release meant for people other than the author. Everything in it
+was found on a live run of the previous version: every entry below is a
+place where the run stood still and a human had to step in.
+
+### DevOps repairs the runtime itself
+
+- The on-call engineer may now change the runtime's own code. The repair is
+  not declared, it is proven: a reproduction test must fail on the current
+  code and pass with the patch, the whole suite must stay green, and the
+  guarded ownership, trust and classification definitions must stay
+  byte-identical. Anything else and the installation is untouched. A repair
+  is a set of edits — several modules, a new module — applied together;
+  half a set never reaches the installation.
+- The engineer's authority moved into `engineer_authority.py`, which no
+  repair can touch; `pipeline_engineer.py` itself became repairable, with
+  five of its definitions guarded by hash.
+- The installer ships the test suite next to the sources: without it a
+  repair cannot be proven, and self-repair would silently disappear on a
+  user's machine while staying green in the repository.
+- Recovery actions are named from a vocabulary, never described in prose.
+  On the previous run the main failure signature had 18 repeats, 15
+  recorded resolutions and zero learned runbooks, because the learning
+  path compared free text against an enumeration. `--action` is now
+  mandatory on `devops-resolve-incident`; circumstances go to `--note`.
+- A repeated failure is bounded per signature (R23). `maximum_attempts`
+  used to be declared and read by nobody; it is now the ceiling per
+  failure signature, default 5, and reaching it opens a ticket for the
+  engineer rather than stopping the run.
+
+### The run no longer waits for a human word
+
+- A retry due after a rate limit is raised by the runtime itself. The last
+  dispatcher and the Stop hook leave a wake-up process behind; it sleeps
+  until the due time and dispatches the same way an automatic successor
+  would, under the same owner and the same ownership check.
+- The wake-up survives a reboot: the installer adds a launchd agent that
+  sweeps known projects at login and every five minutes and arms a wake
+  where a retry waits. The owner is derived from the run's own journal.
+
+### The user hears what they need before the first worker
+
+- Both skill profiles carry an onboarding block: the two decisions that
+  belong to Codex, how to look at the run, what a running task means and
+  what may be done with a finished one, how the plan changes, what happens
+  on a fault and who repairs it. Every phrase the onboarding promises is
+  one the hook knows — that is tested.
+- `tasks` / `задачи` answers with the same card as `status`; bare `stop`,
+  `pause`, `resume`, `continue` and their Russian forms are accepted like
+  bare `status`. Uninstalling still requires the full product name.
+- The engineer writes everything a person will read in the run language,
+  as the workers already did.
+
+### The harness speaks English
+
+- Rules, the launch ladder, hook replies, preflight, CLI output, failure
+  messages and notifications are English. Worker and engineer prompts were
+  already in the run language and are untouched. The short status card —
+  the one thing read in chat — follows the run language. The owner's
+  quotes in the rules' `source` fields stay verbatim.
+- A long-standing concatenation bug glued words together inside the rules
+  that reach every prompt; fixed.
+
+### Measured on the previous run
+
+- Every Pipeline Engineer prompt line names every flag its command
+  requires — `relay-fail` had gained a required `--failure-code` while the
+  runbook still showed the old invocation, and an engineer following it
+  would have been refused by argparse. Tested as a class, not a case.
+- The status card no longer claims the dispatcher is dead during a
+  verification, and no longer prints a model and reasoning that nothing
+  wrote.
+
 ## 0.9.1-beta
 
-Починки, найденные на живом прогоне 0.9.0. Все до одной обнаружены не
-чтением кода, а тем, что прогон вставал у пользователя: каждая запись
-ниже - это остановка, которую пришлось разбирать по журналам.
+Fixes found on the live 0.9.0 run. Every one of them was discovered not by
+reading code but by the run standing still for the user: each entry below is
+a stop that had to be worked out from the journals.
 
-### Запуск больше не висит молча
+### The launch no longer hangs silently
 
-- Проба доверия шла на усилии рабочего воркера. Ход, вся задача
-  которого - один безобидный вызов инструмента, считался на `xhigh` и
-  дважды не уложился в пять минут. У пробы теперь своё усилие.
-- `Timed out waiting for App Server` при исправном App Server отправлял
-  чинить транспорт и права. Ожидание хода поднимает `TurnTimeout`,
-  который прямо говорит, что не уложился ход модели.
-- Пять минут молчания получили голос: перед пробой печатается, что
-  проверяется, в какой задаче и сколько отведено. Один таймаут больше
-  не валит запуск - попыток три.
+- The trust probe ran at the production worker's effort. A turn whose whole
+  job is one harmless tool call was counted at `xhigh` and twice missed the
+  five-minute mark. The probe now has its own effort.
+- `Timed out waiting for App Server` with a healthy App Server sent people
+  to repair transport and permissions. Waiting for a turn raises
+  `TurnTimeout`, which says plainly that the model turn ran over.
+- Five minutes of silence got a voice: before the probe it prints what is
+  being checked, in which task and how long is allowed. One timeout no
+  longer fails the launch — there are three attempts.
 
-### Воркер и приёмка
+### Worker and acceptance
 
-- Воркер не знал, что команда, требующая разрешения, убивает прогон:
-  диспетчер на approvals не отвечает, а диалог висит в задаче, на
-  которую никто не смотрит. Теперь он завершается кодом
-  `BLOCKED DANGEROUS_PERMISSION` и называет команду.
-- Отказ приёмки исчерпывал попытки ревизии и ставил задачу в BLOCKED -
-  без replanner, без инженера и без команды, снимающей это состояние.
-  Теперь задача перенанимается на следующую ступень усилия со свежим
-  исполнителем; план и Definition of Done неприкосновенны.
-- Дежурный инженер, закрыв инцидент, не назначал преемника: прогон
-  уходил в READY/PREPARING и молча стоял. Причинным звеном стал ход
-  самого инженера.
+- The worker did not know that a command requiring permission kills the run:
+  the dispatcher never answers approvals, and the dialog hangs in a task
+  nobody is looking at. It now finishes with `BLOCKED DANGEROUS_PERMISSION`
+  and names the command.
+- An acceptance refusal exhausted the revision attempts and put the task in
+  BLOCKED — with no replanner, no engineer and no command to lift the state.
+  The task is now re-hired at the next effort step with a fresh executor; the
+  plan and the Definition of Done are untouchable.
+- The on-call engineer, having closed an incident, assigned no successor: the
+  run went to READY/PREPARING and stood silently. The engineer's own turn
+  became the causal link.
 
-### Бюджет контекста
+### Context budget
 
-- Исходный запрос копировался в каждый промпт целиком. На прогоне с
-  подробным ТЗ это 51 475 символов из 62 635 при потолке 64 000 -
-  ни одна задача не собралась бы. Теперь это ссылка с длиной и sha256,
-  а текст берётся из Project Memory.
-- Потолок 64 000 не имел обоснования при окне модели в 258 400 токенов.
-  Выведен из окна и записан в `docs/CONTEXT_BENCHMARK.md`. Второй
-  экземпляр той же константы в промпте планировщика убирал релей прямо
-  посреди прогона.
+- The original request was copied whole into every prompt. On a run with a
+  detailed specification that is 51 475 characters out of 62 635 under a
+  64 000 ceiling — not one task would have assembled. It is now a reference
+  with a length and sha256, and the text is fetched from Project Memory.
+- The 64 000 ceiling had no justification against a model window of
+  258 400 tokens. Derived from the window and recorded in
+  `docs/CONTEXT_BENCHMARK.md`. A second copy of the same constant in the
+  planner prompt was killing the relay in the middle of a run.
 
-### Установка и хуки
+### Installation and hooks
 
-- Доверие хукам слетало перед каждой новой задачей. Codex зажимал
-  объявленный таймаут `Interrupt` до своего предела и тем самым правил
-  наше определение при каждой загрузке; единица доверия - файл целиком,
-  поэтому на повторный разбор уходили все три хука.
-- Прогон хранил путь к скиллу вместе с номером версии. Первая же
-  установка оставляла ссылку в пустоте и убивала активный прогон -
-  то есть обновить продукт было нельзя в принципе. Путь теперь идёт
-  через стабильный `current`, а прогоны прежних версий лечатся при
-  загрузке.
-- Новый прогон наследовал открытые тикеты прежнего и вставал на них
-  ещё до первой задачи.
+- Hook trust was lost before every new task. Codex clamped the declared
+  `Interrupt` timeout to its own limit and thereby rewrote our definition on
+  every load; the unit of trust is the whole file, so all three hooks went
+  back to review.
+- The run stored the skill path together with the version number. The first
+  install left the reference dangling and killed the active run — that is,
+  the product could not be upgraded at all. The path now goes through the
+  stable `current`, and runs of earlier versions are healed on load.
+- A new run inherited the previous run's open tickets and stood on them
+  before its first task.
 
-### Отказы перестали прятать причину
+### Failures stopped hiding the cause
 
-- Отказ до отправки запроса считался неоднозначным: `installed_plugin_root`
-  вычислялся среди аргументов вызова, то есть после флага «запрос ушёл».
-  Такой отказ порождал тикет класса `AMBIGUOUS_SIDE_EFFECT`, где
-  запрещены и автопочинка, и инженер.
-- Повторный отказ уже ожидающей задачи поднимал
-  `IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT`, убивал релей и
-  открывал второй тикет поверх первого - настоящая причина оказывалась
-  спрятана под следствием.
-- `NameError` вместо внятного отказа: исключение не импортировалось в
-  модуле, который его поднимает. Тест теперь держит этот класс ошибки
-  для всего рантайма.
+- A failure before the request was sent counted as ambiguous:
+  `installed_plugin_root` was computed among the call arguments, i.e. after
+  the "request went out" flag. Such a failure opened an
+  `AMBIGUOUS_SIDE_EFFECT` ticket, where both auto-repair and the engineer are
+  forbidden.
+- A repeated failure of a task already waiting raised
+  `IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT`, killed the relay and
+  opened a second ticket on top of the first — the real cause ended up
+  hidden under the consequence.
+- `NameError` instead of a clear refusal: the exception was not imported in
+  the module that raises it. A test now holds this class of error for the
+  whole runtime.
 
-### Ответ пользователя на эскалацию
+### The user's answer to an escalation
 
-- Возобновление закрывало эскалации только в одной фазе прогона, а её
-  выставляет исключительно завершение инженера. Тикет, эскалированный
-  маршрутизацией, ждал человека, человек отвечал - и ответ пропадал.
+- Resuming closed escalations only in one phase of the run, and that phase
+  is set solely by the engineer's completion. A ticket escalated by routing
+  waited for a human, the human answered — and the answer was lost.
 
-611 тестов.
+611 tests.
 
 ## 0.8.2-beta
 
-Продолжение ревизии 0.8.1 и первая реально работающая дорожка дежурного
-инженера. Приёмка на живом Codex Desktop пройдена: три вехи, шесть
-воркеров, все задачи внутри проекта, ноль тикетов, DONE.
+Continuation of the 0.8.1 revision and the first really working on-call
+engineer lane. Acceptance on live Codex Desktop passed: three milestones,
+six workers, every task inside the project, zero tickets, DONE.
 
-### Дежурный инженер стал воркером
+### The on-call engineer became a worker
 
-- `ensure_pipeline_engineer` меняло поле в JSON и называло это
-  инженером. Теперь инцидент класса `PIPELINE_ENGINEER` резервирует
-  настоящую сессию вида `pipeline_engineer` - раньше всей прочей
-  работы и без единого ресурса, потому что чинит он именно ту
-  очередь, в которой стоит.
-- `build_pipeline_engineer_prompt` был снят в 0.8.1 как неиспользуемый.
-  Ссылок на него не было не потому, что его заменили, а потому, что
-  дорожку не дописали. Восстановлен и переписан: называет настоящие
-  команды (`relay-status`, `relay-complete`, `relay-fail --definitive`,
-  `devops-rearm-relay-owner`, `arm`, `devops-resolve-incident`) вместо
-  придуманных.
-- R13 в тексте промпта: у инженера полные права на починку, способ
-  выбирает он, пользователь в выборе не участвует. Эскалация
-  исключительна и требует кода из закрытого списка
+- `ensure_pipeline_engineer` changed a field in JSON and called that an
+  engineer. Now an incident in the `PIPELINE_ENGINEER` class reserves a real
+  session of kind `pipeline_engineer` — ahead of all other work and without a
+  single resource, because what it repairs is the very queue it stands in.
+- `build_pipeline_engineer_prompt` had been removed in 0.8.1 as unused.
+  There were no references to it not because it was replaced but because the
+  lane was never finished. Restored and rewritten: it names real commands
+  (`relay-status`, `relay-complete`, `relay-fail --definitive`,
+  `devops-rearm-relay-owner`, `arm`, `devops-resolve-incident`) instead of
+  invented ones.
+- R13 in the prompt text: the engineer has full authority to repair, it
+  chooses the method, the user takes no part in the choice. Escalation is
+  exceptional and requires a code from the closed list
   (`DANGEROUS_PERMISSION`, `GLOBAL_CONFIG_CHANGE`, `PROJECT_DAMAGE_RISK`,
-  `RECOVERY_EXHAUSTED`, `PRODUCT_DECISION`, `ARCHITECTURE_DECISION`);
-  голое `ESCALATE_TO_USER` больше не принимается.
-- Справку о ветках (`server_view`) собирает диспетчер и кладёт в пакет
-  инцидента. Прежде инженеру пришлось бы запрашивать разрешения на
-  команды, которых у него нет; теперь спрашивать нечего - всё уже
-  в пакете. Промпт пересобирается в момент старта хода, а не при
-  резервации, чтобы картина была свежей.
-- Новая команда `devops-resolve-incident` закрывает тикет: она требует
-  имени healthcheck и наблюдений, и `RESOLVED` наступает только если
-  тикет действительно закрыт.
+  `RECOVERY_EXHAUSTED`, `PRODUCT_DECISION`, `ARCHITECTURE_DECISION`); a bare
+  `ESCALATE_TO_USER` is no longer accepted.
+- The thread digest (`server_view`) is gathered by the dispatcher and placed
+  in the incident package. Before, the engineer would have had to request
+  permissions for commands it does not have; now there is nothing to ask —
+  everything is already in the package. The prompt is rebuilt at the start
+  of the turn, not at reservation, so the picture is fresh.
+- The new command `devops-resolve-incident` closes the ticket: it requires a
+  healthcheck name and observations, and `RESOLVED` happens only if the
+  ticket is really closed.
 
-### Исправлено
+### Fixed
 
-- Смена плана больше не требует дословного эха `user_request`. В живом
-  прогоне это 35 234 символа: модель, переписывающая граф, такую строку
-  не воспроизводит, поэтому **ни одна** смена плана пройти не могла.
-  Поле переносится из текущего плана - это строже эха, которое можно
-  было подделать. `goal` и `model_strategy` остаются строгими.
-- `turn/start` выполняется только на ветке, загруженной этим
-  соединением: если ветки нет в `subscribed_thread_ids`, она сначала
-  поднимается через `thread/resume`.
-- Битый `dispatcher_pid` в состоянии - отказ, а не догадка. Прежде
-  нечисловое значение молча читалось как "процесс жив".
-- Шаблон плана в обоих скиллах нёс `execution_strategy="serial"` и
-  одного воркера. `plan.py` объявляет умолчанием `auto` и двух, но план
-  пишет планировщик по образцу из `SKILL.md` - и явное значение в файле
-  умолчанием не перебить. Ни один новый прогон не входил в
-  параллельность. Заодно сказано то, чего дефолт не даёт: параллельность
-  создаётся формой графа, а сёстры, пишущие в один файл, сериализуются
-  замком ресурса.
-- Аудит причинности создания (R1) вызывается из отчёта о статусе.
-  Функции были написаны и вызывались только из тестов: утверждение
-  "цепочка проверяется" не подкреплялось путём вызова. Первый прогон на
-  живом состоянии показал два разрыва, которых никто не видел.
+- A plan change no longer requires a verbatim echo of `user_request`. In the
+  live run that is 35 234 characters: a model rewriting the graph does not
+  reproduce such a string, so **no** plan change could pass. The field is
+  carried over from the current plan — stricter than an echo, which could be
+  forged. `goal` and `model_strategy` stay strict.
+- `turn/start` runs only on a thread loaded by this connection: if the thread
+  is not in `subscribed_thread_ids`, it is first raised through
+  `thread/resume`.
+- A broken `dispatcher_pid` in the state is a refusal, not a guess. Before, a
+  non-numeric value was silently read as "the process is alive".
+- The plan template in both skills carried `execution_strategy="serial"` and
+  one worker. `plan.py` declares `auto` and two as the default, but the plan
+  is written by the planner from the example in `SKILL.md` — and an explicit
+  value in the file cannot be overridden by a default. Not one new run
+  entered parallelism. It is also stated what the default does not give:
+  parallelism is created by the shape of the graph, and siblings writing to
+  one file are serialized by the resource lock.
+- The creation causality audit (R1) is called from the status report. The
+  functions were written and called only from tests: the claim "the chain is
+  checked" was not backed by a call path. The first run on live state showed
+  two breaks nobody had seen.
 
-### Снято
+### Removed
 
-- Пять определений, которые прятал фасад `lifecycle`, два аргумента с
-  единственным допустимым значением, 50 неиспользуемых импортов в
-  модулях памяти. Фасад теперь реэкспортирует ровно то, что через него
-  импортируют.
+- Five definitions hidden by the `lifecycle` facade, two arguments with a
+  single allowed value, 50 unused imports in the memory modules. The facade
+  now re-exports exactly what is imported through it.
 
-### Закрыто из набора независимой проверки
+### Closed from the independent review set
 
-- **R6.** `ensure_project_root` при каждом создании задачи молча вызывал
-  `project/update` и дописывал канонический корень в сохранённый проект
-  пользователя. Теперь чтение и правка разделены: правка требует
-  принятого решения пользователя, названного этим проектом и этим
-  корнем (`authorize-project-root --yes`, снимается `--revoke`).
-  Заодно исправлено членство - оно определяется вложенностью, тем же
-  правилом, по которому preflight выбирает проект.
-- **R13.** `BLOCKED` и `ESCALATE` воркера несут код из закрытого списка.
-  Прежде причина уходила в `last_error` строкой "M9 worker returned
-  BLOCKED", в которой нет ничего сверх самого статуса.
-- **R5.** Измеренное расхождение размещения роняет вердикт запуска и
-  уходит в один нормализованный тикет; прежде `visible_in_desktop` не
-  входил в решающие пункты вовсе, и `OUTSIDE` не менял ничего.
-  Неизмеренность перестала быть вечной: спустя 180 секунд после
-  создания ветки она становится отрицательным результатом.
-- **PRE-SIDE-EFFECT-FENCE.** Отставленная Desktop-задача отказывает на
-  `UserPromptSubmit`, до единого вызова модели или инструмента. Прежде
-  закрытый отказ наступал на завершении хода, то есть после работы.
-- **R18.** Происхождение внешнего материала обязательно при приёме;
-  ярлык `external` появился в схеме инструмента памяти; Constraint на
-  внешнем, переход в связывающее состояние и дописывание внешней
-  поддержки постфактум - закрыты. `contradicts` остаётся открытой.
-- **R1.** Аудит причинности вызывается из отчёта о статусе.
-- **ENTRYPOINT-DEFAULTS.** Шаблон плана входит в заявленный дефолт.
+- **R6.** `ensure_project_root` silently called `project/update` on every
+  task creation and appended the canonical root to the user's saved
+  project. Reading and writing are now separated: writing requires an
+  accepted user decision naming this project and this root
+  (`authorize-project-root --yes`, lifted by `--revoke`). Membership is
+  fixed too — it is determined by nesting, the same rule by which preflight
+  picks the project.
+- **R13.** A worker's `BLOCKED` and `ESCALATE` carry a code from the closed
+  list. Before, the reason went into `last_error` as the string "M9 worker
+  returned BLOCKED", which holds nothing beyond the status itself.
+- **R5.** A measured placement discrepancy fails the launch verdict and goes
+  into one normalized ticket; before, `visible_in_desktop` was not among the
+  deciding items at all, and `OUTSIDE` changed nothing. An unmeasured state
+  stopped being eternal: 180 seconds after the thread's creation it becomes
+  a negative result.
+- **PRE-SIDE-EFFECT-FENCE.** A retired Desktop task refuses on
+  `UserPromptSubmit`, before a single model or tool call. Before, the closed
+  refusal came at the end of the turn, i.e. after the work.
+- **R18.** Provenance of external material is mandatory on intake; the
+  `external` label appeared in the memory tool schema; a Constraint on
+  external material, the transition into a binding state and appending
+  external support after the fact — closed. `contradicts` stays open.
+- **R1.** The causality audit is called from the status report.
+- **ENTRYPOINT-DEFAULTS.** The plan template enters the declared default.
 
-### Известное и незакрытое
+### Known and not closed
 
-`docs/M11_COMPLETION.md` перечисляет пункты независимой проверки,
-оставшиеся открытыми, и почему каждый из них не закрыт здесь.
+`docs/M11_COMPLETION.md` lists the items of the independent review that
+remain open, and why each of them is not closed here.
 
 ## 0.9.0-beta
 
-Первая версия, в которой закрыт аудит 0.8.0 целиком, и первая, чьи
-обещания сверяются тестами с кодом.
+The first version in which the 0.8.0 audit is closed entirely, and the first
+whose promises are checked against the code by tests.
 
-### Аудит 0.8.0 закрыт
+### The 0.8.0 audit is closed
 
-1. **Мёртвый пайплайн снят.** `orchestrator.py`, `smoke.py` и поверхность
-   `headless_app_server` — около 1165 строк, которые не мог выполнить ни
-   один прогон.
-2. **У дежурного инженера появилось тело.** Скилл обещал роль, кода
-   которой не существовало. Теперь инцидент класса `PIPELINE_ENGINEER`
-   создаёт настоящего видимого воркера; он чинит от имени пользователя,
-   а эскалация требует кода из закрытого списка.
-3. **Механизм заранее созданных слотов снят целиком.** Он обходил
-   мнимую невозможность завести видимую задачу через App Server;
-   посылка опровергнута живым прогоном.
-4. **Пустая привязка к проекту убрана** из пути создания.
-5. **Команды CLI разобраны.** У каждой есть названный потребитель:
-   пользовательские описаны в документации, ремонтные — в инструментах
-   инженера, внутренние несут свою справку. Остальные сняты.
-6. **Отказы памяти называют допустимое.** Прежде воркер перебирал
-   значения вслепую и уходил читать исходники плагина.
+1. **The dead pipeline is removed.** `orchestrator.py`, `smoke.py` and the
+   `headless_app_server` surface — about 1165 lines no run could execute.
+2. **The on-call engineer got a body.** The skill promised a role whose code
+   did not exist. Now an incident in the `PIPELINE_ENGINEER` class creates a
+   real visible worker; it repairs on the user's behalf, and escalation
+   requires a code from the closed list.
+3. **The pre-created slots mechanism is removed entirely.** It worked around
+   a supposed impossibility of creating a visible task through App Server;
+   the premise was refuted by a live run.
+4. **The empty project binding is removed** from the creation path.
+5. **CLI commands sorted out.** Each has a named consumer: user commands are
+   described in the documentation, repair commands in the engineer's tools,
+   internal ones carry their own help. The rest are removed.
+6. **Memory refusals name what is accepted.** Before, a worker tried values
+   blindly and went off to read the plugin's sources.
 
-### Что проверено живьём
+### Checked live
 
-Два полных прогона на настоящем проекте: параллельные воркеры на одной
-границе зависимостей, разблокировка, независимая проверка, инцидент с
-эскалацией по коду и ответом пользователя, каноническое размещение
-каждой созданной задачи. Установка из релизного архива с последующей
-проверкой `doctor`.
+Two full runs on a real project: parallel workers on one dependency
+boundary, unblocking, independent verification, an incident with a coded
+escalation and the user's answer, canonical placement of every created task.
+Installation from the release archive followed by a `doctor` check.
 
-### Что осталось непроверенным
+### Left unchecked
 
-Внешняя установка кем-то, кроме автора; прогон CI на заявленном Python
-3.11; путь `--install-deps` на машине без Python и Codex CLI;
-многочасовое восстановление после лимита; Computer Use без присмотра;
-Windows. Всё это названо в README, а не спрятано.
+External installation by anyone but the author; a CI run on the declared
+Python 3.11; the `--install-deps` path on a machine without Python and Codex
+CLI; multi-hour recovery after a rate limit; Computer Use unattended;
+Windows. All of this is named in the README, not hidden.
 
 - Added independent contract regressions for the required v0.9 execution
   default, Desktop-owned start surface, exact thread-title formats, canonical
@@ -229,58 +299,61 @@ Windows. Всё это названо в README, а не спрятано.
 
 ## 0.8.1-beta
 
-Ревизия после первой успешной приёмки 0.8.0: снято то, что не могло
-выполниться, и исправлено то, что обещало невыполнимое.
+A revision after the first successful 0.8.0 acceptance: what could not
+execute was removed, and what promised the impossible was fixed.
 
-### Снято как недостижимое
+### Removed as unreachable
 
-- `orchestrator.py` (1130 строк) и поверхность `headless_app_server`.
-  `run`, `resume` и `_dispatch` отказывали при `desktop_owned`, а
-  умолчание всех команд было именно `desktop_owned`. Живыми входами
-  оставались только `smoke.py` и тесты. Вместе с ними ушли `smoke.py`,
-  команды `run`, `_dispatch`, `test desktop`, `restore-app-server` и
+- `orchestrator.py` (1130 lines) and the `headless_app_server` surface.
+  `run`, `resume` and `_dispatch` refused under `desktop_owned`, and the
+  default of every command was exactly `desktop_owned`. The only live entry
+  points were `smoke.py` and the tests. With them went `smoke.py`, the
+  commands `run`, `_dispatch`, `test desktop`, `restore-app-server` and
   `restore_app_server_transport`.
-- Механизм заранее созданных слотов: `add-worker-slot`,
-  `append_worker_slot`, `worker_thread_ids`, `worker_slot_cursor`,
-  `_validate_worker_slots`, фазы `WAITING_PROJECT_SLOT*`. Он был обходом
-  вокруг мнимой невозможности завести видимую задачу через App Server;
-  посылка опровергнута - шесть воркеров приёмки 0.8.0 все оказались
-  внутри проекта.
-- Повторная привязка ветки к проекту после создания. Код строкой выше
-  отклоняет создание, если ветка не в нужном проекте, то есть
-  `thread/metadata/update` привязывал привязанное. v0.7 его не вызывает.
-- Параметр `threadSource` в `start_thread`: значение
-  `agent_created_thread` помечало задачу созданной другим приложением.
-- Восемь функций, не упомянутых нигде: `system_roles`,
+- The pre-created slots mechanism: `add-worker-slot`, `append_worker_slot`,
+  `worker_thread_ids`, `worker_slot_cursor`, `_validate_worker_slots`, the
+  `WAITING_PROJECT_SLOT*` phases. It was a workaround for a supposed
+  impossibility of creating a visible task through App Server; the premise
+  was refuted — all six 0.8.0 acceptance workers turned out inside the
+  project.
+- Re-binding a thread to the project after creation. The line above rejects
+  creation if the thread is not in the right project, so
+  `thread/metadata/update` was binding the already bound. v0.7 does not call
+  it.
+- The `threadSource` parameter in `start_thread`: the value
+  `agent_created_thread` marked the task as created by another application.
+- Eight functions mentioned nowhere: `system_roles`,
   `build_pipeline_engineer_prompt`, `send_message_payload`, `_transport`,
   `_require_transport_claim`, `_healthcheck_passed`, `_sha256`,
   `_validate_owner_against_state`.
 
-### Исправлено
+### Fixed
 
-- Дорожка Pipeline Engineer получила процедуру. Прежде скилл обещал, что
-  DevOps починит и перезаведёт, а кода, создающего инженера, не было
-  вовсе: `ensure_pipeline_engineer` меняет поле в JSON. Теперь названа
-  последовательность из существующих защищённых команд, и отдельно
-  сказано, что неизвестный побочный эффект остаётся остановкой.
-- Отчёт о запуске больше не выдаётся за видимый. Stop-хук обязан отвечать
-  `continue`, иначе инициирующий ход остаётся `interrupted` и диспетчер не
-  стартует; значит отчёт не показывается. Инициирующий ход обязан назвать
-  фразу `статус`, которая идёт через `UserPromptSubmit` и видима.
-- Версия MCP-сервера памяти бралась из прибитой строки и разошлась бы с
-  пакетом при любом подъёме версии.
-- Умолчание `worker_surface` в конфиге было `headless_app_server`: новый
-  прогон получал неработающую поверхность, если её не выбрали явно.
+- The Pipeline Engineer lane got a procedure. Before, the skill promised that
+  DevOps would repair and re-arm, and there was no code creating the engineer
+  at all: `ensure_pipeline_engineer` changes a field in JSON. Now a sequence
+  of existing guarded commands is named, and it is said separately that an
+  unknown side effect remains a stop.
+- The launch report is no longer presented as visible. The Stop hook must
+  answer `continue`, otherwise the initiating turn stays `interrupted` and
+  the dispatcher does not start; so the report is not shown. The initiating
+  turn must name the phrase `status`, which goes through `UserPromptSubmit`
+  and is visible.
+- The memory MCP server's version was taken from a hard-coded string and
+  would have diverged from the package on any version bump.
+- The default `worker_surface` in the config was `headless_app_server`: a
+  new run got a non-working surface unless one was chosen explicitly.
 
-### Покрытие
+### Coverage
 
-- `test_model_routing.py` - маршрутизация моделей напрямую, без мёртвого
-  оркестратора: таблица маршрутов и отсутствие тихой подмены модели.
-- `test_skill_promises.py` - скилл не вправе обещать того, чего рантайм не
-  делает; проверяет и то, что процедура не называет несуществующих команд.
-- Снято 24 теста мёртвого пути, `test_recovery.py` и
-  `test_context_budget.py` целиком: последний мерил рост промпта сборкой,
-  которой больше нет, а у живой есть жёсткий предел `MAX_PROMPT_CHARS`.
+- `test_model_routing.py` — model routing directly, without the dead
+  orchestrator: the routing table and the absence of a silent model swap.
+- `test_skill_promises.py` — the skill may not promise what the runtime does
+  not do; it also checks that the procedure names no non-existent commands.
+- Removed 24 tests of the dead path, `test_recovery.py` and
+  `test_context_budget.py` entirely: the latter measured prompt growth with an
+  assembly that no longer exists, while the live one has a hard
+  `MAX_PROMPT_CHARS` limit.
 
 ## 0.8.0-beta
 

@@ -14,40 +14,39 @@ Synthetic full-history growth over the same fixture: **49165 characters**.
 
 The MCP sample is one bounded FTS query with limit 8 at each checkpoint. Real workers may make more calls depending on the milestone; the server caps each page at 20 records.
 
-## Откуда взялся потолок промпта
+## Where the prompt ceiling comes from
 
-`MAX_PROMPT_CHARS` больше не константа из воздуха. Прежде здесь стояло
-`64_000` без комментария и без единого упоминания в документации, и это
-число составляло примерно шестую часть того, что модель фактически
-принимает.
+`MAX_PROMPT_CHARS` is no longer a constant out of thin air. It used to be
+`64_000` with no comment and not a single mention in the documentation, and
+that number was roughly a sixth of what the model actually accepts.
 
-Выводится так:
+It is derived as follows:
 
-| величина | значение | откуда |
+| quantity | value | source |
 | --- | ---: | --- |
-| окно контекста модели | 258 400 токенов | поле `model_context_window` живого события App Server `turn`, 14.09.2026 |
-| доля, отводимая промпту | 0.25 | остальное нужно воркеру на чтение файлов, вывод инструментов и собственный ответ |
-| символов на токен | 3.0 | консервативно для смешанного русско-английского JSON |
-| **потолок** | **193 800 символов** | произведение |
+| model context window | 258 400 tokens | the `model_context_window` field of a live App Server `turn` event, 14 Sep 2026 |
+| share reserved for the prompt | 0.25 | the rest is needed by the worker for reading files, tool output and its own reply |
+| characters per token | 3.0 | conservative for mixed Russian-English JSON |
+| **ceiling** | **193 800 characters** | the product |
 
-Для сравнения: на том же прогоне один ход исполнителя израсходовал
-144 368 входных токенов — вдевятеро больше прежнего потолка целиком.
+For comparison: on the same run one executor turn consumed 144 368 input
+tokens — nine times the whole previous ceiling.
 
-## Исходный запрос не копируется в промпт
+## The original request is not copied into the prompt
 
-`acceptance_gate.original_user_request` — ссылка, а не текст: длина,
-`sha256` и способ получения через Project Memory (`operation=current`).
-Текст пользователя неизменен на весь прогон и сузить его нельзя, поэтому
-копия в каждом промпте была чистым повтором.
+`acceptance_gate.original_user_request` is a reference, not the text: its
+length, `sha256` and the way to fetch it through Project Memory
+(`operation=current`). The user's text is fixed for the whole run and cannot
+be narrowed, so a copy in every prompt was pure repetition.
 
-Замер на реальном плане прогона v1.0 — 23 задачи, запрос 49 739 символов:
+Measured on the real plan of run v1.0 — 23 tasks, a 49 739-character request:
 
-| | до | после |
+| | before | after |
 | --- | ---: | ---: |
-| промпт M1 | 62 635 из 64 000 | 12 214 из 193 800 |
+| prompt of M1 | 62 635 of 64 000 | 12 214 of 193 800 |
 | `acceptance_gate` | 51 475 | 559 |
-| сама задача M1 | 395 | 395 |
+| task M1 itself | 395 | 395 |
 
-До правки задача занимала 0.6 % собственного промпта, а свободного места
-оставалось 1 365 символов: первая же задача с зависимостями не собралась
-бы вовсе.
+Before the change the task occupied 0.6 % of its own prompt, and 1 365
+characters of free space remained: the first task with dependencies would
+not have assembled at all.

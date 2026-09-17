@@ -1,79 +1,83 @@
-# Перенайм · что происходит, когда приёмка отказывает
+# Re-hiring · what happens when acceptance refuses
 
-## Короткий ответ
+## Short answer
 
-Отказ верификатора никогда не останавливает прогон. Задача получает новую
-попытку с полным перечнем претензий, а когда попытки этого исполнителя
-кончаются — нового исполнителя. Останавливается она только на вершине
-лестницы найма, и тогда это осознанное решение владельца продукта, а не
-молчаливая смерть пайплайна.
+A verifier's refusal never stops the run. The task gets a new attempt with
+the full list of complaints, and when this executor's attempts run out — a
+new executor. It stops only at the top of the hiring ladder, and then that is
+a conscious decision of the product owner, not a silent death of the pipeline.
 
-## Цикл ревизии
+## The revision cycle
 
-1. Верификатор возвращает `REVISE` со структурированными issues. У каждого
-   ровно четыре поля: `code`, `summary`, `details`, `dod_refs` — то есть не
-   «плохо», а что именно и какой пункт Definition of Done нарушен.
-2. Задача переходит в `REVISION_REQUIRED`, issues сохраняются в состоянии.
-3. Следующий проход диспетчера резервирует **свежего** revision-воркера
-   `R{n}` и вкладывает issues в его промпт. Старт без issues запрещён на двух
-   уровнях: схемой run-state и самой резервацией.
-4. Ревизия закрыта → `IMPLEMENTED` → снова свежий независимый верификатор.
+1. The verifier returns `REVISE` with structured issues. Each has exactly
+   four fields: `code`, `summary`, `details`, `dod_refs` — that is, not
+   "bad", but what exactly and which Definition of Done item is violated.
+2. The task moves to `REVISION_REQUIRED`; the issues are saved in the state.
+3. The dispatcher's next pass reserves a **fresh** revision worker `R{n}` and
+   puts the issues into its prompt. Starting without issues is forbidden at
+   two levels: by the run-state schema and by the reservation itself.
+4. Revision closed → `IMPLEMENTED` → a fresh independent verifier again.
 
-Бюджет цикла — `verification.max_revision_attempts` задачи.
+The cycle's budget is the task's `verification.max_revision_attempts`.
 
-## Лестница найма
+## The hiring ladder
 
-Когда бюджет ревизий текущего исполнителя исчерпан, меняется не план и не
-планка, а **способ достижения результата и тот, кто его достигает**:
+When the current executor's revision budget is exhausted, what changes is
+neither the plan nor the bar, but **the way the result is reached and who
+reaches it**:
 
 ```
 medium -> high -> xhigh -> max
 ```
 
-Каждая ступень — новый найм: свежий воркер, поднятое усилие, весь
-накопленный перечень претензий, новый бюджет ревизий. Счётчик ревизий
-остаётся сквозным, чтобы нумерация `R{n}` и история попыток не терялись.
+Each step is a new hire: a fresh worker, raised effort, the whole accumulated
+list of complaints, a new revision budget. The revision counter stays
+continuous, so that the `R{n}` numbering and the attempt history are not
+lost.
 
-Что при перенайме **не** меняется: граф, Definition of Done, детерминированные
-проверки, версия плана. Иначе приёмка двигалась бы под работу, а не наоборот.
+What does **not** change on a re-hire: the graph, the Definition of Done, the
+deterministic checks, the plan version. Otherwise acceptance would move to
+meet the work, rather than the other way round.
 
-Состояние: `task_rehires[task_id]` — сколько раз задача перенанята;
-`task_effort[task_id]` — назначенная ступень поверх записанной в плане.
-Журнал: событие `task_rehired` с полями `hire`, `effort_from`, `effort_to`.
+State: `task_rehires[task_id]` — how many times the task was re-hired;
+`task_effort[task_id]` — the assigned step on top of the one recorded in the
+plan. Journal: the `task_rehired` event with the fields `hire`,
+`effort_from`, `effort_to`.
 
-## Почему модель не является ступенью
+## Why the model is not a step
 
-В стратегии `auto` модель жёстко связана с `execution_mode` задачи: `astra`
-означает заявленную способность Computer Use, `sol` — её отсутствие. Подмена
-модели ради качества означала бы подмену заявленной способности, а не
-усердия, поэтому лестница поднимает только усилие.
+In the `auto` strategy the model is tied hard to the task's `execution_mode`:
+`astra` means a declared Computer Use capability, `sol` means its absence.
+Swapping the model for quality would swap the declared capability, not the
+diligence, so the ladder raises only the effort.
 
-## Вершина лестницы
+## The top of the ladder
 
-Когда ступеней больше нет, задача переходит в `BLOCKED`, журнал получает
-событие `hiring_ladder_exhausted`, а `last_error` называет число наймов,
-достигнутую ступень и число попыток. Статус задачи дополнительно печатает
-сами претензии приёмки — иначе владельцу нечем решать.
+When no steps remain, the task moves to `BLOCKED`, the journal receives the
+`hiring_ladder_exhausted` event, and `last_error` names the number of hires,
+the step reached and the number of attempts. The task status additionally
+prints the acceptance complaints themselves — otherwise the owner has
+nothing to decide with.
 
-Это единственный случай остановки, и он согласован с таксономией инцидентов:
-класс `PRODUCTION` принадлежит владельцу продукта, автоматический ремонт
-качества запрещён. Pipeline Engineer сюда не приходит — он не чинит
-production quality failures.
+This is the only stopping case, and it agrees with the incident taxonomy: the
+`PRODUCTION` class belongs to the product owner, and automatic repair of
+quality is forbidden. The Pipeline Engineer does not come here — it does not
+fix production quality failures.
 
-## Соседние задачи
+## Neighbouring tasks
 
-Перенайм не трогает общий граф, ничего не сливает и не меняет версию плана,
-поэтому задачи, не зависящие от вставшей, продолжают идти. Прогон объявляет
-себя `BLOCKED` только когда активной работы не осталось вовсе.
+A re-hire does not touch the shared graph, merges nothing and does not change
+the plan version, so tasks that do not depend on the stalled one keep going.
+The run declares itself `BLOCKED` only when no active work remains at all.
 
-## Точка расширения
+## Extension point
 
-Ступень лестницы сегодня — усилие, потому что это единственный рычаг,
-существующий в рантайме. Когда появятся версионированные профили
-компетенций, шагом станет смена профиля исполнителя, а не подъём усилия.
-Меняется содержимое шага; событие, счётчики, границы и гарантия
-неприкосновенности Definition of Done остаются те же.
+Today a ladder step is effort, because that is the only lever that exists in
+the runtime. When versioned competence profiles appear, the step becomes a
+change of the executor's profile rather than a raise of effort. The content of
+the step changes; the event, the counters, the boundaries and the guarantee
+that the Definition of Done stays untouched remain the same.
 
-Точка подключения — `_rehire_or_block_on_revision_limit` в
-`src/codex_autopilot/lifecycle_base.py` и `next_effort_step` в
+The attachment point is `_rehire_or_block_on_revision_limit` in
+`src/codex_autopilot/lifecycle_base.py` and `next_effort_step` in
 `src/codex_autopilot/models.py`.

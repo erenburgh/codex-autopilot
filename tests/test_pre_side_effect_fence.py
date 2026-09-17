@@ -155,7 +155,7 @@ class RetiredTaskFenceTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "plugins/codex-autopilot-adaptive/skills/codex-autopilot-adaptive/SKILL.md"
         ).read_text(encoding="utf-8")
-        self.assertIn("спроси `статус`", skill)
+        self.assertIn("ask `status`", skill)
         self.assertIn(_normalized_prompt("статус"), STATUS_PROMPTS)
 
     def test_an_unreadable_state_does_not_gag_the_project(self) -> None:

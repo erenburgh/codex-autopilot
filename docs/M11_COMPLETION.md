@@ -1,131 +1,131 @@
-# M11 — закрытие вручную
+# M11 — closed by hand
 
-M11 называлась «Run live acceptance and prepare beta artifacts» и должна
-была собрать релиз **0.9.0-beta из дерева 0.8.0**. К моменту, когда до неё
-дошла очередь, это перестало быть верным: линия ушла в 0.8.1 и 0.8.2, а
-дерево 0.8.0 сегодня признано содержащим 2 471 строку мёртвого и
-недостижимого кода. Выпускать релиз из него было бы выпуском того, что мы
-только что разобрали.
+M11 was called «Run live acceptance and prepare beta artifacts» and was
+meant to assemble the **0.9.0-beta release from the 0.8.0 tree**. By the time
+its turn came, that had stopped being true: the line had moved on to 0.8.1
+and 0.8.2, and the 0.8.0 tree is now known to contain 2 471 lines of dead and
+unreachable code. Releasing from it would have meant releasing what we had
+just taken apart.
 
-Поэтому M11 закрыта вручную и на 0.8.2, а не прогнана пайплайном. Прогон
-`repair/m10-p0`, в котором она стояла, остановлен: из него взято всё, что
-он мог дать, и каждая сегодняшняя правка родилась из его отказов.
+So M11 was closed by hand and on 0.8.2, not run through the pipeline. The run
+`repair/m10-p0` it stood in was stopped: everything it could give was taken
+from it, and every one of today's fixes was born from its failures.
 
-Это не обход пайплайна. Пайплайн подтверждён отдельно и чисто: приёмка
-проходила дважды - на 0.8.0 и на 0.8.2, каждый раз три вехи, шесть
-воркеров, все задачи внутри проекта, ноль тикетов, DONE.
+This is not a bypass of the pipeline. The pipeline was confirmed separately
+and cleanly: acceptance ran twice — on 0.8.0 and on 0.8.2 — each time three
+milestones, six workers, every task inside the project, zero tickets, DONE.
 
-## Почему M11 не запускалась
+## Why M11 never launched
 
-Пять причин, каждая найдена и устранена в свой момент:
+Five causes, each found and removed at its own moment:
 
-1. `originator` был `codex_work_desktop` вместо `Codex Desktop` - задачи
-   создавались невидимыми.
-2. Stop-хук отвечал `decision: "block"`. Ход, чей Stop-хук ответил
-   `block`, остаётся `interrupted` навсегда, а диспетчер ждёт
-   `completed` - запуск не наступал никогда.
-3. Резервация инженера падала с `NameError: AIStudioRuntime`: импорт был
-   срезан упрощателем как неиспользуемый.
-4. `turn/start` вызывался на ветке, не загруженной этим соединением.
-5. И последнее, из-за чего не помогло бы ничто: смена плана требовала
-   дословного эха `user_request`. В этом прогоне поле - 35 234 символа.
-   Ни одна смена плана пройти не могла в принципе, а M11 без смены плана
-   продолжаться не могла.
+1. `originator` was `codex_work_desktop` instead of `Codex Desktop` — tasks
+   were created invisible.
+2. The Stop hook answered `decision: "block"`. A turn whose Stop hook
+   answered `block` stays `interrupted` forever, while the dispatcher waits
+   for `completed` — the launch never came.
+3. Reserving the engineer crashed with `NameError: AIStudioRuntime`: the
+   import had been cut by a simplifier as unused.
+4. `turn/start` was called on a thread not loaded by that connection.
+5. And the last one, against which nothing would have helped: a plan change
+   required a verbatim echo of `user_request`. In that run the field was
+   35 234 characters. No plan change could pass at all, and M11 could not
+   continue without one.
 
-К пятому пункту состояние самой M11 уже несло следы всех предыдущих:
-мёртвая ветка, неоднозначная сессия, отработавший инженер, реплэннер,
-смена плана, применённая руками. Воскрешать это состояние смысла не было.
+By the fifth point the state of M11 itself already carried the traces of all
+the previous ones: a dead thread, an ambiguous session, a spent engineer, a
+replanner, a plan change applied by hand. Resurrecting that state made no
+sense.
 
-## Что из Definition of Done выполнено
+## What of the Definition of Done is fulfilled
 
-| Пункт DoD | Состояние |
+| DoD item | State |
 | --- | --- |
-| Все детерминированные тесты и валидаторы проходят | **Да.** 462 теста, `PYTHONPATH=src python3 -m unittest discover -s tests`. |
-| Дерево несёт документы и руководство по миграции | **Да**, от M10: `MIGRATION_0.8_TO_0.9.md`, `DEPENDENCY_GRAPH.md`, `PARALLEL_EXECUTION.md`, `ROLES.md`, `RESOURCE_LOCKS.md`, `THREAD_NAMING.md`, `PROJECT_ASSOCIATION.md`, `TESTING.md`. |
-| Живая приёмка параллельных воркеров и Computer Use | **Нет.** Приёмка 0.8.2 шла одним воркером. Параллельность проверяется отдельным чистым прогоном - см. ниже. |
-| Метаданные App Server / Desktop проверены во всех фазах | **Да.** Размещение наблюдалось живьём во всех шести воркерах приёмки; `desktop_placement` переписан на `thread/read` и сверку `projectId`; расхождение теперь доходит до тикета. Проверено на живом сервере и то, что исправление `originator` работает: все ветки приёмки 0.8.2 несут `Codex Desktop` и пустой `threadSource`, тогда как ветки прогона M11 - `codex_work_desktop` и `agent_created_thread`. |
-| Итоговый отчёт с 57 пунктами и точным руководством по обновлению | **Заменён.** Список из 57 пунктов принадлежал релизу 0.9.0 из дерева 0.8.0. Вместо него - разбор набора из 12 пунктов независимой проверки, ниже, и руководство по обновлению в конце. |
+| All deterministic tests and validators pass | **Yes.** 462 tests, `PYTHONPATH=src python3 -m unittest discover -s tests`. |
+| The tree carries the documents and the migration guide | **Yes**, from M10: `MIGRATION_0.8_TO_0.9.md`, `DEPENDENCY_GRAPH.md`, `PARALLEL_EXECUTION.md`, `ROLES.md`, `RESOURCE_LOCKS.md`, `THREAD_NAMING.md`, `PROJECT_ASSOCIATION.md`, `TESTING.md`. |
+| Live acceptance of parallel workers and Computer Use | **No.** The 0.8.2 acceptance ran with one worker. Parallelism is checked by a separate clean run — see below. |
+| App Server / Desktop metadata verified in every phase | **Yes.** Placement was observed live in all six acceptance workers; `desktop_placement` was rewritten onto `thread/read` and a `projectId` comparison; a discrepancy now reaches a ticket. It was also checked on the live server that the `originator` fix works: every 0.8.2 acceptance thread carries `Codex Desktop` and an empty `threadSource`, while the M11 run's threads carry `codex_work_desktop` and `agent_created_thread`. |
+| A final report with 57 items and an exact upgrade guide | **Replaced.** The list of 57 items belonged to the 0.9.0 release from the 0.8.0 tree. In its place — the breakdown of the 12-item set of the independent review, below, and the upgrade guide at the end. |
 
-## Разбор набора M11 из независимой проверки
+## Breakdown of the M11 set from the independent review
 
-Нумерация из `RELEASE_VERIFICATION_0.9.0-beta.md`, раздел 11.6.
+Numbering from `RELEASE_VERIFICATION_0.9.0-beta.md`, section 11.6.
 
-| # | Пункт | Состояние |
+| # | Item | State |
 | --- | --- | --- |
-| 1 | `M11-ENTRYPOINT-DEFAULTS` | **Закрыт.** Оба шаблона скилла несут `auto` и двух воркеров; сказано, что параллельность создаётся формой графа, а не флагом, и что общий файл сериализует сестёр замком ресурса. |
-| 2 | `M11-PRE-SIDE-EFFECT-FENCE` | **Закрыт.** Отказ наступает на `UserPromptSubmit`, до единого вызова модели или инструмента. Действующая сессия перевешивает отставленную, управляющие фразы идут своим путём, нечитаемое состояние заслон не включает. Повтор проверен тестом. |
-| 3 | `M11-R1-REACHABILITY` | **Закрыт.** `audit_creation_causality` вызывается из отчёта о статусе. Это отчёт, а не запрет: барьер причинности решает в момент создания, здесь он перепроверяется постфактум по журналу. Слепая зона названа числом. |
-| 4 | `M11-R5-DESKTOP-PLACEMENT` | **Закрыт по существу.** Измеренное расхождение роняет вердикт и уходит в один нормализованный тикет; неизмеренность перестала быть вечной - спустя 180 секунд после создания она становится отрицательным результатом. Редактируемость осталась наблюдением: `canAcceptDirectInput` приходит `null` и в `thread/read`, и во всех тридцати строках `thread/list`, гейт на таком поле не строится. |
-| 5 | `M11-R6-FAIL-CLOSED` | **Закрыт.** `verify_project_root` только читает; дописать корень можно лишь при найденном принятом решении пользователя, названном этим проектом и этим корнем (`authorize-project-root --yes`, снимается `--revoke`). Отказ наступает до создания и уходит в существующую ветку `definitive`. Членство считается вложенностью - тем же правилом, по которому preflight выбирает проект. |
-| 6 | `M11-R7-ATTRIBUTION-BUDGET` | Открыт. Учёта общего дерева по задачам и бюджетов времени/попыток/токенов нет. |
-| 7 | `M11-R13-UNIFIED-REASONS` | **Закрыт.** `BLOCKED` и `ESCALATE` несут код из закрытого списка; неизвестный код отвергается, отсутствующий записывается как `UNSPECIFIED` и засчитывается нарушением R13. У `ROTATE` и `DONE` кода нет и он при них отвергается. |
-| 8 | `M11-R16-R17-PHASE-CONTRACT` | Открыт для проверяющего, реплэннера и инженера. |
-| 9 | `M11-R18-TAINT` | **Закрыт.** Из четырёх путей был закрыт один. Теперь: происхождение обязательно при приёме, ярлык `external` появился в схеме инструмента памяти, Constraint на внешнем отвергается, переход в связывающее состояние перепроверяет заражение, дописать внешнюю поддержку постфактум нельзя. Связь `contradicts` остаётся открытой всегда. |
-| 10 | `M11-REAL-RECOVERY` | Частично. Независимый healthcheck обязателен: `devops-resolve-incident` требует имени проверки и наблюдений, `RESOLVED` наступает только при реально закрытом тикете. Список разрешённых действий остаётся текстом промпта; фактическую границу задаёт набор защищённых команд, а не проверка списка. |
-| 11 | `M11-R30-LEAD-RUBRIC` | Открыт. Руководителей по направлениям и версионируемой рубрики нет. |
-| 12 | `M11-LIVE-AND-RELEASE` | Живая часть выполнена дважды. Упаковка и запись SHA-256 - после чистого прогона. |
+| 1 | `M11-ENTRYPOINT-DEFAULTS` | **Closed.** Both skill templates carry `auto` and two workers; it is stated that parallelism is created by the shape of the graph, not by a flag, and that a shared file serializes siblings through the resource lock. |
+| 2 | `M11-PRE-SIDE-EFFECT-FENCE` | **Closed.** The refusal happens on `UserPromptSubmit`, before a single model or tool call. The active session outranks the retired one, control phrases take their own path, an unreadable state does not raise the fence. The repeat is covered by a test. |
+| 3 | `M11-R1-REACHABILITY` | **Closed.** `audit_creation_causality` is called from the status report. It is a report, not a ban: the causality barrier decides at the moment of creation; here it is re-checked after the fact from the journal. The blind spot is named as a number. |
+| 4 | `M11-R5-DESKTOP-PLACEMENT` | **Closed in substance.** A measured discrepancy fails the verdict and goes into one normalized ticket; an unmeasured state is no longer eternal — 180 seconds after creation it becomes a negative result. Editability remained an observation: `canAcceptDirectInput` arrives `null` both in `thread/read` and in all thirty rows of `thread/list`; a gate cannot be built on such a field. |
+| 5 | `M11-R6-FAIL-CLOSED` | **Closed.** `verify_project_root` only reads; a root may be appended only under a found accepted user decision naming this project and this root (`authorize-project-root --yes`, lifted by `--revoke`). The refusal happens before creation and goes into the existing `definitive` branch. Membership is nesting — the same rule by which preflight picks the project. |
+| 6 | `M11-R7-ATTRIBUTION-BUDGET` | Open. There is no per-task accounting of the shared tree and no time/attempt/token budgets. |
+| 7 | `M11-R13-UNIFIED-REASONS` | **Closed.** `BLOCKED` and `ESCALATE` carry a code from the closed list; an unknown code is rejected, a missing one is recorded as `UNSPECIFIED` and counted as an R13 violation. `ROTATE` and `DONE` have no code and one is rejected with them. |
+| 8 | `M11-R16-R17-PHASE-CONTRACT` | Open for the verifier, the replanner and the engineer. |
+| 9 | `M11-R18-TAINT` | **Closed.** Of four paths one had been closed. Now: provenance is mandatory on intake, the `external` label appeared in the memory tool schema, a Constraint on external material is rejected, the transition into a binding state re-checks the taint, external support cannot be appended after the fact. The `contradicts` link stays open always. |
+| 10 | `M11-REAL-RECOVERY` | Partial. An independent healthcheck is mandatory: `devops-resolve-incident` requires a check name and observations, `RESOLVED` happens only when the ticket is really closed. The list of allowed actions remains prompt text; the actual boundary is set by the set of guarded commands, not by checking the list. |
+| 11 | `M11-R30-LEAD-RUBRIC` | Open. There are no discipline leads and no versioned rubric. |
+| 12 | `M11-LIVE-AND-RELEASE` | The live part was done twice. Packaging and the SHA-256 record — after a clean run. |
 
-Пункты 5, 7 и 4 сделаны отдельно, после разбора: они лежат в пути
-создания и завершения задачи, и правки там разбирались по одной, с
-прогоном всего набора после каждой. Две вещи нашлись прямо в процессе.
+Items 5, 7 and 4 were done separately, after the breakdown: they lie on the
+path of task creation and completion, and the changes there were taken one
+at a time, with the whole suite run after each. Two things were found right
+in the process.
 
-Первая: членство корня в проекте определялось равенством, а не
-вложенностью. Проверка на равенство считала бы расхождением обычный
-случай, когда канонический каталог лежит внутри корня проекта - и
-прежний код именно поэтому дописывал ещё один корень при каждом новом
-каталоге. След виден на живом состоянии: у проекта "Codex Autopilot"
-корень `.../work/codex-autopilot-v0.8.0-beta` появился так.
+First: a root's membership in a project was determined by equality, not by
+nesting. An equality check would count as a discrepancy the ordinary case
+where the canonical directory lies inside the project root — and that is
+exactly why the previous code appended another root on every new
+directory. The trace is visible in the live state: the "Codex Autopilot"
+project got the root `.../work/codex-autopilot-v0.8.0-beta` that way.
 
-Вторая: `visible_in_desktop` не входил в решающие пункты вовсе. То
-есть измеренные `OUTSIDE` и `ABSENT` не заводили тикет никогда, а не
-только в неизмеренном случае, как я считала, читая обоснование.
+Second: `visible_in_desktop` was not among the deciding items at all. That
+is, a measured `OUTSIDE` or `ABSENT` never opened a ticket — not only in the
+unmeasured case, as I believed while reading the justification.
 
-Пункты 2 и 9 закрыты следом. В каждом нашлось по дефекту, которого не
-было в наборе аудита.
+Items 2 and 9 were closed next. Each held a defect that was not in the
+audit set.
 
-В заслоне: скилл обещает пользователю «спроси `статус`», а хук знал
-только развёрнутые формы вроде «статус Codex Autopilot». Обещанный
-видимый путь не работал так, как написан.
+In the fence: the skill promises the user «ask `статус`», while the hook knew
+only the expanded forms like «статус Codex Autopilot». The promised visible
+path did not work as written.
 
-В заражении: ярлык `external` не был перечислен в схеме инструмента
-памяти вовсе. Воркер, принимающий текст со стороны, мог записать его
-только как `file`, `tool` или `user_instruction` - то есть заражение
-исчезало в момент приёма, и все дальнейшие проверки смотрели на ярлык,
-который никто не мог поставить. И отдельно: подписи операций памяти не
-попадали в итоговую схему, оставаясь мёртвым текстом.
+In the taint: the `external` label was not listed in the memory tool schema
+at all. A worker taking in text from outside could record it only as
+`file`, `tool` or `user_instruction` — that is, the taint vanished at the
+moment of intake, and all later checks looked at a label nobody could set.
+And separately: the memory operation signatures did not make it into the
+final schema, remaining dead text.
 
-Открытыми остаются 6 (бюджеты), 8 (контракт фаз для проверяющего,
-реплэннера и инженера), 10 (список разрешённых действий как проверка, а
-не как текст промпта), 11 (руководители и рубрика) и упаковка из 12.
+Open remain 6 (budgets), 8 (the phase contract for the verifier, the
+replanner and the engineer), 10 (the allowed-actions list as a check rather
+than prompt text), 11 (leads and the rubric) and packaging from 12.
 
-## Чем проверяется то, что M11 проверить не успела
+## What checks what M11 did not get to check
 
-Чистый прогон на новом проекте `work/codex-thread-tools`: четыре задачи,
-где две средние не нуждаются в результате друг друга и объявлены сёстрами
-на одной зависимости. Планировщик, проверенный на этом графе, выдаёт:
+A clean run on a new project `work/codex-thread-tools`: four tasks, where the
+two middle ones do not need each other's result and are declared siblings on
+one dependency. The scheduler, checked on this graph, yields:
 
 ```text
-шаг 1: ready=('T1',)        -> ЗАПУСК ('T1',)
-шаг 2: ready=('T2', 'T3')   -> ЗАПУСК ('T2', 'T3')
-шаг 3: ready=('T4',)        -> ЗАПУСК ('T4',)
+step 1: ready=('T1',)        -> LAUNCH ('T1',)
+step 2: ready=('T2', 'T3')   -> LAUNCH ('T2', 'T3')
+step 3: ready=('T4',)        -> LAUNCH ('T4',)
 ```
 
-То есть прогон проверяет именно то, чего не проверила ни одна приёмка:
-двух одновременных воркеров, разблокировку по зависимости, независимого
-проверяющего на последней задаче и дорожку ревизии, если он вернёт
-работу.
+That is, the run checks exactly what no acceptance had checked: two
+simultaneous workers, unblocking by dependency, an independent verifier on
+the last task, and the revision path if it returns the work.
 
-## Обновление
+## Upgrading
 
-С 0.8.1 или 0.8.2: переустановить из дерева, `./install.sh`. Внешний
-путь запуска остаётся `current/bin/codex-autopilot`, поэтому доверие к
-хуку и разрешения на инструменты не сбрасываются.
+From 0.8.1 or 0.8.2: reinstall from the tree, `./install.sh`. The external
+launch path stays `current/bin/codex-autopilot`, so hook trust and tool
+permissions are not reset.
 
-С 0.8.0: то же самое, но шаблон плана изменился. Уже существующие
-прогоны не затронуты - у них `execution_strategy` записан в
-`config.toml` и остаётся прежним. Новый прогон входит в `auto` с двумя
-воркерами.
+From 0.8.0: the same, but the plan template changed. Existing runs are not
+affected — their `execution_strategy` is recorded in `config.toml` and stays
+as it was. A new run enters `auto` with two workers.
 
-С 0.7.x: состояние мигрируется консервативно и остаётся serial с одним
-воркером; `legacy_serial` не даёт мигрированному плану неявно уйти в
-параллельность.
+From 0.7.x: the state is migrated conservatively and stays serial with one
+worker; `legacy_serial` keeps a migrated plan from slipping into parallelism
+implicitly.

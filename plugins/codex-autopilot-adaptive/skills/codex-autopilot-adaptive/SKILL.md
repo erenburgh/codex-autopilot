@@ -261,7 +261,11 @@ see it.
 Therefore the last visible line of the initiating turn must tell the user how to
 look. Name the phrase:
 
-> Запуск взведён. Чтобы увидеть ход дела, спроси `статус` или `задачи` — ответит хук, коротко и сразу; `подробный статус` даёт полный отчёт.
+> The launch is armed. To see how it goes, ask `status` or `tasks` — the hook
+> answers, briefly and at once; `detailed status` gives the full report.
+
+Rendered in the run language, so a Russian run hears «спроси `статус` или
+`задачи`; `подробный статус` даёт полный отчёт».
 
 The status phrase runs on `UserPromptSubmit`, which is outside the causal chain
 and may block safely - that is why its output is visible when the Stop hook's is
@@ -279,7 +283,7 @@ Rules for any such report:
 - The final visible line carries the verdict. If the ladder stopped, say so
   there, naming the step - never end on progress counts while the stall sits in
   collapsed reasoning. "10 of 11 verified, M11 active" is not a verdict when the
-  launch did not start; "остановилось на проверке видимости" is.
+  launch did not start; "stopped at the visibility check" is.
 - A `[✗]` line is not yours to fix. Repairing the pipeline is Pipeline Engineer
   work, by the procedure below, never an improvisation from this session.
 - A verifier rejection is not a stall and not yours to report as one. The task

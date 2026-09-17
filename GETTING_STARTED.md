@@ -196,16 +196,16 @@ To remove one project's Autopilot state too:
 "$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" uninstall --yes --purge-project-state --project /absolute/path/to/project
 ```
 
-## Задача остановлена правилом
+## A task stopped by a rule
 
-Автопилот не снимает такую остановку сам: нарушение правила разбирает
-человек, и «продолжи» её намеренно не стирает. Когда вы разобрались и
-решили, что работа может идти дальше, снимите остановку своим решением —
-причина записывается в состояние прогона:
+Autopilot does not lift such a stop by itself: a rule violation is reviewed
+by a human, and «resume» deliberately does not erase it. When you have looked
+into it and decided the work may go on, lift the stop by your own decision —
+the reason is recorded in the run state:
 
 ```bash
-scripts/codex-autopilot unblock --project <путь> --task <ID> --reason "<почему это допустимо>"
+scripts/codex-autopilot unblock --project <path> --task <ID> --reason "<why this is acceptable>"
 ```
 
-После этого продолжите прогон обычной фразой «Resume Codex Autopilot.»
-в задаче Codex.
+After that, continue the run with the usual phrase «Resume Codex Autopilot.»
+in a Codex task.

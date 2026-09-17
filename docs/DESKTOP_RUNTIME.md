@@ -212,62 +212,62 @@ are owned by the external App Server connection, and no Desktop follow-up,
 steering, or immediate ownership-return promise is made. Desktop-owned hooks
 reject attempts to spawn that dispatcher.
 
-## Уведомление о готовности
+## Notification of readiness
 
-Состояние «непрочитано» в Desktop снаружи недоступно. Замерено на живом
-App Server, а не предположено:
+The «unread» state in Desktop is not reachable from outside. Measured on a
+live App Server, not assumed:
 
-- `initialize` не возвращает списка возможностей вовсе — ни одного
-  объявленного API про непрочитанное, бейджи или уведомления;
-- `thread/metadata/update` принимает только `projectId`. Контрольный
-  опыт: то же поле с прежним значением проходит, а `name`, `title`,
-  `threadName`, `section`, `sectionEnteredAt`, `agentNickname` и
-  `agentRole` отвергаются одинаковым `must include at least one field`;
-- методов `thread/rename`, `thread/setName`, `thread/title/update`,
+- `initialize` returns no capability list at all — not one declared API
+  about unread state, badges or notifications;
+- `thread/metadata/update` accepts only `projectId`. Control experiment: the
+  same field with its previous value passes, while `name`, `title`,
+  `threadName`, `section`, `sectionEnteredAt`, `agentNickname` and
+  `agentRole` are rejected with the same `must include at least one field`;
+- the methods `thread/rename`, `thread/setName`, `thread/title/update`,
   `thread/markUnread`, `thread/setUnread`, `thread/unread/update`,
-  `thread/notify`, `notification/create` не существует.
+  `thread/notify`, `notification/create` do not exist.
 
-Значит ни отметить ветку непрочитанной, ни переименовать её после
-создания нельзя: заголовок задаётся один раз, при создании.
+So a thread can neither be marked unread nor renamed after creation: the
+title is set once, at creation.
 
-Остаётся то, что целиком наше. Диспетчер — обычный локальный процесс, и
-системный банер ему доступен без чьего-либо API:
+What remains is entirely ours. The dispatcher is an ordinary local process,
+and the system banner is available to it without anyone's API:
 
 ```toml
 [runtime]
 desktop_notifications = true
 ```
 
-По умолчанию выключено. Банер приходит на три события: задача проверена,
-задача встала, прогон завершён — один на переход, а не на каждое
-событие. Реализация в `notify.py` ничего не автоматизирует: текст
-уходит аргументами `osascript`, а не склейкой строк, и запрет на
-запрет на управление приложениями через `osascript` проверяется
-отдельным тестом: в `notify.py` нет ни `tell application`, ни `System
-Events`, ни кликов.
+Off by default. The banner arrives on three events: a task verified, a task
+stopped, the run finished — one per transition, not one per event. The
+implementation in `notify.py` automates nothing: the text goes as arguments
+to `osascript`, not as string concatenation, and the ban on controlling
+applications through `osascript` is held by a separate test: `notify.py`
+contains neither `tell application`, nor `System Events`, nor clicks.
 
-### Когда ветка становится видимой
+### When a thread becomes visible
 
-Замерено управляемым опытом, а не выведено:
+Measured by a controlled experiment, not deduced:
 
 ```text
- 0.1s  создана ветка
- 5.2s  через 5 секунд после создания в thread/list её нет
- 5.2s  старт хода
- 6.5s  появилась в thread/list
+ 0.1s  thread created
+ 5.2s  five seconds after creation it is not in thread/list
+ 5.2s  turn started
+ 6.5s  appeared in thread/list
 ```
 
-Ветка становится видимой через ~1.3 секунды после **старта хода**, а не
-при создании и не по завершении хода. Созданная и не запущенная ветка не
-существует и для сервера: `thread/read` отвечает `thread not loaded`, в
-`thread/list` её нет, и без единого хода она не сохраняется вовсе.
+A thread becomes visible ~1.3 seconds after the **start of a turn**, not at
+creation and not at the end of the turn. A created but never started thread
+does not exist for the server either: `thread/read` answers `thread not
+loaded`, it is absent from `thread/list`, and without a single turn it is not
+persisted at all.
 
-Отсюда следствие о старом двухшаговом механизме слотов: он работал
-именно потому, что второе действие запускало ход. Нынешний диспетчер
-делает то же самое сразу после создания, так что со стороны сервера
-задержки почти нет.
+Hence the consequence about the old two-step slot mechanism: it worked
+precisely because the second action started a turn. The current dispatcher
+does the same immediately after creation, so on the server side there is
+almost no delay.
 
-Остаточная задержка, которую видит человек, целиком на стороне
-интерфейса: Desktop перечитывает список по собственным поводам, а
-рассылки о создании веток App Server не делает — проверено двумя
-соединениями, чужое создание не порождает ни одного уведомления.
+The residual delay a person sees is entirely on the interface side: Desktop
+re-reads the list on its own occasions, and App Server sends no broadcasts
+about thread creation — checked with two connections, a foreign creation
+produces not one notification.
