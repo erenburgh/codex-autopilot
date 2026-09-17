@@ -134,6 +134,7 @@ class RecoveryLifecycleTests(unittest.TestCase):
         self.store.complete_pipeline_engineer(
             incident["incident_id"],
             success=True,
+            actions=("inspect_bounded_system_state",),
             at="t2",
             healthcheck=HealthcheckResult(
                 name="relay-ready",

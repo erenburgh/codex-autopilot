@@ -480,6 +480,7 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         incidents.complete_pipeline_engineer(
             self.incident_id,
             success=True,
+            actions=("rearm_relay_owner",),
             at=utc_now(),
             healthcheck=HealthcheckResult(
                 name=_expected_healthcheck(record) or "causal_predecessor_rearm_ready",

@@ -170,6 +170,33 @@ READ_ONLY_DIAGNOSTIC_ACTIONS = (
     "run_declared_healthcheck",
 )
 
+# Действия, которые меняют состояние, а не только читают его. Каждое
+# отвечает ровно одной команде восстановления, и у каждой из них свой
+# отказ, когда предпосылки не выполнены. Называть их можно только так,
+# как они называются: пересказ прозой не сходится ни с чем.
+REPAIR_ACTIONS = (
+    "rearm_relay_owner",
+    "rearm_run",
+    "reconcile_thread_identity",
+    "recreate_archived_retry",
+    "record_definitive_transport_failure",
+    "record_completed_worker_turn",
+    "repair_runtime_code",
+)
+
+# Весь словарь: чем инженер вправе отчитаться о починке.
+RECOVERY_ACTIONS = READ_ONLY_DIAGNOSTIC_ACTIONS + REPAIR_ACTIONS
+
+# Что уровень 1 вправе повторить сам, без человека. Диагностика - вся;
+# из чинящих только те две команды, что сами отказывают, когда их
+# предпосылки не выполнены, и потому безопасны при слепом повторе.
+# Правка кода не повторяется никогда: патч, снявший поломку здесь, на
+# другой машине и в другом состоянии - не лечение, а совпадение.
+AUTO_REPLAYABLE_ACTIONS = READ_ONLY_DIAGNOSTIC_ACTIONS + (
+    "rearm_relay_owner",
+    "rearm_run",
+)
+
 FORBIDDEN_ACTIONS = (
     "fix_production_quality_failures",
     "bypass_trust_or_permission_checks",
@@ -584,12 +611,14 @@ class PipelineIncidentStore:
         healthcheck: HealthcheckResult | None = None,
         reason: str = "",
         actions: Sequence[str] = (),
+        note: str = "",
     ) -> IncidentPhase:
         with self._transaction() as state:
             incident = _incident(state, incident_id)
             if IncidentPhase(str(incident["phase"])) is not IncidentPhase.PIPELINE_ENGINEER:
                 raise PipelineIncidentError("Pipeline Engineer completion requires PIPELINE_ENGINEER")
             if success:
+                _require_named_actions(actions)
                 _require_passing_healthcheck(
                     healthcheck,
                     expected_name=_expected_healthcheck(incident),
@@ -599,7 +628,7 @@ class PipelineIncidentStore:
                 incident["resolved_at"] = at
                 event = "pipeline_engineer_resolved"
                 promoted = _record_resolution(
-                    state, incident, actions=actions, healthcheck=healthcheck, at=at
+                    state, incident, actions=actions, healthcheck=healthcheck, at=at, note=note
                 )
             else:
                 # Pipeline Engineer исчерпал свои возможности - это
@@ -1092,10 +1121,19 @@ def _record_resolution(
     actions: Sequence[str],
     healthcheck: HealthcheckResult | None,
     at: str,
+    note: str = "",
 ) -> str | None:
     """Накопить способ решения под подписью и, если пора, сделать раннбук.
 
     Возвращает id продвинутого раннбука, если продвижение случилось.
+
+    Действия здесь - идентификаторы из словаря, а не пересказ. Замерено
+    на прогоне v1.0: по главной подписи накопилось 15 решений и ни
+    одного раннбука, потому что записаны они были прозой ("attempted
+    incident-scoped relay-owner reactivation; helper refused because…"),
+    а продвижение сверяет их с перечислением. Проза с перечислением не
+    совпадает никогда - путь обучения был замкнут сам на себя. Прозе
+    место в note: она объясняет обстоятельства и ни на что не влияет.
     """
 
     signature = str(incident.get("signature") or "")
@@ -1106,17 +1144,25 @@ def _record_resolution(
     normalized = tuple(sorted({str(item) for item in actions if str(item).strip()}))
     check = healthcheck.name if healthcheck is not None else None
     entry["resolutions"].append(
-        {"actions": list(normalized), "healthcheck": check, "at": at}
+        {
+            "actions": list(normalized),
+            "healthcheck": check,
+            "at": at,
+            "note": _bounded(note, MAX_EVENT_CHARS),
+        }
     )
     if entry.get("promoted_runbook") is not None or not normalized:
         return None
-    forbidden = [item for item in normalized if item in FORBIDDEN_ACTIONS]
-    if forbidden:
-        return None
-    if not set(normalized).issubset(READ_ONLY_DIAGNOSTIC_ACTIONS):
-        # Продвигаются только действия из списка безопасных: уровень 1
-        # работает без человека, поэтому не вправе делать ничего, кроме
-        # диагностики и ограниченной повторной попытки.
+    # Фильтра запрещённых здесь нет намеренно: словарь действий и
+    # список запретов не пересекаются, а закрытие тикета принимает
+    # только словарь. Проверка запрещённого на этом месте была бы
+    # недостижимой веткой - тем самым мёртвым кодом, который R19 велит
+    # снимать, а не держать «на всякий случай».
+    if not set(normalized).issubset(AUTO_REPLAYABLE_ACTIONS):
+        # Продвигаются только действия, которые уровень 1 вправе
+        # повторить вслепую: он работает без человека. Починка кода и
+        # адресные команды с чужими идентификаторами сюда не попадают -
+        # они остаются знанием в реестре, но не становятся процедурой.
         return None
     identical = [
         item
@@ -1211,6 +1257,31 @@ def _incident(
 
 def _runbook(runbook_id: str) -> RecoveryRunbook | None:
     return next((item for item in RUNBOOKS if item.id == runbook_id), None)
+
+
+def _require_named_actions(actions: Sequence[str]) -> None:
+    """Починка называет, ЧТО сделано, идентификатором из словаря.
+
+    Отчёт прозой обучению не годится: он не сравним ни с чем, и реестр
+    подписей копит его без всякого выхода. Поэтому закрытие тикета без
+    единого названного действия отклоняется, а незнакомое название - тем
+    более: словарь ограничен теми командами, которые у рантайма есть.
+    """
+
+    named = [str(item).strip() for item in actions if str(item).strip()]
+    if not named:
+        raise PipelineIncidentError(
+            "resolving an incident requires at least one named action from: "
+            + ", ".join(RECOVERY_ACTIONS)
+        )
+    unknown = sorted({item for item in named if item not in RECOVERY_ACTIONS})
+    if unknown:
+        raise PipelineIncidentError(
+            "unknown recovery actions "
+            + ", ".join(unknown)
+            + "; prose belongs in the note, actions must come from: "
+            + ", ".join(RECOVERY_ACTIONS)
+        )
 
 
 def _require_passing_healthcheck(

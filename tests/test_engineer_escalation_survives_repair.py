@@ -60,6 +60,7 @@ class EscalationAfterRepairTests(unittest.TestCase):
         self.store.complete_pipeline_engineer(
             incident_id,
             success=True,
+            actions=("reconcile_durable_journal",),
             at=utc_now(),
             healthcheck=HealthcheckResult(
                 name="fail-safe",

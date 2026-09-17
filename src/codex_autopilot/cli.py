@@ -112,7 +112,18 @@ def parser() -> argparse.ArgumentParser:
     devops_resolve.add_argument("--incident-id", required=True)
     devops_resolve.add_argument("--healthcheck-name", required=True)
     devops_resolve.add_argument("--check", action="append", required=True)
-    devops_resolve.add_argument("--action", action="append", default=[])
+    # Чем починено - обязательно и идентификатором из словаря. Замерено
+    # на прогоне v1.0: флаг был необязательным, и все шестнадцать
+    # починок записались без единого действия либо прозой, поэтому по
+    # подписи с восемнадцатью повторами не выучилось ни одной процедуры.
+    # Сам словарь не дублируется здесь: имена проверяет реестр, у него
+    # они и живут.
+    devops_resolve.add_argument("--action", action="append", required=True)
+    devops_resolve.add_argument(
+        "--note",
+        default="",
+        help="обстоятельства прозой: объясняют починку и ни на что не влияют",
+    )
     # Задача, остановленная нарушением правила, снимается только
     # человеком и только с записанной причиной. Прежде снять её было
     # нечем вовсе: "продолжи" отказывает на BLOCKED по любой причине,
@@ -526,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
                 at=utc_now(),
                 healthcheck=healthcheck,
                 actions=tuple(args.action),
+                note=args.note,
             )
             print(json.dumps({"incident_id": args.incident_id, "phase": phase.value}, ensure_ascii=False))
             return 0

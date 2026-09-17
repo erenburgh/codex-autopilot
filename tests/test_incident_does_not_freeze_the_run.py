@@ -155,6 +155,7 @@ class IncidentScopeTests(unittest.TestCase):
         incidents.complete_pipeline_engineer(
             incident_id,
             success=True,
+            actions=("inspect_bounded_system_state",),
             at=utc_now(),
             healthcheck=HealthcheckResult(
                 name="probe",

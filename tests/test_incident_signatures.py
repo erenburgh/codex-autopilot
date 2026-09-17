@@ -371,16 +371,67 @@ class PromotionSafetyTests(StoreTestCase):
 
     def test_an_action_outside_the_safe_list_is_never_promoted(self) -> None:
         """Уровень 1 работает без человека и не вправе делать ничего,
-        кроме диагностики и ограниченной повторной попытки."""
+        кроме диагностики и ограниченной повторной попытки.
 
-        self.resolve_with(["restart_the_whole_machine"], times=PROMOTION_THRESHOLD + 1)
+        Правка кода - действие из словаря, отчитаться им можно. Но
+        повторить его вслепую на другой машине и в другом состоянии
+        нельзя, поэтому процедурой оно не становится ни на какой раз.
+        """
+
+        self.resolve_with(["repair_runtime_code"], times=PROMOTION_THRESHOLD + 1)
         self.assertEqual(self.promoted(), [])
+        entry = next(iter(self.store.signature_ledger().values()))
+        self.assertEqual(
+            len(entry["resolutions"]),
+            PROMOTION_THRESHOLD + 1,
+            "знание о починке сохраняется, даже когда процедурой не становится",
+        )
 
-    def test_a_forbidden_action_is_never_promoted(self) -> None:
+    def test_a_forbidden_action_is_refused_at_the_door(self) -> None:
+        """Запрещённое не «не продвигается» - оно не принимается вовсе.
+
+        Прежде запрет стоял только на продвижении: тикет закрывался,
+        запись о запрещённом действии ложилась в реестр, и дальше её
+        просто не брали в раннбук. Словарь и запреты не пересекаются,
+        поэтому отказ наступает на входе.
+        """
+
         from codex_autopilot.pipeline_engineer import FORBIDDEN_ACTIONS
 
-        self.resolve_with([FORBIDDEN_ACTIONS[0]], times=PROMOTION_THRESHOLD + 1)
+        with self.assertRaises(PipelineIncidentError) as refusal:
+            self.resolve_with([FORBIDDEN_ACTIONS[0]], times=1)
+        self.assertIn(FORBIDDEN_ACTIONS[0], str(refusal.exception))
         self.assertEqual(self.promoted(), [])
+
+    def test_prose_is_refused_and_keeps_its_place_in_the_note(self) -> None:
+        """Та самая поломка обучения, снятая замером на прогоне v1.0.
+
+        По главной подписи накопилось 15 решений и ни одного раннбука:
+        действия писали прозой, а продвижение сверяет их с
+        перечислением. Теперь проза отклоняется на входе, а объяснение
+        обстоятельств уезжает в note и ни на что не влияет.
+        """
+
+        prose = "attempted incident-scoped relay-owner reactivation; helper refused"
+        with self.assertRaises(PipelineIncidentError) as refusal:
+            self.resolve_with([prose], times=1)
+        self.assertIn("prose belongs in the note", str(refusal.exception))
+
+        incident = self.store.open_incident(signal("with-note"), at="n1")
+        self.store.ensure_pipeline_engineer(incident["incident_id"], at="n1")
+        self.store.complete_pipeline_engineer(
+            incident["incident_id"],
+            success=True,
+            at="n2",
+            healthcheck=healthcheck(),
+            actions=[READ_ONLY_DIAGNOSTIC_ACTIONS[0]],
+            note=prose,
+        )
+        entry = next(iter(self.store.signature_ledger().values()))
+        self.assertEqual(entry["resolutions"][-1]["note"], prose)
+        self.assertEqual(
+            entry["resolutions"][-1]["actions"], [READ_ONLY_DIAGNOSTIC_ACTIONS[0]]
+        )
 
     def test_different_fixes_do_not_add_up(self) -> None:
         """Два разных способа - не подтверждение одного и того же."""
