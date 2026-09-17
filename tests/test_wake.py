@@ -231,6 +231,69 @@ class WakeTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(calls, [])
 
+    # --- то, что нашла проверяющая --------------------------------------
+
+    def test_revoked_hook_trust_stops_the_wake(self) -> None:
+        """Будильник проходит тот же гейт, что и запуск от хука.
+
+        Спящий процесс не несёт доказательства доверия с собой. Если
+        человек отозвал доверие хуку, пока прогон спал, повтор не
+        поднимается - и это записано как причина, а не проглочено.
+        """
+
+        from unittest import mock
+
+        from codex_autopilot.hook_trust import HookPreflightError
+
+        due = self.hit_the_limit()
+        clock = _Clock(due + 1)
+        with mock.patch(
+            "codex_autopilot.lifecycle_reservations.require_trusted_stop_hook_for_config",
+            side_effect=HookPreflightError("trust revoked"),
+        ):
+            self.wake(at_epoch=due, clock=clock)
+        self.assertEqual(self.spawned, [])
+        journal = self.store.load().resilience_journal
+        skipped = [item for item in journal if item["event"] == "wake_skipped"]
+        self.assertTrue(skipped)
+        self.assertIn("hook trust", json.dumps(skipped[-1], ensure_ascii=False))
+
+    def test_the_final_record_waits_for_the_lock(self) -> None:
+        """Запись после диспетчеризации идёт под замком координатора."""
+
+        import threading
+
+        from codex_autopilot.resources import ResourceLockCoordinator
+        from codex_autopilot.wake import _finish
+
+        coordinator = ResourceLockCoordinator(self.store, self.cfg.root)
+        released = threading.Event()
+        holder_ready = threading.Event()
+
+        def hold() -> None:
+            with coordinator.transaction():
+                holder_ready.set()
+                released.wait(5)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        holder_ready.wait(5)
+        finished = threading.Event()
+
+        def finish() -> None:
+            _finish(self.cfg, self.store, "wake_skipped", detail={"why": "test"})
+            finished.set()
+
+        writer = threading.Thread(target=finish)
+        writer.start()
+        self.assertFalse(
+            finished.wait(0.5), "запись прошла, пока замок держал другой"
+        )
+        released.set()
+        holder.join(5)
+        self.assertTrue(finished.wait(5), "запись не дождалась освобождения замка")
+        writer.join(5)
+
 
 class SurvivesARebootTests(WakeTests):
     """Агент обхода делает то же, что будильник, но после перезагрузки.

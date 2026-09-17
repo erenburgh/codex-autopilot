@@ -6,11 +6,14 @@
 поднять. Прогон стоял, пока хозяйка не писала "Resume" - каждые
 несколько часов, руками, ради действия, которое рантайм умел сам.
 
-Здесь ничего не обходится. Диспетчер, законно поднятый доверенным
-Stop-хуком, и так продолжает прогон без повторной проверки хука - так
-устроены все его преемники. Будильник - тот же преемник, только
-отложенный: он спит до срока и делает ровно то, что диспетчер сделал бы
-сразу, будь задача готова. Владелец тот же, проверка владения в
+Здесь ничего не обходится, и это проверялось со стороны. Первая
+редакция пропускала гейт доверия хуку по аналогии с преемниками
+диспетчера - но те пропускают его внутри уже проверенной синхронной
+операции, а будильник просыпается через часы, когда доказательства
+доверия ни у кого на руках нет. Поэтому перед тем как поднять
+диспетчер, будильник проходит тот же гейт, что и запуск от хука: если
+человек за это время отозвал доверие, повтор не поднимается. Владелец
+тот же, проверка владения в reserve_ready_frontier и
 spawn_automatic_app_server_relay та же.
 
 Чего будильник не делает: не будит остановленный человеком прогон
@@ -99,11 +102,11 @@ def run_wake(
     while True:
         state = store.load()
         if state.status in {"BLOCKED", "DONE"} or store.pause_requested():
-            _finish(store, "wake_skipped", detail={"why": "run is stopped or paused"})
+            _finish(cfg, store, "wake_skipped", detail={"why": "run is stopped or paused"})
             return 0
         due = due_wake_epoch(state)
         if due is None:
-            _finish(store, "wake_skipped", detail={"why": "nothing waits for a retry"})
+            _finish(cfg, store, "wake_skipped", detail={"why": "nothing waits for a retry"})
             return 0
         target = max(due, int(at_epoch))
         if isinstance(state.rate_limit_until, int):
@@ -113,7 +116,7 @@ def run_wake(
             sleep(min(remaining, MAX_NAP_SECONDS))
             continue
         if _dispatcher_alive(state):
-            _finish(store, "wake_skipped", detail={"why": "a dispatcher is already running"})
+            _finish(cfg, store, "wake_skipped", detail={"why": "a dispatcher is already running"})
             return 0
         break
 
@@ -122,17 +125,27 @@ def run_wake(
     if spawn_relay is None:
         from .control import spawn_automatic_app_server_relay as spawn_relay
 
-    descriptors = reserve(
-        cfg,
-        now_epoch=int(now()),
-        # Проверка хука уже была - при законном запуске той цепочки, из
-        # которой этот будильник вырос. Так же продолжают прогон все
-        # автоматические преемники.
-        hook_gate=lambda _cfg: None,
-        relay_owner_thread_id=owner,
-    )
+    # Тот же гейт, что у запуска от хука. Спящий процесс не несёт
+    # доказательства доверия с собой, поэтому спрашивает заново; отозванное
+    # доверие - причина не поднимать повтор, а не обходить проверку.
+    from .hook_trust import HookPreflightError
+
+    try:
+        descriptors = reserve(
+            cfg,
+            now_epoch=int(now()),
+            relay_owner_thread_id=owner,
+        )
+    except HookPreflightError as exc:
+        _finish(
+            cfg,
+            store,
+            "wake_skipped",
+            detail={"why": "hook trust is not in place", "error": str(exc)},
+        )
+        return 0
     if not descriptors:
-        _finish(store, "wake_skipped", detail={"why": "the frontier reserved nothing"})
+        _finish(cfg, store, "wake_skipped", detail={"why": "the frontier reserved nothing"})
         return 0
     pids = [
         spawn_relay(
@@ -144,6 +157,7 @@ def run_wake(
         for item in descriptors
     ]
     _finish(
+        cfg,
         store,
         "wake_dispatched",
         detail={
@@ -154,14 +168,23 @@ def run_wake(
     return 0
 
 
-def _finish(store: StateStore, event: str, *, detail: dict[str, Any]) -> None:
+def _finish(cfg: Config, store: StateStore, event: str, *, detail: dict[str, Any]) -> None:
+    """Последняя запись будильника - под тем же замком, что и все остальные.
+
+    Замерено проверяющей: чтение-правка-запись без транзакции сразу после
+    того, как будильник породил релеи, шло наперегонки со свежим
+    диспетчером, который пишет в тот же файл под своим замком, и теряло
+    его правки молча.
+    """
+
     from .resilience import append_resilience_event
 
-    state = store.load()
-    append_resilience_event(state, event, at=utc_now(), detail=detail)
-    state.wake_pid = None
-    state.wake_at = None
-    store.save(state)
+    with ResourceLockCoordinator(store, cfg.root).transaction():
+        state = store.load()
+        append_resilience_event(state, event, at=utc_now(), detail=detail)
+        state.wake_pid = None
+        state.wake_at = None
+        store.save(state)
 
 
 def _dispatcher_alive(state: Any) -> bool:

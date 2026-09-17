@@ -1,3 +1,3 @@
 """Codex Autopilot public beta runtime."""
 
-__version__ = "0.9.14-beta"
+__version__ = "0.10.0-beta"
