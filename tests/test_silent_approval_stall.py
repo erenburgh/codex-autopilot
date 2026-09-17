@@ -141,6 +141,20 @@ class ExecpolicyRegistrationTests(unittest.TestCase):
         self.assertNotIn("/old/scripts/codex-autopilot", text)
         self.assertEqual(text.count(register_execpolicy.MARKER), 1)
 
+    def test_upgrade_removes_the_block_written_under_the_legacy_marker(self) -> None:
+        # Installs before the English harness wrote a Russian marker line. An
+        # upgrade must still replace that block, not stack a second one.
+        legacy = register_execpolicy.LEGACY_MARKERS[0]
+        self.rules.parent.mkdir(parents=True)
+        self.rules.write_text(
+            legacy + '\nprefix_rule(pattern=["/old/scripts/codex-autopilot", "start-skill"], decision="allow")\n',
+            encoding="utf-8",
+        )
+        text = register_execpolicy.register("/new/scripts/codex-autopilot", self.rules)
+        self.assertNotIn(legacy, text)
+        self.assertNotIn("/old/scripts/codex-autopilot", text)
+        self.assertEqual(text.count(register_execpolicy.MARKER), 1)
+
     def test_foreign_rules_survive(self) -> None:
         self.rules.parent.mkdir(parents=True)
         self.rules.write_text('prefix_rule(pattern=["cp"], decision="allow")\n', encoding="utf-8")

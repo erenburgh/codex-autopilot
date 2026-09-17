@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Внести ветки прогона в проект так же, как это делает сам Desktop.
+"""Bring the run's threads into the project the way Desktop itself does.
 
-Зачем. Desktop умеет забирать ветки, созданные через App Server: обход
-thread/list вызывает observe -> thread/read -> adopt, и adopt пишет запись
-в thread-project-assignments. Но весь обход живёт внутри migrate(), а
-там при падении любой ветки из пачки бросается исключение на весь цикл, и
-флаг threadAssignmentsMigrated пишется только в самом конце. Одна сбойная
-ветка блокирует перенос целиком: очередь не рассасывается никогда.
+Why. Desktop can adopt threads created through App Server: the thread/list
+sweep calls observe -> thread/read -> adopt, and adopt writes a record into
+thread-project-assignments. But the whole sweep lives inside migrate(),
+where a failure on any thread of the batch raises for the whole loop, and
+the threadAssignmentsMigrated flag is written only at the very end. One
+failing thread blocks the migration entirely: the queue never drains.
 
-Скрипт делает ту же запись, что делает adopt, и ничего сверх неё.
+The script writes the same record adopt writes, and nothing beyond it.
 
-БЕЗОПАСНОСТЬ. Приложение держит состояние в памяти и перезаписывает файл
-своей копией, поэтому работать можно ТОЛЬКО при закрытом Codex. Скрипт
-сам отказывается запускаться, если приложение живо. Перед записью
-делается резервная копия рядом с файлом.
+SAFETY. The application keeps its state in memory and overwrites the file
+with its own copy, so this may run ONLY while Codex is closed. The script
+refuses to run by itself if the application is alive. A backup is made next
+to the file before writing.
 
-Запуск:
-  python3 scripts/adopt_threads_into_project.py            # показать, что будет сделано
-  python3 scripts/adopt_threads_into_project.py --apply    # записать
+Usage:
+  python3 scripts/adopt_threads_into_project.py            # show what would be done
+  python3 scripts/adopt_threads_into_project.py --apply    # write
   python3 scripts/adopt_threads_into_project.py --thread <id> --apply
 """
 
@@ -58,7 +58,7 @@ def codex_is_running() -> bool:
 
 
 def legacy_project_id(state: dict, app_server_project_id: str) -> str | None:
-    """Обратное отображение проекта App Server в проект Desktop."""
+    """The reverse mapping from an App Server project to a Desktop project."""
 
     for mapping in (state.get(MAPPING) or {}).values():
         for legacy, server in (mapping or {}).items():
@@ -78,8 +78,8 @@ def run_threads(cfg) -> list[tuple[str, str]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--thread", action="append", help="конкретная ветка; можно несколько")
-    parser.add_argument("--apply", action="store_true", help="записать; без него только показ")
+    parser.add_argument("--thread", action="append", help="a specific thread; may repeat")
+    parser.add_argument("--apply", action="store_true", help="write; without it only show")
     args = parser.parse_args()
 
     cfg = load_config(ROOT)
@@ -89,11 +89,11 @@ def main() -> int:
     project = legacy_project_id(state, cfg.desktop.project_id or "")
     if project is None:
         raise SystemExit(
-            f"проект App Server {cfg.desktop.project_id!r} не отображается ни в один "
-            "проект Desktop — вносить некуда"
+            f"App Server project {cfg.desktop.project_id!r} maps to no "
+            "Desktop project — nowhere to adopt into"
         )
     name = ((state.get("local-projects") or {}).get(project) or {}).get("name")
-    print(f"проект Desktop: {name!r} ({project})\n")
+    print(f"Desktop project: {name!r} ({project})\n")
 
     targets = [(t, "?") for t in (args.thread or [])] or run_threads(cfg)
     assignments = state.get(ASSIGNMENTS) or {}
@@ -104,28 +104,28 @@ def main() -> int:
     planned: list[tuple[str, str]] = []
     for thread_id, task in targets:
         if assignments.get(thread_id, {}).get("projectId") == project:
-            print(f"  {task:4s} {thread_id}  уже в проекте")
+            print(f"  {task:4s} {thread_id}  already in the project")
             continue
         planned.append((thread_id, task))
-        print(f"  {task:4s} {thread_id}  БУДЕТ ВНЕСЕНА")
+        print(f"  {task:4s} {thread_id}  WILL BE ADOPTED")
 
     if not planned:
-        print("\nвносить нечего")
+        print("\nnothing to adopt")
         return 0
     if not args.apply:
-        print(f"\nпоказ без записи: {len(planned)} веток. Добавь --apply")
+        print(f"\ndry run: {len(planned)} threads. Add --apply")
         return 0
     if codex_is_running():
         raise SystemExit(
-            "\nCodex запущен. Он держит состояние в памяти и перезапишет файл своей "
-            "копией — закрой приложение и повтори."
+            "\nCodex is running. It keeps its state in memory and will overwrite the "
+            "file with its own copy — close the application and retry."
         )
 
     backup = path.with_name(path.name + f".backup-{time.strftime('%Y%m%d-%H%M%S')}")
     shutil.copy2(path, backup)
 
     for thread_id, _task in planned:
-        # Ровно та запись, которую делает adopt в самом приложении.
+        # Exactly the record adopt writes inside the application.
         assignments[thread_id] = {"projectKind": "local", "projectId": project}
         if thread_id in projectless:
             projectless.remove(thread_id)
@@ -137,9 +137,9 @@ def main() -> int:
     orders[project] = {"threadIds": order}
     state[ORDERS] = orders
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\nвнесено веток: {len(planned)}")
-    print(f"резервная копия: {backup}")
-    print("открой Codex и проверь проект")
+    print(f"\nthreads adopted: {len(planned)}")
+    print(f"backup: {backup}")
+    print("open Codex and check the project")
     return 0
 
 

@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""Провести ветку по циклу видимости и показать, где он обрывается.
+"""Walk a thread through the visibility cycle and show where it breaks.
 
-Цикл: создана невидимой -> стала видимой -> легла в проект.
+The cycle: created invisible -> became visible -> landed in the project.
 
-Скрипт не рассуждает, а делает шаги и после каждого сверяется с
-СОБСТВЕННЫМИ записями Desktop (~/.codex/.codex-global-state.json).
-Успех вызова на стороне App Server видимостью не считается: project/update
-и thread/metadata/update проходят в пространстве имён App Server, не меняя
-метаданных сайдбара Electron - это записано в самом продукте
-(project_association.py) и подтверждено на живом прогоне.
+The script does not reason; it takes steps and after each one checks
+against Desktop's OWN records (~/.codex/.codex-global-state.json). A
+successful call on the App Server side does not count as visibility:
+project/update and thread/metadata/update pass in the App Server namespace
+without changing the Electron sidebar metadata - recorded in the product
+itself (project_association.py) and confirmed on a live run.
 
-Состояния, которые различаются по записям Desktop:
+The states told apart by Desktop's records:
 
-  НЕТ НИГДЕ          Desktop о ветке не знает - её не видно вообще
-  ВИДНА ВНЕ ПРОЕКТА  ветка в projectless-thread-ids: видна в Recents
-  В ПРОЕКТЕ          ветка в thread-project-assignments и порядке сайдбара
+  ABSENT               Desktop does not know the thread - not visible at all
+  VISIBLE OUTSIDE      the thread is in projectless-thread-ids: visible in Recents
+  IN PROJECT           the thread is in thread-project-assignments and the sidebar order
 
-Запуск:
-  python3 scripts/promote_thread_visibility.py                # активная ветка прогона
+Usage:
+  python3 scripts/promote_thread_visibility.py                # the run's active thread
   python3 scripts/promote_thread_visibility.py --thread <id>
-  python3 scripts/promote_thread_visibility.py --dry-run      # только замер, без вызовов
+  python3 scripts/promote_thread_visibility.py --dry-run      # measure only, no calls
 """
 
 from __future__ import annotations
@@ -41,9 +41,9 @@ from codex_autopilot.run_state import StateStore  # noqa: E402
 PROJECT_KEYS = ("thread-project-assignments", "sidebar-project-thread-orders")
 KNOWN_KEYS = PROJECT_KEYS + ("projectless-thread-ids", "electron-persisted-atom-state")
 
-ABSENT = "НЕТ НИГДЕ"
-OUTSIDE = "ВИДНА ВНЕ ПРОЕКТА"
-INSIDE = "В ПРОЕКТЕ"
+ABSENT = "ABSENT"
+OUTSIDE = "VISIBLE OUTSIDE"
+INSIDE = "IN PROJECT"
 
 
 def desktop_state() -> dict:
@@ -52,7 +52,7 @@ def desktop_state() -> dict:
 
 
 def placement(thread_id: str) -> tuple[str, list[str]]:
-    """Где ветка по мнению самого Desktop, и в каких его записях."""
+    """Where the thread is according to Desktop itself, and in which of its records."""
 
     state = desktop_state()
     hits = [
@@ -76,76 +76,77 @@ def active_thread(cfg) -> str:
     ]
     if not live:
         raise SystemExit(
-            "активной ветки в прогоне нет — укажи её явно через --thread"
+            "the run has no active thread — name it explicitly with --thread"
         )
     return str(live[-1]["thread_id"])
 
 
 def report(stage: str, thread_id: str) -> str:
     where, hits = placement(thread_id)
-    detail = ", ".join(hits) if hits else "ни в одной записи"
+    detail = ", ".join(hits) if hits else "in no record"
     print(f"  {stage:<22} {where:<18} ({detail})")
     return where
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--thread", help="идентификатор ветки; по умолчанию активная")
-    parser.add_argument("--project", help="проект App Server; по умолчанию из конфига")
+    parser.add_argument("--thread", help="thread identifier; the active one by default")
+    parser.add_argument("--project", help="App Server project; from the config by default")
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="только замерить текущее размещение, ничего не вызывая",
+        help="only measure the current placement, calling nothing",
     )
     parser.add_argument("--settle", type=float, default=3.0,
-                        help="сколько секунд ждать перезаписи состояния Desktop")
+                        help="how many seconds to wait for Desktop to rewrite its state")
     args = parser.parse_args()
 
     cfg = load_config(ROOT)
     thread_id = args.thread or active_thread(cfg)
     project_id = args.project or cfg.desktop.project_id
     if not project_id:
-        raise SystemExit("в конфиге прогона не задан проект App Server")
+        raise SystemExit("the run config names no App Server project")
 
-    print(f"ветка:  {thread_id}")
-    print(f"проект: {project_id}\n")
-    before = report("до вмешательства", thread_id)
+    print(f"thread:  {thread_id}")
+    print(f"project: {project_id}\n")
+    before = report("before intervention", thread_id)
     if args.dry_run:
         return 0 if before == INSIDE else 1
     if before == INSIDE:
-        print("\nветка уже в проекте — делать нечего")
+        print("\nthe thread is already in the project — nothing to do")
         return 0
 
-    print("\nшаг 1: привязка к проекту через App Server")
+    print("\nstep 1: attach to the project through App Server")
     client = AppServerClient(
         cfg.desktop.binary, cfg.state_dir / "logs" / "promote-visibility.jsonl"
     )
     with client:
         thread = client.assign_thread_to_project(thread_id, project_id)
-        print(f"  App Server вернул projectId={thread.get('projectId')!r}")
-        # Чтение обратно: успех вызова и фактическое состояние - разные вещи.
+        print(f"  App Server returned projectId={thread.get('projectId')!r}")
+        # Read back: a successful call and the actual state are different things.
         fresh = client.read_thread(thread_id)
-        print(f"  thread/read показывает projectId={fresh.get('projectId')!r}")
+        print(f"  thread/read shows projectId={fresh.get('projectId')!r}")
 
-    # Desktop переписывает своё состояние не мгновенно.
+    # Desktop does not rewrite its state instantly.
     time.sleep(max(0.0, args.settle))
-    after = report("после привязки", thread_id)
+    after = report("after attaching", thread_id)
 
     print()
     if after == INSIDE:
-        print("ЦИКЛ ПРОЙДЕН: ветка лежит в проекте.")
+        print("CYCLE COMPLETE: the thread is in the project.")
         return 0
     if after == OUTSIDE:
         print(
-            "ЦИКЛ ОБОРВАН НА ПОСЛЕДНЕМ ШАГЕ: ветка стала видимой, но осталась\n"
-            "вне проекта. Привязка на стороне App Server прошла, а записи\n"
-            "сайдбара Desktop её не получили — значит этим вызовом ветку в\n"
-            "проект не положить, и нужен путь, где ветку заводит сам Desktop."
+            "CYCLE BROKEN AT THE LAST STEP: the thread became visible but stayed\n"
+            "outside the project. The App Server attach passed, but the Desktop\n"
+            "sidebar records did not receive it — so this call cannot put the\n"
+            "thread into the project, and a path where Desktop itself creates\n"
+            "the thread is needed."
         )
         return 2
     print(
-        "ЦИКЛ НЕ НАЧАЛСЯ: Desktop о ветке не знает даже после привязки.\n"
-        "Проверь, что приложение запущено и проект открыт, и повтори."
+        "CYCLE NOT STARTED: Desktop does not know the thread even after attaching.\n"
+        "Check that the application is running and the project is open, then retry."
     )
     return 3
 

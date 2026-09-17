@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
-"""Прописать собственный скрипт Autopilot в execpolicy Codex.
+"""Register Autopilot's own script in the Codex execpolicy.
 
-Зачем это существует. Codex спрашивает разрешение на команду, которой нет в
-execpolicy. Для Autopilot это означает, что запуск его же установленного
-скрипта может упереться в нативный диалог - а диспетчер по своему правилу не
-отвечает на approvals ни при каких условиях. Запрос повисает в задаче, на
-которую пользователь не смотрит, инициирующий ход молчит, и прогон не
-начинается.
+Why this exists. Codex asks permission for a command that is not in the
+execpolicy. For Autopilot that means launching its own installed script may
+hit a native dialog - and by its own rule the dispatcher never answers
+approvals. The request hangs in a task the user is not looking at, the
+initiating turn stays silent, and the run does not start.
 
-Что именно замерено на живой машине:
+What exactly was measured on a live machine:
 
-- ``codex execpolicy check`` разрешает команду, когда она идёт прямым argv;
-- та же команда внутри ``/bin/zsh -lc "..."`` не совпадает ни с одним правилом,
-  потому что правила сопоставляются по токенам argv, а вся строка шелла - один
-  токен.
+- ``codex execpolicy check`` allows the command when it comes as direct argv;
+- the same command inside ``/bin/zsh -lc "..."`` matches no rule, because
+  rules are matched by argv tokens and the whole shell string is one token.
 
-Отсюда два следствия. SKILL требует запускать скрипт без обёртки шеллом, а
-здесь заводится ровно то правило, которое такой запуск закрывает.
+Two consequences. The SKILL requires launching the script without a shell
+wrapper, and exactly the rule that covers such a launch is created here.
 
-Разрешены только команды инициирующего хода. Всё остальное - ``devops-*``,
-``uninstall``, ``hook``, ``relay-*`` - по-прежнему спрашивает.
+Only the initiating turn's commands are allowed. Everything else -
+``devops-*``, ``uninstall``, ``hook``, ``relay-*`` - still asks.
 
-Путь скрипта версионирован, поэтому блок переписывается на каждой установке:
-старые строки Autopilot удаляются, новые добавляются. Правила, написанные
-пользователем или самим Codex, не трогаются.
+The script path is versioned, so the block is rewritten on every install:
+old Autopilot lines are removed, new ones added. Rules written by the user
+or by Codex itself are not touched.
 """
 
 from __future__ import annotations
@@ -31,7 +29,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-MARKER = "# codex-autopilot (managed): собственный скрипт плагина, прямой argv"
+MARKER = "# codex-autopilot (managed): the plugin's own script, direct argv"
+# The marker written by installs before the harness switched to English. It
+# is still recognized so an upgrade removes that block instead of stacking
+# a second one under it.
+LEGACY_MARKERS = ("# codex-autopilot (managed): собственный скрипт плагина, прямой argv",)
 ALLOWED_COMMANDS = ("start-skill", "timeline")
 
 
@@ -43,11 +45,11 @@ def build_block(script: str, commands: tuple[str, ...] = ALLOWED_COMMANDS) -> st
 
 
 def strip_managed(existing: str) -> str:
-    """Убрать прошлый управляемый блок, не трогая чужие правила."""
+    """Remove the previous managed block without touching foreign rules."""
     kept: list[str] = []
     inside = False
     for line in existing.splitlines():
-        if line.strip() == MARKER:
+        if line.strip() == MARKER or line.strip() in LEGACY_MARKERS:
             inside = True
             continue
         if inside:

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Живая лента событий прогона: видно, что происходит прямо сейчас.
+"""A live feed of run events: what is happening right now.
 
-Хук отдаёт один ответ и показать ход работы построчно не может. Эта
-команда закрывает другую половину: пока задача идёт, она печатает события
-журнала по мере появления, а не оставляет смотреть в тишину.
+The hook gives one answer and cannot show progress line by line. This
+command covers the other half: while a task runs, it prints journal events
+as they appear instead of leaving you to stare into silence.
 
-Запуск:
-  python3 scripts/watch_run.py              # следить дальше
-  python3 scripts/watch_run.py --tail 20    # показать последние и следить
-  python3 scripts/watch_run.py --once       # напечатать и выйти
+Usage:
+  python3 scripts/watch_run.py              # follow from here
+  python3 scripts/watch_run.py --tail 20    # show the last ones and follow
+  python3 scripts/watch_run.py --once       # print and exit
 """
 
 from __future__ import annotations
@@ -66,15 +66,15 @@ def journal(path: Path) -> list[dict]:
     try:
         return json.loads(path.read_text(encoding="utf-8")).get("lifecycle_journal", [])
     except (OSError, json.JSONDecodeError):
-        # Состояние пишется атомарно, но прочитать можно ровно в момент
-        # подмены: это не ошибка, а повод перечитать на следующем круге.
+        # The state is written atomically, but a read can land exactly at
+        # the swap: not an error, a reason to re-read on the next lap.
         return []
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tail", type=int, default=10, help="сколько последних показать")
-    parser.add_argument("--once", action="store_true", help="напечатать и выйти")
+    parser.add_argument("--tail", type=int, default=10, help="how many recent events to show")
+    parser.add_argument("--once", action="store_true", help="print and exit")
     parser.add_argument("--interval", type=float, default=1.0)
     args = parser.parse_args()
 
@@ -87,7 +87,7 @@ def main() -> int:
     if args.once:
         return 0
 
-    print("— слежу за журналом, Ctrl+C чтобы выйти —")
+    print("— following the journal, Ctrl+C to exit —")
     try:
         while True:
             time.sleep(max(0.2, args.interval))
@@ -98,7 +98,7 @@ def main() -> int:
                 print(render(item))
                 seen = int(item["sequence"])
     except KeyboardInterrupt:
-        print("\n— слежение остановлено, прогон не тронут —")
+        print("\n— stopped following, the run is untouched —")
     return 0
 
 

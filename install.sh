@@ -54,11 +54,11 @@ target="$install_root/$version"
 mkdir -p "$install_root"
 rm -rf "$target"
 mkdir -p "$target/runtime" "$target/bin"
-# Рантайм устанавливается деревом той же формы, что и репозиторий: не
-# только src, а всё, чем набор тестов доказывает поведение - тесты,
-# плагины, документация, установщик, pyproject. Дежурный инженер
-# доказывает починку прогоном этого набора на копии установленного
-# дерева; из одного src он не собирался вовсе: 94 падения на месте.
+# The runtime is installed as a tree of the same shape as the repository:
+# not only src but everything the test suite proves behaviour with - tests,
+# plugins, documentation, the installer, pyproject. The on-call engineer
+# proves a repair by running that suite on a copy of the installed tree;
+# from src alone it did not even assemble: 94 failures on the spot.
 for item in src tests scripts build_backend plugins .agents .gitignore docs install.sh pyproject.toml README.md GETTING_STARTED.md CHANGELOG.md LICENSE; do
   [ -e "$source_dir/$item" ] && cp -R "$source_dir/$item" "$target/runtime/$item"
 done
@@ -82,10 +82,11 @@ exec "$base/venv/bin/python" -m codex_autopilot.cli "$@"
 EOF
 chmod 755 "$target/bin/codex-autopilot"
 
-# Агент будильника. Спящий процесс, который поднимает повтор по сроку,
-# не переживает перезагрузку; агент launchd раз в пять минут обходит
-# известные проекты и заводит будильник там, где он нужен. Без него
-# прогон, уснувший на лимите, ждал бы слова человека до следующего запуска.
+# The wake-up agent. The sleeping process that raises a retry when its time
+# comes does not survive a reboot; the launchd agent sweeps the known
+# projects every five minutes and arms the alarm where one is needed.
+# Without it a run asleep on a rate limit would wait for a human's word
+# until the next launch.
 if [ "$(uname -s)" = "Darwin" ]; then
   agents_dir="$HOME/Library/LaunchAgents"
   mkdir -p "$agents_dir"
@@ -108,8 +109,8 @@ if [ "$(uname -s)" = "Darwin" ]; then
 </dict>
 </plist>
 EOF
-  # В тестах установщика HOME подменён: грузить агента в настоящий launchd
-  # оттуда нельзя, и переменная это запрещает.
+  # The installer tests substitute HOME: loading the agent into the real
+  # launchd from there is not allowed, and the variable forbids it.
   if [ -z "${CODEX_AUTOPILOT_SKIP_LAUNCHD:-}" ] && command -v launchctl >/dev/null 2>&1; then
     launchctl bootout "gui/$(id -u)" "$wake_plist" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/$(id -u)" "$wake_plist" >/dev/null 2>&1 || true
@@ -176,13 +177,14 @@ for legacy in astra-autopilot-adaptive astra-autopilot-inherit; do
   fi
 done
 
-# Проверять только наличие marketplace недостаточно. Установщик другой
-# версии регистрирует его по разрешённому пути своего каталога, и тогда
-# "есть?" отвечает "есть", указывая на чужую версию: current перевешен на
-# эту, а скилл и хуки грузятся из прежней. Замерено: после установки 0.7
-# поверх 0.8 marketplace остался на 0.7.0-beta, рантайм под ним - 0.8.
-# Поэтому сверяется корень, и перерегистрация делается только когда он
-# чужой - иначе обычное обновление зря сбрасывало бы доверие хукам.
+# Checking only that the marketplace exists is not enough. Another
+# version's installer registers it under the resolved path of its own
+# directory, and then "is it there?" answers "yes" while pointing at a
+# foreign version: current is switched to this one, but the skill and the
+# hooks load from the old one. Measured: after installing 0.7 over 0.8 the
+# marketplace stayed at 0.7.0-beta with the 0.8 runtime beneath it. So the
+# root is compared, and re-registration happens only when it is foreign -
+# otherwise an ordinary update would reset hook trust for nothing.
 marketplace_root=$("$codex_bin" plugin marketplace list --json 2>/dev/null | "$python_bin" -c '
 import json, sys
 try:
@@ -205,16 +207,16 @@ elif [ "$marketplace_root" != "$target" ] && [ "$marketplace_root" != "$install_
   "$codex_bin" plugin marketplace add "$install_root/current" >/dev/null
 fi
 
-# Codex читает плагин НЕ из каталога установки, а из своего кэша. Пока в
-# кэше оставалась хоть одна прежняя копия, он продолжал грузить её: у
-# пользователя лежал 0.9.7, а работал 0.9.0 - с прежним объявлением
-# Interrupt на 30 секунд. Codex зажимает его до 3, переписывает файл,
-# хэш меняется, и доверие Stop-хука слетает. Каждая загрузка. Весь день
-# это выглядело как "хуки слетают сами".
+# Codex reads the plugin NOT from the install directory but from its own
+# cache. While even one old copy remained in the cache it kept loading
+# that: the user had 0.9.7 on disk while 0.9.0 was running - with the old
+# 30-second Interrupt declaration. Codex clamps it to 3, rewrites the
+# file, the hash changes, and Stop-hook trust is lost. On every load. All
+# day it looked like "the hooks keep dropping by themselves".
 #
-# Поэтому кэш профиля вычищается целиком, плагин переустанавливается, а
-# результат сверяется. Одна копия, её версия известна - или установка
-# честно падает, а не оставляет расхождение на потом.
+# So the profile cache is cleared entirely, the plugin is reinstalled, and
+# the result is verified. One copy, its version known - or the install
+# fails honestly instead of leaving the discrepancy for later.
 codex_home=${CODEX_HOME:-"$HOME/.codex"}
 plugin_cache="$codex_home/plugins/cache/codex-autopilot-local"
 expected_version=$("$python_bin" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' \
@@ -225,16 +227,16 @@ expected_version=$("$python_bin" -c 'import json,sys;print(json.load(open(sys.ar
 rm -rf "$plugin_cache/codex-autopilot-adaptive" "$plugin_cache/codex-autopilot-host-settings"
 "$codex_bin" plugin add "codex-autopilot-$profile@codex-autopilot-local" >/dev/null
 
-# В дереве кэша Codex не должно быть ничего, кроме каталогов профилей.
-# Любая посторонняя папка там - готовый источник чужой копии: Codex
-# пересканирует дерево и восстановит плагин из неё. Именно так вернулась
-# копия 0.9.0, отложенная "в сторонку" внутри того же кэша.
+# Nothing but profile directories belongs in the Codex cache tree. Any
+# stray folder there is a ready source of a foreign copy: Codex rescans
+# the tree and restores the plugin from it. That is exactly how the 0.9.0
+# copy came back after being set "aside" inside the same cache.
 if [ -d "$plugin_cache" ]; then
   for stray in "$plugin_cache"/* "$plugin_cache"/.[!.]*; do
     [ -e "$stray" ] || continue
     case "$(basename "$stray")" in
       codex-autopilot-adaptive|codex-autopilot-host-settings) ;;
-      *) echo "Убираю постороннее из кэша Codex: $(basename "$stray")"; rm -rf "$stray" ;;
+      *) echo "Removing a stray item from the Codex cache: $(basename "$stray")"; rm -rf "$stray" ;;
     esac
   done
 fi
@@ -248,20 +250,20 @@ print(json.loads(roots[0].read_text(encoding="utf-8"))["version"] if len(roots) 
 PYCHECK
 )
 if [ "$cached_dirs" = "0" ]; then
-  # Codex забирает копию не мгновенно. Это не расхождение - preflight
-  # перед прогоном сверит ещё раз и не пустит чужую копию.
-  echo "Плагин ещё не появился в кэше Codex; preflight сверит его перед прогоном."
+  # Codex does not pick the copy up instantly. That is not a discrepancy -
+  # preflight checks again before the run and will not admit a foreign copy.
+  echo "The plugin has not appeared in the Codex cache yet; preflight will verify it before the run."
 elif [ "$cached_dirs" != "1" ] || [ "$cached_version" != "$expected_version" ]; then
-  echo "Плагин в кэше Codex не совпадает с установленным." >&2
-  echo "  установлено: $expected_version" >&2
-  echo "  в кэше:      ${cached_version:-<копий: $cached_dirs>}" >&2
-  echo "Запуск в таком состоянии грузил бы чужую копию: остановлено." >&2
+  echo "The plugin in the Codex cache does not match the installed one." >&2
+  echo "  installed: $expected_version" >&2
+  echo "  in cache:  ${cached_version:-<copies: $cached_dirs>}" >&2
+  echo "Launching in this state would load a foreign copy: stopped." >&2
   exit 1
 fi
 
-# Собственный скрипт Autopilot прописывается в execpolicy Codex, иначе его
-# запуск может упереться в нативный диалог, на который диспетчер не отвечает.
-# Подробности и замеры - в scripts/register_execpolicy.py.
+# Autopilot's own script is registered in the Codex execpolicy; otherwise
+# launching it may hit a native dialog the dispatcher never answers.
+# Details and measurements are in scripts/register_execpolicy.py.
 installed_script=$(ls -d "$codex_home/plugins/cache/codex-autopilot-local/codex-autopilot-$profile"/*/skills/"codex-autopilot-$profile"/scripts/codex-autopilot 2>/dev/null | tail -1)
 if [ -n "$installed_script" ]; then
   "$python_bin" "$source_dir/scripts/register_execpolicy.py" --script "$installed_script" --rules "$codex_home/rules/default.rules"
@@ -269,10 +271,10 @@ else
   echo "Execpolicy: installed script not found in the plugin cache; skipped. Codex will ask for approval on each start."
 fi
 
-# Прежние установки больше не остаются лежать рядом. Пока их было
-# тринадцать, любая из них могла стать источником чужой копии, а разница
-# между "установлено" и "работает" стоила пользователю целой ночи. Они не
-# удаляются, а складываются в один архив рядом.
+# Previous installations no longer stay lying next door. While there were
+# thirteen of them, any one could become the source of a foreign copy, and
+# the gap between "installed" and "running" cost the user a whole night.
+# They are not deleted but packed into one archive alongside.
 legacy_zip="$install_root/legacy-backups/previous-installs-$(date +%Y%m%d-%H%M%S).zip"
 mkdir -p "$install_root/legacy-backups"
 pruned=0
@@ -291,7 +293,7 @@ for previous in "$install_root"/*/; do
   fi
 done
 if [ "$pruned" -gt 0 ]; then
-  echo "Прежних установок убрано в архив: $pruned -> $legacy_zip"
+  echo "Previous installations moved to an archive: $pruned -> $legacy_zip"
 fi
 
 echo "Codex Autopilot $version installed with the $profile profile."

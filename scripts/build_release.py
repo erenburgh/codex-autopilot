@@ -13,53 +13,54 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _package_version() -> str:
-    """Версия берётся из пакета, а не из третьей прибитой копии.
+    """The version comes from the package, not from a third hard-coded copy.
 
-    Здесь стояло "0.8.0-beta", когда пакет был на 0.8.2: скрипт сборки
-    релиза назвал бы архив двумя версиями назад. Это третий случай той
-    же болезни за день - до него разошлись версия MCP-сервера памяти и
-    версия клиента в рукопожатии App Server.
+    This read "0.8.0-beta" while the package was at 0.8.2: the release
+    build script would have named the archive two versions back. The third
+    case of the same disease in one day - before it the memory MCP server
+    version and the client version in the App Server handshake diverged.
     """
 
     source = (ROOT / "src" / "codex_autopilot" / "__init__.py").read_text(encoding="utf-8")
     for line in source.splitlines():
         if line.startswith("__version__"):
             return line.split("=", 1)[1].strip().strip('"').strip("'")
-    raise SystemExit("не нашла __version__ в пакете")
+    raise SystemExit("__version__ not found in the package")
 
 
 VERSION = _package_version()
-# Тесты едут пользователю вместе с исходниками: установщик кладёт их рядом
-# с рантаймом, а дежурный инженер доказывает ими починку. Архив без них
-# не устанавливался вовсе - install.sh падал на копировании tests.
+# The tests travel to the user with the sources: the installer places them
+# next to the runtime, and the on-call engineer proves a repair with them.
+# An archive without them did not install at all - install.sh failed
+# copying tests.
 USER_ITEMS = [".agents", ".gitignore", "plugins", "src", "tests", "scripts", "build_backend", "pyproject.toml", "docs", "install.sh", "README.md", "GETTING_STARTED.md", "CHANGELOG.md", "LICENSE"]
-# Внутренние документы, которые живут в репозитории ради воркеров, но не
-# уезжают пользователю: целевая спецификация следующей версии - это
-# рабочий план и коммерческое позиционирование, а не документация продукта.
+# Internal documents that live in the repository for the workers but do
+# not ship to the user: the target specification of the next version is a
+# working plan and commercial positioning, not product documentation.
 INTERNAL_DOCS = {
-    # Целевая спецификация следующей версии: рабочий план и коммерческое
-    # позиционирование, а не документация продукта.
+    # The next version's target specification: a working plan and
+    # commercial positioning, not product documentation.
     "docs/V1_TARGET.md",
     "docs/V1_RUN.md",
-    # Записи о том, как строился сам скилл. Пользователю они не нужны:
-    # это аудит наших собственных прогонов и отчёты о починке вех.
+    # Records of how the skill itself was built. The user does not need
+    # them: audits of our own runs and reports on repairing milestones.
     "docs/RELEASE_VERIFICATION_0.9.0-beta.md",
     "docs/M11_COMPLETION.md",
     "docs/M11_CONTRACT_CHECKPOINT.md",
     "docs/RELEASE_REPORT_0.8.0-beta.md",
 }
-# .codex-autopilot - состояние прогона в ЭТОМ репозитории: план, журнал,
-# память проекта, логи. Оно принадлежит тому, кто здесь работал, и в
-# исходный архив попадать не должно ни при каких условиях. Защита
-# релиза ловила его по абсолютным путям, но ловить надо не следствие.
-# patches - каталог применённых правок рантайма: состояние машины, на
-# которой чинили, а не исходник.
+# .codex-autopilot is the run state in THIS repository: plan, journal,
+# project memory, logs. It belongs to whoever worked here and must never
+# get into the source archive. The release guard caught it by absolute
+# paths, but the consequence is not what to catch. patches is the
+# directory of applied runtime patches: the state of the machine that
+# repaired, not source.
 SOURCE_EXCLUDES = {"__pycache__", ".git", ".DS_Store", ".venv", "dist", "build", ".codex-autopilot", "patches"}
 BANNED_PARTS = {"__pycache__", ".git", ".venv", "venv", "logs"}
 BANNED_SUFFIXES = {".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".wal", ".shm"}
 
-# Файлы, которые автопилот генерирует в каждом проекте сам. В архиве
-# скилла это остаток чужого прогона.
+# Files Autopilot generates in every project by itself. In the skill
+# archive they are the leftovers of someone else's run.
 GENERATED_FILES = {"ROADMAP.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md"}
 
 
@@ -111,10 +112,9 @@ def main() -> int:
     source_stage = output / f".codex-autopilot-{VERSION}-source-stage"
     if source_stage.exists(): shutil.rmtree(source_stage)
     shutil.copytree(ROOT, source_stage, ignore=shutil.ignore_patterns(*SOURCE_EXCLUDES, "*.pyc", "*.zip"))
-    # Исходный архив - это репозиторий для того, кто хочет собрать или
-    # доработать. Внутренние документы не относятся ни к тому, ни к
-    # другому, а исходный ZIP висит в том же публичном релизе, что и
-    # пользовательский: исключать надо из обоих.
+    # The source archive is the repository for whoever wants to build or
+    # extend. The internal documents belong to neither, and the source ZIP
+    # hangs in the same public release as the user one: exclude from both.
     for internal in INTERNAL_DOCS | GENERATED_FILES:
         (source_stage / internal).unlink(missing_ok=True)
     validate(source_stage)

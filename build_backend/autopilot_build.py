@@ -1,14 +1,14 @@
-"""Сборочный backend в самом дереве, без единой внешней зависимости.
+"""A build backend inside the tree itself, without a single external dependency.
 
-Codex Autopilot - чистый Python на стандартной библиотеке. Тянуть ради
-его сборки setuptools из сети значит требовать сеть там, где кода сети
-нет: свежая offline-установка исходников падала до того, как доходило до
-тестов, и новый пользователь не мог поставить продукт вообще.
+Codex Autopilot is pure Python on the standard library. Pulling setuptools
+from the network to build it means requiring the network where there is
+no network code: a fresh offline install of the sources failed before it
+got to the tests, and a new user could not install the product at all.
 
-Backend лежит в дереве (PEP 517 ``backend-path``) и ничего не требует,
-поэтому ``pip install .`` работает в пустом venv без сети и без заранее
-поставленного setuptools. Собирается ровно то, что у пакета есть:
-пакеты из ``src`` и одна консольная команда.
+The backend lives in the tree (PEP 517 ``backend-path``) and requires
+nothing, so ``pip install .`` works in an empty venv without network and
+without a pre-installed setuptools. Exactly what the package has is built:
+the packages under ``src`` and one console command.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def _distribution(project: dict[str, object]) -> tuple[str, str]:
 
 
 def _package_files() -> list[tuple[str, Path]]:
-    """Собрать (путь в колесе, путь на диске) для всех модулей пакета."""
+    """Collect (path in the wheel, path on disk) for every module of the package."""
 
     members: list[tuple[str, Path]] = []
     source_root = ROOT / "src"
@@ -48,7 +48,7 @@ def _package_files() -> list[tuple[str, Path]]:
             continue
         members.append((path.relative_to(source_root).as_posix(), path))
     if not members:
-        raise RuntimeError("src не содержит ни одного модуля - собирать нечего")
+        raise RuntimeError("src contains no module - nothing to build")
     return members
 
 

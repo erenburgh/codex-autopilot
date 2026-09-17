@@ -1,6 +1,6 @@
-# Сборка не требует ничего извне: backend лежит в дереве и написан на
-# стандартной библиотеке. Иначе `pip install .` в пустом venv без сети
-# падал на загрузке setuptools - до того, как доходило до тестов.
+# The build needs nothing from outside: the backend lives in the tree and
+# is written on the standard library. Otherwise `pip install .` in an empty
+# offline venv failed downloading setuptools - before it got to the tests.
 [build-system]
 requires = []
 build-backend = "autopilot_build"
