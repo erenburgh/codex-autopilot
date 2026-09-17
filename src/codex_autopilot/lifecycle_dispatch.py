@@ -103,12 +103,12 @@ def _descriptor_workspace(cfg: Config, descriptor: LaunchDescriptor) -> Path:
     return workspace
 
 def _project_root_mutation_authorized(cfg: Config) -> bool:
-    """R6: разрешена ли правка корней сохранённого проекта в этом прогоне.
+    """R6: may the saved project's roots be edited in this run.
 
-    Открывается своя короткая сессия памяти: путь создания не держит
-    ProjectMemory, а заводить её ради одного лукапа на каждый запуск
-    дороже, чем спросить один раз здесь. Любая ошибка чтения - "нет":
-    закрытый отказ не должен зависеть от доступности хранилища.
+    A short memory session of its own is opened: the creation path holds no
+    ProjectMemory, and opening one for a single lookup on every launch costs
+    more than asking once here. Any read error is "no": a closed refusal
+    must not depend on the store being available.
     """
 
     from .memory import ProjectMemory
@@ -203,11 +203,11 @@ def create_desktop_thread_via_app_server(
                         authorized=_project_root_mutation_authorized(cfg),
                     )
                 except ProjectRootDrift as drift:
-                    # R6 закрытый отказ. Создание ещё не вызывалось, поэтому
-                    # исключение уходит в ветку definitive: открывается один
-                    # стабильный тикет, задача встаёт в RETRY_WAIT, и второй
-                    # попытки создания не будет. Молчаливая правка корней
-                    # сохранённого проекта здесь больше не происходит.
+                    # R6 closed refusal. Creation was not called yet, so the
+                    # exception goes to the definitive branch: one stable
+                    # ticket opens, the task goes to RETRY_WAIT, and there is
+                    # no second creation attempt. A silent edit of the saved
+                    # project's roots no longer happens here.
                     raise DesktopLifecycleError(
                         f"{drift} — Autopilot does not change a saved project on "
                         "its own. To authorize this exact change, record the "
@@ -218,12 +218,12 @@ def create_desktop_thread_via_app_server(
                     raise DesktopLifecycleError(
                         "configured App Server project could not be verified"
                     )
-            # Всё, что может отказать ДО отправки запроса, вычисляется до
-            # взведения флага. Прежде `installed_plugin_root` стоял среди
-            # аргументов вызова: он падал уже после `create_invoked = True`,
-            # хотя запрос не уходил. Отказ становился UNKNOWN и порождал
-            # тикет AMBIGUOUS_SIDE_EFFECT, из которого нет выхода - при
-            # том что в логе диспетчера нет ни одного `thread/start`.
+            # Everything that can fail BEFORE the request is sent is computed
+            # before the flag is raised. `installed_plugin_root` used to sit
+            # among the call arguments: it failed after `create_invoked =
+            # True` although the request never went out. The failure became
+            # UNKNOWN and produced an AMBIGUOUS_SIDE_EFFECT ticket with no way
+            # out - while the dispatcher log held not one `thread/start`.
             plugin_root = installed_plugin_root(cfg.skill_path)
             create_invoked = True
             started = client.start_thread(
@@ -236,12 +236,12 @@ def create_desktop_thread_via_app_server(
                 plugin_root=plugin_root,
                 ephemeral=False,
                 project_memory=(session.get("kind") != "plan_verifier"),
-                # v0.7 не передавала threadSource вовсе, и её задачи
-                # появлялись в сайдбаре проекта обычными ветками.
-                # "agent_created_thread" помечает ветку как созданную
-                # агентом: приложение показывает её как созданную в другом
-                # приложении и требует ручного перехвата. Именно этот
-                # параметр и отличал 0.8 от работавшей 0.7.
+                # v0.7 passed no threadSource at all, and its tasks appeared
+                # in the project sidebar as ordinary threads.
+                # "agent_created_thread" marks a thread as agent-created: the
+                # app shows it as created in another application and demands
+                # a manual takeover. Exactly this parameter distinguished 0.8
+                # from the working 0.7.
             )
             thread = started.get("thread") or {}
             thread_id = str(thread.get("id") or "")
@@ -276,12 +276,13 @@ def create_desktop_thread_via_app_server(
                 raise DesktopLifecycleError(
                     "App Server did not preserve the configured project association"
                 )
-            # Явной привязки после создания здесь нет и не должно быть.
-            # Строкой выше проверено, что ветка уже в нужном проекте, иначе
-            # создание отклонено, - значит thread/metadata/update привязывал
-            # бы привязанное. v0.7 его не вызывает вовсе, а её задачи видны.
-            # Замерено: в приёмке 0.8.0 этот вызов уходил на каждом из шести
-            # воркеров и ничего не менял.
+            # No explicit binding after creation here, and there must be
+            # none. The line above verified the thread is already in the
+            # right project, or creation was refused - so
+            # thread/metadata/update would bind the already bound. v0.7 does
+            # not call it at all, and its tasks are visible. Measured: in the
+            # 0.8.0 acceptance this call went out on each of the six workers
+            # and changed nothing.
         if owns_client and (client is None or not _client_process_exited(client)):
             raise DesktopLifecycleError(
                 "App Server create process did not fully exit before Desktop handoff"
@@ -366,11 +367,11 @@ def create_desktop_thread_via_app_server(
         store.save(state)
         descriptor = LaunchDescriptor.from_dict(dict(session["descriptor"]))
     _materialize((descriptor,))
-    # Desktop о создании не узнаёт никак: его app-server - отдельный
-    # процесс (/Applications/ChatGPT.app/.../codex app-server), наш -
-    # свой, общего у них только диск. Канала, по которому можно было бы
-    # сообщить, не существует, поэтому «задача взята в работу» доходит
-    # до человека единственным доступным способом - системным банером.
+    # Desktop learns nothing of the creation: its app-server is a separate
+    # process (/Applications/ChatGPT.app/.../codex app-server), ours is our
+    # own, and all they share is the disk. No channel exists to tell it, so
+    # «task taken up» reaches the human the only available way - as a
+    # system banner.
     _notify_start(cfg, descriptor)
     return {
         "reservation_token": reservation_token,
@@ -388,12 +389,12 @@ def _thread_is_gone(
     client_factory: Callable[..., AppServerClient] = AppServerClient,
     connected_client: AppServerClient | None = None,
 ) -> bool:
-    """Ветки, к которой привязана резервация, на App Server больше нет.
+    """The thread the reservation is bound to no longer exists on App Server.
 
-    Проверяется чтением: отсутствие ветки - это ответ сервера, а не вывод
-    из наших записей. Любая другая ошибка чтения исчезновением не
-    считается, иначе временный сбой связи приводил бы к пересозданию
-    живой ветки и раздвоению работы.
+    Checked by reading: the thread's absence is the server's answer, not an
+    inference from our records. Any other read error does not count as
+    disappearance, or a transient connection failure would re-create a live
+    thread and fork the work.
     """
 
     state = StateStore(cfg.state_dir).load()
@@ -417,7 +418,7 @@ def _thread_is_gone(
 
 
 def _reset_to_create_requested(cfg: Config, reservation_token: str) -> None:
-    """Отвязать резервацию от исчезнувшей ветки и дать создать новую."""
+    """Unbind the reservation from a vanished thread and allow a new one."""
 
     store = StateStore(cfg.state_dir)
     coordinator = ResourceLockCoordinator(store, cfg.root)
@@ -452,14 +453,14 @@ def _reset_to_create_requested(cfg: Config, reservation_token: str) -> None:
 
 
 def _creator_process_is_gone(session: Mapping[str, Any]) -> bool:
-    """Процесс, создавший ветку, больше не существует.
+    """The process that created the thread no longer exists.
 
-    Отметку о своём выходе он ставит сам, штатно завершаясь. Если он упал -
-    например, на отказе гейта размещения, - отметки нет, и следующий
-    диспетчер не может взять ход: сессия остаётся неподъёмной навсегда.
+    It marks its own exit when it ends normally. If it crashed - on a
+    placement gate refusal, say - there is no mark, and the next dispatcher
+    cannot take the turn: the session stays unliftable forever.
 
-    Барьер защищает ровно от одного: от второго писателя в ту же ветку.
-    Мёртвый pid это доказывает.
+    The barrier protects against exactly one thing: a second writer into the
+    same thread. A dead pid proves that.
     """
 
     from .control import pid_alive
@@ -480,19 +481,19 @@ def _require_thread_placement(
     connected_client: AppServerClient | None = None,
     at: str | None,
 ) -> str:
-    """Измерить размещение ветки и не пустить работу без него.
+    """Measure the thread's placement and let no work start without it.
 
-    Порядок повторяет рабочий цикл v0.7: слот создан, ветка создана, и
-    только после подтверждённого размещения задача начинает работу.
-    Размещение спрашивается у сервера - из его списка Desktop и рисует
-    сайдбар. Прежняя версия читала ключи .codex-global-state.json и
-    называла OUTSIDE ветки, которые человек видел глазами; на её
-    показаниях был построен ложный вывод о неустранимой невидимости.
+    The order repeats the v0.7 working cycle: slot created, thread created,
+    and only after confirmed placement does the task start working.
+    Placement is asked of the server - Desktop draws the sidebar from its
+    list. The previous version read the keys of .codex-global-state.json and
+    called OUTSIDE threads a person saw with their own eyes; on its readings
+    a false conclusion about irreparable invisibility was built.
 
-    Досылать привязку тут нечем: thread/metadata/update проходит успешно,
-    ничего не меняя, а дописывать в состояние приложения за его спиной -
-    это то, чем прежняя версия маскировала неверный диагноз. Ветка выходит
-    в нужный проект уже из thread/start.
+    There is nothing to send a binding with: thread/metadata/update
+    succeeds while changing nothing, and writing into the application's
+    state behind its back is how the previous version masked a wrong
+    diagnosis. The thread lands in the right project from thread/start.
     """
 
     from .launch_gate import (
@@ -506,9 +507,9 @@ def _require_thread_placement(
     if required == "any":
         return "any"
     if not cfg.desktop.project_id:
-        # Сохранённого проекта нет - размещать не во что, и требовать
-        # нечего. Проверять при этом настоящий каталог Codex было бы
-        # зависимостью от машины, а не от прогона.
+        # No saved project - nothing to place into, nothing to require.
+        # Checking the real Codex directory here would be a dependency on
+        # the machine, not on the run.
         return "unconfigured"
     timestamp = at or utc_now()
     state = StateStore(cfg.state_dir).load()
@@ -580,20 +581,20 @@ def server_view_for_incident(
     state: RunState,
     incident: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Что сервер думает о ветках пострадавшей задачи.
+    """What the server thinks of the affected task's threads.
 
-    Инженеру эта справка нужна первым делом: состояние прогона говорит,
-    что автопилот записал, а сервер - что произошло, и расходятся они
-    ровно тогда, когда диспетчер умер на полпути.
+    The engineer needs this digest first of all: the run state says what
+    Autopilot recorded, the server says what happened, and they diverge
+    exactly when the dispatcher died halfway.
 
-    Собирает её диспетчер, а не инженер. У диспетчера соединение уже
-    открыто и разрешений не требует; инженер же, добывая то же самое сам,
-    выходил питоном за пределы рабочего каталога и упирался в запрос
-    доступа, на который автопилот принципиально не отвечает. Замерено:
-    два тикета подряд, каждый - прерванный ход на этом запросе.
+    The dispatcher gathers it, not the engineer. The dispatcher's connection
+    is already open and needs no permissions; the engineer, fetching the
+    same thing itself, left the working directory with Python and hit an
+    access request Autopilot never answers on principle. Measured: two
+    tickets in a row, each an interrupted turn on that request.
 
-    Только чтение и только метаданные: ходы не запрашиваются, стенограммы
-    воркеров не читаются.
+    Read-only and metadata only: no turns are requested, no worker
+    transcripts are read.
     """
 
     affected = {str(item) for item in incident.get("affected_task_ids") or ()}
@@ -613,7 +614,7 @@ def server_view_for_incident(
         }
         try:
             thread = client.read_thread(thread_id) or {}
-        except Exception as error:  # сервер отвечает отказом - это тоже факт
+        except Exception as error:  # the server answers with a refusal - that is a fact too
             entry["exists"] = False
             entry["server_error"] = str(error)[:200]
         else:
@@ -634,7 +635,7 @@ def _pipeline_engineer_prompt_with_server_view(
     client: Any,
     session: Mapping[str, Any],
 ) -> str:
-    """Промпт инженера с готовым ответом сервера внутри."""
+    """The engineer's prompt with the server's answer already inside."""
 
     from .ai_studio import AIStudioRuntime
     from .lifecycle_reservations import pipeline_engineer_package
@@ -663,23 +664,22 @@ def causal_gate_open(
     thread_id: str,
     turn_id: str,
 ) -> bool:
-    """Кончился ли ход предшественника на самом деле.
+    """Has the predecessor's turn really ended.
 
-    Устойчивое "completed" открывает ворота, как в v0.7. Одного лишь
-    "interrupted" мало: пока синхронный Stop-хук работает, второй App
-    Server видит тот же ход прерванным за мгновение до того, как он
-    станет completed - замерено в прогоне 0.7 на ходе 01a097aa-4832.
-    Принимать это значило бы открывать ворота ровно в тот момент, от
-    которого барьер и защищает.
+    A stable "completed" opens the gate, as in v0.7. "interrupted" alone is
+    not enough: while the synchronous Stop hook runs, a second App Server
+    sees the same turn interrupted an instant before it becomes completed -
+    measured on the 0.7 run, turn 01a097aa-4832. Accepting that would open
+    the gate at precisely the moment the barrier protects against.
 
-    Но прерывание, записанное в журнале для этого же хода, - наше
-    собственное и окончательное: ход не станет completed уже никогда.
+    But an interruption journaled for this very turn is our own and final:
+    the turn will never become completed.
 
-    Замерено: реплэннер попросил разрешение, диспетчер на approvals не
-    отвечает, ход остался 'interrupted' навсегда. Дежурный инженер,
-    посланный чинить именно это, сам не смог стартовать - его
-    предшественником был тот же мёртвый ход, - и открыл поверх первого
-    тикета второй. Прогон из 24 задач встал с нулём выполненных.
+    Measured: the replanner asked for a permission, the dispatcher answers
+    no approvals, the turn stayed 'interrupted' forever. The on-call
+    engineer sent to repair exactly this could not start either - its
+    predecessor was the same dead turn - and opened a second ticket on top
+    of the first. A 24-task run stood with zero done.
     """
 
     if not turn:
@@ -716,7 +716,7 @@ def run_automatic_app_server_turn(
     same dispatcher loop. Codex App ``create_thread`` and
     ``send_message_to_thread`` are not part of this transport.
     """
-    # поздний импорт: развязка обратной зависимости модулей
+    # late import: breaks a circular module dependency
     from .lifecycle_completion import complete_desktop_worker
 
     _require_desktop_owned(cfg)
@@ -773,9 +773,9 @@ def run_automatic_app_server_turn(
                     "causal predecessor did not reach durable completed state; "
                     f"last turn status: {(turn or {}).get('status')!r}"
                 )
-            # Раз в секунду, а не четыре: read_thread тянет всю историю
-            # ветки целиком. На живом прогоне это дало 42 МБ журнала за
-            # две минуты ожидания.
+            # Once a second, not four times: read_thread pulls the thread's
+            # whole history. On a live run that produced 42 MB of log in two
+            # minutes of waiting.
             time.sleep(1.0)
 
     session = _session_by_token(StateStore(cfg.state_dir).load(), reservation_token)
@@ -785,13 +785,13 @@ def run_automatic_app_server_turn(
         client_factory=client_factory,
         connected_client=connected_client,
     ):
-        # v0.7 создавала ветку и тут же ею пользовалась - одним соединением,
-        # без разрыва. v0.8 создаёт ветку в одном процессе, требует его
-        # полного выхода и стартует ход другим процессом позже. В этом
-        # промежутке ветка живёт без подписчика, и после перезапуска её
-        # может уже не быть: turn/start отвечает "thread not found", а
-        # резервация остаётся навсегда привязанной к мёртвому идентификатору.
-        # Исчезнувшая ветка - повод создать новую, а не повод встать.
+        # v0.7 created a thread and used it at once - one connection, no
+        # break. v0.8 creates the thread in one process, requires its full
+        # exit and starts the turn from another process later. In that gap
+        # the thread lives without a subscriber, and after a restart it may
+        # be gone: turn/start answers "thread not found" while the
+        # reservation stays bound to a dead identifier forever. A vanished
+        # thread is a reason to create a new one, not a reason to stop.
         _reset_to_create_requested(cfg, reservation_token)
         session = _session_by_token(StateStore(cfg.state_dir).load(), reservation_token)
 
@@ -806,9 +806,9 @@ def run_automatic_app_server_turn(
             connected_client=connected_client,
         )
 
-    # Гейт размещения: задача не начинает работу, пока её ветка не доведена
-    # до требуемого состояния в Desktop. Невидимую задачу нельзя открыть и
-    # прочитать, а в этом весь смысл видимых воркеров.
+    # The placement gate: a task does not start working until its thread
+    # reaches the required state in Desktop. An invisible task cannot be
+    # opened and read, and that is the whole point of visible workers.
     _require_thread_placement(
         cfg,
         reservation_token,
@@ -841,17 +841,17 @@ def run_automatic_app_server_turn(
     try:
         with production_context as production_client:
             client = production_client
-            # Ход стартует только на ветке, загруженной ЭТИМ соединением.
-            # Условие прежде спрашивало "своё ли у нас соединение", а это
-            # другой вопрос: реле всегда передаёт готовый клиент, и ветка,
-            # созданная прежним - умершим - диспетчером, оставалась
-            # незагруженной. thread/read при этом отдаёт метаданные, и
-            # отказ приходил только от turn/start.
+            # A turn starts only on a thread loaded by THIS connection. The
+            # condition used to ask "is the connection our own", which is a
+            # different question: the relay always passes a ready client,
+            # and a thread created by the previous - dead - dispatcher stayed
+            # unloaded. thread/read still returns metadata, and the refusal
+            # came only from turn/start.
             #
-            # Замерено на M11: ветка реплэннера 01a0970c читается и
-            # резюмируется, а turn/start отвечает "thread not found".
-            # Воспроизведено на одноразовой ветке: создать, закрыть
-            # процесс-создатель, стартовать ход из нового - тот же отказ.
+            # Measured on M11: the replanner thread 01a0970c reads and
+            # resumes, and turn/start answers "thread not found". Reproduced
+            # on a throwaway thread: create, close the creating process,
+            # start a turn from a new one - the same refusal.
             if thread_id in getattr(production_client, "subscribed_thread_ids", ()):
                 thread = production_client.read_thread(thread_id)
             else:
@@ -867,10 +867,10 @@ def run_automatic_app_server_turn(
                 )
             prompt = descriptor.prompt
             if str(session.get("kind") or "") == "pipeline_engineer":
-                # Промпт инженера пересобирается здесь, а не при резервации:
-                # только тут есть открытое соединение, и справку о ветках
-                # можно взять у сервера, не выходя за рабочий каталог и не
-                # прося доступа, на который автопилот не отвечает.
+                # The engineer's prompt is rebuilt here, not at reservation:
+                # only here is a connection open, and the thread digest can
+                # be taken from the server without leaving the working
+                # directory or asking for an access Autopilot never answers.
                 prompt = _pipeline_engineer_prompt_with_server_view(
                     cfg, production_client, session
                 )
@@ -1010,14 +1010,13 @@ def run_automatic_app_server_turn(
             dispatcher_pid=(os.getpid() if dispatcher_authorized else None),
         )
     except WorkerProtocolError as exc:
-        # Кривой финальный ответ - ошибка модели, а не поломка машины.
-        # Прежде она уходила наверх: диспетчер падал, заводился тикет
-        # PIPELINE, поднимался инженер, а завершённый ход оставался
-        # непринятым - прогон вставал целиком и ждал человека. R31
-        # запрещает отвергать уже сделанную работу на позднем гейте.
-        # Здесь это обычная неудачная попытка задачи: причина
-        # записывается, задача получает повтор, инфраструктура ни при
-        # чём.
+        # A malformed final reply is a model error, not a machine fault. It
+        # used to propagate up: the dispatcher crashed, a PIPELINE ticket
+        # opened, the engineer was raised, and the completed turn stayed
+        # unaccepted - the whole run stood waiting for a human. R31 forbids
+        # rejecting already done work at a late gate. Here it is an ordinary
+        # failed attempt of the task: the reason is recorded, the task gets
+        # a retry, the infrastructure is not involved.
         descriptors = record_desktop_failure(
             cfg,
             reservation_token,
@@ -1038,7 +1037,7 @@ def run_automatic_app_server_turn(
         )
 
 def _notify_start(cfg: Config, descriptor: LaunchDescriptor) -> None:
-    """Сказать человеку, что задача взята в работу."""
+    """Tell the human that the task has been taken up."""
 
     from .notify import notify
 
@@ -1051,14 +1050,14 @@ def _notify_start(cfg: Config, descriptor: LaunchDescriptor) -> None:
 
 
 def _rate_limit_reset(client: Any) -> int | None:
-    """Когда сервер сам говорит, что лимит отпустит.
+    """When the server itself says the limit will lift.
 
-    Без этого пауза после лимита была догадкой: общий retry-интервал,
-    не связанный с настоящим окном. Функции, которые спрашивают сервер,
-    были написаны и не вызывались ни разу - барьер существовал, а
-    данных для него никто не добывал.
+    Without this the pause after a limit was a guess: a generic retry
+    interval unrelated to the real window. The functions that ask the server
+    were written and never called - the barrier existed, and nobody fetched
+    the data for it.
 
-    Отказ спросить - не отказ работы: остаётся прежняя оценка.
+    A failure to ask is not a failure of work: the previous estimate stands.
     """
 
     from .appserver import rate_limit_reset_at
@@ -1114,14 +1113,13 @@ def record_automatic_app_server_exit(
         store.save(state)
 
 def causal_predecessor(state: Any, owner: str) -> dict[str, Any] | None:
-    """Последняя сессия владельца, чей ход действительно завершён.
+    """The owner's latest session whose turn has really completed.
 
-    Проверка одного лишь статуса "COMPLETED" отсекала законного
-    предшественника: задача, вернувшая PLAN_CHANGE_REQUEST, свой ход
-    завершила и записала turn_completed, но её сессия остаётся в
-    PLAN_CHANGE_REQUESTED. В control это учтено давно, здесь лежала
-    вторая копия проверки - и планировщик, зарезервированный такой
-    задачей, поднять было некому.
+    Checking the status "COMPLETED" alone cut off a legitimate predecessor:
+    a task that returned PLAN_CHANGE_REQUEST completed its turn and recorded
+    turn_completed, but its session stays in PLAN_CHANGE_REQUESTED. control
+    accounted for this long ago; a second copy of the check lived here - and
+    nobody could raise the planner reserved by such a task.
     """
 
     from .control import _turn_is_completed
@@ -1228,9 +1226,9 @@ def claim_automatic_app_server_turn(
                 "or the legacy creator process exit barrier"
             )
         if creator_gone and not session.get("app_server_create_exited_at"):
-            # Барьер существует ради одного: доказать, что создатель больше
-            # не пишет в эту ветку. Мёртвый процесс это доказывает не хуже
-            # штатной отметки, которую он не успел поставить, упав.
+            # The barrier exists for one thing: to prove the creator no
+            # longer writes into this thread. A dead process proves that no
+            # worse than the normal mark it never got to set before crashing.
             session["app_server_create_exited_at"] = utc_now()
             _append_event(
                 state,

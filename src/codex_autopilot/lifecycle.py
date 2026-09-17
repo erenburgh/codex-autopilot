@@ -1,28 +1,27 @@
-"""Desktop-owned жизненный цикл: фасад над модулями реализации.
+"""The Desktop-owned lifecycle: a facade over the implementation modules.
 
-Модуль был единым файлом на 4844 строки. Разрезан по связности,
-граф зависимостей односторонний:
+The module used to be one 4844-line file. It was split by cohesion; the
+dependency graph is one-directional:
 
-    lifecycle_base          типы, журнал сессий, чекпойнты, мелкие помощники
-      <- lifecycle_reservations   резервация фронтира и построение дескрипторов
-      <- lifecycle_failures       отказы, инциденты, реконсиляция identity
-      <- lifecycle_dispatch       создание задачи и production-ход через App Server
-      <- lifecycle_completion     потребление авторитетного завершения
-         lifecycle_prompts        сборка промптов фаз
+    lifecycle_base          types, the session journal, checkpoints, small helpers
+      <- lifecycle_reservations   frontier reservation and descriptor building
+      <- lifecycle_failures       failures, incidents, identity reconciliation
+      <- lifecycle_dispatch       task creation and the production turn via App Server
+      <- lifecycle_completion     consuming the authoritative completion
+         lifecycle_prompts        phase prompt assembly
 
-Два обратных ребра развязаны поздними импортами внутри функций:
-lifecycle_failures -> app_server_creation_contract и
+Two back edges are broken by late imports inside functions:
+lifecycle_failures -> app_server_creation_contract and
 lifecycle_dispatch -> complete_desktop_worker.
 
-Этот файл ничего не реализует. Он существует, чтобы публичный API
-остался прежним: и CLI, и тесты по-прежнему импортируют из
-codex_autopilot.lifecycle.
+This file implements nothing. It exists so the public API stays the same:
+both the CLI and the tests still import from codex_autopilot.lifecycle.
 
-Реэкспортируется ровно то, что через фасад действительно импортируют, и
-список закреплён в __all__. Механическое разрезание монолита протащило
-сюда 91 имя, из них 47 приватных: приватный помощник публичным API не
-был никогда, и его присутствие здесь делало границу неотличимой от
-содержимого.
+Exactly what is really imported through the facade is re-exported, and
+the list is pinned in __all__. The mechanical split of the monolith
+dragged 91 names in here, 47 of them private: a private helper was never
+public API, and its presence here made the boundary indistinguishable
+from the contents.
 """
 
 from __future__ import annotations

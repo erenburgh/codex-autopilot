@@ -1,21 +1,21 @@
-"""Гейт запуска: подтвердить, что задача поднялась, а не сообщить об этом.
+"""The launch gate: confirm that the task came up, do not announce it.
 
-Отказ, ради которого это написано, выглядел так: сессия отвечала
-"диспетчер запущен, pid такой-то", завершалась, и ничего не происходило.
-Сообщение было заявлением о намерении, а не наблюдением результата:
-ожидание диспетчера подтверждало лишь то, что его процесс дошёл до
-какой-то фазы, и ничего не говорило о самой задаче. Та функция
-(`wait_for_dispatcher`) снята в 0.8.1 вместе с headless-путём; замер,
-ради которого написан этот гейт, от этого не устарел.
+The failure this was written for looked like this: the session answered
+"dispatcher started, pid such-and-such", ended, and nothing happened. The
+message was a statement of intent, not an observation of a result: waiting
+for the dispatcher confirmed only that its process reached some phase, and
+said nothing about the task itself. That function (`wait_for_dispatcher`)
+was removed in 0.8.1 together with the headless path; the measurement this
+gate was written for did not go stale with it.
 
-Здесь проверяется цепочка целиком и по записям прогона, без обращения к
-App Server: резервирование, привязанная ветка, создание в проекте,
-подтверждённая отправка, отчёт о видимом запуске, живой диспетчер и
-отсутствие отказа уже после запуска.
+Here the whole chain is checked from the run's records, without calling
+App Server: the reservation, the bound thread, creation in the project, the
+acknowledged send, the visible launch report, a live dispatcher and the
+absence of a failure after launch.
 
-Проверка, для которой нет данных, помечается как непроверенная и НЕ
-считается пройденной. "Не удалось подтвердить" и "подтверждено" - разные
-вещи, и подмена второго первым и есть тот самый дефект.
+A check with no data is marked unchecked and is NOT counted as passed.
+"Could not confirm" and "confirmed" are different things, and passing the
+second off as the first is the very defect.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from .config import Config
 from .run_state import RunState, StateStore
 
-# События, которые пишет только фактически прошедший шаг живого пути.
+# Events written only by a step of the live path that actually happened.
 CREATED_EVENTS = frozenset(
     {
         "app_server_thread_created",
@@ -43,8 +43,8 @@ CREATED_EVENTS = frozenset(
 ACKNOWLEDGED_EVENTS = frozenset({"start_acknowledged", "wait_registered"})
 REPORT_EVENTS = frozenset({"visible_launch_report_ready"})
 
-# Где Desktop держит собственные записи об интерфейсе. Успех на стороне
-# App Server их не меняет, поэтому видимость проверяется только здесь.
+# Where Desktop keeps its own interface records. Success on the App Server
+# side does not change them, so visibility is checked only here.
 DESKTOP_UI_KEYS = ("thread-project-assignments", "sidebar-project-thread-orders")
 FAILURE_EVENTS = frozenset(
     {
@@ -57,10 +57,11 @@ FAILURE_EVENTS = frozenset(
     }
 )
 
-# M11-R5: сколько ждать измерения размещения, прежде чем считать его
-# несостоявшимся. Размещение меряется сразу после создания, в том же
-# проходе диспетчера, поэтому запас здесь велик намеренно: срок нужен не
-# для нормального хода, а для случая, когда мерить стало некому.
+# M11-R5: how long to wait for the placement measurement before treating
+# it as never made. Placement is measured right after creation, in the same
+# dispatcher pass, so the margin here is deliberately large: the deadline
+# is not for the normal course but for the case when nobody is left to
+# measure.
 PLACEMENT_MEASUREMENT_DEADLINE_SECONDS = 180.0
 
 ACTIVE_STATUS = "ACTIVE"
@@ -82,13 +83,13 @@ __all__ = [
 
 
 class LaunchVerdict(str, Enum):
-    """Три состояния запуска, а не два.
+    """Three launch states, not two.
 
-    Создание ветки через App Server занимает десятки секунд, а хук живёт
-    тридцать. Пока шагов не хватает, но диспетчер жив и отказов не
-    записано, это ИДЁТ, а не СЛОМАЛОСЬ. Смешение этих двух состояний
-    превращает нормальный запуск в ложный тикет - тот самый шум, из-за
-    которого проверки перестают читать.
+    Creating a thread through App Server takes tens of seconds, and the
+    hook lives for thirty. While steps are missing but the dispatcher is
+    alive and no failure is recorded, that is IN PROGRESS, not BROKEN.
+    Confusing the two turns a normal launch into a false ticket - the very
+    noise that makes checks go unread.
     """
 
     CONFIRMED = "CONFIRMED"
@@ -96,24 +97,25 @@ class LaunchVerdict(str, Enum):
     FAILED = "FAILED"
 
 
-# Пункты, недостижимость которых означает поломку, а не незавершённость.
+# Items whose absence means breakage, not incompleteness.
 DECISIVE_CHECKS = frozenset({"reserved", "dispatcher_alive", "no_failure_after_launch"})
 
-# M11-R5. Пункты, которые роняют вердикт только на явном False, но не на
-# "проверить было нечем". Размещение именно таково: между созданием ветки
-# и записью измерения есть окно, и отказ по неизмеренности плодил бы
-# ложные тикеты - ровно поэтому пункт и был сделан нерешающим целиком.
-# Но измеренное OUTSIDE или ABSENT - это не окно, а результат, и прежде
-# он не менял ничего: вердикт держался в IN_PROGRESS, тикет не заводился.
-# Просроченная неизмеренность превращается в False отдельно, по сроку.
+# M11-R5. Items that fail the verdict only on an explicit False, not on
+# "nothing to check with". Placement is exactly that: there is a window
+# between thread creation and the measurement record, and a refusal on the
+# unmeasured state would breed false tickets - which is exactly why the
+# item was made non-deciding altogether. But a measured OUTSIDE or ABSENT
+# is a result, not a window, and it used to change nothing: the verdict
+# held at IN_PROGRESS, no ticket opened. An expired unmeasured state turns
+# into False separately, by deadline.
 DECISIVE_ON_FAILURE = frozenset({"visible_in_desktop"})
 
 
 @dataclass(frozen=True, slots=True)
 class LaunchCheck:
-    """Один пункт чек-листа.
+    """One checklist item.
 
-    ``passed=None`` означает, что проверить было нечем. Это не успех.
+    ``passed=None`` means there was nothing to check with. That is not a pass.
     """
 
     id: str
@@ -138,11 +140,12 @@ def launch_checklist(
     pid_alive: Callable[[Any], bool] | None = None,
     now: Callable[[], float] | None = None,
 ) -> tuple[LaunchCheck, ...]:
-    """Проверить по записям прогона, что названные задачи действительно подняты.
+    """Check from the run's records that the named tasks really came up.
 
-    ``now`` отдаёт время эпохи и нужен только сроку измерения размещения;
-    он отделён от монотонных часов ожидания, потому что сравнивается с
-    отметкой создания ветки, а она записана стенными часами.
+    ``now`` returns epoch time and is needed only for the placement
+    measurement deadline; it is separate from the monotonic waiting clock
+    because it is compared with the thread creation stamp, which is wall
+    clock.
     """
 
     alive = pid_alive or _pid_alive
@@ -180,9 +183,9 @@ def launch_checklist(
                 bad="no record of the thread being created",
             )
         )
-        # Отправка подтверждается durable-записью, а не мгновенным
-        # статусом. Ход, успевший завершиться до проверки, уводит статус
-        # дальше ACTIVE - и быстрый воркер объявлялся незапущенным.
+        # The send is confirmed by a durable record, not the momentary
+        # status. A turn that completed before the check moves the status
+        # past ACTIVE - and a fast worker was declared never launched.
         acknowledged = session.get("status") == ACTIVE_STATUS or any(
             str(item.get("event") or "") in ACKNOWLEDGED_EVENTS for item in events
         )
@@ -215,10 +218,10 @@ def launch_checklist(
         pid = session.get("automatic_dispatch_pid")
         if pid is None:
             pid = state.dispatcher_pid
-        # Завершённому ходу живой диспетчер не нужен: он выходит штатно,
-        # закончив работу. Прежде быстрый воркер получал здесь False и
-        # тикет launch_not_confirmed - при том что в том же чек-листе
-        # стояло "ход завершён".
+        # A completed turn needs no live dispatcher: it exits normally when
+        # the work is done. A fast worker used to get False here and a
+        # launch_not_confirmed ticket - while the same checklist said "turn
+        # completed".
         finished = any(str(item.get("event") or "") == "turn_completed" for item in events)
         checks.append(
             LaunchCheck(
@@ -246,7 +249,7 @@ def launch_checklist(
 
 
 def launch_verdict(checks: Iterable[LaunchCheck]) -> LaunchVerdict:
-    """Подтверждён, ещё идёт или отказ - по наличию признаков поломки."""
+    """Confirmed, still in progress or failed - by the presence of signs of breakage."""
 
     items = list(checks)
     if not items:
@@ -263,9 +266,9 @@ def launch_verdict(checks: Iterable[LaunchCheck]) -> LaunchVerdict:
 
 
 def launch_confirmed(checks: Iterable[LaunchCheck]) -> bool:
-    """Запуск подтверждён, только если каждый пункт прошёл.
+    """The launch is confirmed only if every item passed.
 
-    Непроверенный пункт подтверждением не является.
+    An unchecked item is not a confirmation.
     """
 
     items = list(checks)
@@ -291,8 +294,8 @@ def render_launch_checklist(checks: Sequence[LaunchCheck]) -> str:
     return verdict + "\n" + "\n".join(lines)
 
 
-# Шаги запуска человеческим языком. Порядок берётся из журнала, а не
-# отсюда: журнал и есть настоящая последовательность.
+# Launch steps in human language. The order comes from the journal, not
+# from here: the journal is the real sequence.
 TIMELINE_STEPS = {
     "reservation_created": "slot reserved",
     "create_requested": "thread creation requested",
@@ -321,12 +324,12 @@ TIMELINE_FAILURES = {
 
 
 def render_launch_timeline(state: RunState, task_ids: Sequence[str]) -> str:
-    """Лента шагов запуска с починками, а не снимок конечного состояния.
+    """A timeline of launch steps with repairs, not a snapshot of the end state.
 
-    Снимок умалчивает о самом важном: по нему нельзя понять, понадобилась
-    ли починка. Гейт размещения может увидеть ABSENT, перенести ветку в
-    проект и увидеть INSIDE - в снимке это одна галочка, и кажется, что
-    всё прошло само.
+    A snapshot omits what matters most: it cannot show whether a repair was
+    needed. The placement gate may see ABSENT, move the thread into the
+    project and see INSIDE - in a snapshot that is one tick, and it looks as
+    if everything went by itself.
     """
 
     lines: list[str] = []
@@ -347,13 +350,13 @@ def render_launch_timeline(state: RunState, task_ids: Sequence[str]) -> str:
 def _current_attempt(
     events: Sequence[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
-    """Оставить по одной - последней - записи каждого шага.
+    """Keep one - the last - record of every step.
 
-    Резервация переживает несколько попыток, и её журнал копит их все. В
-    ленте это выглядело противоречием: рядом стояли "перенос не помог" от
-    первой попытки и "размещение подтверждено" от второй, и прочесть, где
-    задача сейчас, было нельзя. Показываем текущее положение дел, а не
-    историю: у каждого шага последнее наблюдение.
+    A reservation outlives several attempts, and its journal accumulates
+    them all. In the timeline that looked like a contradiction: "the move
+    did not help" from the first attempt stood next to "placement confirmed"
+    from the second, and where the task was now could not be read. We show
+    the current state, not the history: the latest observation per step.
     """
 
     latest: dict[str, Mapping[str, Any]] = {}
@@ -379,7 +382,7 @@ def _timeline_line(event: Mapping[str, Any]) -> list[str]:
 
 
 def _placement_lines(detail: str) -> list[str]:
-    """Размещение в Desktop: показать и проверку, и починку."""
+    """Placement in Desktop: show both the check and the repair."""
 
     before, _, after = detail.partition(" -> ")
     before, after = before.strip(), after.strip()
@@ -409,11 +412,11 @@ def await_launch(
     sleep: Callable[[float], None] | None = None,
     monotonic: Callable[[], float] | None = None,
 ) -> tuple[LaunchCheck, ...]:
-    """Дождаться подтверждения запуска или срока, и вернуть чек-лист как есть.
+    """Wait for launch confirmation or the deadline, and return the checklist as is.
 
-    Ограничение по времени обязательно: хук живёт 30 секунд, и гейт не
-    вправе висеть дольше. Истёкший срок - это отрицательный результат,
-    который возвращается честным чек-листом, а не исключением.
+    A time limit is mandatory: the hook lives for 30 seconds, and the gate
+    may not hang longer. An expired deadline is a negative result, returned
+    as an honest checklist rather than an exception.
     """
 
     rest = sleep or time.sleep
@@ -437,24 +440,23 @@ def _desktop_visibility(
     now: Callable[[], float] | None = None,
     required: str = "in_project",
 ) -> LaunchCheck:
-    """Видна ли ветка, по измерению, сделанному при размещении.
+    """Is the thread visible, per the measurement made at placement.
 
-    Само измерение делает путь создания: у него есть живое соединение с
-    сервером, и спрашивать размещение заново на каждый опрос ленты значило
-    бы поднимать app-server по разу в секунду. Здесь читается записанный
-    результат.
+    The creation path does the measuring: it holds a live server connection,
+    and asking placement anew on every timeline poll would spin up an
+    app-server once a second. Here the recorded result is read.
 
-    Пункт не решающий, пока измерения ещё может не быть: между созданием
-    ветки и записью размещения есть окно, и отказ по нему плодил бы
-    ложные тикеты.
+    The item is not deciding while the measurement may not exist yet: there
+    is a window between thread creation and the placement record, and a
+    refusal on it would breed false tickets.
 
-    M11-R5. Но неизмеренность не вечна. Если ветка создана давно, а
-    размещение так и не записано, мерить стало некому - диспетчер умер
-    между созданием и гейтом. Прежде этот случай оставался
-    неопределённым навсегда: вердикт держался в IN_PROGRESS, тикет не
-    заводился, и задача просто не двигалась. Теперь истёкший срок - это
-    отрицательный результат, а он уже уходит в один нормализованный
-    тикет наравне с OUTSIDE и ABSENT.
+    M11-R5. But an unmeasured state is not eternal. If the thread was created
+    long ago and placement was never recorded, nobody is left to measure -
+    the dispatcher died between creation and the gate. This case used to
+    stay undecided forever: the verdict held at IN_PROGRESS, no ticket
+    opened, the task simply did not move. Now an expired deadline is a
+    negative result, and it goes into one normalized ticket alongside
+    OUTSIDE and ABSENT.
     """
 
     if not thread_id:
@@ -471,9 +473,9 @@ def _desktop_visibility(
             "visible_in_desktop", task_id, True, "thread in the project and visible in the sidebar"
         )
     if placement == OUTSIDE:
-        # При required="visible" вне проекта - всё ещё видимая ветка, и
-        # гейт размещения её пропускает. Объявлять её отказом здесь
-        # значило бы заводить тикет на то, что конфиг разрешил.
+        # With required="visible", outside the project is still a visible
+        # thread, and the placement gate lets it through. Declaring it a
+        # failure here would open a ticket for what the config allowed.
         if required == "visible":
             return LaunchCheck(
                 "visible_in_desktop",
@@ -505,12 +507,12 @@ def _desktop_visibility(
 def _seconds_since_create(
     session: Mapping[str, Any], *, now: Callable[[], float] | None = None
 ) -> float | None:
-    """Сколько прошло с подтверждения создания ветки, или None.
+    """How long since the thread's creation was confirmed, or None.
 
-    None означает "срок считать не от чего", а не "срок не истёк": без
-    отметки времени нельзя объявить просрочку, и подменять одно другим
-    здесь нельзя - это ровно та подмена, ради которой написан весь
-    модуль.
+    None means "nothing to count the deadline from", not "the deadline has
+    not expired": without a timestamp no expiry can be declared, and the two
+    must not be swapped here - that is exactly the substitution the whole
+    module was written against.
     """
 
     raw = session.get("create_acknowledged_at")
@@ -566,7 +568,7 @@ def _event_check(
 
 
 def _failure_after_launch(events: Sequence[Mapping[str, Any]]) -> str | None:
-    """Отказ, записанный уже после того, как ветка была создана."""
+    """A failure recorded after the thread had been created."""
 
     launched_at = next(
         (
@@ -593,12 +595,13 @@ def _pid_alive(pid: Any) -> bool:
     return control_pid_alive(pid)
 
 
-# Где ветка по мнению самого сервера. Именно из его списка Desktop рисует
-# сайдбар: замерено на ветках, которые человек видит глазами, - записи
-# приложения в .codex-global-state.json про них молчат, а сервер их знает.
-ABSENT = "ABSENT"      # сервер ветки не знает: она не сохранилась
-OUTSIDE = "OUTSIDE"    # сервер знает, но вне нужного проекта
-INSIDE = "INSIDE"      # в проекте
+# Where the thread is according to the server itself. Desktop draws the
+# sidebar from its list: measured on threads a person sees with their own
+# eyes - the app's records in .codex-global-state.json say nothing of them,
+# and the server knows them.
+ABSENT = "ABSENT"      # the server does not know the thread: it was not saved
+OUTSIDE = "OUTSIDE"    # the server knows it, but outside the wanted project
+INSIDE = "INSIDE"      # in the project
 
 
 def desktop_placement(
@@ -609,17 +612,18 @@ def desktop_placement(
     binary: str = "codex",
     log_path: Path | None = None,
 ) -> str:
-    """Спросить у сервера, где ветка.
+    """Ask the server where the thread is.
 
-    Прежняя проверка читала ключи .codex-global-state.json. Замерено: три
-    ветки, которые человек видел в сайдбаре проекта, лежат только в
-    electron-persisted-atom-state, а в thread-project-assignments их нет
-    вовсе - та проверка называла их OUTSIDE. На её показаниях был построен
-    ложный вывод, что видимую задачу через App Server завести нельзя.
+    The old check read the keys of .codex-global-state.json. Measured: three
+    threads a person saw in the project sidebar lived only in
+    electron-persisted-atom-state and were absent from
+    thread-project-assignments entirely - that check called them OUTSIDE. On
+    its readings the false conclusion was built that a visible task cannot
+    be created through App Server.
 
-    Ветка без единого хода на сервере не сохраняется: четыре пробы,
-    созданные пустыми, исчезли из thread/list полностью. Поэтому ABSENT
-    означает не "невидима", а "её больше нет".
+    A thread with not one turn is not persisted on the server: four probes
+    created empty vanished from thread/list completely. So ABSENT means not
+    "invisible" but "no longer there".
     """
 
     if not thread_id:
@@ -638,19 +642,18 @@ def desktop_placement(
 
 
 def placement_observation(client: Any, thread_id: str) -> dict[str, Any]:
-    """Что сервер сообщает о пригодности ветки к правке человеком.
+    """What the server reports about a thread's fitness for human editing.
 
-    M11-R5 требовал проверять не только принадлежность проекту, но и
-    редактируемость. Замерено на живом сервере: ``canAcceptDirectInput``
-    приходит null и в ``thread/read`` незагруженной ветки, и во всех
-    тридцати строках ``thread/list``. Поле живое, а не долговечное:
-    строить на нём гейт нельзя, потому что "нельзя править" и "никто не
-    держит" оно не различает.
+    M11-R5 demanded checking not only project membership but editability.
+    Measured on a live server: ``canAcceptDirectInput`` arrives null both in
+    ``thread/read`` of an unloaded thread and in all thirty rows of
+    ``thread/list``. The field is live, not durable: no gate can be built on
+    it, because it does not tell "cannot be edited" from "nobody holds it".
 
-    Поэтому здесь наблюдение, а не решение. Оно пишется рядом с
-    размещением, чтобы вопрос о передаче владения решался по записям, а
-    не по памяти. ``status.type == "notLoaded"`` - то состояние, в
-    котором ветку никто не держит.
+    So this is an observation, not a decision. It is written next to the
+    placement so the question of handing over ownership is settled from
+    records, not from memory. ``status.type == "notLoaded"`` is the state in
+    which nobody holds the thread.
     """
 
     try:
@@ -673,8 +676,8 @@ def _placement_via(client: Any, thread_id: str, project_id: str | None) -> str:
     try:
         thread = client.read_thread(thread_id)
     except Exception:
-        # Исчезнувшая ветка отвечает "thread not found"; связь могла и
-        # просто оборваться, но в обоих случаях размещения у нас нет.
+        # A vanished thread answers "thread not found"; the connection may
+        # also simply have dropped, but either way we have no placement.
         return ABSENT
     if not thread:
         return ABSENT

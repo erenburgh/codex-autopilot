@@ -1,24 +1,23 @@
-"""Будильник прогона: повтор по сроку поднимается сам, а не по слову человека.
+"""The run's wake-up: a due retry rises by itself, not on a human's word.
 
-Замерено на прогоне v1.0. Задача упиралась в лимит, рантайм честно
-записывал срок повтора - и на этом всё: когда последний диспетчер
-выходил, живого процесса не оставалось, и повтор по сроку некому было
-поднять. Прогон стоял, пока хозяйка не писала "Resume" - каждые
-несколько часов, руками, ради действия, которое рантайм умел сам.
+Measured on the v1.0 run. A task hit a rate limit, the runtime honestly
+recorded the retry time - and that was all: when the last dispatcher
+exited, no live process remained, and nobody was left to raise the due
+retry. The run stood until the owner typed "Resume" - every few hours, by
+hand, for an action the runtime knew how to do itself.
 
-Здесь ничего не обходится, и это проверялось со стороны. Первая
-редакция пропускала гейт доверия хуку по аналогии с преемниками
-диспетчера - но те пропускают его внутри уже проверенной синхронной
-операции, а будильник просыпается через часы, когда доказательства
-доверия ни у кого на руках нет. Поэтому перед тем как поднять
-диспетчер, будильник проходит тот же гейт, что и запуск от хука: если
-человек за это время отозвал доверие, повтор не поднимается. Владелец
-тот же, проверка владения в reserve_ready_frontier и
-spawn_automatic_app_server_relay та же.
+Nothing is bypassed here, and that was checked from the outside. The first
+draft skipped the hook-trust gate by analogy with the dispatcher's
+successors - but those skip it inside an already checked synchronous
+operation, while the wake-up rises hours later, when nobody holds proof of
+trust. So before raising the dispatcher the wake-up passes the same gate
+as a hook-driven launch: if the human revoked trust meanwhile, the retry is
+not raised. The owner is the same, and the ownership check in
+reserve_ready_frontier and spawn_automatic_app_server_relay is the same.
 
-Чего будильник не делает: не будит остановленный человеком прогон
-(пауза, BLOCKED), не будит законченный, не толкается с живым
-диспетчером и не стреляет раньше, если лимит продлили.
+What the wake-up does not do: it does not wake a run stopped by a human
+(pause, BLOCKED), does not wake a finished one, does not race a live
+dispatcher, and does not fire early if the limit was extended.
 """
 
 from __future__ import annotations
@@ -34,12 +33,12 @@ from .config import Config
 from .resources import ResourceLockCoordinator
 from .run_state import StateStore, utc_now
 
-# Спать дольше одного отрезка нельзя: за это время срок могли продлить.
+# Never sleep longer than one nap: the due time may be extended meanwhile.
 MAX_NAP_SECONDS = 300
 
 
 def due_wake_epoch(state: Any) -> int | None:
-    """Ближайший срок повтора среди задач, которые ждут повтора."""
+    """The nearest retry time among the tasks waiting for a retry."""
 
     due = [
         int(retry_at)
@@ -56,11 +55,11 @@ def ensure_wake(
     owner_turn: str,
     spawn: Callable[..., int] | None = None,
 ) -> int | None:
-    """Завести будильник, если есть кого будить и никто уже не ждёт.
+    """Arm a wake-up if there is something to wake and nobody waits already.
 
-    Возвращает pid спящего процесса или None, если будить некого.
-    Живой будильник с не более поздним сроком считается достаточным:
-    второй рядом с ним только толкался бы за ту же резервацию.
+    Returns the pid of the sleeping process, or None if there is nothing to
+    wake. A live wake-up with a no-later time counts as sufficient: a second
+    one next to it would only race for the same reservation.
     """
 
     store = StateStore(cfg.state_dir)
@@ -94,7 +93,7 @@ def run_wake(
     reserve: Callable[..., tuple[Any, ...]] | None = None,
     spawn_relay: Callable[..., int] | None = None,
 ) -> int:
-    """Спать до срока и поднять диспетчер - или молча уйти, если нельзя."""
+    """Sleep until the due time and raise the dispatcher - or leave quietly if not allowed."""
 
     from .resilience import append_resilience_event
 
@@ -125,9 +124,9 @@ def run_wake(
     if spawn_relay is None:
         from .control import spawn_automatic_app_server_relay as spawn_relay
 
-    # Тот же гейт, что у запуска от хука. Спящий процесс не несёт
-    # доказательства доверия с собой, поэтому спрашивает заново; отозванное
-    # доверие - причина не поднимать повтор, а не обходить проверку.
+    # The same gate as a hook-driven launch. The sleeping process carries no
+    # proof of trust with it, so it asks again; revoked trust is a reason not
+    # to raise the retry, not a reason to skip the check.
     from .hook_trust import HookPreflightError
 
     try:
@@ -169,12 +168,12 @@ def run_wake(
 
 
 def _finish(cfg: Config, store: StateStore, event: str, *, detail: dict[str, Any]) -> None:
-    """Последняя запись будильника - под тем же замком, что и все остальные.
+    """The wake-up's last record - under the same lock as every other.
 
-    Замерено проверяющей: чтение-правка-запись без транзакции сразу после
-    того, как будильник породил релеи, шло наперегонки со свежим
-    диспетчером, который пишет в тот же файл под своим замком, и теряло
-    его правки молча.
+    Measured by the reviewer: a read-modify-write without a transaction,
+    right after the wake-up spawned the relays, raced the fresh dispatcher
+    writing to the same file under its own lock, and lost its changes
+    silently.
     """
 
     from .resilience import append_resilience_event
@@ -209,12 +208,11 @@ def _pid_alive(pid: Any) -> bool:
 
 
 def wake_command(cfg: Config, *, owner: str, owner_turn: str, at_epoch: int) -> list[str]:
-    """Аргументы спящего процесса - ровно те, что примет парсер ``_wake``.
+    """The sleeping process's arguments - exactly what the ``_wake`` parser accepts.
 
-    Вынесено из запуска, чтобы это можно было проверить: проверяющая
-    сломала имя флага, и 947 тестов остались зелёными, потому что
-    настоящий запуск нигде не исполнялся. Теперь тест прогоняет эти
-    аргументы через настоящий парсер CLI.
+    Taken out of the launch so it can be checked: the reviewer broke a flag
+    name, and 947 tests stayed green because the real launch never ran
+    anywhere. Now a test runs these arguments through the real CLI parser.
     """
 
     return [
@@ -259,23 +257,24 @@ def _spawn_wake(cfg: Config, *, owner: str, owner_turn: str, at_epoch: int) -> i
 
 
 # ---------------------------------------------------------------------------
-# Переживает перезагрузку: обход по расписанию вместо одного спящего процесса
+# Survives a reboot: a scheduled sweep instead of one sleeping process
 # ---------------------------------------------------------------------------
 #
-# Спящий процесс умирает вместе с машиной. Поэтому рядом с ним есть второй
-# путь, которого перезагрузка не касается: агент launchd раз в несколько
-# минут обходит известные проекты и заводит будильник там, где повтор по
-# сроку ждёт, а живого будильника нет. Владелец и ход берутся из самого
-# состояния прогона - из последнего завершённого хода причинного владельца,
-# ровно так же, как их находит диспетчер для своих преемников.
+# A sleeping process dies with the machine. So next to it there is a second
+# path a reboot does not touch: a launchd agent sweeps the known projects
+# every few minutes and arms a wake-up wherever a due retry waits and no
+# live wake-up exists. The owner and the turn come from the run state
+# itself - from the last completed turn of the causal owner, exactly as the
+# dispatcher finds them for its successors.
 
 
 def projects_registry_path() -> Path:
-    """Список проектов, которые обходит агент.
+    """The list of projects the agent sweeps.
 
-    Лежит в корне установки, а не рядом с реестром запуска: тот живёт во
-    временном каталоге, который macOS чистит при перезагрузке - а агент
-    нужен ровно после неё. Удаление рантайма уносит список вместе с ним.
+    Lives in the install root, not next to the launch registry: that one
+    lives in a temporary directory macOS clears on reboot - and the agent is
+    needed precisely after one. Uninstalling the runtime takes the list with
+    it.
     """
 
     configured = os.environ.get("CODEX_AUTOPILOT_INSTALL_ROOT")
@@ -288,7 +287,7 @@ def projects_registry_path() -> Path:
 
 
 def register_project(root: Path, *, path: Path | None = None) -> None:
-    """Запомнить проект для обхода. Повторная запись - не ошибка."""
+    """Remember a project for the sweep. Registering twice is not an error."""
 
     import json
 
@@ -313,11 +312,11 @@ def registered_projects(*, path: Path | None = None) -> list[str]:
 
 
 def derive_owner(state: Any) -> tuple[str, str] | None:
-    """Причинный владелец для будильника - из журнала, не из аргументов.
+    """The causal owner for the wake-up - from the journal, not from arguments.
 
-    Тот же критерий, что у диспетчера для преемников: последняя сессия,
-    чей владелец relay записал завершённый ход. Если такого нет, будить
-    некого от чьего-либо имени - и агент молча пропускает проект.
+    The same criterion the dispatcher uses for successors: the latest session
+    whose relay owner recorded a completed turn. If there is none, there is
+    nobody on whose behalf to wake - and the agent skips the project quietly.
     """
 
     completed = {
@@ -344,9 +343,9 @@ def sweep(
     spawn: Callable[..., int] | None = None,
     load: Callable[[Path], Config] | None = None,
 ) -> dict[str, str]:
-    """Один обход: для каждого проекта - завести будильник, если он нужен.
+    """One sweep: for every project, arm a wake-up if one is needed.
 
-    Возвращает, что решено по каждому корню; агент печатает это в свой лог.
+    Returns what was decided per root; the agent prints it to its log.
     """
 
     from .config import load_config as _load_config
@@ -360,7 +359,7 @@ def sweep(
         try:
             cfg = (load or _load_config)(root)
             state = StateStore(cfg.state_dir).load()
-        except Exception as exc:  # noqa: BLE001 - один больной проект не рушит обход
+        except Exception as exc:  # noqa: BLE001 - one sick project does not break the sweep
             outcome[raw] = f"unreadable: {exc}"
             continue
         if state.status in {"BLOCKED", "DONE"} or StateStore(cfg.state_dir).pause_requested():

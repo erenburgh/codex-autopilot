@@ -512,17 +512,18 @@ def reconcile_running_work(
         if observed == "unknown":
             unresolved.append(task_id)
             continue
-        # Сессия дежурного инженера намеренно создаётся БЕЗ перевода
-        # задачи в активное состояние: инженер чинит инцидент, а не
-        # выполняет задачу. Поэтому её зависший ход снимается сам по
-        # себе и состояния задачи не касается - у той своя жизнь.
+        # The on-call engineer's session is deliberately created WITHOUT
+        # moving the task into an active state: the engineer repairs the
+        # incident, it does not execute the task. So its hung turn is
+        # cleared on its own and does not touch the task's state - that has
+        # a life of its own.
         #
-        # Прежде этого различия не было, и сверка требовала активного
-        # состояния от ЛЮБОЙ pending-сессии. 16.09.2026 прогон встал
-        # намертво: ход инженера завершился, сессия осталась висеть, а
-        # M8 был READY - и каждое возобновление отвечало «pending
-        # session for M8 is not in an active task state». Возобновить
-        # прогон стало нельзя ничем.
+        # There was no such distinction before, and reconciliation demanded
+        # an active state of ANY pending session. On 16 Sep 2026 the run
+        # stopped dead: the engineer's turn completed, the session stayed
+        # hanging, M8 was READY - and every resume answered «pending session
+        # for M8 is not in an active task state». Nothing could resume the
+        # run.
         if str(session.get("kind") or "") == "pipeline_engineer":
             session["status"] = "RETRY_WAIT"
             session["failure_reason"] = (
@@ -537,9 +538,9 @@ def reconcile_running_work(
                 released.append(lock_ids.get(token, token))
             continue
         raw_state = TaskState(state.task_states[task_id])
-        # Уже в RETRY_WAIT - значит сверка для этой задачи проводилась
-        # раньше: следующая строка ставит ровно это состояние. Повтор
-        # сверки не конфликт, а ничего.
+        # Already in RETRY_WAIT means reconciliation ran for this task
+        # before: the next line sets exactly that state. Repeating it is not
+        # a conflict but a no-op.
         if raw_state is not TaskState.RETRY_WAIT and raw_state not in ACTIVE_TASK_STATES:
             raise PlanChangeConflictError(
                 f"pending session for {task_id} is not in an active task state"

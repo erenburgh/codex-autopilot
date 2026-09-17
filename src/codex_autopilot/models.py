@@ -26,13 +26,13 @@ class ModelSelection:
 
 
 def next_effort_step(current: str | None) -> str | None:
-    """Следующая ступень усилия, или None когда лестница кончилась.
+    """The next effort step, or None when the ladder has run out.
 
-    Это и есть способ достижения результата в терминах найма: план и DoD
-    неприкосновенны, меняется исполнитель и то, сколько он думает. Модель
-    ступенью не является: в стратегии `auto` она жёстко связана с
-    execution_mode задачи, и подмена модели означала бы подмену заявленной
-    способности, а не усердия.
+    This is the way of reaching the result in hiring terms: the plan and
+    DoD are untouchable, what changes is the executor and how much it
+    thinks. The model is not a step: under the `auto` strategy it is tied
+    hard to the task's execution_mode, and swapping the model would swap
+    the declared capability, not the diligence.
     """
     ladder = PUBLIC_REASONING
     value = current or ladder[0]

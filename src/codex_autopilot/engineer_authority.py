@@ -1,17 +1,18 @@
-"""Полномочия дежурного инженера: что он вправе, а что запрещено.
+"""The on-call engineer's authority: what it may do and what is forbidden.
 
-Вынесено из pipeline_engineer.py отдельным модулем не ради порядка. С
-тех пор как инженер получил право править код рантайма, всё лежавшее с
-ним в одном файле пришлось бы запретить целиком - а в том же файле
-живёт обычная бухгалтерия инцидентов, где настоящие дефекты и
-случаются. Один такой мы чинили руками на прогоне v1.0: эскалация не
-принималась после того, как инженер уже починил поломку.
+Moved out of pipeline_engineer.py into its own module not for tidiness.
+Once the engineer gained the right to repair the runtime's code, everything
+that shared a file with its authority would have had to be locked as a
+whole - and that same file holds the ordinary incident bookkeeping, where
+real defects actually happen. One such we repaired by hand on the v1.0
+run: an escalation was not accepted after the engineer had already fixed
+the fault.
 
-Поэтому граница проходит здесь. Этот модуль правке не подлежит и
-сверяется хэшами: класс поломки, словарь действий, список запретов и
-порог, после которого способ починки начинает работать без человека.
-Всё остальное в pipeline_engineer.py инженер чинить вправе - как чинил
-бы любой другой модуль рантайма, через доказательство.
+So the boundary runs here. This module is out of reach for a repair and is
+checked by hashes: the fault class, the action vocabulary, the forbidden
+list and the threshold after which a repair starts working without a
+human. Everything else in pipeline_engineer.py the engineer may repair -
+like any other runtime module, through proof.
 """
 
 from __future__ import annotations
@@ -36,13 +37,13 @@ class SideEffectOutcome(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-# Операции, которые меняют состояние на той стороне. Отказ такой
-# операции с неизвестным исходом - единственный случай, когда повтор
-# запрещён вслепую: именно так в живом прогоне появлялись лишние ветки.
+# Operations that change state on the far side. A failure of such an
+# operation with an unknown outcome is the one case where a blind retry is
+# forbidden: that is exactly how extra threads appeared in a live run.
 MUTATING_TRANSPORT_OPERATIONS = frozenset({"create_thread", "send_message_to_thread"})
 
-# Классы, которыми занимается инженер пайплайна. Продакшен сюда не
-# входит: качество продукта - работа воркеров, а не его.
+# The classes the pipeline engineer deals with. Production is not among
+# them: product quality is the workers' job, not the engineer's.
 INFRASTRUCTURE_INCIDENT_CLASSES = frozenset(
     {
         IncidentClass.PIPELINE,
@@ -59,10 +60,10 @@ READ_ONLY_DIAGNOSTIC_ACTIONS = (
     "run_declared_healthcheck",
 )
 
-# Действия, которые меняют состояние, а не только читают его. Каждое
-# отвечает ровно одной команде восстановления, и у каждой из них свой
-# отказ, когда предпосылки не выполнены. Называть их можно только так,
-# как они называются: пересказ прозой не сходится ни с чем.
+# Actions that change state rather than only read it. Each answers exactly
+# one recovery command, and each of those has its own refusal when its
+# preconditions do not hold. They may be named only as they are named: a
+# prose retelling matches nothing.
 REPAIR_ACTIONS = (
     "rearm_relay_owner",
     "rearm_run",
@@ -73,14 +74,15 @@ REPAIR_ACTIONS = (
     "repair_runtime_code",
 )
 
-# Весь словарь: чем инженер вправе отчитаться о починке.
+# The whole vocabulary: what the engineer may report a repair with.
 RECOVERY_ACTIONS = READ_ONLY_DIAGNOSTIC_ACTIONS + REPAIR_ACTIONS
 
-# Что уровень 1 вправе повторить сам, без человека. Диагностика - вся;
-# из чинящих только те две команды, что сами отказывают, когда их
-# предпосылки не выполнены, и потому безопасны при слепом повторе.
-# Правка кода не повторяется никогда: патч, снявший поломку здесь, на
-# другой машине и в другом состоянии - не лечение, а совпадение.
+# What level 1 may replay by itself, without a human. All of the
+# diagnostics; of the repairing ones only the two commands that refuse by
+# themselves when their preconditions do not hold, and are therefore safe
+# to replay blindly. A code repair is never replayed: a patch that removed a
+# fault here is, on another machine and in another state, a coincidence,
+# not a cure.
 AUTO_REPLAYABLE_ACTIONS = READ_ONLY_DIAGNOSTIC_ACTIONS + (
     "rearm_relay_owner",
     "rearm_run",
@@ -98,6 +100,7 @@ FORBIDDEN_ACTIONS = (
     "create_or_message_codex_tasks_without_real_user_authority_or_an_official_platform_capability",
 )
 
-# Сколько одинаковых успешных решений одной подписи нужно, чтобы способ
-# перестал требовать инженера и стал детерминированным раннбуком.
+# How many identical successful resolutions of one signature it takes for
+# the repair to stop requiring the engineer and become a deterministic
+# runbook.
 PROMOTION_THRESHOLD = 2

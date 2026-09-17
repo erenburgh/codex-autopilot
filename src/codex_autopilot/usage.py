@@ -1,19 +1,19 @@
-"""Сколько воркеров можно запускать при текущем состоянии лимитов.
+"""How many workers may be launched given the current rate-limit state.
 
-Заявленное пользователем число - его решение и потолок. Здесь оно может
-только понижаться, и только когда лимит действительно рядом. Сказать
-человеку с автосписанием "тебе положено десять" было бы наглостью:
-он платит по факту, и ограничивать его нам не за что.
+The number the user declared is their decision and the ceiling. Here it
+can only go down, and only when the limit is really near. Telling someone
+on auto-billing "you are entitled to ten" would be presumptuous: they pay
+as they go, and we have no grounds to restrict them.
 
-Данные приходят от App Server событием `account/rateLimits/updated` и
-читаются по запросу через `account/rateLimits/read`:
+The data comes from App Server as the `account/rateLimits/updated` event
+and is read on demand through `account/rateLimits/read`:
 
-    primary.usedPercent      сколько окна израсходовано
-    primary.windowDurationMins  длина окна
-    credits.unlimited        безлимит
-    credits.hasCredits       есть кредиты, списание продолжится
-    spendControlReached      пользователь сам поставил предел и достиг его
-    rateLimitReachedType     лимит уже упёрт
+    primary.usedPercent      how much of the window is used
+    primary.windowDurationMins  the window length
+    credits.unlimited        unlimited
+    credits.hasCredits       credits exist, billing continues
+    spendControlReached      the user set a cap themselves and reached it
+    rateLimitReachedType     the limit is already exhausted
 """
 
 from __future__ import annotations
@@ -24,11 +24,11 @@ from typing import Any, Mapping
 
 @dataclass(frozen=True, slots=True)
 class WorkerBudget:
-    """Решение о ёмкости вместе с его причиной.
+    """A capacity decision together with its reason.
 
-    `workers = None` означает отсутствие потолка: на безлимитном
-    аккаунте ограничивать нечем, и число одновременных воркеров задаёт
-    сам граф - столько, сколько задач готово к работе.
+    `workers = None` means no ceiling: on an unlimited account there is
+    nothing to restrict with, and the graph itself sets the number of
+    simultaneous workers - as many tasks as are ready.
     """
 
     workers: int | None
@@ -49,36 +49,36 @@ def worker_budget(
     *,
     declared_by_user: bool = False,
 ) -> WorkerBudget:
-    """Сколько воркеров запускать сейчас и почему именно столько.
+    """How many workers to launch now, and why exactly that many.
 
-    `declared_by_user` означает, что число названо человеком явно. Такое
-    число не повышается никогда - даже на безлимите: если он попросил
-    три, значит три.
+    `declared_by_user` means the human named the number explicitly. Such a
+    number is never raised - not even on unlimited: if they asked for
+    three, it is three.
     """
 
     declared = max(1, int(declared))
     snapshot = _snapshot(limits)
     if not snapshot:
-        # Нет данных - нет и повода урезать. Молчаливое понижение по
-        # незнанию было бы худшим из вариантов: пользователь не поймёт,
-        # почему прогон идёт медленнее, чем он попросил.
+        # No data - no reason to cut. A silent reduction out of ignorance
+        # would be the worst option: the user would not understand why the
+        # run goes slower than they asked.
         return WorkerBudget(declared, "no rate-limit data", False)
 
     credits = snapshot.get("credits")
     credits = credits if isinstance(credits, Mapping) else {}
-    # Предел, заданный самим человеком, сильнее любых кредитов: он его и
-    # ставил, чтобы списание остановилось. Прежде эта проверка стояла
-    # ПОСЛЕ кредитов и потому не срабатывала вовсе у тех, ради кого была
-    # написана - у аккаунтов с автосписанием.
+    # A cap set by the human outranks any credits: they set it precisely so
+    # billing would stop. This check used to stand AFTER credits and so
+    # never fired for the very accounts it was written for - those on
+    # auto-billing.
     if snapshot.get("spendControlReached"):
         return WorkerBudget(1, "the spending cap set by the user has been reached", True)
     if snapshot.get("rateLimitReachedType"):
         return WorkerBudget(1, "the limit is already exhausted", True)
 
     if _burns_without_a_wall(credits):
-        # Автосписание и есть безлимит: окно лимита такому аккаунту не
-        # стена, списание идёт дальше. Потолка нет - сколько задач граф
-        # откроет одновременно, столько и пойдёт.
+        # Auto-billing is unlimited: the limit window is no wall for such an
+        # account, billing carries on. No ceiling - as many tasks as the
+        # graph opens at once will run.
         if declared_by_user:
             return WorkerBudget(declared, "unlimited billing, the number was set by the user", False)
         return WorkerBudget(None, "unlimited billing: no ceiling", False)
@@ -101,12 +101,12 @@ def worker_budget(
 
 
 def capacity_notice(limits: Mapping[str, Any] | None, declared: int | None) -> str:
-    """Что сказать человеку про ёмкость перед стартом прогона.
+    """What to tell the human about capacity before the run starts.
 
-    Пользователь не обязан знать ни своего тарифа, ни того, что число
-    воркеров вообще можно задать. Спросить его один раз, назвав его
-    собственное положение, честнее, чем молча поставить десятку из
-    шаблона - именно так она и простояла весь прогон на 24 задачи.
+    The user need not know their plan, nor that the number of workers can
+    be set at all. Asking once, naming their own situation, is more honest
+    than silently setting the template's ten - which is exactly how it
+    stood for a whole 24-task run.
     """
 
     snapshot = _snapshot(limits)
@@ -144,28 +144,27 @@ def capacity_notice(limits: Mapping[str, Any] | None, declared: int | None) -> s
     )
 
 
-# Тариф Plus заметно уже остальных: держать на нём десять воркеров
-# значит сжечь окно за один прогон. Решение пользователя от 14 сентября.
+# The Plus plan is noticeably narrower than the rest: ten workers on it
+# would burn the window in one run. The user's decision of 14 September.
 PLUS_DEFAULT_WORKERS = 3
 STANDARD_DEFAULT_WORKERS = 10
 _PLUS_PLANS = frozenset({"plus", "chatgpt-plus", "plus-monthly"})
 
 
 def _burns_without_a_wall(credits: Mapping[str, Any]) -> bool:
-    """Аккаунт, которому окно лимита не стена.
+    """An account for which the limit window is not a wall.
 
-    Безлимит и подключённое автосписание - это одно и то же положение:
-    расход продолжается за окном, упереться не во что. Прежде кредиты
-    считались смягчающим обстоятельством и всё равно сужали ёмкость -
-    то есть ограничивали того, кто как раз и платит за отсутствие
-    ограничений.
+    Unlimited and enabled auto-billing are the same situation: spending
+    continues past the window, there is nothing to hit. Credits used to
+    count as a mitigating circumstance and still narrowed capacity - that
+    is, restricted exactly the one who pays for having no restrictions.
     """
 
     return bool(credits.get("unlimited") or credits.get("hasCredits"))
 
 
 def default_workers(limits: Mapping[str, Any] | None) -> int:
-    """Сколько воркеров ставить, когда человек ничего не сказал."""
+    """How many workers to set when the human said nothing."""
 
     snapshot = _snapshot(limits)
     plan_type = str(snapshot.get("planType") or "").strip().lower()
@@ -174,10 +173,10 @@ def default_workers(limits: Mapping[str, Any] | None) -> int:
     return STANDARD_DEFAULT_WORKERS
 
 
-# Внутренние имена тарифов человеку не показываются: свой план он читает
-# как "Pro", а событие App Server называет его "prolite". Показать слаг
-# значило бы сообщить пользователю неправду о его же подписке, а
-# незнакомый слаг - ещё и выдумать тариф, которого он не знает.
+# Internal plan names are not shown to the human: they read their plan as
+# "Pro", while the App Server event calls it "prolite". Showing the slug
+# would tell the user something false about their own subscription, and an
+# unfamiliar slug would invent a plan they do not know.
 _PLAN_NAMES = {
     "plus": "Plus",
     "chatgpt-plus": "Plus",
@@ -196,6 +195,6 @@ def _is_plus(raw: Any) -> bool:
 
 
 def _human_plan_name(raw: Any) -> str:
-    """Имя тарифа так, как его знает человек, или пусто."""
+    """The plan name as the human knows it, or empty."""
 
     return _PLAN_NAMES.get(str(raw or "").strip().lower(), "")

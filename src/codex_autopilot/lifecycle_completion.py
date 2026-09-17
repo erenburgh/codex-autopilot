@@ -104,12 +104,12 @@ def _audit_rule_declaration(
     final_message: str,
     at: str,
 ) -> None:
-    """Правило R16: отчёт обязан перечислить применённые id правил.
+    """Rule R16: the report must list the applied rule ids.
 
-    Правило в режиме CHECKED: отсутствие перечня записывается как дефект
-    и поднимает R16 в приоритете правил следующего воркера, но завершение
-    не рушит. Ссылка на несуществующий id - тоже дефект: так правило
-    "соблюдается" цитированием того, чего нет.
+    The rule is CHECKED: a missing list is recorded as a defect and raises
+    R16 in the next worker's rule priority, but does not fail the completion.
+    A reference to a non-existent id is a defect too: that is how a rule gets
+    "observed" by citing what does not exist.
     """
 
     from .rules import RULES
@@ -141,17 +141,16 @@ def _record_rule_conflicts(
     at: str,
     memory,
 ) -> None:
-    """Правило R16: расхождение с формулировкой уходит в Conflict.
+    """Rule R16: a disagreement with the wording becomes a Conflict.
 
-    Воркер не разрешает его сам. Конфликт открывается между записанной
-    формулировкой правила и тем, как её прочитал исполнитель, и остаётся
-    открытым: разрешает его человек или отдельная задача, но не тот, кто
-    его заявил.
+    The worker does not resolve it itself. The conflict opens between the
+    recorded wording of the rule and how the executor read it, and stays
+    open: a human or a separate task resolves it, never the one who filed it.
 
-    Формулировка правила заводится наблюдением один раз на проект -
-    конфликту нужна существующая запись, а правило живёт в коде, не в
-    памяти. Дальше все расхождения по этому правилу спорят с той же
-    записью, и историю по правилу видно целиком.
+    The rule's wording is recorded as an observation once per project - a
+    conflict needs an existing record, and the rule lives in code, not in
+    memory. From then on every disagreement about this rule argues with the
+    same record, and the rule's whole history is visible.
     """
 
     from .lifecycle_base import parse_rule_conflicts
@@ -206,13 +205,13 @@ def _record_rule_conflicts(
 
 
 def _rule_statement_record(memory, rule_id: str, statement: str) -> dict[str, Any]:
-    """Каноническая формулировка правила как Truth, одна на проект.
+    """The canonical wording of a rule as Truth, one per project.
 
-    Конфликт открывается только против Truth - и это правильно: спорить
-    можно с установленным, а не с чьим-то мнением. Формулировка правила
-    установлена: она прочитана из работающего рантайма, и это
-    доказательство вида environment_probe. Файлом её не подтвердить -
-    rules.py лежит в автопилоте, а не в проекте пользователя.
+    A conflict opens only against Truth - rightly so: one can argue with what
+    is established, not with someone's opinion. The wording is established:
+    it is read from the running runtime, which is evidence of the
+    environment_probe kind. A file cannot confirm it - rules.py lives in
+    Autopilot, not in the user's project.
     """
 
     marker = f"{rule_id} (recorded wording)"
@@ -302,13 +301,13 @@ def complete_desktop_worker(
             replanner_result = parse_plan_change_result(final_message)
         except PlanChangeProtocolError as exc:
             raise WorkerProtocolError(str(exc)) from exc
-        # Владение переходом передаётся и сюда. Инженеру и воркеру его
-        # чинили по отдельности, реплэннера пропустили: сторона
-        # вызываемого была готова, а вызывающий флаг не передавал. Из-за
-        # этого весь учёт преемника у реплэннера был недостижим из
-        # продакшена, и следующий шаг отвечал "current dispatcher does
-        # not own the completed-to-successor transition" - на первой же
-        # смене плана.
+        # Ownership of the transition is passed here too. It was fixed for
+        # the engineer and the worker separately and the replanner was
+        # missed: the callee side was ready, the caller never passed the
+        # flag. So the replanner's whole successor bookkeeping was
+        # unreachable from production, and the next step answered "current
+        # dispatcher does not own the completed-to-successor transition" -
+        # on the very first plan change.
         return _complete_replanner(
             cfg,
             session=session,
@@ -355,13 +354,14 @@ def complete_desktop_worker(
         try:
             verdict = parse_verifier_result(final_message)
         except VerificationProtocolError as exc:
-            # Нечитаемый вердикт - ошибка модели, а не поломка рантайма.
-            # Замерено: верифаер приложил к вердикту поле `rubric` -
-            # рубрику отдела, которую предыдущая задача сама и создала, -
-            # ход завершился успешно, а диспетчер умер на разборе ответа.
-            # Работа осталась сделанной, приёмка не записана, поверх
-            # неё открылся тикет о падении диспетчера, и прогон простоял
-            # полтора часа. Тот же класс уже закрыт для реплэннера.
+            # An unreadable verdict is a model error, not a runtime fault.
+            # Measured: the verifier attached a `rubric` field to the verdict
+            # - the department rubric the previous task itself created - the
+            # turn completed successfully, and the dispatcher died parsing
+            # the reply. The work stayed done, the acceptance was not
+            # recorded, a dispatcher-crash ticket opened on top of it, and
+            # the run stood for an hour and a half. The same class is
+            # already closed for the replanner.
             return _reject_verifier_result(
                 cfg,
                 session=session,
@@ -677,10 +677,10 @@ def complete_desktop_worker(
                     timestamp,
                     detail=json.dumps(verdict.to_dict(), ensure_ascii=False, sort_keys=True),
                 )
-                # Решение о перенайме принимается один раз - на резервации,
-                # где бюджет ревизий реально тратится и известен номер
-                # следующей ревизии. Второй вызов здесь поднимал ступень
-                # дважды за один отказ приёмки.
+                # The re-hire decision is taken once - at reservation, where
+                # the revision budget is actually spent and the next revision
+                # number is known. A second call here raised the step twice
+                # for one acceptance refusal.
         elif worker_status in SUCCESS_STATUSES:
             expected = (
                 TaskState.REVISING.value
@@ -736,9 +736,9 @@ def complete_desktop_worker(
             state.task_states = transition_task(
                 plan, state.task_states, task_id, TaskState.BLOCKED
             )
-            # R13: причина остановки - код из закрытого списка, а не
-            # пересказ статуса. Прежняя строка "M9 worker returned
-            # BLOCKED" не сообщала ничего сверх самого статуса.
+            # R13: the stop reason is a code from the closed list, not a
+            # retelling of the status. The old line "M9 worker returned
+            # BLOCKED" said nothing beyond the status itself.
             state.last_error = f"{task_id} {kind} {worker_status} {reason_code}".strip()
             current["reason_code"] = reason_code
             if reason_code == "UNSPECIFIED":
@@ -807,15 +807,15 @@ def complete_desktop_worker(
 
 
 def _notify_completion(cfg, plan, task_id: str, *, state_after: str, done: bool) -> None:
-    """Сказать человеку, что работа закончилась.
+    """Tell the human that the work is finished.
 
-    Единственный доступный способ: состояние "непрочитано" принадлежит
-    интерфейсу Desktop, и снаружи оно не наше - замерено, см. notify.py.
-    Здесь один банер на переход, а не на каждое событие: поток
-    уведомлений человек выключит на второй задаче.
+    The only available way: the "unread" state belongs to the Desktop
+    interface and is not ours from outside - measured, see notify.py. One
+    banner per transition, not per event: a stream of notifications gets
+    switched off by the second task.
 
-    Вызов не вправе ничего сломать: он стоит после сохранения состояния
-    и не бросает.
+    The call may break nothing: it stands after the state is saved and does
+    not raise.
     """
 
     from .notify import notify
@@ -829,10 +829,10 @@ def _notify_completion(cfg, plan, task_id: str, *, state_after: str, done: bool)
     word = "verified" if state_after == TaskState.VERIFIED.value else "stopped"
     notify(cfg, "Codex Autopilot", cfg.root.name, f"{task_id} {word}: {title}")
 
-# R13: DevOps решает инфраструктурные баги от имени пользователя, и
-# пользователь не участвует в выборе способа фикса. Поэтому эскалация -
-# не второй равноправный выход, а исключение, и она обязана назвать
-# причину кодом из закрытого списка.
+# R13: DevOps resolves infrastructure bugs on the user's behalf, and the
+# user takes no part in choosing the fix. So an escalation is not a second
+# equal exit but an exception, and it must name its reason with a code from
+# the closed list.
 ESCALATION_CODES = frozenset({
     "DANGEROUS_PERMISSION",
     "GLOBAL_CONFIG_CHANGE",
@@ -847,7 +847,7 @@ PIPELINE_ENGINEER_STATUS = re.compile(
 
 
 def parse_pipeline_engineer_status(message: str) -> tuple[str, str]:
-    """Финальная строка инженера: итог и, для эскалации, код причины."""
+    """The engineer's final line: the outcome and, for an escalation, the reason code."""
 
     matches = PIPELINE_ENGINEER_STATUS.findall(message or "")
     last = next(
@@ -872,13 +872,13 @@ def parse_pipeline_engineer_status(message: str) -> tuple[str, str]:
 
 
 def _orphaned_pending_descriptors(state: RunState) -> tuple[Any, ...]:
-    """Зарезервированная работа, которую некому поднять.
+    """Reserved work that nobody is left to raise.
 
-    После инцидента остаются сессии в состояниях, пригодных к релею:
-    ветка ещё не создавалась, дублировать нечего. Их владелец - задача,
-    завершившая свой ход до инцидента, - поднять их уже не может: его
-    процесс вышел. Возврат их дескрипторов и есть продолжение прогона
-    без оператора.
+    After an incident, sessions remain in states fit for a relay: the thread
+    was never created, so there is nothing to duplicate. Their owner - the
+    task that completed its turn before the incident - can no longer raise
+    them: its process has exited. Returning their descriptors is how the run
+    continues without an operator.
     """
 
     from .lifecycle_base import RELAYABLE_SESSION_STATUSES, LaunchDescriptor
@@ -893,12 +893,11 @@ def _orphaned_pending_descriptors(state: RunState) -> tuple[Any, ...]:
 
 
 def _would_idle_forever(state: RunState) -> bool:
-    """Прогон встал бы навсегда: работа готова, а делать её некому.
+    """The run would stand forever: work is ready and nobody is there to do it.
 
-    Пустой список преемников законен сам по себе - например, когда всё
-    упёрлось в заблокированную задачу. Признак беды другой: есть задача
-    в READY и при этом ни одной живой сессии, то есть никто не придёт и
-    ничего не сдвинет.
+    An empty successor list is legitimate in itself - when everything hangs
+    on a blocked task, say. The sign of trouble is different: a task in READY
+    and not one live session, so nobody will come and nothing will move.
     """
 
     active = any(
@@ -924,12 +923,12 @@ def _complete_pipeline_engineer(
     dispatcher_authorized: bool = False,
     dispatcher_pid: int | None = None,
 ) -> CompletionOutcome:
-    """Принять итог инженера, ничего не принимая на слово.
+    """Accept the engineer's outcome, taking nothing on its word.
 
-    RESOLVED засчитывается только если тикет действительно закрыт - через
-    devops-resolve-incident, с пройденной проверкой здоровья. Слово в
-    финальной строке заявлением о починке не является: ровно эта подмена
-    наблюдения заявлением и стоила прогону ночи.
+    RESOLVED counts only if the ticket is really closed - through
+    devops-resolve-incident, with a passing healthcheck. The word in the
+    final line is not a statement of repair: exactly that substitution of a
+    claim for an observation cost the run a night.
     """
 
     from .pipeline_engineer import IncidentPhase, PipelineIncidentStore
@@ -973,11 +972,11 @@ def _complete_pipeline_engineer(
         if escalation_code:
             current["escalation_code"] = escalation_code
         current["completed_at"] = timestamp
-        # Ход инженера завершился так же, как любой другой, и барьер
-        # причинности читает именно это событие. Прежде инженер писал
-        # только своё `pipeline_engineer_completed`: его завершённый ход
-        # оставался для барьера невидимым, и преемника некому было
-        # поднять - "automatic relay has no completed causal predecessor".
+        # The engineer's turn completed like any other, and the causality
+        # barrier reads exactly this event. The engineer used to write only
+        # its own `pipeline_engineer_completed`: its completed turn stayed
+        # invisible to the barrier, and nobody was left to raise the
+        # successor - "automatic relay has no completed causal predecessor".
         _append_event(state, "turn_completed", current, timestamp, detail=status)
         _append_event(
             state,
@@ -986,19 +985,19 @@ def _complete_pipeline_engineer(
             timestamp,
             detail=f"{incident_id}: {status}",
         )
-        # Контракт фаз одинаков для всех: инженер отчитывается о
-        # применённых правилах и о расхождениях так же, как воркер.
+        # The phase contract is the same for all: the engineer reports the
+        # applied rules and the disagreements exactly like a worker.
         _audit_rule_declaration(cfg, state, current, final_message, timestamp)
         _record_rule_conflicts(
             cfg, state, current, final_message, timestamp, ProjectMemory(cfg.root)
         )
         descriptors: tuple[Any, ...] = ()
         if status == "ESCALATE_TO_USER":
-            # Тикет обязан узнать об эскалации вместе с прогоном. Прежде
-            # прогон уходил в BLOCKED, а тикет оставался в
-            # PIPELINE_ENGINEER: хранилище считало инженера работающим,
-            # задача висела приостановленной, и закрыть тикет было
-            # нечем ни ему, ни пользователю.
+            # The ticket must learn of the escalation together with the run.
+            # The run used to go to BLOCKED while the ticket stayed in
+            # PIPELINE_ENGINEER: the store believed the engineer was working,
+            # the task hung paused, and neither it nor the user had anything
+            # to close the ticket with.
             PipelineIncidentStore(cfg.state_dir).escalate_incident_to_user(
                 incident_id,
                 reason_code=escalation_code,
@@ -1015,14 +1014,13 @@ def _complete_pipeline_engineer(
             state.status = "READY"
             state.phase = "PREPARING"
             state.last_error = None
-            # Починка без преемника завершением не является. Прежде здесь
-            # возвращался пустой список, прогон уходил в READY/PREPARING,
-            # и на этом всё кончалось: инженер закрывал инцидент, его
-            # процесс штатно выходил, а запускать M1 становилось некому.
-            # Причинный предшественник к этому моменту мёртв - именно его
-            # смерть и была инцидентом, - поэтому причинным звеном служит
-            # сам ход инженера: его Stop-хук выполняет релей, как у
-            # любого воркера.
+            # A repair without a successor is not a completion. An empty
+            # list used to be returned here, the run went to READY/PREPARING,
+            # and that was the end: the engineer closed the incident, its
+            # process exited normally, and nobody was left to launch M1. The
+            # causal predecessor is dead by then - its death was the incident
+            # - so the causal link is the engineer's own turn: its Stop hook
+            # performs the relay, as for any worker.
             descriptors = _reserve_in_state(
                 cfg,
                 load_plan(cfg.state_dir, cfg.profile),
@@ -1031,22 +1029,22 @@ def _complete_pipeline_engineer(
                 relay_owner_thread_id=thread_id,
                 now_epoch=now_epoch,
             )
-            # Резервация, созданная ДО инцидента, новой не является, и
-            # `_reserve_in_state` её не вернёт. Прежде она так и оставалась
-            # висеть в CREATE_REQUESTED: инженер чинил причину, выходил, а
-            # прогон стоял до тех пор, пока человек не возобновит его
-            # руками. Именно это и делало пайплайн неавтоматическим -
-            # каждая починка требовала оператора.
+            # A reservation created BEFORE the incident is not new, and
+            # `_reserve_in_state` will not return it. It used to stay hanging
+            # in CREATE_REQUESTED: the engineer fixed the cause, exited, and
+            # the run stood until a human resumed it by hand. Exactly this
+            # made the pipeline non-automatic - every repair needed an
+            # operator.
             if not descriptors:
                 descriptors = _orphaned_pending_descriptors(state)
             if dispatcher_authorized:
-                # Тот же учёт владения переходом, что и у обычного воркера.
-                # Прежде инженер назначал преемника и не отмечал его у себя:
-                # диспетчер отказывался вести цепочку дальше словами
-                # "current dispatcher does not own the completed-to-successor
-                # transition", резервация висела в CREATE_REQUESTED, и поверх
-                # закрытого инцидента открывался новый - о падении самого
-                # диспетчера.
+                # The same transition-ownership bookkeeping as for an
+                # ordinary worker. The engineer used to assign a successor
+                # without marking it on itself: the dispatcher refused to
+                # carry the chain on with "current dispatcher does not own
+                # the completed-to-successor transition", the reservation
+                # hung in CREATE_REQUESTED, and a new incident - about the
+                # dispatcher's own crash - opened on top of the closed one.
                 current["automatic_successor_tokens"] = [
                     item.reservation_token for item in descriptors
                 ]
@@ -1054,9 +1052,9 @@ def _complete_pipeline_engineer(
                     "ADVANCING" if descriptors else "COMPLETED"
                 )
             if not descriptors and _would_idle_forever(state):
-                # Исключение здесь потеряло бы саму запись о завершении
-                # инженера, поэтому прогон останавливается громко, а не
-                # падает: задача готова к работе, но назначить её некому.
+                # An exception here would lose the very record of the
+                # engineer's completion, so the run stops loudly rather than
+                # crashing: the task is ready, but nobody can be assigned.
                 state.status = "BLOCKED"
                 state.phase = "PIPELINE_ENGINEER_NO_SUCCESSOR"
                 state.last_error = (
@@ -1074,11 +1072,11 @@ def _complete_pipeline_engineer(
     return CompletionOutcome(True, status, descriptors, False)
 
 
-# Сколько раз реплэннеру возвращают его же граф с причиной отказа.
-# Три попытки всего: одна исходная и две с текстом ошибки на руках. Если
-# модель трижды не попала в схему, дело не в случайности, и следующий ход
-# будет жечь лимиты впустую - прогон должен остановиться громко и назвать
-# человеку причину, а не молча крутиться.
+# How many times the replanner gets its own graph back with the reason.
+# Three attempts in all: one original and two with the error text in hand.
+# If the model missed the schema three times, it is no accident, and the
+# next turn would burn limits for nothing - the run must stop loudly and
+# name the reason to the human, not spin silently.
 MAX_PLAN_CHANGE_REJECTIONS = 2
 
 
@@ -1095,13 +1093,13 @@ def _reject_replanner_result(
     now_epoch: int | None,
     dispatcher_authorized: bool = False,
 ) -> CompletionOutcome:
-    """Вернуть реплэннеру его граф с причиной отказа и дать переделать.
+    """Return the graph to the replanner with the reason and let it redo it.
 
-    План не меняется: отвергнутый граф не пишется никуда. Меняется
-    только запись смены плана - в ней копится список отказов, который
-    попадает в следующий промпт. Задача-заказчик уходит в BLOCKED, и
-    обычный путь резервирования поднимает из него свежего реплэннера:
-    он уже умеет BLOCKED -> READY для этого случая.
+    The plan does not change: a rejected graph is written nowhere. Only the
+    plan-change record changes - it accumulates the list of refusals that
+    goes into the next prompt. The requesting task goes to BLOCKED, and the
+    ordinary reservation path raises a fresh replanner from it: it already
+    knows BLOCKED -> READY for this case.
     """
 
     timestamp = at or utc_now()
@@ -1167,9 +1165,9 @@ def _reject_replanner_result(
             detail={"reason": reason, "attempt": len(rejections)},
         )
         if exhausted:
-            # Бюджет исчерпан. Молчаливое ожидание здесь и есть та дыра,
-            # из-за которой прогон стоит без объяснения: остановка должна
-            # называть причину в статусе.
+            # The budget is exhausted. A silent wait here is precisely the
+            # hole that leaves a run standing unexplained: a stop must name
+            # its reason in the status.
             change["status"] = "REJECTED"
             state.active_plan_change_id = None
             state.status = "BLOCKED"
@@ -1207,8 +1205,8 @@ def _reject_replanner_result(
     return CompletionOutcome(True, "PLAN_CHANGE_REJECTED", descriptors, False)
 
 
-# Сколько раз вердикт возвращают верифаеру с причиной. Три попытки
-# всего: одна исходная и две с текстом отказа на руках.
+# How many times a verdict is returned to the verifier with the reason.
+# Three attempts in all: one original and two with the refusal in hand.
 MAX_VERIFICATION_REJECTIONS = 2
 
 
@@ -1223,12 +1221,12 @@ def _reject_verifier_result(
     now_epoch: int | None,
     dispatcher_authorized: bool = False,
 ) -> CompletionOutcome:
-    """Вернуть верифаеру его вердикт с причиной и дать переписать.
+    """Return the verdict to the verifier with the reason and let it rewrite it.
 
-    Приёмка не засчитывается ни в какую сторону: непрочитанный вердикт
-    не PASS и не REVISE. Задача возвращается в IMPLEMENTED - работа
-    сделана и по-прежнему ждёт приёмки, - и обычный путь резервирования
-    поднимает свежего верифаера.
+    The acceptance counts in no direction: an unreadable verdict is neither
+    PASS nor REVISE. The task returns to IMPLEMENTED - the work is done and
+    still awaits acceptance - and the ordinary reservation path raises a
+    fresh verifier.
     """
 
     timestamp = at or utc_now()
@@ -1280,9 +1278,9 @@ def _reject_verifier_result(
             TaskState.BLOCKED if exhausted else TaskState.IMPLEMENTED,
         )
         if exhausted:
-            # Три нечитаемых вердикта подряд - это не случайность. Дальше
-            # жечь ходы бессмысленно: прогон встаёт громко и называет
-            # причину, а не крутится молча.
+            # Three unreadable verdicts in a row are no accident. Burning
+            # more turns is pointless: the run stops loudly and names the
+            # reason instead of spinning silently.
             state.status = "BLOCKED"
             state.phase = "VERIFICATION_PROTOCOL_BLOCKED"
             state.last_error = (
@@ -1340,14 +1338,14 @@ def _complete_replanner(
             promotion_evidence_store=ProjectMemory(cfg.root),
         )
     except (PlanChangeProtocolError, PlanChangeConflictError, ValueError) as exc:
-        # Негодный граф - ошибка модели, а не поломка инфраструктуры.
-        # Прежде она поднималась как DesktopLifecycleError: диспетчер
-        # падал, открывался PIPELINE-тикет, и прогон вставал навсегда -
-        # дежурному инженеру чинить нечего, сломан не рантайм, а ответ.
-        # Замерено: реплэннер вернул поле departments, которого нет в
-        # схеме, и прогон из 24 задач простоял с нулём выполненных.
-        # Верифаер в такой ситуации возвращает работу воркеру с
-        # причиной; у реплэннера этого пути не было.
+        # An invalid graph is a model error, not an infrastructure fault.
+        # It used to be raised as DesktopLifecycleError: the dispatcher
+        # crashed, a PIPELINE ticket opened, and the run stood forever - the
+        # on-call engineer had nothing to repair; the reply was broken, not
+        # the runtime. Measured: the replanner returned a departments field
+        # absent from the schema, and a 24-task run stood with zero done. A
+        # verifier in that situation returns the work to the worker with the
+        # reason; the replanner had no such path.
         return _reject_replanner_result(
             cfg,
             session=session,
@@ -1465,12 +1463,12 @@ def _complete_replanner(
             now_epoch=now_epoch,
         )
         if dispatcher_authorized:
-            # Третий путь завершения, которому не передавали владение
-            # переходом. Планировщик менял план, резервировал преемника и
-            # не отмечал его у себя: следующий шаг отвечал "current
-            # dispatcher does not own the completed-to-successor
-            # transition". Тот же пробел уже был у дежурного инженера и
-            # чинился отдельно - путей три, а закрыт был один.
+            # The third completion path that was never handed ownership of
+            # the transition. The planner changed the plan, reserved a
+            # successor and did not mark it on itself: the next step answered
+            # "current dispatcher does not own the completed-to-successor
+            # transition". The on-call engineer had the same gap and it was
+            # fixed separately - three paths, one closed.
             current["automatic_successor_tokens"] = [
                 item.reservation_token for item in descriptors
             ]

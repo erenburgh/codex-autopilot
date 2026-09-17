@@ -1,13 +1,13 @@
-"""Разбор плана v0.8 - отдельно от канонической схемы.
+"""Parsing a v0.8 plan - apart from the canonical schema.
 
-Формат снят с поддержки как способ ставить новую работу и живёт только
-как путь миграции существующего прогона. Держать его в `plan.py` значит
-смешивать действующий контракт с историческим; здесь он не мешает читать
-основной и не растит модуль сверх предела раздела 0.
+The format is no longer supported as a way to submit new work and lives
+only as the migration path of an existing run. Keeping it in `plan.py`
+would mix the current contract with the historical one; here it does not
+get in the way of reading the main one and does not push the module past
+the section-0 limit.
 
-Модуль импортируется лениво, из тела вызова в `plan.py`, поэтому его
-собственные импорты оттуда безопасны: к моменту первого обращения
-`plan` уже загружен целиком.
+The module is imported lazily, from a call body in `plan.py`, so its own
+imports from there are safe: by the first use `plan` is fully loaded.
 """
 
 from __future__ import annotations
@@ -36,20 +36,21 @@ def validate_legacy_plan(
     *,
     migrated_milestone_ids: frozenset[str] | None = None,
 ) -> Plan:
-    """Принять план v0.8 - но только как миграцию существующего прогона.
+    """Accept a v0.8 plan - but only as the migration of an existing run.
 
-    Исключение из порога приёмки историческое: переписывать контракт уже
-    идущего прогона нельзя. У свежего проекта истории нет, переписывать
-    нечего, и исключению неоткуда взяться. Прежде формат сам по себе был
-    обходом: любой мог подать schema-2 для нового проекта и освободить
-    все задачи от независимой верификации - это самопринятие (R8).
+    The exemption from the acceptance floor is historical: the contract of
+    a run already under way cannot be rewritten. A fresh project has no
+    history, nothing to rewrite, and no source for an exemption. The format
+    by itself used to be a bypass: anyone could submit schema-2 for a new
+    project and free every task from independent verification -
+    self-acceptance (R8).
 
-    Поэтому происхождение доказывается не форматом, а прогоном, который
-    мигрируют: `migrated_milestone_ids` несёт вехи, уже существовавшие в
-    нём. Веха, которой там не было, - это новая работа, и формат v0.8
-    выразить для неё независимую приёмку не может вовсе: поля
-    `verification` в нём нет. Новая работа добавляется после миграции
-    канонической сменой плана.
+    So provenance is proven not by the format but by the run being
+    migrated: `migrated_milestone_ids` carries the milestones that already
+    existed in it. A milestone that was not there is new work, and the v0.8
+    format cannot express independent acceptance for it at all: it has no
+    `verification` field. New work is added after migration by a canonical
+    plan change.
     """
 
     if migrated_milestone_ids is None:

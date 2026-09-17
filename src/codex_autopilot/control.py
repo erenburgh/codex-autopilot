@@ -65,13 +65,14 @@ def find_project_root(start: Path) -> Path | None:
 
 
 def _revive_dead_relay_session(session: dict[str, Any]) -> bool:
-    """Вернуть к запуску релей, умерший до создания ветки.
+    """Bring back to launch a relay that died before the thread was created.
 
-    Ветки нет - значит дублировать нечего. Прежде такая сессия запирала
-    прогон навсегда: запуск отвечал `cannot spawn from 'RELAYING'`, а
-    разобрать её не мог никто, потому что наблюдать со стороны App Server
-    тоже нечего. Это не догадка о побочном эффекте, а утверждение о его
-    отсутствии, проверенное по состоянию: есть thread_id - не трогаем.
+    No thread means nothing to duplicate. Such a session used to lock the run
+    forever: the launch answered `cannot spawn from 'RELAYING'`, and nobody
+    could sort it out, because there was nothing to observe on the App Server
+    side either. This is not a guess about a side effect but a statement of
+    its absence, checked against the state: if there is a thread_id, we do
+    not touch it.
     """
 
     if session.get("status") != "RELAYING" or str(session.get("thread_id") or ""):
@@ -112,7 +113,7 @@ def _register_for_wake(root: Path) -> None:
 
     try:
         register_project(root)
-    except Exception:  # noqa: BLE001 - реестр обхода не вправе валить запуск
+    except Exception:  # noqa: BLE001 - the sweep registry may not fail the launch
         return
 
 
@@ -132,8 +133,8 @@ def arm(root: Path) -> None:
     request_id = LaunchRegistry().add(payload)
     payload["request_id"] = request_id
     store.arm(payload)
-    # Проект попадает в обход агента будильника: с этого момента повтор
-    # по сроку поднимут и после перезагрузки.
+    # The project joins the wake agent's sweep: from now on a due retry is
+    # raised even after a reboot.
     _register_for_wake(cfg.root)
     state.status = "READY"
     state.phase = "ARMED"
@@ -243,13 +244,13 @@ def spawn_automatic_app_server_relay(
 
 
 def _turn_is_completed(state: Any, thread_id: str, turn_id: str) -> bool:
-    """Ход владельца завершён - по записи в журнале, а не по статусу сессии.
+    """The owner's turn is complete - by the journal record, not the session status.
 
-    Проверка статуса "COMPLETED" отсекала законного предшественника:
-    задача, вернувшая PLAN_CHANGE_REQUEST, завершила свой ход и записала
-    turn_completed, но её сессия остаётся в PLAN_CHANGE_REQUESTED. Из-за
-    этого зарезервированный планировщик некому было поднять, и прогон
-    вставал с ошибкой про отсутствующего причинного предшественника.
+    Checking for the status "COMPLETED" cut off a legitimate predecessor: a
+    task that returned PLAN_CHANGE_REQUEST finished its turn and recorded
+    turn_completed, but its session stays in PLAN_CHANGE_REQUESTED. Because
+    of that, nobody could raise the reserved planner, and the run stopped with
+    an error about a missing causal predecessor.
     """
 
     if any(
@@ -259,13 +260,12 @@ def _turn_is_completed(state: Any, thread_id: str, turn_id: str) -> bool:
         for item in state.lifecycle_journal
     ):
         return True
-    # Журнальная запись - не единственное доказательство. Прогоны,
-    # созданные до того, как дежурный инженер начал её писать, имеют
-    # завершённый ход и не имеют события: цепочка вставала на
-    # "automatic relay has no completed causal predecessor", а починить
-    # это можно было только правкой журнала руками - то есть подделкой
-    # записи о том, чего система не наблюдала. Закрытая сессия с тем же
-    # ходом является таким же наблюдением, сделанным в своё время.
+    # The journal record is not the only proof. Runs created before the
+    # on-call engineer started writing it have a completed turn and no event:
+    # the chain stopped on "automatic relay has no completed causal
+    # predecessor", and the only fix was editing the journal by hand - that
+    # is, forging a record of something the system never observed. A closed
+    # session with the same turn is an equal observation, made in its time.
     if any(
         str(item.get("thread_id") or "") == thread_id
         and str(item.get("turn_id") or "") == turn_id
@@ -273,10 +273,10 @@ def _turn_is_completed(state: Any, thread_id: str, turn_id: str) -> bool:
         for item in state.worker_sessions
     ):
         return True
-    # Прерванный ход тоже кончился. Успехом он не кончился, и
-    # turn_completed по нему не будет никогда - значит ждать его значит
-    # ждать вечно. Замерено: реплэннер попросил разрешение, ход остался
-    # прерванным, и преемника было некому поднять.
+    # An interrupted turn has ended too. It did not end in success, and no
+    # turn_completed will ever come for it - so waiting for one means waiting
+    # forever. Measured: the replanner asked for a permission, the turn stayed
+    # interrupted, and nobody was left to raise the successor.
     return any(
         str(item.get("event") or "") == "interrupt_observed"
         and str(item.get("thread_id") or "") == thread_id
@@ -578,14 +578,14 @@ def reactivate_desktop_relay_owner(root: Path, *, incident_id: str | None = None
         initiator_thread_id=owner_thread_id,
         initiator_turn_id=predecessor_turn_id,
     )
-    # Починка девопса заканчивается тем же гейтом, что и обычный запуск.
-    # Иначе "REARMED" означало бы только "процесс релея порождён" - ровно
-    # то заявление вместо наблюдения, ради которого гейт и написан.
+    # A DevOps repair ends with the same gate as an ordinary launch.
+    # Otherwise "REARMED" would mean only "the relay process was spawned" -
+    # exactly the claim-instead-of-observation the gate was written against.
     checks = await_launch(cfg, task_ids=[task_id], timeout=15.0)
     confirmed = launch_confirmed(checks)
     if not confirmed:
-        # Решение инженера не подтвердилось наблюдением: инцидент не
-        # считается закрытым, иначе починка сертифицирует сама себя.
+        # Not confirmed by observation: the incident stays open, or the
+        # repair would certify itself.
         package = incident_store.incident_package(incident_id)["incident"]
         if package["phase"] == IncidentPhase.RESOLVED.value:
             incident_store.invalidate_pipeline_engineer_resolution(
@@ -803,12 +803,12 @@ def _launch_report(
     started: str,
     timeout: float,
 ) -> dict[str, Any]:
-    """Ответ хука о запуске: наблюдение вместо заявления.
+    """The hook's launch reply: an observation instead of a claim.
 
-    Прежние сообщения сообщали только pid порождённого процесса. Ход
-    завершался, и если задача при этом не поднималась, об этом никто не
-    узнавал. Теперь ход заканчивается чек-листом, а неподтверждённый
-    запуск явно называется отказом.
+    The old messages reported only the pid of the spawned process. The turn
+    ended, and if the task did not come up, nobody learned about it. Now the
+    turn ends with a checklist, and an unconfirmed launch is called a failure
+    explicitly.
     """
 
     checks = await_launch(cfg, task_ids=task_ids, timeout=timeout)
@@ -818,31 +818,32 @@ def _launch_report(
         LaunchVerdict.IN_PROGRESS: "LAUNCH IN PROGRESS — no failures, some steps ahead",
         LaunchVerdict.FAILED: "LAUNCH FAILED",
     }[verdict]
-    # Лента шагов вместо снимка: по снимку нельзя понять, понадобилась ли
-    # починка по дороге. Итог отдельной строкой сверху, чтобы вывод читался
-    # с первой секунды.
+    # A timeline of steps instead of a snapshot: a snapshot cannot show
+    # whether a repair was needed along the way. The verdict on its own line
+    # at the top, so the output reads from the first second.
     timeline = render_launch_timeline(StateStore(cfg.state_dir).load(), task_ids)
     report = f"{started}\n{headline}\n{timeline}"
     if verdict is not LaunchVerdict.FAILED:
-        # Идущий запуск - не отказ. Создание ветки через App Server занимает
-        # десятки секунд, а хук живёт тридцать: объявлять отказ по нехватке
-        # времени значит плодить ложные тикеты.
+        # A launch in progress is not a failure. Creating a thread through App
+        # Server takes tens of seconds, and the hook lives for thirty: declaring
+        # a failure for lack of time would breed false tickets.
         #
-        # Ответ обязан быть "continue". Прежде здесь стоял блокирующий - ради
-        # видимости отчёта, с обоснованием, что диспетчер поднят отдельным
-        # процессом и от завершения этого хода не зависит. Это неверно:
-        # диспетчер ждёт ровно устойчивого "completed" на инициирующем ходе,
-        # а ход, чей Stop-хук ответил block, остаётся "interrupted" навсегда.
+        # The answer must be "continue". A blocking one stood here before - for
+        # the sake of a visible report, justified by the dispatcher being a
+        # separate process that does not depend on this turn ending. That is
+        # wrong: the dispatcher waits precisely for a stable "completed" on the
+        # initiating turn, and a turn whose Stop hook answered block stays
+        # "interrupted" forever.
         #
-        # Замерено на обоих прогонах. 0.7 отвечает continue, и её ход виден
-        # сначала interrupted, затем completed - воркер стартует. 0.8 с
-        # блокирующим ответом: владелец 01a097d7, ход 01a097e3 остался
-        # interrupted, диспетчер ждал до таймаута, ветка не создалась ни
-        # разу. Показ лестницы и запуск исключали друг друга.
+        # Measured on both runs. 0.7 answers continue, and its turn is seen
+        # first interrupted, then completed - the worker starts. 0.8 with the
+        # blocking answer: owner 01a097d7, turn 01a097e3 stayed interrupted,
+        # the dispatcher waited until the timeout, the thread was never created.
+        # Showing the ladder and launching excluded each other.
         #
-        # Отчёт при continue пользователю не виден - это цена, которую
-        # платила и 0.7. Видимым остаётся тот случай, ради которого отчёт и
-        # нужен: отказ. Ему блокировать уже нечего.
+        # The report on continue is invisible to the user - the price 0.7 paid
+        # too. What stays visible is the case the report exists for: a failure.
+        # It has nothing left to block.
         return {"continue": True, "systemMessage": report}
     ticket = _open_launch_incident(cfg, task_ids, checks)
     return {
@@ -862,10 +863,10 @@ def _open_launch_incident(
     task_ids: Sequence[str],
     checks: Sequence[Any],
 ) -> str:
-    """Завести тикет на неподтверждённый запуск и отдать его девопсу.
+    """Open a ticket for an unconfirmed launch and hand it to DevOps.
 
-    Подпись инцидента нормализованная, поэтому повтор того же отказа
-    опознаётся как повтор, а не как новая загадка.
+    The incident signature is normalized, so a repeat of the same failure is
+    recognized as a repeat, not as a new mystery.
     """
 
     store = PipelineIncidentStore(cfg.state_dir)
@@ -889,7 +890,7 @@ def _open_launch_incident(
         incident_id = str(incident["incident_id"])
         phase = store.route_incident(incident_id, at=now)
         if phase is IncidentPhase.DEGRADED:
-            # Уровень 1: способ уже выучен, модель не поднимается.
+            # Level 1: the repair is already learned, no model is raised.
             phase = store.attempt_known_recovery(
                 incident_id, at=now, owner_id="launch-gate"
             )
@@ -898,8 +899,7 @@ def _open_launch_incident(
             phase = IncidentPhase.PIPELINE_ENGINEER
     except PipelineIncidentError as error:
         return f"The ticket could not be opened: {error}"
-    # Владельца не выдумываем: автоматического исполнителя у тикета нет,
-    # пока его не поднимет живой Pipeline Engineer.
+    # No owner is invented: no automatic executor until a live engineer raises one.
     return (
         f"Ticket {incident_id} opened (phase {phase.value}). "
         "No automatic executor was raised — the ticket awaits triage."
@@ -907,12 +907,13 @@ def _open_launch_incident(
 
 
 def _orphaned_pending_descriptors(cfg: Config) -> tuple[Any, ...]:
-    """Резервации, под которые ветку так и не создали.
+    """Reservations for which the thread was never created.
 
-    Сессия остаётся в ожидании создания, а диспетчера у неё нет: процесс
-    вышел, не подхватив преемника. Планировщик новых дескрипторов при этом
-    не выдаёт - слот уже занят этой самой резервацией, - и прогон встаёт
-    молча. Такие резервации надо поднимать заново, а не ждать.
+    The session stays waiting for creation, and it has no dispatcher: the
+    process exited without picking up the successor. The scheduler issues no
+    new descriptors meanwhile - the slot is taken by this very reservation -
+    and the run stops silently. Such reservations must be raised again, not
+    waited for.
     """
 
     state = StateStore(cfg.state_dir).load()
@@ -930,7 +931,7 @@ def _orphaned_pending_descriptors(cfg: Config) -> tuple[Any, ...]:
 
 
 def _ensure_wake_from_hook(cfg: Any, *, owner: str, owner_turn: str) -> None:
-    """Будильник из Stop-хука: забота, а не контракт, хук не роняет."""
+    """A wake-up from the Stop hook: a courtesy, not a contract; it never fails the hook."""
 
     from .wake import ensure_wake
 
@@ -938,9 +939,9 @@ def _ensure_wake_from_hook(cfg: Any, *, owner: str, owner_turn: str) -> None:
         return
     try:
         ensure_wake(cfg, owner=owner, owner_turn=owner_turn)
-    except Exception as exc:  # noqa: BLE001 - хук обязан ответить Codex в любом случае
-        # Молчать нельзя: будильник, который не завёлся, - это прогон,
-        # который снова ждёт человека. Хук не роняем, но след оставляем.
+    except Exception as exc:  # noqa: BLE001 - the hook must answer Codex no matter what
+        # Silence is not an option: a wake-up that did not arm is a run that
+        # waits for a human again. The hook is not failed, but a trace is left.
         _note_wake_failure(cfg, exc)
         return
 
@@ -951,7 +952,7 @@ def _note_wake_failure(cfg: Any, exc: BaseException) -> None:
         log_dir.mkdir(parents=True, exist_ok=True)
         with (log_dir / "wake-errors.log").open("a", encoding="utf-8") as handle:
             handle.write(f"{utc_now()} wake scheduling failed: {exc!r}\n")
-    except Exception:  # noqa: BLE001 - запись следа сама не вправе ронять хук
+    except Exception:  # noqa: BLE001 - writing the trace may not fail the hook itself
         return
 
 
@@ -1012,9 +1013,9 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
                     ),
                     timeout=15.0,
                 )
-            # Ход закончился, преемников нет. Если кто-то ждёт повтора по
-            # сроку, поднять его будет некому - хук и есть последний
-            # живой процесс. Он оставляет будильник.
+            # The turn ended, there are no successors. If something waits for
+            # a due retry, nobody will be left to raise it - the hook is the
+            # last live process. It leaves a wake-up behind.
             _ensure_wake_from_hook(
                 cfg,
                 owner=str(payload.get("session_id") or ""),
@@ -1078,10 +1079,10 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
         # the initiating turn ends. Never turn its stale Stop hook into a
         # second dispatcher.
         #
-        # Но молча выбрасывать уже изъятый запрос нельзя: состояние могло
-        # уйти вперёд в этом же ходе - например, в PLAN_CHANGE_DRAINING, -
-        # и тогда возобновление исчезало без следа. Если при этом есть
-        # резервация без живого диспетчера, поднимаем именно её.
+        # But an already claimed request must not be dropped silently: the
+        # state may have moved on within this turn - into PLAN_CHANGE_DRAINING,
+        # say - and the resume vanished without a trace. If a reservation
+        # without a live dispatcher exists, that is the one we raise.
         stalled = _orphaned_pending_descriptors(cfg)
         if not stalled:
             return {}
@@ -1110,9 +1111,10 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
         registry.add(request)
         raise
     if not descriptors:
-        # Резерв уже сделан раньше, а ветку под него никто не создал:
-        # прежний диспетчер умер, не подхватив преемника. Тихий возврат
-        # здесь и оставлял прогон стоять без единой записи в журнале.
+        # The reservation was made earlier and nobody created a thread for
+        # it: the previous dispatcher died without picking up the successor.
+        # A silent return here is what left the run standing with not one
+        # journal record.
         descriptors = _orphaned_pending_descriptors(cfg)
         if not descriptors:
             return {}
@@ -1133,18 +1135,18 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-# Название продукта, записанное так, как его реально произносят. Диктовка
-# по-русски неизбежно даёт кириллицу: управляющая фраза не должна зависеть
-# от того, переключил ли говорящий раскладку в середине предложения.
+# The product name spelled the way people actually say it. Russian dictation
+# inevitably yields Cyrillic: a control phrase must not depend on whether the
+# speaker switched the keyboard layout mid-sentence.
 PRODUCT_ALIASES = ("codex autopilot", "кодекс автопайлот", "кодекс автопилот")
 
-# Знаки, которые речь и диктовка добавляют, не меняя смысла команды.
+# Marks that speech and dictation add without changing the command.
 _STRIPPED_PUNCTUATION = ",.!?;:"
 
 
-# Вводные слова, которые речь добавляет в начало, не меняя команды.
-# Список намеренно короткий: сопоставление остаётся точным, иначе хук
-# начнёт перехватывать обычные просьбы пользователя.
+# Filler words speech adds at the start without changing the command. The
+# list is deliberately short: matching stays exact, or the hook would start
+# intercepting ordinary user requests.
 _LEADING_FILLERS = frozenset({"просто", "давай", "давайте", "пожалуйста", "just", "please"})
 
 
@@ -1159,7 +1161,7 @@ def _normalized_prompt(value: str) -> str:
 
 
 def _phrases(*templates: str) -> set[str]:
-    """Развернуть шаблоны по всем написаниям названия продукта."""
+    """Expand the templates over every spelling of the product name."""
 
     return {
         template.format(product=product)
@@ -1174,9 +1176,9 @@ PAUSE_PROMPTS = _phrases(
     "приостанови {product}",
     "останови {product}",
 ) | {
-    # Одинокое слово - то же намерение, что и у "статус": совпадение идёт
-    # по всему вводу целиком, случайно внутрь фразы оно не попадает.
-    # Удаление сюда не входит намеренно: оно необратимо и требует имени.
+    # A bare word is the same intent as with "status": the match covers the
+    # whole input, so it cannot land inside a phrase by accident. Uninstall
+    # is deliberately not here: it is irreversible and requires the name.
     "останови",
     "пауза",
     "stop",
@@ -1209,17 +1211,16 @@ STATUS_PROMPTS = _phrases(
     "что сейчас делает {product}",
     "статус {product}",
 ) | DETAILED_STATUS_PROMPTS | {
-    # Скилл обещает пользователю ровно одно слово: "спроси `статус`".
-    # Развёрнутых форм хук знал четыре, а этой - ни одной, и обещанный
-    # видимый путь не работал как написано. Совпадение идёт по всему
-    # вводу целиком, поэтому одинокое слово - это намерение, а не
-    # случайное попадание внутрь фразы.
+    # The skill promises the user exactly one word: "ask `status`". The hook
+    # knew four expanded forms and none of this one, and the promised visible
+    # path did not work as written. The match covers the whole input, so a
+    # bare word is an intent, not an accidental hit inside a phrase.
     "статус",
     "status",
     "статус автопилота",
-    # Ещё одно слово для того же взгляда: в Desktop задачи прогона видны
-    # только после ответа хука, и человек, который ищет "задачи", а не
-    # "статус", не должен уходить ни с чем.
+    # One more word for the same look: in Desktop the run's tasks are visible
+    # only after the hook answers, and a person who reaches for "tasks" rather
+    # than "status" must not leave empty-handed.
     "задачи",
     "tasks",
     "покажи задачи",
@@ -1233,20 +1234,21 @@ UNINSTALL_PROMPTS = _phrases(
 
 
 def _retired_task_fence(payload: dict[str, Any]) -> dict[str, Any]:
-    """Заслон до побочного эффекта: в отставленную задачу писать нечего.
+    """A fence before the side effect: there is nothing to write into a retired task.
 
-    M11-PRE-SIDE-EFFECT-FENCE. Отставленная сессия уже падала закрыто -
-    но на завершении хода, то есть после того, как модель отработала
-    воркером по резервации, которой нет. Замерено на прогоне M11: у
-    исходников менялись mtime, пока рядом шла замена той же задачи.
+    M11-PRE-SIDE-EFFECT-FENCE. A retired session already failed closed - but
+    at the end of the turn, that is after the model had worked as a worker on
+    a reservation that no longer exists. Measured on the M11 run: source
+    mtimes changed while a replacement of the same task ran next to it.
 
-    Здесь отказ наступает на UserPromptSubmit, до единого вызова модели
-    или инструмента. Это единственный ответ хука, который пользователю
-    видно, поэтому он же и объясняет, куда идти.
+    Here the refusal happens on UserPromptSubmit, before a single model or
+    tool call. It is the only hook reply the user can see, so it is also the
+    one that explains where to go.
 
-    Провал чтения состояния - не отказ. Заслон знает про конкретную
-    отставленную ветку; если состояние нечитаемо, знания нет, и глушить
-    из-за этого всю переписку в проекте было бы хуже болезни.
+    A failure to read the state is not a refusal. The fence knows about a
+    specific retired thread; if the state is unreadable there is no such
+    knowledge, and silencing every conversation in the project because of it
+    would be worse than the disease.
     """
 
     thread_id = str(payload.get("session_id") or "")
@@ -1280,17 +1282,17 @@ def _retired_task_fence(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reconcile_before_resume(cfg) -> tuple[str, ...]:
-    """Вернуть в работу задачи, чьи воркеры уже не живут.
+    """Return to work the tasks whose workers are no longer alive.
 
-    reconcile_desktop_runtime написан ровно для этого и вызывался
-    только из тестов - наблюдений, без которых он ничего не делает,
-    в продакшене не производил никто. Поэтому сессия, чей ход
-    закончился без разбираемого ответа, оставалась ACTIVE навсегда, а
-    задача - в VERIFYING, и возобновление её не подхватывало.
+    reconcile_desktop_runtime was written for exactly this and was called
+    only from tests - the observations without which it does nothing were
+    produced by nobody in production. So a session whose turn ended without a
+    parseable reply stayed ACTIVE forever, the task stayed in VERIFYING, and
+    resuming did not pick it up.
 
-    Наблюдение спрашивается у сервера. Молчание и обрыв связи дают
-    "unknown", и такая сессия удерживается: "не знаю" не читается как
-    "закончилось".
+    The observation is asked of the server. Silence and a dropped connection
+    yield "unknown", and such a session is retained: "I do not know" is not
+    read as "it ended".
     """
 
     from .lifecycle import observe_worker_states, reconcile_desktop_runtime
@@ -1303,26 +1305,25 @@ def _reconcile_before_resume(cfg) -> tuple[str, ...]:
 
 
 def _answer_escalation(cfg, state) -> tuple[str, ...]:
-    """Возобновление - это и есть ответ пользователя на эскалацию.
+    """Resuming is the user's answer to an escalation.
 
-    R13 разрешает обращение к пользователю как исключение, но обращение
-    без обратного пути - тупик, а не исключение. Инженер объявлял
-    ESCALATE_TO_USER, прогон уходил в BLOCKED, и возобновление
-    отказывало ровно потому, что прогон в BLOCKED. Человеку, который
-    уже всё починил, сказать об этом было нечем.
+    R13 allows turning to the user as an exception, but an appeal with no
+    way back is a dead end, not an exception. The engineer declared
+    ESCALATE_TO_USER, the run went to BLOCKED, and resuming refused precisely
+    because the run was BLOCKED. A person who had already fixed everything
+    had no way to say so.
 
-    Закрываются только эскалированные тикеты. BLOCKED по любой другой
-    причине остаётся отказом: "продолжи" не должно быть кнопкой,
-    стирающей неразобранную поломку.
+    Only escalated tickets are closed. BLOCKED for any other reason remains a
+    refusal: "resume" must not be a button that erases an unexamined fault.
     """
 
 
-    # Фаза прогона авторитетом здесь не является. Её выставляет только
-    # завершение инженера; инцидент, эскалированный маршрутизацией - как
-    # любой AMBIGUOUS_SIDE_EFFECT, - оставлял прогон в его прежней фазе, и
-    # возобновление молча ничего не закрывало. Тикет ждал человека,
-    # человек отвечал, и ответ пропадал. Авторитет - само хранилище
-    # инцидентов: закрываются ровно те тикеты, что ждут пользователя.
+    # The run phase is not the authority here. Only the engineer's completion
+    # sets it; an incident escalated by routing - like any
+    # AMBIGUOUS_SIDE_EFFECT - left the run in its previous phase, and
+    # resuming silently closed nothing. The ticket waited for a human, the
+    # human answered, and the answer was lost. The authority is the incident
+    # store itself: exactly the tickets awaiting the user are closed.
     store = PipelineIncidentStore(cfg.state_dir)
     closed: list[str] = []
     for incident_id in store.incident_ids_awaiting_the_user():
@@ -1338,8 +1339,8 @@ def _answer_escalation(cfg, state) -> tuple[str, ...]:
 def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
     prompt = _normalized_prompt(str(payload.get("prompt") or ""))
     if prompt not in PAUSE_PROMPTS | RESUME_PROMPTS | STATUS_PROMPTS | UNINSTALL_PROMPTS:
-        # Управляющие фразы проходят и из отставленной ветки: они про
-        # прогон, а не про задачу, и до модели не доходят вовсе.
+        # Control phrases pass even from a retired thread: they are about the
+        # run, not the task, and never reach the model at all.
         return _retired_task_fence(payload)
     root = find_project_root(Path(str(payload.get("cwd") or ".")))
     if prompt in UNINSTALL_PROMPTS:
@@ -1374,11 +1375,11 @@ def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
         recovered = _reconcile_before_resume(cfg)
         state = store.load()
         if answered_ids:
-            # Причина снимается ПОСЛЕ перечитывания. Раньше её снимали на
-            # объекте выше, а следом состояние перечитывалось с диска ради
-            # задач, которые вернула реконсиляция, - и приносило прежний
-            # last_error обратно. Замерено: прогон уходил в READY/ARMED,
-            # а подробный статус печатал причину остановки, которой нет.
+            # The reason is cleared AFTER re-reading. It used to be cleared
+            # on the object above, and then the state was re-read from disk
+            # for the tasks reconciliation returned - bringing the old
+            # last_error back. Measured: the run went to READY/ARMED while the
+            # detailed status printed a stop reason that no longer existed.
             state.last_error = None
         request = {
             "project_root": str(cfg.root),
@@ -1399,8 +1400,8 @@ def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
         if recovered:
             note += f" Returned to retry after a dead worker: {', '.join(recovered)}."
         return {"systemMessage": note}
-    # Короткий ответ по умолчанию: текст хука приходит пользователю одним
-    # куском, и полный отчёт в переписке читается как стена.
+    # Short by default: the hook's text arrives in one piece, and the full
+    # report reads like a wall in a conversation.
     return {
         "decision": "block",
         "reason": status_text(root, detailed=prompt in DETAILED_STATUS_PROMPTS),
@@ -1440,7 +1441,7 @@ def _desktop_relay_continuation(
     relay_owner_thread_id: str,
     relay_owner_turn_id: str,
 ) -> str:
-    """Поднять уже зарезервированный релей и отчитаться лентой."""
+    """Raise an already reserved relay and report with the timeline."""
 
     if not relay_owner_thread_id or not relay_owner_turn_id:
         return {}
@@ -1462,8 +1463,8 @@ def _desktop_relay_continuation(
         triggering_thread_id=relay_owner_thread_id,
         triggering_turn_id=relay_owner_turn_id,
     )
-    # Отчёт лентой, как на всех остальных путях запуска: голое "диспетчер
-    # запущен, pid такой-то" - это заявление, а не наблюдение.
+    # A timeline report, as on every other launch path: a bare "dispatcher
+    # started, pid such-and-such" is a claim, not an observation.
     return _launch_report(
         cfg,
         [item.task_id for item in launchable],
@@ -1489,9 +1490,9 @@ def status_text(root: Path, *, detailed: bool = True) -> str:
         plan,
         dispatcher_running=running,
     )
-    # Лента шагов прямо в чате: хук не умеет дописывать строки по ходу
-    # дела, но по запросу может показать, где сейчас находится задача и
-    # что уже чинилось. Иначе за этим пришлось бы идти в терминал.
+    # The step timeline right in the chat: the hook cannot append lines as
+    # things happen, but on request it shows where the task is and what was
+    # repaired - otherwise that would mean the terminal.
     active = list(state.active_task_ids or ())
     if not active:
         return summary

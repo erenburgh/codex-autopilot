@@ -11,8 +11,9 @@ from pathlib import Path
 import tempfile
 from typing import Any, Iterator, Mapping, Sequence
 
-# Полномочия инженера объявлены отдельно и правке не подлежат: он
-# чинит рантайм, но не переписывает границы того, что ему можно.
+# The engineer's authority is declared separately and is out of reach for
+# a repair: it fixes the runtime but does not redraw the bounds of what it
+# may do.
 from .engineer_authority import (
     AUTO_REPLAYABLE_ACTIONS,
     FORBIDDEN_ACTIONS,
@@ -47,11 +48,11 @@ class IncidentPhase(str, Enum):
 
 
 class EscalationReason(str, Enum):
-    """Правило R13: закрытый список причин обращения к пользователю.
+    """Rule R13: the closed list of reasons for turning to the user.
 
-    Пользователь не участвует в выборе способа фикса инфраструктурных
-    багов - это работа DevOps от его имени. Эскалация допустима только
-    по одной из этих причин, и код причины обязателен.
+    The user takes no part in choosing how infrastructure bugs are fixed -
+    that is DevOps' work on their behalf. An escalation is allowed only for
+    one of these reasons, and the reason code is mandatory.
     """
 
     DANGEROUS_PERMISSION = "DANGEROUS_PERMISSION"
@@ -72,10 +73,11 @@ def escalate_to_user(
     at: str,
     detail: str = "",
 ) -> None:
-    """Перевести инцидент в ESCALATE_TO_USER с обязательным кодом причины.
+    """Move the incident to ESCALATE_TO_USER with a mandatory reason code.
 
-    Эскалация без кода или с кодом вне списка отклоняется: именно так
-    пользователь переставал быть тем, кто чинит пайплайн.
+    An escalation without a code, or with a code outside the list, is
+    refused: that is exactly how the user stopped being the one who repairs
+    the pipeline.
     """
     value = reason.value if isinstance(reason, EscalationReason) else str(reason)
     if value not in ESCALATION_REASONS:
@@ -90,15 +92,15 @@ def escalate_to_user(
 
 
 class TransportStatus(str, Enum):
-    """Состояние резервации транспорта.
+    """The state of a transport reservation.
 
-    Определения не существовало ни в одном коммите, хотя код ссылался на
-    него в пяти местах: любое чтение состояния с непустым списком
-    резерваций падало с NameError. Тесты этого не ловили, потому что ни
-    один из них не создавал резерваций, а в живом прогоне они есть.
+    The definition existed in no commit although the code referenced it in
+    five places: any read of a state with a non-empty reservation list
+    crashed with NameError. Tests did not catch it because none created
+    reservations, while a live run has them.
 
-    Значения восстановлены по долговременному состоянию прогона
-    (ACKNOWLEDGED, CLAIMED) и по местам использования (RESERVED, FAILED).
+    The values are restored from durable run state (ACKNOWLEDGED, CLAIMED)
+    and from the places of use (RESERVED, FAILED).
     """
 
     RESERVED = "RESERVED"
@@ -108,14 +110,13 @@ class TransportStatus(str, Enum):
 
 
 class AuthorityKind(str, Enum):
-    """На каком основании транспорт вправе быть использован.
+    """On what authority a transport may be used.
 
-    Набор намеренно узкий: подтверждён только USER_AUTHORIZED_TASK -
-    он встречается в долговременном состоянии. Лишний член здесь означал
-    бы, что система принимает основание, которого никто не вводил.
-    PIPELINE_RECOVERY_MANDATE сюда не входит: он объявлен устаревшим в
-    LEGACY_PERSISTED_AUTHORITY_KINDS и принимается только у уже
-    записанных резерваций.
+    The set is deliberately narrow: only USER_AUTHORIZED_TASK is confirmed -
+    it occurs in durable state. An extra member here would mean the system
+    accepts an authority nobody ever introduced. PIPELINE_RECOVERY_MANDATE is
+    not here: it is declared legacy in LEGACY_PERSISTED_AUTHORITY_KINDS and
+    accepted only on already recorded reservations.
     """
 
     USER_AUTHORIZED_TASK = "USER_AUTHORIZED_TASK"
@@ -167,20 +168,19 @@ SIGNATURE_VERSION = "v1"
 
 
 def incident_signature(signal: IncidentSignal) -> str:
-    """Нормализованная подпись поломки - тождество тикета.
+    """The normalized failure signature - the identity of a ticket.
 
-    Считается ТОЛЬКО по структурным полям. Намеренно не входят:
+    Computed ONLY from structural fields. Deliberately excluded:
 
-    - signal_id: в него подмешан идентификатор попытки, поэтому один и
-      тот же отказ каждый раз выглядел новым. В живом прогоне v0.9 из
-      трёх инцидентов два были одной поломкой, разведённой этим полем;
-    - summary: свободный текст, он меняется от случая к случаю и не
-      должен влиять на маршрутизацию (то же основание, что у
-      classify_incident);
-    - affected_task_ids: отказ транспорта на M4 и на M9 - одна и та же
-      инфраструктурная поломка, а не две.
+    - signal_id: it has the attempt identifier mixed in, so the same failure
+      looked new every time. On the live v0.9 run two of three incidents
+      were one failure split apart by this field;
+    - summary: free text, it varies from case to case and must not affect
+      routing (the same grounds as in classify_incident);
+    - affected_task_ids: a transport failure on M4 and on M9 is one
+      infrastructure fault, not two.
 
-    Подпись отвечает на вопрос "что сломалось", а не "когда и у кого".
+    The signature answers "what broke", not "when and to whom".
     """
 
     parts = (
@@ -202,10 +202,11 @@ class RecoveryRunbook:
     healthcheck: str
 
 
-# Каталог детерминированных runbook'ов. P3 (DevOps) перестраивает
-# уровень самовосстановления заново по двухуровневой схеме, поэтому
-# здесь остаётся пустой каталог: маршрутизация работает, автоматических
-# действий пока нет, и это видно явно, а не выглядит как забытый код.
+# The catalogue of deterministic runbooks. It is empty on purpose: entries
+# are learned from two identical named repairs of one signature, never
+# seeded from a single observation. Routing works; there are no automatic
+# actions until they are learned, and that is visible rather than looking
+# like forgotten code.
 RUNBOOKS: tuple[RecoveryRunbook, ...] = ()
 
 
@@ -285,14 +286,14 @@ class PipelineIncidentStore:
             if incident["runbook_id"] is None:
                 learned = _promoted_runbook(state, signature)
                 if learned is not None:
-                    # Способ уже выучен на прошлых повторах: инженер не нужен.
+                    # The repair was learned on earlier repeats: no engineer needed.
                     incident["runbook_id"] = learned["id"]
                     incident["runbook_healthcheck"] = learned.get("healthcheck")
             state["incidents"].append(incident)
             occurrences = _record_signature(state, signature, incident, at=at)
             _append_event(state, "incident_opened", at, incident=incident)
             if occurrences > 1:
-                # Повтор той же поломки - не новая загадка, а известная.
+                # A repeat of the same fault is a known one, not a new mystery.
                 _append_event(
                     state,
                     "incident_recurrence_observed",
@@ -350,11 +351,11 @@ class PipelineIncidentStore:
         at: str,
         owner_id: str,
     ) -> dict[str, Any]:
-        """Уровень 1: детерминированная попытка без участия модели.
+        """Level 1: a deterministic attempt with no model involved.
 
-        Занимает единственный слот восстановления, тратит одну попытку из
-        бюджета и назначает следующую с растущей задержкой. Модель здесь
-        не участвует: если способ известен, он применяется сам.
+        Takes the single recovery slot, spends one attempt of the budget and
+        schedules the next with a growing delay. No model takes part here: if
+        the repair is known, it is applied by itself.
         """
 
         _nonempty(owner_id, "owner_id")
@@ -380,10 +381,10 @@ class PipelineIncidentStore:
             incident["recovery_owner_id"] = owner_id
             incident["next_retry_at"] = _backoff_seconds(incident)
             incident["updated_at"] = at
-            # owner_id кладётся здесь, потому что отсюда его читает статус.
-            # Писатель клал два ключа, читатель просил третий - и `status`
-            # падал KeyError ровно тогда, когда человек приходил
-            # разбираться с занятым слотом.
+            # owner_id is written here because the status reads it from here.
+            # The writer stored two keys, the reader asked for a third - and
+            # `status` crashed with KeyError exactly when a person came to
+            # look into the busy slot.
             state["recovery_slot"] = {
                 "incident_id": incident_id,
                 "token": token,
@@ -407,7 +408,7 @@ class PipelineIncidentStore:
         at: str,
         healthcheck: HealthcheckResult | None = None,
     ) -> IncidentPhase:
-        """Итог уровня 1. Исчерпанный бюджет открывает дорогу уровню 2."""
+        """The outcome of level 1. An exhausted budget opens the way to level 2."""
 
         with self._transaction() as state:
             incident = _incident(state, incident_id)
@@ -429,7 +430,7 @@ class PipelineIncidentStore:
                 incident["phase"] = IncidentPhase.AUTO_RECOVERY_FAILED.value
                 event = "auto_recovery_exhausted"
             else:
-                # Бюджет не исчерпан: инцидент ждёт следующей попытки.
+                # The budget is not exhausted: the incident awaits the next attempt.
                 incident["phase"] = IncidentPhase.DEGRADED.value
                 event = "auto_recovery_attempt_failed"
             incident["updated_at"] = at
@@ -443,29 +444,27 @@ class PipelineIncidentStore:
         at: str,
         owner_id: str,
     ) -> IncidentPhase:
-        """Уровень 1 целиком, в один заход: занять слот и отпустить его.
+        """Level 1 whole, in one go: take the slot and release it.
 
-        Известная поломка не должна поднимать сессию модели. Проверка
-        здесь детерминированная и опирается только на запись инцидента:
+        A known fault must not raise a model session. The check here is
+        deterministic and relies only on the incident record:
 
-        - неоднозначный побочный эффект повторять нельзя вслепую (то же
-          основание, по которому classify_incident выделяет его в
-          отдельный класс);
-        - непрофильный класс инцидента - не работа инженера пайплайна.
+        - an ambiguous side effect must not be retried blindly (the same
+          grounds on which classify_incident puts it in its own class);
+        - an incident of a foreign class is not the pipeline engineer's job.
 
-        Если условия держатся, инцидент помечается восстановленным и
-        обычный ограниченный повтор идёт своим ходом.
+        If the conditions hold, the incident is marked recovered and the
+        ordinary bounded retry goes its own way.
 
-        Ветка отказа - защита, а не рабочий путь: через маршрутизацию
-        сюда не попадает ни неоднозначный побочный эффект (он уходит к
-        пользователю), ни непрофильный класс (раннбук для него не
-        выучивается). Проверка оставлена на случай, если будущая правка
-        откроет такой путь: вслепую повторять операцию с неизвестным
-        побочным эффектом - это ровно то, как в живом прогоне появились
-        лишние ветки.
+        The refusal branch is a guard, not a working path: routing brings
+        neither an ambiguous side effect here (it goes to the user) nor a
+        foreign class (no runbook is learned for it). The check is kept in
+        case a future change opens such a path: blindly retrying an
+        operation with an unknown side effect is exactly how extra threads
+        appeared in a live run.
 
-        Слот не удерживается между вызовами: застрявший в AUTO_RECOVERY
-        инцидент заблокировал бы восстановление всем остальным.
+        The slot is not held between calls: an incident stuck in
+        AUTO_RECOVERY would block recovery for everyone else.
         """
 
         incident = self.begin_auto_recovery(incident_id, at=at, owner_id=owner_id)
@@ -496,12 +495,12 @@ class PipelineIncidentStore:
         )
 
     def signature_ledger(self) -> dict[str, Any]:
-        """Реестр подписей: сколько раз что ломалось и чем чинилось."""
+        """The signature ledger: how often what broke and what repaired it."""
 
         return _copy(self.load().get("signatures", {}))
 
     def require_engineer_incident(self, incident_id: str) -> dict[str, Any]:
-        """Тикет, который инженер держит прямо сейчас, - или отказ."""
+        """The ticket the engineer holds right now - or a refusal."""
 
         state = self.load()
         incident = _incident(state, incident_id)
@@ -515,12 +514,12 @@ class PipelineIncidentStore:
     def record_runtime_patch(
         self, incident_id: str, *, patch: Mapping[str, str], at: str
     ) -> dict[str, Any]:
-        """Записать правку кода рантайма в журнал тикета.
+        """Record a runtime code repair in the ticket's journal.
 
-        Починка, которой нет в журнале, для следующего раза не
-        существует. Правка кода не становится раннбуком - повторять её
-        вслепую нельзя, - но остаётся видимой: что за модуль, какие
-        хэши до и после, каким тестом доказано.
+        A repair absent from the journal does not exist for next time. A
+        code repair does not become a runbook - it must not be replayed
+        blindly - but stays visible: which module, which hashes before and
+        after, which test proved it.
         """
 
         with self._transaction() as state:
@@ -609,9 +608,8 @@ class PipelineIncidentStore:
                     state, incident, actions=actions, healthcheck=healthcheck, at=at, note=note
                 )
             else:
-                # Pipeline Engineer исчерпал свои возможности - это
-                # единственная причина, по которой он вправе обратиться
-                # к пользователю (R13).
+                # The Pipeline Engineer has exhausted its means - the one
+                # reason it may turn to the user (R13).
                 escalate_to_user(
                     incident,
                     EscalationReason.RECOVERY_EXHAUSTED,
@@ -650,13 +648,12 @@ class PipelineIncidentStore:
         at: str,
         detail: str = "",
     ) -> IncidentPhase:
-        """Перевести тикет в ESCALATE_TO_USER с кодом, который назвал инженер.
+        """Move the ticket to ESCALATE_TO_USER with the code the engineer named.
 
-        Прогон помечался BLOCKED/PIPELINE_ENGINEER_ESCALATED, а сам
-        тикет оставался в PIPELINE_ENGINEER: хранилище считало, что
-        инженер всё ещё работает. Из-за этого задача оставалась
-        приостановленной навсегда, а закрыть тикет было нечем - ни
-        инженеру, ни пользователю.
+        The run was marked BLOCKED/PIPELINE_ENGINEER_ESCALATED while the
+        ticket itself stayed in PIPELINE_ENGINEER: the store believed the
+        engineer was still working. So the task stayed paused forever, and
+        nobody - neither the engineer nor the user - could close the ticket.
         """
 
         with self._transaction() as state:
@@ -664,17 +661,18 @@ class PipelineIncidentStore:
             phase = IncidentPhase(str(incident["phase"]))
             if phase is IncidentPhase.ESCALATE_TO_USER:
                 return phase
-            # Инженер вправе закрыть сам сбой и при этом поднять решение
-            # владельцу: это разные вещи. Тикет он чинит, а конфликт
-            # правила решить не может - это не его полномочие.
+            # The engineer may close the fault itself and still raise a
+            # decision to the owner: these are different things. It repairs
+            # the ticket, but cannot resolve a rule conflict - not its
+            # authority.
             #
-            # Прежде эскалация допускалась только из фазы «удерживается
-            # инженером», и закрытый тикет её отвергал. 16.09.2026 это
-            # дважды останавливало прогон целиком: инженер закрывал сбой,
-            # эскалировал конфликт R31, отказ уходил наверх, диспетчер
-            # падал, завершение хода принимать становилось некому. При
-            # этом терять такую эскалацию нельзя - решение, которого
-            # никто не увидит, не отличается от решения непринятого.
+            # Escalation used to be allowed only from the "held by the
+            # engineer" phase, and a closed ticket rejected it. On 16 Sep 2026
+            # this stopped the whole run twice: the engineer closed the fault,
+            # escalated an R31 conflict, the refusal propagated, the
+            # dispatcher crashed, nobody was left to accept the completion.
+            # Such an escalation must not be lost either - a decision nobody
+            # sees is no different from one never made.
             if phase not in {
                 IncidentPhase.PIPELINE_ENGINEER,
                 IncidentPhase.RESOLVED,
@@ -702,28 +700,28 @@ class PipelineIncidentStore:
         at: str,
         note: str = "",
     ) -> IncidentPhase:
-        """Закрыть эскалацию тем, что пользователь на неё ответил.
+        """Close an escalation because the user answered it.
 
-        R13 допускает обращение к пользователю как исключение - но
-        обращение без обратного пути это не исключение, а тупик.
-        Инженер объявлял ESCALATE_TO_USER, прогон уходил в BLOCKED, и
-        возобновление отказывало именно потому, что прогон в BLOCKED.
-        Человеку, который уже всё починил, сказать об этом было нечем.
+        R13 allows turning to the user as an exception - but an appeal with
+        no way back is not an exception, it is a dead end. The engineer
+        declared ESCALATE_TO_USER, the run went to BLOCKED, and resuming
+        refused precisely because the run was BLOCKED. A person who had
+        already fixed everything had no way to say so.
 
-        Раннбук здесь не повышается: починка произошла снаружи, и
-        повторять её автоматически нечем. Если причина осталась, тот же
-        сбой вернётся под той же подписью, и повтор опознается.
+        No runbook is promoted here: the repair happened outside, and there
+        is nothing to replay it with. If the cause remains, the same fault
+        returns under the same signature, and the repeat is recognized.
         """
 
         with self._transaction() as state:
             incident = _incident(state, incident_id)
             phase = IncidentPhase(str(incident["phase"]))
-            # PIPELINE_ENGINEER принимается наравне с ESCALATE_TO_USER.
-            # Прогоны, эскалированные прежней версией, оставляли тикет в
-            # фазе инженера: прогон уходил в BLOCKED, а хранилище об
-            # эскалации не узнавало. Отказывать такому тикету значило бы
-            # починить только будущие случаи и оставить запертым то
-            # состояние, ради которого починка и делалась.
+            # PIPELINE_ENGINEER is accepted alongside ESCALATE_TO_USER. Runs
+            # escalated by the previous version left the ticket in the
+            # engineer's phase: the run went to BLOCKED and the store never
+            # learned of the escalation. Refusing such a ticket would fix
+            # only future cases and leave locked the very state the fix was
+            # made for.
             if phase not in {
                 IncidentPhase.ESCALATE_TO_USER,
                 IncidentPhase.PIPELINE_ENGINEER,
@@ -744,11 +742,11 @@ class PipelineIncidentStore:
             return IncidentPhase(str(incident["phase"]))
 
     def incident_ids_awaiting_the_user(self) -> tuple[str, ...]:
-        """Тикеты, которые ждут ответа пользователя.
+        """Tickets awaiting the user's answer.
 
-        Сюда же попадают застрявшие в PIPELINE_ENGINEER: прежняя версия
-        помечала эскалацию только на прогоне, и такой тикет не мог
-        закрыть никто - ни инженер, ни человек.
+        Those stuck in PIPELINE_ENGINEER land here too: the previous version
+        marked the escalation only on the run, and nobody - neither the
+        engineer nor a human - could close such a ticket.
         """
 
         state = self.load()
@@ -830,10 +828,10 @@ class PipelineIncidentStore:
                 for item in state["transport_reservations"]
                 if item["status"] not in {TransportStatus.ACKNOWLEDGED.value, TransportStatus.FAILED.value}
             ],
-            # R23 требует от отчёта три вещи: сигнатуру, число попыток и
-            # что менялось между ними. Первые две несёт сам реестр,
-            # третью - список его решений: это и есть перечень того, чем
-            # поломку пробовали чинить.
+            # R23 demands three things of the report: the signature, the
+            # attempt count and what changed between attempts. The ledger
+            # carries the first two, its resolution list the third: that is
+            # the list of what the fault was repaired with.
             "repeat_breakages": _repeat_breakages(self.signature_ledger()),
         }
 
@@ -908,11 +906,10 @@ class PipelineIncidentStore:
 
 
 def _repeat_breakages(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Поломки, случившиеся больше одного раза, и чем их чинили.
+    """Faults that happened more than once, and what they were repaired with.
 
-    Одиночное событие поводом для отчёта не является: R23 ограничивает
-    ПОВТОР. Порядок - по числу повторов, чтобы самое назойливое читалось
-    первым.
+    A single event is no reason for a report: R23 bounds REPETITION. Ordered
+    by repeat count, so the most persistent reads first.
     """
 
     repeats = []
@@ -952,10 +949,10 @@ def render_pipeline_status(snapshot: Mapping[str, Any]) -> str:
     lines.append(
         "Recovery slot: free"
         if not slot
-        # Читатель не падает из-за отсутствующего ключа: статус - это то,
-        # куда человек приходит разбираться, и он обязан читаться всегда.
-        # Писатель клал два ключа, читатель просил третий, и `status`
-        # ронялся KeyError ровно на занятом слоте.
+        # The reader does not crash on a missing key: the status is where a
+        # person comes to look into things, and it must always read. The
+        # writer stored two keys, the reader asked for a third, and `status`
+        # crashed with KeyError exactly on a busy slot.
         else "Recovery slot: incident={} owner={}".format(
             slot.get("incident_id", "?"), slot.get("owner_id", "?")
         )
@@ -1011,8 +1008,8 @@ def _validate_state(raw: Any) -> dict[str, Any]:
         raise PipelineIncidentError("incomplete Pipeline Engineer state")
     if not all(isinstance(raw[key], list) for key in ("incidents", "transport_reservations", "journal")):
         raise PipelineIncidentError("Pipeline Engineer collections must be arrays")
-    # Реестр подписей добавлен позже и намеренно не поднимает версию схемы:
-    # живое состояние прогона версии 1 должно читаться как есть.
+    # The signature ledger was added later and deliberately does not bump
+    # the schema version: live version-1 run state must read as is.
     if "signatures" not in raw:
         raw["signatures"] = {}
     if not isinstance(raw["signatures"], dict):
@@ -1066,7 +1063,7 @@ def _validate_state(raw: Any) -> dict[str, Any]:
 
 
 def _backoff_seconds(incident: Mapping[str, Any]) -> int:
-    """Растущая задержка следующей попытки, ограниченная потолком."""
+    """The growing delay before the next attempt, capped by a ceiling."""
 
     attempt = int(incident["recovery_attempts"])
     initial = int(incident["retry_initial_seconds"])
@@ -1075,7 +1072,7 @@ def _backoff_seconds(incident: Mapping[str, Any]) -> int:
 
 
 def _expected_healthcheck(incident: Mapping[str, Any]) -> str | None:
-    """Имя проверки здоровья: у выученного раннбука оно лежит на инциденте."""
+    """The healthcheck name: for a learned runbook it lives on the incident."""
 
     declared = incident.get("runbook_healthcheck")
     if isinstance(declared, str) and declared:
@@ -1101,23 +1098,23 @@ def _record_resolution(
     at: str,
     note: str = "",
 ) -> str | None:
-    """Накопить способ решения под подписью и, если пора, сделать раннбук.
+    """Accumulate a resolution under the signature and, when due, make a runbook.
 
-    Возвращает id продвинутого раннбука, если продвижение случилось.
+    Returns the id of the promoted runbook if promotion happened.
 
-    Действия здесь - идентификаторы из словаря, а не пересказ. Замерено
-    на прогоне v1.0: по главной подписи накопилось 15 решений и ни
-    одного раннбука, потому что записаны они были прозой ("attempted
-    incident-scoped relay-owner reactivation; helper refused because…"),
-    а продвижение сверяет их с перечислением. Проза с перечислением не
-    совпадает никогда - путь обучения был замкнут сам на себя. Прозе
-    место в note: она объясняет обстоятельства и ни на что не влияет.
+    Actions here are vocabulary identifiers, not a retelling. Measured on
+    the v1.0 run: the main signature accumulated 15 resolutions and not one
+    runbook, because they were recorded as prose ("attempted
+    incident-scoped relay-owner reactivation; helper refused because…") and
+    promotion compares them against an enumeration. Prose never matches an
+    enumeration - the learning path was closed on itself. Prose belongs in
+    the note: it explains circumstances and affects nothing.
     """
 
     signature = str(incident.get("signature") or "")
     entry = state.get("signatures", {}).get(signature)
     if not signature or not isinstance(entry, dict):
-        # Инцидент старой схемы: подписи нет, накапливать не под чем.
+        # An old-schema incident: no signature, nothing to accumulate under.
         return None
     normalized = tuple(sorted({str(item) for item in actions if str(item).strip()}))
     check = healthcheck.name if healthcheck is not None else None
@@ -1131,16 +1128,16 @@ def _record_resolution(
     )
     if entry.get("promoted_runbook") is not None or not normalized:
         return None
-    # Фильтра запрещённых здесь нет намеренно: словарь действий и
-    # список запретов не пересекаются, а закрытие тикета принимает
-    # только словарь. Проверка запрещённого на этом месте была бы
-    # недостижимой веткой - тем самым мёртвым кодом, который R19 велит
-    # снимать, а не держать «на всякий случай».
+    # No forbidden-action filter here on purpose: the action vocabulary and
+    # the forbidden list do not intersect, and closing a ticket accepts only
+    # the vocabulary. A forbidden check here would be an unreachable branch
+    # - the very dead code R19 says to remove rather than keep "just in
+    # case".
     if not set(normalized).issubset(AUTO_REPLAYABLE_ACTIONS):
-        # Продвигаются только действия, которые уровень 1 вправе
-        # повторить вслепую: он работает без человека. Починка кода и
-        # адресные команды с чужими идентификаторами сюда не попадают -
-        # они остаются знанием в реестре, но не становятся процедурой.
+        # Only actions level 1 may replay blindly are promoted: it works
+        # without a human. Code repairs and targeted commands with foreign
+        # identifiers do not qualify - they stay as knowledge in the ledger
+        # but never become a procedure.
         return None
     identical = [
         item
@@ -1169,7 +1166,7 @@ def _record_signature(
     *,
     at: str,
 ) -> int:
-    """Учесть инцидент в реестре подписей и вернуть число повторов."""
+    """Count the incident in the signature ledger and return the repeat count."""
 
     ledger = state["signatures"]
     entry = ledger.get(signature)
@@ -1238,12 +1235,12 @@ def _runbook(runbook_id: str) -> RecoveryRunbook | None:
 
 
 def _require_named_actions(actions: Sequence[str]) -> None:
-    """Починка называет, ЧТО сделано, идентификатором из словаря.
+    """A repair names WHAT was done with an identifier from the vocabulary.
 
-    Отчёт прозой обучению не годится: он не сравним ни с чем, и реестр
-    подписей копит его без всякого выхода. Поэтому закрытие тикета без
-    единого названного действия отклоняется, а незнакомое название - тем
-    более: словарь ограничен теми командами, которые у рантайма есть.
+    A prose report is no use for learning: it compares with nothing, and the
+    signature ledger accumulates it with no way out. So closing a ticket
+    without a single named action is refused, and an unknown name even more
+    so: the vocabulary is limited to the commands the runtime actually has.
     """
 
     named = [str(item).strip() for item in actions if str(item).strip()]

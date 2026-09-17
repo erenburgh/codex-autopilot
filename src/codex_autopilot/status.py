@@ -133,17 +133,17 @@ def project_status_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[st
 
 
 def _creation_causality(state: RunState) -> dict[str, Any]:
-    """Правило R1, проверенное по журналу, а не обещанное.
+    """Rule R1, checked against the journal rather than promised.
 
-    M11-R1-REACHABILITY: аудит существовал и вызывался только из
-    тестов, то есть утверждение "цепочка причинности проверяется"
-    ничем в продакшене не подкреплялось. Это отчёт, а не запрет:
-    барьер причинности стоит в момент создания, а здесь он
-    перепроверяется постфактум по всему журналу прогона.
+    M11-R1-REACHABILITY: the audit existed and was called only from tests,
+    so the claim "the causality chain is checked" was backed by nothing in
+    production. This is a report, not a ban: the causality barrier stands at
+    creation time, and here it is re-checked after the fact over the whole
+    run journal.
 
-    Слепая зона названа числом: события, записанные до появления
-    relay_owner_thread_id в схеме, оценить нечем, и "нарушений нет"
-    не должно читаться как "проверено всё".
+    The blind spot is named as a number: events recorded before
+    relay_owner_thread_id entered the schema cannot be assessed, and "no
+    violations" must not read as "everything checked".
     """
 
     assessed, total = creation_causality_coverage(state)
@@ -189,16 +189,16 @@ def render_short_status(
     *,
     dispatcher_running: bool,
 ) -> str:
-    """Ответ в чат: несколько строк, а не выгрузка состояния.
+    """A chat reply: a few lines, not a state dump.
 
-    Хук отвечает на «статус» блокировкой ввода, и его текст приходит
-    пользователю целиком, одним куском. Полный отчёт - двадцать пять
-    строк с путями и метаданными: в терминале это уместно, в переписке
-    читается как стена и прячет единственное, что нужно знать сейчас.
+    The hook answers «status» by blocking the input, and its text reaches
+    the user whole, in one piece. The full report is twenty-five lines with
+    paths and metadata: fine in a terminal, but in a conversation it reads
+    like a wall and hides the one thing worth knowing now.
 
-    Здесь ровно то, что отвечает на вопрос «и что дальше»: сколько
-    сделано, что идёт прямо сейчас, что мешает. Полный отчёт остаётся
-    по отдельной фразе.
+    Here is exactly what answers "so what next": how much is done, what runs
+    right now, what is in the way. The full report stays behind a separate
+    phrase.
     """
 
     snapshot = project_status_snapshot(cfg, state, plan)
@@ -317,20 +317,20 @@ def render_project_status(
             f"Canonical cwd: {placement['canonical_cwd']}",
             f"Project association: {placement['association']}",
             (
-                # Модель и уровень рассуждения отсюда сняты: их не пишет
-                # ни один продакшен-путь, и подставленное "Host default"
-                # было утверждением без замера - R26. Замерено: записей в
-                # selected_model_display и selected_reasoning вне
-                # run_state.py ноль, строка печаталась одинаково на любом
-                # прогоне. Настоящий выбор принадлежит задаче и живёт в
-                # маршрутизации AIStudioRuntime, а не в состоянии прогона.
+                # The model and reasoning level are removed from here: no
+                # production path writes them, and the substituted "Host
+                # default" was a claim without a measurement - R26. Measured:
+                # zero writes to selected_model_display and
+                # selected_reasoning outside run_state.py; the line printed
+                # the same on any run. The real choice belongs to the task
+                # and lives in AIStudioRuntime routing, not in run state.
                 f"Runtime: execution_mode={state.execution_mode or plan.tasks[state.milestone_index].execution_mode}, "
                 f"strategy={plan.model_strategy}, surface={cfg.runtime.worker_surface}, "
                 f"dispatcher={'running' if dispatcher_running else 'not running'}, "
                 f"phase={state.phase}, last_error={state.last_error or 'none'}"
             ),
-            # Правка кода рантайма молча меняет поведение установки:
-            # пользователь вправе видеть, что она была.
+            # A runtime code repair silently changes how the installation
+            # behaves: the user is entitled to see that it happened.
             render_applied_patches(_install_root() / "runtime"),
         ]
     )
@@ -350,9 +350,9 @@ def _active_sessions(state: RunState) -> dict[str, dict[str, Any]]:
 def _plan_change_status(state: RunState) -> dict[str, Any] | None:
     selected = state.active_plan_change_id
     if selected is None:
-        # Исчерпанная смена плана перестаёт быть активной, но прогон на
-        # ней стоит. Не показать её здесь значит оставить человека перед
-        # остановкой без причины - ровно то, из-за чего прогон молчал.
+        # An exhausted plan change stops being active, but the run stands
+        # on it. Not showing it here leaves the person facing a stop with no
+        # reason - exactly why the run went silent.
         if state.phase != "PLAN_CHANGE_REJECTED":
             return None
         rejected = [
@@ -416,9 +416,9 @@ def _waiting_reason(
         dependencies = unmet_dependencies(plan, task_id, state.task_states)
         if dependencies:
             return f"waiting for verified dependencies: {', '.join(dependencies)}"
-        # Раздел 33 спецификации требует называть причину ожидания:
-        # "T18 · resource locked by T14". Без этого задача, у которой
-        # зависимости выполнены, стоит без объяснения.
+        # Section 33 of the specification requires naming the wait reason:
+        # "T18 · resource locked by T14". Without it a task whose
+        # dependencies are done stands unexplained.
         return _resource_reason(plan, state, task_id, project_root) or (
             "waiting for scheduler eligibility"
         )
@@ -430,11 +430,12 @@ def _waiting_reason(
     if task_state is TaskState.REVISION_REQUIRED:
         return "verification requires a revision" + _hiring_suffix(state, task_id)
     if task_state is TaskState.BLOCKED:
-        # Претензии приёмки лежали в состоянии и не показывались никому.
-        # Без них "blocked" не сообщает, что именно решать владельцу.
+        # The acceptance complaints lay in the state and were shown to
+        # nobody. Without them "blocked" does not say what the owner must
+        # decide.
         return (
-            # last_error уже называет номер найма и ступень - здесь
-            # добавляются только сами претензии приёмки.
+            # last_error already names the hire number and the step - only
+            # the acceptance complaints themselves are added here.
             f"blocked: {state.last_error or 'no reason recorded'}"
             + _issue_suffix(state, task_id)
         )
@@ -446,7 +447,7 @@ def _waiting_reason(
 
 
 def _hiring_suffix(state: RunState, task_id: str) -> str:
-    """Какой по счёту исполнитель ведёт задачу и на какой ступени."""
+    """Which executor in order drives the task, and at which step."""
 
     hires = int(state.task_rehires.get(task_id, 0))
     if not hires:
@@ -479,11 +480,11 @@ def _latest_issues(state: RunState, task_id: str) -> list[dict[str, object]]:
 def _resource_reason(
     plan: Plan, state: RunState, task_id: str, project_root: Path
 ) -> str | None:
-    """Почему задача стоит из-за ресурса, если стоит.
+    """Why the task waits on a resource, if it does.
 
-    Нечитаемая запись блокировки не выдаётся за отсутствие владельца:
-    "не удалось прочитать" и "никто не держит" - разные вещи, и вторая
-    успокаивает там, где успокаивать нечем.
+    An unreadable lock record is not passed off as an absent owner: "could
+    not read" and "nobody holds it" are different things, and the second
+    reassures where there is nothing reassuring.
     """
 
     task = plan.task_map.get(task_id)

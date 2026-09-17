@@ -71,11 +71,11 @@ def initialize_project(
     if replace and (state_dir / "logs").exists():
         shutil.rmtree(state_dir / "logs")
     if replace:
-        # Тикеты принадлежат прогону, который их завёл: run_id в них не
-        # хранится, а дежурный инженер старше любой работы. Прежде новый
-        # прогон наследовал чужие открытые тикеты и вставал на них сразу,
-        # ещё до первой задачи. Файл не удаляется, а откладывается: это
-        # запись о поломке, и она может понадобиться.
+        # Tickets belong to the run that opened them: no run_id is stored in
+        # them, and the on-call engineer outranks any work. A new run used
+        # to inherit someone else's open tickets and stop on them at once,
+        # before its first task. The file is not deleted but set aside: it
+        # is a record of a fault, and it may be needed.
         incidents = state_dir / "pipeline-incidents.json"
         if incidents.is_file():
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -98,8 +98,8 @@ def initialize_project(
         _roadmap(plan, completed, language=language), encoding="utf-8"
     )
     _write_milestone(state_dir, plan, current_index, language=language)
-    # Задачные чекпойнты (M10-REV-005): у каждой задачи свой файл,
-    # чтобы параллельные воркеры не закрывали гейт друг другу.
+    # Per-task checkpoints (M10-REV-005): each task has its own file, so
+    # parallel workers do not close the gate for one another.
     (state_dir / "handoff").mkdir(exist_ok=True)
     (state_dir / "HANDOFF.md").write_text(
         _initial_handoff(language),
@@ -231,16 +231,16 @@ def _write_config(
         "",
         "[runtime]",
         f"execution_strategy = {_toml_string(plan.execution_strategy)}",
-        # Системный банер, когда задача проверена, встала или прогон
-        # завершён. Выключено: включать побочный эффект на чужой машине
-        # без спроса нельзя. См. docs/DESKTOP_RUNTIME.md.
+        # A system banner when a task is verified, stopped, or the run is
+        # done. Off: a side effect on someone else's machine must not be
+        # enabled unasked. See docs/DESKTOP_RUNTIME.md.
         "desktop_notifications = false",
         f"max_parallel_workers = {plan.max_parallel_workers}",
         f"computer_use_slots = {plan.computer_use_slots}",
         f"full_plan_revalidation_patches = {DEFAULT_FULL_REVALIDATION_PATCHES}",
-        # Поверхность одна. Поле пишется явно, чтобы конфиг читался
-        # без знания умолчаний, а проверка при чтении отвергает
-        # устаревший файл, называющий снятую поверхность.
+        # There is one surface. The field is written explicitly so the
+        # config reads without knowing the defaults, and the read-time
+        # check rejects a stale file naming the removed surface.
         f"worker_surface = {_toml_string(DESKTOP_OWNED_SURFACE)}",
         "",
         "[git]",

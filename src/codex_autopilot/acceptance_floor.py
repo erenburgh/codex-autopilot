@@ -144,12 +144,12 @@ def _invokes_full_test_suite(command: tuple[str, ...]) -> bool:
             return _unittest_discovers_test_root(args[3:])
         if len(args) >= 2 and args[:2] == ("-m", "pytest"):
             return _pytest_covers_test_root(args[2:])
-        # Произвольный скрипт полным набором не засчитывается. Прежде
-        # хватало слова "suite" в имени файла: хелпер с одним тестом
-        # проходил как весь репозиторий. Имя - не доказательство, а
-        # намерение; выполнение доказывает исход, но лишь тогда, когда
-        # объявлен настоящий запускальщик (R25). Полный прогон
-        # объявляется вызовом запускальщика, а не названием файла.
+        # An arbitrary script does not count as the full suite. The word
+        # "suite" in a file name used to suffice: a helper with one test
+        # passed as the whole repository. A name is intent, not proof;
+        # execution proves the outcome, but only when a real runner is
+        # declared (R25). A full run is declared by invoking the runner, not
+        # by a file name.
         return False
     if executable in {"pytest", "py.test"}:
         return _pytest_covers_test_root(args)

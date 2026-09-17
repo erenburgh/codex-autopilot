@@ -77,26 +77,26 @@ class DesktopLifecycleError(RuntimeError):
 
 
 class WorkerProtocolError(DesktopLifecycleError):
-    """Воркер закончил ход, но оформил ответ не по протоколу.
+    """The worker finished its turn but shaped the reply against the protocol.
 
-    Это ошибка модели, а не поломка машины. Разница не косметическая:
-    на хуковом пути такой отказ возвращается воркеру строкой
-    `decision: block`, и он исправляется в том же ходе - бесплатно. На
-    автоматическом пути ход уже завершён, вернуть в него нельзя, и
-    прежде исключение уходило наверх: диспетчер падал, заводился тикет
-    класса PIPELINE, поднимался инженер.
+    A model error, not a machine fault. The difference is not cosmetic: on
+    the hook path such a refusal goes back to the worker as a
+    `decision: block` line and is fixed within the same turn - for free.
+    On the automatic path the turn is already over and cannot be returned
+    to, and the exception used to propagate: the dispatcher crashed, a
+    PIPELINE ticket opened, an engineer was raised.
 
-    Замерено 16.09.2026 на живом прогоне: воркер M8 отработал, ошибся
-    финальной строкой - и прогон встал целиком. Завершение хода стало
-    некому принять, сессия осталась висеть активной, и понадобился
-    человек. Дежурный инженер, разбирая это, открыл конфликт правила
-    R31: рантайм отверг уже завершённого воркера на поздней проверке,
-    то есть выбросил сделанную работу на форматном гейте.
+    Measured on 16 Sep 2026 on a live run: worker M8 did its work, got the
+    final line wrong - and the whole run stood. Nobody was left to accept
+    the completion, the session hung active, and a human was needed. The
+    on-call engineer, working it out, opened an R31 rule conflict: the
+    runtime rejected an already finished worker at a late check, i.e. threw
+    away done work at a formatting gate.
 
-    Отдельный класс нужен, чтобы автоматический путь мог отличить
-    «модель оформила ответ криво» от «сломался транспорт» и поступить
-    с первым как с неудачной попыткой задачи - записать причину и дать
-    повтор, - а не как с аварией инфраструктуры.
+    A separate class lets the automatic path tell "the model shaped the
+    reply badly" from "the transport broke" and treat the first as a failed
+    attempt of the task - record the reason, grant a retry - rather than as
+    an infrastructure emergency.
     """
 
 
@@ -168,29 +168,29 @@ class CompletionOutcome:
     descriptors: tuple[LaunchDescriptor, ...]
     run_done: bool
 
-# R13: остановка работы всегда названа кодом из закрытого списка.
-# Свободная строка не годится: по ней нельзя ни маршрутизировать, ни
-# посчитать, ни отличить "нужно решение пользователя" от "сломалось
-# окружение". ROTATE и DONE кода не несут - успеху причина не нужна.
+# R13: a stop of the work is always named with a code from the closed
+# list. A free string will not do: it can neither be routed on, nor
+# counted, nor tell "the user must decide" from "the environment broke".
+# ROTATE and DONE carry no code - success needs no reason.
 WORKER_REASON_CODES = frozenset(
     {
-        # Требуется разрешение или доступ, который воркер брать не вправе.
+        # A permission or access the worker may not take is required.
         "DANGEROUS_PERMISSION",
-        # Нужного ресурса, инструмента или учётных данных нет.
+        # The needed resource, tool or credentials are missing.
         "MISSING_RESOURCE",
-        # Выход проверенной зависимости непригоден для этой задачи.
+        # A verified dependency's output is unfit for this task.
         "DEPENDENCY_DEFECT",
-        # Контракт задачи противоречит сам себе или плану.
+        # The task contract contradicts itself or the plan.
         "CONTRADICTORY_CONTRACT",
-        # Окружение сломано за пределами полномочий задачи.
+        # The environment is broken beyond the task's authority.
         "ENVIRONMENT_FAILURE",
-        # Решение принадлежит пользователю: продуктовое.
+        # The decision belongs to the user: a product one.
         "PRODUCT_DECISION",
-        # Решение принадлежит пользователю: архитектурное.
+        # The decision belongs to the user: an architectural one.
         "ARCHITECTURE_DECISION",
-        # Способы починки исчерпаны.
+        # The means of repair are exhausted.
         "RECOVERY_EXHAUSTED",
-        # Кода не было. Это тоже факт, и он записывается как факт.
+        # There was no code. That too is a fact, and is recorded as one.
         "UNSPECIFIED",
     }
 )
@@ -201,19 +201,19 @@ _WORKER_STATUS_PATTERN = re.compile(
 
 
 def parse_desktop_worker_status(message: str) -> tuple[str, str]:
-    """Вернуть (статус, код причины) из финального ответа воркера.
+    """Return (status, reason code) from the worker's final reply.
 
-    R13. Прежде функция возвращала только статус, а причина остановки
-    уходила в ``last_error`` свободной строкой вида "M9 worker returned
-    BLOCKED" - то есть не уходила никуда. Теперь BLOCKED и ESCALATE
-    несут код из закрытого списка.
+    R13. The function used to return only the status, and the stop reason
+    went into ``last_error`` as a free string like "M9 worker returned
+    BLOCKED" - that is, went nowhere. Now BLOCKED and ESCALATE carry a code
+    from the closed list.
 
-    Отсутствие кода не роняет завершение: ход воркера уже закончился,
-    и жёсткий отказ здесь означал бы, что пайплайн клинит ровно в тот
-    момент, когда что-то уже пошло не так. Такой случай записывается
-    как ``UNSPECIFIED`` - это честная запись, а не тихое прощение.
-    Неизвестный код - другое дело: закрытый список, в который можно
-    дописать что угодно, не закрытый.
+    A missing code does not fail the completion: the worker's turn is over,
+    and a hard refusal here would jam the pipeline at exactly the moment
+    something has already gone wrong. Such a case is recorded as
+    ``UNSPECIFIED`` - an honest record, not a quiet pardon. An unknown code
+    is another matter: a closed list anything can be appended to is not
+    closed.
     """
 
     matches = _WORKER_STATUS_PATTERN.findall(message)
@@ -254,15 +254,15 @@ RULE_CONFLICT_PATTERN = re.compile(
 
 
 def parse_rule_conflicts(message: str) -> tuple[tuple[str, str], ...]:
-    """Правило R16: несогласие с формулировкой правила - это Conflict.
+    """Rule R16: disagreement with a rule's wording is a Conflict.
 
-    Воркер не вправе разрешать расхождение сам: он либо применяет
-    правило как записано, либо называет расхождение, и оно уходит в
-    Project Memory конфликтом. Молчаливое переиначивание - тот самый
-    способ, которым правило перестаёт быть правилом.
+    The worker may not resolve the disagreement itself: it either applies
+    the rule as written or names the disagreement, which goes to Project
+    Memory as a conflict. Silent reinterpretation is precisely how a rule
+    stops being a rule.
 
-    Возвращает пары (id правила, формулировка несогласия) в порядке
-    появления, без повторов по id.
+    Returns (rule id, disagreement wording) pairs in order of appearance,
+    without repeats by id.
     """
 
     found: list[tuple[str, str]] = []
@@ -280,14 +280,14 @@ APPLIED_RULES_PATTERN = re.compile(r"(?mi)^AUTOPILOT_RULES:\s*(.+?)\s*$")
 
 
 def parse_applied_rules(message: str) -> tuple[str, ...]:
-    """Правило R16: отчёт перечисляет id правил, применённых к задаче.
+    """Rule R16: the report lists the ids of the rules applied to the task.
 
-    Правила подаются воркеру структурой со стабильными id (R17), и отчёт
-    обязан сослаться на них теми же id. Отчёт без перечня - дефект: без
-    него нельзя отличить "правило учтено" от "правило не прочитано".
+    Rules reach the worker as a structure with stable ids (R17), and the
+    report must cite them by the same ids. A report without the list is a
+    defect: without it "rule applied" cannot be told from "rule not read".
 
-    Возвращает найденные id в порядке появления, без повторов. Пустой
-    кортеж означает, что перечня нет.
+    Returns the ids found in order of appearance, without repeats. An empty
+    tuple means there is no list.
     """
 
     found: list[str] = []
@@ -656,7 +656,7 @@ def _latest_task_session(state: RunState, task_id: str) -> dict[str, Any]:
     return session
 
 def task_effort(plan: Plan, state: RunState, task_id: str) -> str:
-    """Ступень усилия задачи с учётом перенайма."""
+    """The task's effort step, re-hires included."""
 
     assigned = state.task_effort.get(task_id)
     if assigned:
@@ -671,27 +671,28 @@ def _rehire_or_block_on_revision_limit(
     session: dict[str, Any],
     at: str,
 ) -> bool:
-    """Исчерпан бюджет ревизий - перенанять исполнителя, а не встать.
+    """The revision budget is exhausted - re-hire the executor, do not stop.
 
-    Меняется не план и не планка, а способ достижения результата и тот, кто
-    его достигает: задача получает свежего воркера на следующей ступени
-    усилия и весь накопленный перечень претензий верификации. Definition of
-    Done, детерминированные проверки и граф остаются те же - иначе приёмка
-    двигалась бы под работу, а не наоборот.
+    Neither the plan nor the bar changes; what changes is the way the result
+    is reached and who reaches it: the task gets a fresh worker at the next
+    effort step and the whole accumulated list of verification complaints.
+    The Definition of Done, the deterministic checks and the graph stay the
+    same - or acceptance would move to meet the work, not the other way.
 
-    Возвращает True только когда лестница найма кончилась. Это единственный
-    случай, когда задача действительно встаёт: класс PRODUCTION по
-    таксономии инцидентов принадлежит владельцу продукта, и автоматический
-    ремонт качества здесь запрещён. Соседние задачи, не зависящие от этой,
-    продолжают идти - перенайм ничего не сливает и не трогает общий граф.
+    Returns True only when the hiring ladder has run out. That is the only
+    case where the task really stops: by the incident taxonomy the
+    PRODUCTION class belongs to the product owner, and automatic quality
+    repair is forbidden here. Neighbouring tasks that do not depend on this
+    one keep going - a re-hire merges nothing and touches no shared graph.
     """
 
     task = plan.task_map[task_id]
     used = int(state.task_revisions.get(task_id, 0))
     hires = int(state.task_rehires.get(task_id, 0))
     maximum = task.verification.max_revision_attempts
-    # Бюджет выдаётся каждому найму заново, а счётчик ревизий остаётся
-    # сквозным: иначе история попыток и нумерация R{n} теряются.
+    # The budget is issued afresh to every hire, while the revision counter
+    # stays continuous: otherwise the attempt history and R{n} numbering
+    # are lost.
     if used < maximum * (hires + 1):
         return False
 
@@ -824,20 +825,20 @@ def _require_relay_executor(
             "relay executor thread does not match the reservation owner"
         )
 
-# M10-REV-006: статус для сессии, вытесненной заменой той же задачи.
+# M10-REV-006: the status of a session displaced by a replacement of the same task.
 RETIRED_SUPERSEDED = "RETIRED_SUPERSEDED"
 
-# Статусы, после которых сессия уже не может ничего изменить.
+# Statuses after which a session can no longer change anything.
 _TERMINAL_SESSION_STATUSES = {"COMPLETED", "BLOCKED", RETIRED_SUPERSEDED}
 
-# M11-PRE-SIDE-EFFECT-FENCE. Отставленная Desktop-задача остаётся
-# адресуемой: её ветка никуда не делась, в неё можно написать, и модель
-# продолжит работать воркером по резервации, которой уже нет.
+# M11-PRE-SIDE-EFFECT-FENCE. A retired Desktop task stays addressable: its
+# thread is still there, one can write into it, and the model would keep
+# working as a worker on a reservation that no longer exists.
 #
-# Набор шире, чем у session_is_fenced, намеренно. Тот участвует в
-# завершении хода и меняет семантику готового пути; этот только
-# отказывает на входе, до единого побочного эффекта, и потому может
-# перечислить все виды отставки, а не одну.
+# The set is wider than session_is_fenced's on purpose. That one takes part
+# in turn completion and changes the semantics of a finished path; this one
+# only refuses at the entrance, before a single side effect, and so can
+# list every kind of retirement, not one.
 RETIRED_SESSION_STATUSES = frozenset(
     {
         RETIRED_SUPERSEDED,
@@ -851,11 +852,11 @@ RETIRED_SESSION_STATUSES = frozenset(
 def retired_session_for_thread(
     state: RunState, thread_id: str
 ) -> dict[str, Any] | None:
-    """Последняя отставленная сессия этой ветки, если она есть.
+    """The latest retired session of this thread, if any.
 
-    Активная сессия перевешивает: одна и та же ветка могла быть
-    отставлена и вновь взята в работу, и отказывать действующей
-    задаче из-за её собственного прошлого нельзя.
+    An active session outranks it: the same thread may have been retired
+    and taken up again, and an active task must not be refused because of
+    its own past.
     """
 
     if not thread_id:
@@ -885,12 +886,12 @@ def fence_superseded_sessions(
     at: str,
     reason: str,
 ) -> list[dict[str, Any]]:
-    """Оградить прежние сессии задачи перед тем, как замена возьмёт ресурсы.
+    """Fence the task's previous sessions before a replacement takes resources.
 
-    Наблюдалось на самом аудите M10: исходная резервация оставалась
-    в RETRY_WAIT, новая становилась ACTIVE, а прерванная Desktop-задача
-    продолжала менять то же рабочее дерево - у исходников и тестов
-    менялись mtime во время аудита.
+    Observed during the M10 audit itself: the original reservation stayed
+    in RETRY_WAIT, the new one became ACTIVE, and the interrupted Desktop
+    task kept changing the same working tree - source and test mtimes
+    changed during the audit.
     """
     fenced: list[dict[str, Any]] = []
     for session in state.worker_sessions:
@@ -898,10 +899,10 @@ def fence_superseded_sessions(
             continue
         if session.get("status") in _TERMINAL_SESSION_STATUSES:
             continue
-        # Ограждать нужно то, что реально может продолжить производство:
-        # адресуемую Desktop-задачу. У сессии без привязанного треда
-        # создание не состоялось, продолжать нечему, и она остаётся
-        # доступной для штатного ремонта и повторного запуска DevOps.
+        # What must be fenced is what can really continue producing: an
+        # addressable Desktop task. A session with no bound thread was never
+        # created, has nothing to continue, and stays available for normal
+        # DevOps repair and relaunch.
         if not str(session.get("thread_id") or "").strip():
             continue
         session["status"] = RETIRED_SUPERSEDED
@@ -927,9 +928,9 @@ def _active_session_by_thread(state: RunState, thread_id: str) -> dict[str, Any]
         raise DesktopLifecycleError("Desktop thread has multiple active reservations")
     if matches:
         return matches[0]
-    # M10-REV-006: вытесненная сессия не молчит, а падает закрыто.
-    # Её Desktop-задача остаётся адресуемой, и без этого она продолжала
-    # бы производство рядом с активной попыткой той же задачи.
+    # M10-REV-006: a displaced session does not stay silent, it fails
+    # closed. Its Desktop task stays addressable, and without this it would
+    # keep producing next to the active attempt of the same task.
     superseded = [
         item
         for item in state.worker_sessions
@@ -1069,16 +1070,16 @@ def _checkpoint(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 def task_checkpoint_path(state_dir: Path, task_id: str) -> Path:
-    """Задачный файл передачи работы (M10-REV-005).
+    """The per-task handoff file (M10-REV-005).
 
-    Раньше гейтом завершения был общий .codex-autopilot/HANDOFF.md:
-    все параллельно зарезервированные задачи получали ОДИН хэш этого
-    файла, и первый же воркер, который его записал, закрывал гейт всем
-    остальным. Плюс параллельная запись в один файл теряла правки,
-    хотя ресурсы задач не пересекались.
+    The completion gate used to be the shared .codex-autopilot/HANDOFF.md:
+    all tasks reserved in parallel got ONE hash of that file, and the first
+    worker to write it closed the gate for everyone else. Parallel writes
+    to one file also lost changes, although the tasks' resources did not
+    overlap.
 
-    Теперь у каждой задачи свой файл, и гейт проверяет именно его.
-    HANDOFF.md остаётся общей запиской для человека и гейтом не является.
+    Now every task has its own file, and the gate checks exactly that one.
+    HANDOFF.md remains a shared note for the human and is not a gate.
     """
     return state_dir / "handoff" / f"{_checkpoint_slug(task_id)}.md"
 
@@ -1144,9 +1145,10 @@ def _materialize(descriptors: tuple[LaunchDescriptor, ...]) -> None:
 
 def _require_desktop_owned(cfg: Config) -> None:
     if cfg.runtime.worker_surface != DESKTOP_OWNED_SURFACE:
-        # Через load_config сюда не попасть: поверхность одна и проверяется
-        # при разборе конфига. Отказ оставлен для Config, собранного в
-        # обход разбора, и потому называет значение, а не снятую поверхность.
+        # Unreachable through load_config: there is one surface and it is
+        # checked while parsing the config. The refusal is kept for a Config
+        # built around the parser, so it names the value, not a removed
+        # surface.
         raise DesktopLifecycleError(
             "Desktop lifecycle requires worker_surface="
             f"{DESKTOP_OWNED_SURFACE}; this run declares "
@@ -1156,19 +1158,19 @@ def _require_desktop_owned(cfg: Config) -> None:
         raise DesktopLifecycleError("desktop_owned requires desktop.desktop_project_id")
 
 def _pid_alive(pid: int | None) -> bool:
-    """Жив ли записанный диспетчер. Битое значение - отказ, а не догадка.
+    """Is the recorded dispatcher alive. A broken value is a refusal, not a guess.
 
-    Оба вызова этой проверки - охранные: они отказываются работать, пока
-    диспетчер жив. Поэтому ошибка в любую сторону дорога.
+    Both callers of this check are guards: they refuse to work while the
+    dispatcher is alive. So an error in either direction is expensive.
 
-    Отрицательный pid уходил в os.kill(-N, 0), а это сигнал ГРУППЕ
-    процессов: посторонний живой процесс в группе давал "диспетчер жив", и
-    прогон вставал навсегда. Нецелое значение роняло TypeError, который
-    здесь не ловится.
+    A negative pid went into os.kill(-N, 0), which signals a process GROUP:
+    an unrelated live process in the group meant "dispatcher alive", and
+    the run stood forever. A non-integer raised a TypeError that is not
+    caught here.
 
-    Считать такое значение мёртвым тоже нельзя: тогда поверх живого
-    диспетчера поднялся бы второй. Единственный честный ответ - назвать
-    испорченную запись и остановиться.
+    Treating such a value as dead is not allowed either: a second
+    dispatcher would rise on top of a live one. The only honest answer is
+    to name the corrupt record and stop.
     """
 
     if pid is None or pid == 0:
@@ -1197,7 +1199,7 @@ def reconcile_desktop_runtime(
     terminal/absent observation retires an attempt, and it retries rather than
     advancing the graph because no trusted completion protocol was observed.
     """
-    # поздний импорт: развязка обратной зависимости модулей
+    # late import: breaks a circular module dependency
     from .lifecycle_reservations import _prepare_state
 
     _require_desktop_owned(cfg)
@@ -1254,18 +1256,17 @@ def observe_worker_states(
     *,
     client_factory: Callable[..., Any] | None = None,
 ) -> dict[str, str]:
-    """Спросить сервер, живы ли ходы незакрытых сессий.
+    """Ask the server whether the turns of open sessions are alive.
 
-    Наблюдения, которых не хватало ``reconcile_desktop_runtime``, чтобы
-    работать вне тестов. Функция восстановления существовала, была
-    экспортирована и вызывалась только из тестов - поэтому мёртвая
-    сессия не возвращалась в работу никогда, и задача оставалась в
-    VERIFYING навсегда.
+    The observations ``reconcile_desktop_runtime`` lacked to work outside
+    tests. The recovery function existed, was exported and was called only
+    from tests - so a dead session never returned to work, and the task
+    stayed in VERIFYING forever.
 
-    Словарь: токен владения -> одно из "active", "terminal", "absent",
-    "unknown". Молчание и ошибка связи дают "unknown", и такая сессия
-    удерживается, а не ретраится: "не знаю" не должно читаться как
-    "закончилось".
+    A mapping: ownership token -> one of "active", "terminal", "absent",
+    "unknown". Silence and a connection error yield "unknown", and such a
+    session is retained rather than retried: "I do not know" must not read
+    as "it ended".
     """
 
     from .appserver import AppServerClient
@@ -1294,7 +1295,7 @@ def observe_worker_states(
                     continue
                 observations[token] = _observe_one(client, session)
     except Exception:
-        # Связи нет - наблюдений нет. Пустой словарь удерживает всё.
+        # No connection - no observations. An empty mapping retains everything.
         return {}
     return observations
 
@@ -1302,8 +1303,8 @@ def observe_worker_states(
 def _observe_one(client: Any, session: Mapping[str, Any]) -> str:
     thread_id = str(session.get("thread_id") or "")
     if not thread_id:
-        # Ветки не было: создание не состоялось. Это не "исчезла", это
-        # "ещё не появлялась", и трогать её реконсиляцией нельзя.
+        # There was no thread: creation never happened. This is not "gone",
+        # it is "never appeared", and reconciliation must not touch it.
         return "unknown"
     try:
         thread = client.read_thread(thread_id)
@@ -1320,10 +1321,10 @@ def _observe_one(client: Any, session: Mapping[str, Any]) -> str:
     return "unknown"
 
 
-# Что сервер отвечает про ход ветки. Замерено на живых ветках прогона:
-# завершённая незагруженная отдаёт "notLoaded", завершённая загруженная -
-# "idle". Незнакомое значение остаётся "unknown": список расширяется
-# осознанно, а не догадкой на ходу.
+# What the server answers about a thread's turn. Measured on live run
+# threads: a completed unloaded one returns "notLoaded", a completed loaded
+# one "idle". An unfamiliar value stays "unknown": the list grows
+# deliberately, not by guessing on the fly.
 _LIVE_THREAD_STATUS = frozenset({"running", "busy", "streaming", "active"})
 _FINISHED_THREAD_STATUS = frozenset({"idle", "notLoaded", "completed", "failed"})
 
@@ -1339,14 +1340,13 @@ def pending_descriptors(cfg: Config) -> tuple[LaunchDescriptor, ...]:
 
 
 def creation_causality_coverage(state: RunState) -> tuple[int, int]:
-    """Сколько создаваний аудит может оценить, и сколько их всего.
+    """How many creations the audit can assess, and how many there are.
 
-    Журнал прогона переживает перезапуски рантайма, и поле
-    relay_owner_thread_id появилось в схеме события не с первого дня.
-    События, записанные до его появления, аудитом не оцениваются -
-    у них нет данных, а не нарушена причинность. Функция делает эту
-    слепую зону измеримой, чтобы "нарушений нет" нельзя было спутать
-    с "проверено не было".
+    The run journal survives runtime restarts, and the relay_owner_thread_id
+    field was not in the event schema from day one. Events recorded before
+    it appeared are not assessed by the audit - they lack the data, their
+    causality is not broken. The function makes that blind spot measurable,
+    so "no violations" cannot be confused with "never checked".
     """
 
     journal = _causal_journal(state)
@@ -1364,11 +1364,11 @@ def _causal_journal(state: RunState) -> list[dict[str, Any]]:
 
 
 def _causality_schema_start(journal: list[dict[str, Any]]) -> int:
-    """Позиция первого события, несущего relay_owner_thread_id.
+    """The position of the first event carrying relay_owner_thread_id.
 
-    _append_event пишет этот ключ всегда - со значением None, если
-    владельца нет. Поэтому полное отсутствие ключа означает запись
-    более старой версией рантайма, а не отсутствие владельца.
+    _append_event always writes this key - as None when there is no owner.
+    So a fully absent key means a record by an older runtime version, not
+    an absent owner.
     """
 
     for index, event in enumerate(journal):
@@ -1386,31 +1386,29 @@ def _run_own_thread_ids(state: RunState) -> set[str]:
 
 
 def audit_creation_causality(state: RunState) -> list[str]:
-    """Правило R1: задача создаётся пайплайном, а не по команде в чат.
+    """Rule R1: a task is created by the pipeline, not by a chat command.
 
-    Проверяется на журнале постфактум: у каждого create_requested,
-    кроме самого первого в прогоне, обязан быть предшествующий
-    turn_completed владельца релея. Создание, у которого такого
-    предшественника нет, означает, что задачу породило что-то другое -
-    например прямое распоряжение пользователя в чате.
+    Checked on the journal after the fact: every create_requested but the
+    very first of the run must have a preceding turn_completed of the relay
+    owner. A creation without such a predecessor means something else
+    produced the task - a direct user instruction in chat, say.
 
-    События, записанные до появления relay_owner_thread_id в схеме,
-    пропускаются как неоцениваемые - их объём отдаёт
-    creation_causality_coverage. Но если ключ пропал уже ПОСЛЕ того,
-    как появился, это нарушение: иначе правило обходится тем, что
-    поле перестают писать.
+    Events recorded before relay_owner_thread_id entered the schema are
+    skipped as unassessable - creation_causality_coverage reports their
+    number. But a key that vanished AFTER it appeared is a violation:
+    otherwise the rule is bypassed by simply no longer writing the field.
 
-    Возвращает список нарушений; пустой список означает, что цепочка
-    причинности не прерывалась.
+    Returns the list of violations; an empty list means the causality chain
+    was never broken.
     """
 
     journal = _causal_journal(state)
     schema_start = _causality_schema_start(journal)
-    # Ход пользователя authoritative-завершения не получает: его никто не
-    # ждёт, turn_completed для него не пишется в принципе. Поэтому
-    # владелец, не принадлежащий ни одной сессии прогона, - это ветка
-    # человека, то есть штатный путь arm/resume, а не нарушение. Иначе
-    # аудит объявлял бы разрыв на каждом возобновлении.
+    # A user's turn gets no authoritative completion: nobody waits for it,
+    # and no turn_completed is ever written for it. So an owner belonging
+    # to no session of the run is the human's thread, i.e. the normal
+    # arm/resume path, not a violation. Otherwise the audit would declare a
+    # break on every resume.
     own_threads = _run_own_thread_ids(state)
     completed_owners: set[str] = set()
     violations: list[str] = []
@@ -1425,11 +1423,11 @@ def audit_creation_causality(state: RunState) -> list[str]:
         if name != "create_requested":
             continue
         if not first_seen:
-            # Первая задача прогона не имеет предшественника по определению.
+            # The first task of a run has no predecessor by definition.
             first_seen = True
             continue
         if index < schema_start:
-            # Старая схема события: владельца в записи нет физически.
+            # An old event schema: the record physically has no owner.
             continue
         if "relay_owner_thread_id" not in event:
             violations.append(
@@ -1445,9 +1443,9 @@ def audit_creation_causality(state: RunState) -> list[str]:
                 f"{event.get('task_id')} has no relay owner"
             )
         elif owner not in own_threads:
-            # Ветка человека: arm/resume создаёт резервацию из хода, за
-            # которым автопилот не следит и завершения которого не
-            # записывает. Это документированный путь, а не обход.
+            # The human's thread: arm/resume creates a reservation from a turn
+            # Autopilot does not watch and whose completion it does not
+            # record. A documented path, not a bypass.
             continue
         elif owner not in completed_owners:
             violations.append(

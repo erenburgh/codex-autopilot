@@ -52,24 +52,25 @@ RESOURCE_KINDS = {
 }
 RESOURCE_ACCESS_MODES = {"read", "write", "exclusive"}
 
-# M10-REV-004: новый schema-3 прогон по умолчанию входит в заявленный
-# режим v0.9. Мигрированные v0.8 планы этим не затрагиваются: они несут
-# execution_strategy="serial", max_parallel_workers=1 и legacy_serial=True
-# явно, и валидация не даёт им неявно уйти в параллельность.
+# M10-REV-004: a new schema-3 run enters the declared v0.9 mode by
+# default. Migrated v0.8 plans are untouched: they carry
+# execution_strategy="serial", max_parallel_workers=1 and
+# legacy_serial=True explicitly, and validation keeps them from slipping
+# into parallelism implicitly.
 DEFAULT_EXECUTION_STRATEGY = "auto"
 
-# Значения для КОНФИГА БЕЗ секции [runtime], то есть для проекта,
-# созданного до v0.9. Такой проект остаётся serial и одномерным явно,
-# а не уезжает в параллельность из-за смены дефолта нового прогона.
+# Values for a CONFIG WITHOUT a [runtime] section, i.e. a project created
+# before v0.9. Such a project stays serial and single-lane explicitly,
+# rather than drifting into parallelism because a new run's default
+# changed.
 COMPAT_EXECUTION_STRATEGY = "serial"
 COMPAT_MAX_PARALLEL_WORKERS = 1
-# Консервативный, но реально параллельный предел: два воркера дают
-# настоящую параллельность при минимальном росте нагрузки и расхода.
-# Решение пользователя от 14 сентября 2026. Двойка стояла здесь как
-# умолчание и попала в шаблон плана, откуда планировщик копировал её не
-# глядя: граф из 24 задач с четырьмя независимыми ветками исполнялся по
-# две. Ограничение на Computer Use держится отдельным слотом и от этого
-# числа не зависит.
+# A conservative but genuinely parallel limit: two workers give real
+# parallelism with minimal growth in load and spend. The user's decision
+# of 14 Sep 2026. Two stood here as the default and got into the plan
+# template, from where the planner copied it blindly: a 24-task graph with
+# four independent branches ran two at a time. The Computer Use limit is
+# held by a separate slot and does not depend on this number.
 DEFAULT_MAX_PARALLEL_WORKERS = 10
 DEFAULT_COMPUTER_USE_SLOTS = 1
 DEFAULT_MAX_MEMORY_RECORDS = 8
@@ -262,17 +263,17 @@ def validate_persisted_plan(
     *,
     state_dir: Path | None = None,
 ) -> Plan:
-    """Проверить план, записанный самим рантаймом.
+    """Validate a plan written by the runtime itself.
 
-    Отличается от `validate_plan` одним: здесь `compatibility` допустимо,
-    потому что его сюда написали не снаружи. Мигрированный план v0.8
-    попадает в этот вид только через `_validate_legacy_plan`, а целевой
-    план транзакции смены плана прибит хэшем к кандидату, уже прошедшему
-    `validate_plan_change`.
+    Differs from `validate_plan` in one thing: `compatibility` is allowed
+    here, because it was not written from outside. A migrated v0.8 plan
+    reaches this form only through `_validate_legacy_plan`, and the target
+    plan of a plan-change transaction is pinned by hash to a candidate that
+    already passed `validate_plan_change`.
 
-    Присланный план проходит другим входом и заявить происхождение не
-    может: иначе свежий schema-3 план объявлял бы себя мигрированным и
-    выходил из-под независимой приёмки - это самопринятие (R8).
+    A submitted plan goes through another entrance and cannot declare its
+    provenance: otherwise a fresh schema-3 plan would call itself migrated
+    and step out from under independent acceptance - self-acceptance (R8).
     """
 
     migrated_ids = _legacy_milestone_ids(data)
@@ -480,27 +481,29 @@ def validate_plan_change(
 ) -> Plan:
     """Validate a complete replacement graph before any durable write."""
 
-    # user_request переносится из текущего плана, а не берётся из ответа
-    # реплэннера. Прежде требовалось дословное эхо, и промпт честно просил
-    # "Дословно сохрани user_request" - но в живом прогоне это 35 234
-    # символа. Модель, переписывающая граф, такую строку не воспроизводит,
-    # и законная смена плана отклонялась целиком.
+    # user_request is carried over from the current plan, not taken from
+    # the replanner's reply. A verbatim echo used to be required, and the
+    # prompt honestly asked "preserve user_request verbatim" - but on a live
+    # run that is 35 234 characters. A model rewriting the graph does not
+    # reproduce such a string, and a legitimate plan change was rejected
+    # wholesale.
     #
-    # Замерено на M11: ход реплэннера завершился успешно, результат отвергли
-    # с "plan changes must not replace the original user request", прогон
-    # встал, тикет открылся.
+    # Measured on M11: the replanner's turn completed successfully, the
+    # result was rejected with "plan changes must not replace the original
+    # user request", the run stood, a ticket opened.
     #
-    # Перенос строже прежней проверки: эхо можно было подделать, а поле,
-    # которое не берётся из ответа, изменить нельзя вовсе. goal (542
-    # символа) и model_strategy остаются строгими - их модель повторяет
-    # надёжно, и расхождение там означает намерение, а не ошибку копии.
+    # Carrying over is stricter than the old check: an echo could be forged,
+    # while a field not taken from the reply cannot be changed at all. goal
+    # (542 characters) and model_strategy stay strict - the model repeats
+    # them reliably, and a discrepancy there means intent, not a copy error.
     data = dict(data)
     data["user_request"] = current.user_request
     if data.get("schema_version") != PLAN_SCHEMA_VERSION:
         raise ValueError("plan changes must use the canonical v0.9 schema")
-    # Происхождение мигрированного плана наследуется от текущего плана и
-    # никогда не заявляется присланным телом: иначе замена «объявила» бы
-    # себя legacy и вышла из-под порога приёмки, а это самопринятие (R8).
+    # A migrated plan's provenance is inherited from the current plan and
+    # never declared by the submitted body: otherwise a replacement would
+    # "declare" itself legacy and step out from under the acceptance floor,
+    # which is self-acceptance (R8).
     candidate = _validate_plan_payload(
         data,
         profile,
@@ -588,12 +591,12 @@ def _validate_canonical_acceptance(
     exception because rewriting their historical acceptance contract would
     mutate an existing run.
 
-    Исключение историческое, поэтому оно держится на происхождении, а не на
-    заявлении. При смене плана его сохраняет только та задача, чей контракт
-    приёмки не переписан: чинить состав задачи (ресурсы, зависимости, текст)
-    мигрированному прогону можно, а новая задача или задача с переписанной
-    верификацией проходит порог целиком. Иначе замена протащила бы под видом
-    миграции задачу, принимающую собственную работу (R8).
+    The exception is historical, so it rests on provenance, not on a claim.
+    On a plan change only a task whose acceptance contract is not rewritten
+    keeps it: a migrated run may fix a task's composition (resources,
+    dependencies, text), while a new task or one with rewritten verification
+    passes the floor in full. Otherwise a replacement would smuggle in, under
+    the guise of migration, a task that accepts its own work (R8).
     """
 
     if not plan.legacy_serial:
@@ -610,15 +613,17 @@ def _validate_canonical_acceptance(
         )
     else:
         def contract(task: "Task") -> tuple:
-            """Суть задачи: что делаем, когда считаем сделанным, чем принимаем.
+            """The task's essence: what we do, when it counts as done, how it is accepted.
 
-            Исключение историческое, поэтому и держится на истории. Прежде
-            сверялась только верификация - и под старым id можно было
-            подменить саму работу, оставив слабый контракт приёмки нетронутым.
-            Новая работа под чужим номером - то же самопринятие (R8).
+            The exception is historical, so it rests on history. Only the
+            verification used to be compared - and under an old id the work
+            itself could be swapped while the weak acceptance contract stayed
+            untouched. New work under someone else's number is the same
+            self-acceptance (R8).
 
-            Ресурсы и зависимости сюда не входят намеренно: чинить состав
-            мигрированной задачи можно, переписывать её смысл - нет.
+            Resources and dependencies are deliberately not included: a
+            migrated task's composition may be fixed, its meaning may not be
+            rewritten.
             """
 
             return (
@@ -672,9 +677,9 @@ def _validate_canonical_acceptance(
                 f"{names}, and invoke the command directly"
             )
 
-# Единственный список допустимых полей плана. Он же называется модели в
-# промпте реплэннера: иначе отказ "plan has unknown fields" не говорит,
-# какие поля вообще существуют, и переделка идёт вслепую.
+# The single list of allowed plan fields. It is also named to the model in
+# the replanner prompt: otherwise the refusal "plan has unknown fields"
+# does not say which fields exist at all, and the redo goes blind.
 GRAPH_PLAN_FIELDS = frozenset({
     "schema_version", "graph_version", "goal", "user_request", "goal_contract",
     "model_strategy", "execution_strategy", "max_parallel_workers", "computer_use_slots",
@@ -725,10 +730,10 @@ def _validate_graph_plan(
     legacy_serial = False
     source_schema = PLAN_SCHEMA_VERSION
     if inherited is not None:
-        # Замена может лишь повторить происхождение текущего плана - так
-        # копия плана из plan_to_dict проходит без изменений, - но ввести
-        # или переписать его не может. Заявить себя мигрированным и выйти
-        # из-под независимой верификации нельзя (R8).
+        # A replacement may only repeat the current plan's provenance - so a
+        # copy of the plan from plan_to_dict passes unchanged - but cannot
+        # introduce or rewrite it. Declaring itself migrated and stepping out
+        # from under independent verification is not allowed (R8).
         expected = (
             {
                 "migrated_from_schema": inherited.source_schema_version,

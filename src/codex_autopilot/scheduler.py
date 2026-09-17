@@ -146,13 +146,13 @@ def schedule(
     reconcile_ready_tasks(plan, state)
 
     strategy = _effective_strategy(plan, state)
-    # Заявленное число - потолок и решение пользователя. Адаптация может
-    # только понижать его, и только когда лимит действительно рядом:
-    # человеку с автосписанием урезать нечего, он платит по факту.
+    # The declared number is the ceiling and the user's decision.
+    # Adaptation may only lower it, and only when the limit is really
+    # near: someone on auto-billing has nothing to cut, they pay as they go.
     declared = min(plan.max_parallel_workers, state.max_parallel_workers)
     budget = worker_budget(declared, getattr(state, "rate_limits", None))
-    # None означает отсутствие потолка: на безлимитном аккаунте
-    # одновременность задаёт сам граф, а не выдуманное число.
+    # None means no ceiling: on an unlimited account the graph itself sets
+    # the concurrency, not an invented number.
     worker_limit = len(plan.tasks) if budget.workers is None else budget.workers
     if strategy == "serial":
         worker_limit = 1
@@ -292,11 +292,11 @@ def _task_capabilities(task: Task, plan: Plan | None = None) -> tuple[str, ...]:
     capabilities = list(task.required_capabilities)
     needs_surface = task.execution_mode == "computer_use"
     if plan is not None and not needs_surface:
-        # Две Астры одновременно недопустимы: они делят одну поверхность
-        # Computer Use, перехватывают управление друг у друга и жгут
-        # лимиты. При стратегии auto Астра выбирается ровно для
-        # computer_use, и слот держал это сам. При astra-only на Астру
-        # уходят ВСЕ задачи, включая code, - и слот их не удерживал.
+        # Two Astras at once are not allowed: they share one Computer Use
+        # surface, take control from each other and burn limits. Under the
+        # auto strategy Astra is chosen exactly for computer_use, and the
+        # slot held that by itself. Under astra-only ALL tasks go to Astra,
+        # code included - and the slot did not hold them.
         from .models import logical_model
 
         try:

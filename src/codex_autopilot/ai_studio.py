@@ -36,25 +36,25 @@ HARD_MAX_MEMORY_RECORDS = 20
 HARD_MAX_DEPENDENCY_OUTPUTS = 20
 MAX_MEMORY_STATEMENT_CHARS = 800
 MAX_OUTPUT_EXCERPT_CHARS = 2_000
-# Имя встроенного сервера Project Memory. Совпадение с preflight
-# закреплено тестом: разойдись они, воркер получил бы инструкцию
-# позвать сервер, которого нет.
+# The name of the built-in Project Memory server. Its agreement with
+# preflight is held by a test: if they diverged, the worker would be told
+# to call a server that does not exist.
 MEMORY_SERVER_NAME = "codex_autopilot_memory"
-# Окно контекста, снятое с живого события App Server `turn` (поле
-# model_context_window) 14.09.2026 на модели Sol. Прежде здесь стояло
-# голое 64_000 без единой строки обоснования - ни комментария, ни
-# упоминания в docs/.
+# The context window read from a live App Server `turn` event (the
+# model_context_window field) on 14 Sep 2026 on the Sol model. A bare
+# 64_000 used to stand here with not one line of justification - no
+# comment, no mention in docs/.
 OBSERVED_CONTEXT_WINDOW_TOKENS = 258_400
-# Промпту отводится четверть окна. Остальное нужно воркеру на чтение
-# файлов, вывод инструментов и собственный ответ: на том же прогоне
-# один ход исполнителя израсходовал 144 368 входных токенов - вдевятеро
-# больше прежнего потолка целиком.
+# The prompt gets a quarter of the window. The rest the worker needs for
+# reading files, tool output and its own reply: on the same run one
+# executor turn consumed 144 368 input tokens - nine times the whole
+# previous ceiling.
 PROMPT_BUDGET_SHARE = 0.25
-# Консервативно для смешанного русско-английского JSON, где токен
-# короче английского.
+# Conservative for mixed Russian-English JSON, where a token is shorter
+# than in English.
 CHARS_PER_TOKEN = 3.0
 MAX_PROMPT_CHARS = int(OBSERVED_CONTEXT_WINDOW_TOKENS * PROMPT_BUDGET_SHARE * CHARS_PER_TOKEN)
-# Сколько символов исходного запроса ещё уместно вложить прямо в промпт.
+# How many characters of the original request may still be embedded in the prompt.
 MAX_INLINE_USER_REQUEST_CHARS = 16_000
 
 PIPELINE_ENGINEER_SYSTEM_ROLE = RoleProfile(
@@ -127,8 +127,8 @@ class AIStudioRuntime:
         self.language = language
         self.skill_path = skill_path.expanduser().resolve()
         self.memory = memory or ProjectMemory(self.project_root)
-        # Каталог состояния нужен только для истории нарушений правил:
-        # чаще нарушавшиеся идут в контексте выше (R17).
+        # The state directory is needed only for the rule-violation history:
+        # rules violated more often come higher in the context (R17).
         self.state_dir = self.project_root / ".codex-autopilot"
 
     def route(self, task_id: str, *, phase: str = "implementation") -> RuntimeRoute:
@@ -197,9 +197,9 @@ class AIStudioRuntime:
         forbidden = tuple(str(item) for item in incident_package.get("forbidden_actions") or ())
         if not set(FORBIDDEN_ACTIONS).issubset(forbidden):
             raise ContextBoundaryError("Pipeline Engineer package omitted mandatory forbidden actions")
-        # Блок правил идёт инженеру ровно тем же, что и воркерам. Без него
-        # строка "те же правила применимы к тебе" была бы обещанием без
-        # исполнения: пакет инцидента правил не содержит.
+        # The rules block reaches the engineer exactly as it reaches workers.
+        # Without it the line "the same rules apply to you" would be a promise
+        # without delivery: the incident package holds no rules.
         package = dict(incident_package)
         package["rules"] = rules_for_prompt(self.state_dir)
         payload = json.dumps(package, ensure_ascii=False, separators=(",", ":"))
@@ -321,11 +321,10 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 f"task {task.id} skill stack cannot be resolved: {exc}"
             ) from exc
         envelope = {
-            # Правило R17: блок правил идёт ПЕРЕД спецификациями задачи
-            # и не подлежит усечению. Если бюджет контекста не вмещает
-            # правила плюс минимальную спецификацию, задача не
-            # запускается - это дефект планирования контекста, а не
-            # повод выбросить правила.
+            # Rule R17: the rules block goes BEFORE the task specifications
+            # and is never truncated. If the context budget cannot hold the
+            # rules plus a minimal specification, the task is not launched -
+            # a context-planning defect, not a reason to drop the rules.
             "rules": rules_for_prompt(self.state_dir),
             **(
                 {"goal_contract": self.plan.goal_contract.to_dict()}
@@ -392,10 +391,10 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             department_acceptance=department_acceptance,
         )
         if len(prompt) > MAX_PROMPT_CHARS:
-            # Прежнее сообщение велело "сузить контекст задачи", не
-            # называя виновника. На прогоне v1.0 это отправляло чинить
-            # задачу в 395 символов, пока 51 475 занимал вложенный
-            # копией запрос пользователя.
+            # The old message said "narrow the task context" without naming
+            # the culprit. On the v1.0 run that sent people to fix a
+            # 395-character task while 51 475 were taken by the embedded
+            # copy of the user's request.
             largest = ", ".join(
                 f"{key}={len(json.dumps(value, ensure_ascii=False))}"
                 for key, value in sorted(
@@ -721,20 +720,20 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         return value if len(value) <= limit else value[: limit - 1] + "…"
 
     def _recorded_human_decisions(self, task_id: str) -> list[dict[str, str]]:
-        """Решения владельца по этой задаче - те, что сняли её остановку.
+        """The owner's decisions on this task - the ones that lifted its stop.
 
-        Прежде причина разблокировки ложилась в журнал и никуда больше:
-        `user_unblocks` встречался только там, где записывается, и в
-        объявлении поля. Ни один воркер её не читал. Владелец за сутки
-        сняла шесть остановок, каждый раз объясняя почему, - и ни одно
-        объяснение не дошло до того, кто продолжал работу.
+        The unblock reason used to go into the journal and nowhere else:
+        `user_unblocks` appeared only where it is written and in the field
+        declaration. No worker read it. The owner lifted six stops in a day,
+        explaining why each time - and not one explanation reached whoever
+        carried the work on.
 
-        Правило R32 требует, чтобы вмешательство человека было записанным
-        решением, а не репликой. Решение, которого никто не читает, от
-        реплики не отличается: оно ничего не меняет.
+        Rule R32 requires a human intervention to be a recorded decision,
+        not a chat remark. A decision nobody reads is no different from a
+        remark: it changes nothing.
 
-        Блок появляется только когда решения есть, и ограничен по объёму:
-        контекст задачи не должен расти от истории вмешательств.
+        The block appears only when decisions exist, and is bounded in size:
+        a task's context must not grow with the history of interventions.
         """
 
         from .run_state import StateStore
@@ -759,14 +758,14 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
     def _acceptance_gate(
         self, task: Task, definition_of_done: list[str] | None = None
     ) -> dict[str, Any]:
-        """Исходный запрос доступен по MCP, а не вложен копией.
+        """The original request is reachable over MCP, not embedded as a copy.
 
-        Текст пользователя неизменен на весь прогон и сузить его нельзя.
-        Копия в конверте повторяла его по разу на каждую задачу: в
-        прогоне v1.0 это 51 475 символов из 62 635 при 395 символах самой
-        задачи, и любая задача с зависимостями пробивала потолок. Ссылка
-        с длиной и sha256 сохраняет контракт приёмки дословно и делает
-        подмену текста заметной.
+        The user's text is fixed for the whole run and cannot be narrowed. A
+        copy in the envelope repeated it once per task: on the v1.0 run that
+        is 51 475 characters of 62 635 against 395 for the task itself, and
+        any task with dependencies broke the ceiling. A reference with a
+        length and sha256 keeps the acceptance contract verbatim and makes a
+        substitution of the text noticeable.
         """
 
         request = self.plan.user_request
@@ -790,10 +789,10 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 },
             },
             "run_goal": self.plan.goal,
-            # DoD берётся тот же, что показан задаче. Отменённая рубрика
-            # вычищается из него выше, и подставить сюда сырой список
-            # значило бы вернуть в промпт ровно тот идентификатор, от
-            # которого работа и уходит.
+            # The DoD is the same one shown to the task. A revoked rubric is
+            # scrubbed from it above, and substituting the raw list here
+            # would put back into the prompt the very identifier the work is
+            # moving away from.
             "task_definition_of_done": list(
                 definition_of_done
                 if definition_of_done is not None
@@ -921,10 +920,10 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 else f"Record new verifiable evidence for {task.id}; use each exact check ID as the role for evidence checks. Before the final line, give an AUTOPILOT_RULES line with the ids of the rules from the rules block you applied to this task (for example AUTOPILOT_RULES: R7, R17). Finish with exactly one AUTOPILOT_STATUS: ROTATE, BLOCKED, or ESCALATE line; DONE is allowed only for the final plan task. BLOCKED and ESCALATE must carry a closed-list reason code on the same line (AUTOPILOT_STATUS: BLOCKED MISSING_RESOURCE): DANGEROUS_PERMISSION, MISSING_RESOURCE, DEPENDENCY_DEFECT, CONTRADICTORY_CONTRACT, ENVIRONMENT_FAILURE, PRODUCT_DECISION, ARCHITECTURE_DECISION, RECOVERY_EXHAUSTED. ROTATE and DONE carry none. If a prerequisite/dependency/resource/verification contract change is required, return exactly one final PLAN_CHANGE_REQUEST line instead, with JSON fields request_version=1, kind, target_task_id={task.id}, summary, rationale, change, and evidence_ids."
             )
 
-        # Превью в сайдбаре показывает начало промпта, а не ответа.
-        # Прежде там стояло "Codex Autopilot AI Studio Runtime — свежий
-        # implementation worker": одинаковая строка на всех задачах, по
-        # которой в списке нельзя отличить одну от другой.
+        # The sidebar preview shows the start of the prompt, not the reply.
+        # It used to read "Codex Autopilot AI Studio Runtime — fresh
+        # implementation worker": the same line on every task, by which one
+        # cannot be told from another in the list.
         headline = f"{role_name} · {task.id} · {task.title}"
         if russian:
             return f"""{headline}

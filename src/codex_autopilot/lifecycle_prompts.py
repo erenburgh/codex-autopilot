@@ -1,8 +1,8 @@
-"""Сборка промптов фаз Desktop-owned жизненного цикла.
+"""Prompt assembly for the phases of the Desktop-owned lifecycle.
 
-Выделено из lifecycle.py: эти функции принимают конфиг, план и задачу
-и возвращают текст. Они не трогают состояние и не выполняют транспорт,
-поэтому живут отдельно от машины жизненного цикла.
+Extracted from lifecycle.py: these functions take the config, the plan and
+the task and return text. They touch no state and perform no transport,
+so they live apart from the lifecycle machine.
 """
 
 from __future__ import annotations
@@ -50,9 +50,9 @@ def _replanner_prompt(
                 ],
             }
         )
-    # Отказы прошлых попыток. Без них модель переделывает вслепую и
-    # возвращает ту же ошибку: замерено на поле departments, которого
-    # нет в схеме плана.
+    # The refusals of earlier attempts. Without them the model redoes the
+    # work blind and returns the same error: measured on a departments
+    # field absent from the plan schema.
     rejections = [
         {"reason": str(item.get("reason") or "")}
         for item in (change.get("rejections") or [])
@@ -93,11 +93,11 @@ def _replanner_prompt(
         + str(plan.graph_version)
         + ',"plan":{...complete schema-3 plan...}}'
     )
-    # Число воркеров живёт в плане, а переписать план вправе только
-    # реплэннер. Пользователь меняет его в своём config.toml, и без этой
-    # передачи его правка не доезжала никуда: реплэннер копировал старое
-    # число из текущего графа, и потолок навсегда оставался тем, с каким
-    # прогон был создан.
+    # The worker count lives in the plan, and only the replanner may
+    # rewrite the plan. The user changes it in their config.toml, and
+    # without this hand-over the change went nowhere: the replanner copied
+    # the old number from the current graph, and the ceiling stayed forever
+    # what the run was created with.
     retry_ru = ""
     retry_en = ""
     workers_ru = ""
@@ -150,12 +150,12 @@ Read {cfg.skill_path} completely first. Retrieve only listed evidence IDs from P
 
 The final non-empty line must be the only protocol line in this exact format:
 {finish}"""
-    # Второй экземпляр того же потолка. Утром число было выведено из окна
-    # модели в ai_studio, а эта копия осталась голой: промпт планировщика
-    # вкладывает весь граф из 23 задач, перевалил за 64 000 и уронил релей
-    # прямо посреди прогона - причём NameError вместо внятного отказа,
-    # потому что исключение здесь не импортировалось с самого разреза
-    # lifecycle.py.
+    # A second copy of the same ceiling. In the morning the number was
+    # derived from the model window in ai_studio, and this copy stayed
+    # bare: the planner prompt embeds the whole 23-task graph, passed
+    # 64 000 and killed the relay mid-run - with a NameError instead of a
+    # clear refusal, because the exception was never imported here since
+    # the split of lifecycle.py.
     if len(prompt) > MAX_PROMPT_CHARS:
         raise DesktopLifecycleError(
             f"replanner prompt is {len(prompt)} characters against a "
@@ -203,9 +203,9 @@ def _worker_prompt(
         evidence=verification_evidence,
         deterministic_results=deterministic_results,
     )
-    # Причина, по которой прошлый вердикт не прочитался. Без неё свежий
-    # верифаер переписывает вслепую и повторяет ту же ошибку: замерено на
-    # поле `rubric`, которое предыдущая задача сама же и ввела.
+    # The reason the previous verdict could not be read. Without it a fresh
+    # verifier rewrites blind and repeats the same error: measured on the
+    # `rubric` field the previous task itself introduced.
     rejections = (state.verification_rejections or {}).get(task_id) or []
     if phase == "verification" and rejections:
         last = str(rejections[-1].get("reason") or "")

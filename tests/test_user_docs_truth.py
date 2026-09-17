@@ -130,4 +130,4 @@ class OneSentenceInstallTests(unittest.TestCase):
 
     def test_a_projectless_directory_is_refused_up_front(self) -> None:
         source = (ROOT / "src/codex_autopilot/preflight.py").read_text(encoding="utf-8")
-        self.assertIn("не принадлежит ни одному проекту Codex", source)
+        self.assertIn("belongs to no Codex project", source)

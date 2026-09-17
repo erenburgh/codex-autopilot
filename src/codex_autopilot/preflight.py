@@ -49,16 +49,16 @@ from .project_association import (
 MEMORY_SERVER_NAME = "codex_autopilot_memory"
 REQUIRED_MEMORY_TOOLS = {"memory"}
 MEMORY_PREFLIGHT_TITLE = "Codex Autopilot Preflight · Project Memory"
-# Проба доверия не рассуждает: она делает один вызов инструмента и
-# отвечает одной строкой. Прежде она шла на усилии рабочего воркера -
-# на прогоне v1.0 это был xhigh, и ход дважды не уложился в пять минут,
-# а на третий раз прошёл меньше чем за минуту. Autopilot ограничивает
-# ЛЕСТНИЦУ ВОРКЕРОВ значениями medium..max; App Server принимает и
-# minimal, и low, а проба воркером не является.
+# The trust probe does not reason: it makes one tool call and answers with
+# one line. It used to run at the production worker's effort - xhigh on the
+# v1.0 run, and the turn twice missed the five-minute mark, then passed in
+# under a minute on the third try. Autopilot bounds the WORKER LADDER to
+# medium..max; App Server accepts minimal and low too, and the probe is not
+# a worker.
 PROBE_REASONING = "low"
 PROBE_TIMEOUT = 300.0
-# Один таймаут не повод валить весь запуск: третий заход показал, что
-# повтор решает. Прежде первый же валил.
+# One timeout is no reason to fail the whole launch: the third try showed
+# a retry resolves it. The first used to fail everything.
 PROBE_ATTEMPTS = 3
 
 ANNOUNCEMENT = (
@@ -100,18 +100,18 @@ class PreflightApprovalRequired(PreflightError):
 
 
 def runtime_command_path() -> Path:
-    """Тот же путь, по которому запускается сам скилл.
+    """The same path the skill itself launches from.
 
-    Прошитый `~/Library/Application Support/...` работал бы только у
-    того, у кого рантайм лежит по умолчанию. Запускатель плагина
-    уважает CODEX_AUTOPILOT_RUNTIME, и выданная человеку команда обязана
-    указывать туда же - иначе она верна ровно у меня на машине.
+    A hard-coded `~/Library/Application Support/...` would work only for
+    someone whose runtime sits in the default place. The plugin launcher
+    honours CODEX_AUTOPILOT_RUNTIME, and the command handed to a person must
+    point there too - or it is correct on exactly one machine.
     """
 
     override = os.environ.get("CODEX_AUTOPILOT_RUNTIME")
     if override:
         return Path(override)
-    # Рантайм знает своё место: <install_root>/current/runtime/src/...
+    # The runtime knows its place: <install_root>/current/runtime/src/...
     candidate = Path(__file__).absolute().parents[3] / "bin/codex-autopilot"
     if candidate.is_file():
         return candidate
@@ -119,7 +119,7 @@ def runtime_command_path() -> Path:
 
 
 def _plan_file_for(project: Path) -> Path:
-    """План, с которым команда разрешения запустится без вопросов."""
+    """The plan with which the permission command runs without questions."""
 
     state_dir = project / STATE_DIR_NAME
     existing = state_dir / "plan.json"
@@ -135,13 +135,13 @@ def approval_command(
     desktop_project_id: str | None = None,
     language: str | None = None,
 ) -> str:
-    """Готовая к запуску команда, а не описание того, как её собрать.
+    """A command ready to run, not a description of how to assemble it.
 
-    Прежде здесь стояло "повторите ту же команду с флагом": собрать её
-    предлагалось модели, и до человека она не доходила ни разу. Диалога
-    же нет вовсе - запрос инструмента уходит на соединение диспетчера,
-    который на approvals не отвечает. Значит единственный путь к
-    человеку - текст, который можно скопировать и запустить.
+    It used to say "repeat the same command with the flag": the model was
+    expected to assemble it, and it never once reached the person. And
+    there is no dialog at all - the tool request goes to the dispatcher's
+    connection, which never answers approvals. So the only path to the
+    person is text that can be copied and run.
     """
 
     runtime = runtime_command_path()
@@ -152,10 +152,10 @@ def approval_command(
         f'--plan-file "{plan_file}"',
         f"--profile {profile}",
     ]
-    # Без идентификаторов проекта preflight отказывает на проверке
-    # размещения: "каталог не принадлежит ни одному проекту Codex".
-    # Первая выданная пользователю команда была именно такой - неполной,
-    # и упала не на разрешении, а раньше.
+    # Without the project identifiers preflight refuses at the placement
+    # check: "the directory belongs to no Codex project". The first command
+    # handed to a user was exactly that - incomplete - and failed not on the
+    # permission but earlier.
     if app_server_project_id:
         parts.append(f"--app-server-project-id {app_server_project_id}")
     if desktop_project_id:
@@ -265,10 +265,11 @@ def run_preflight(
     if emit:
         emit("Codex Autopilot preflight")
         emit("")
-        # Единственное место прогона, где может понадобиться человек, названо до
-        # первой длинной проверки. Без этой строки пользователь видит десять
-        # "OK", потом тишину, и не знает, что решение ждут от него и в другой
-        # задаче: замерено - полчаса "думаю" при том, что диалог висел рядом.
+        # The one place in the run where a human may be needed is named
+        # before the first long check. Without this line the user sees ten
+        # "OK", then silence, and does not know a decision is awaited from
+        # them in another task: measured - half an hour of "thinking" while
+        # the dialog hung next door.
         emit(ANNOUNCEMENT)
         emit("")
         emit(f"Project: {project}")
@@ -303,8 +304,8 @@ def run_preflight(
     try:
         cache_status, cache_detail = plugin_cache_state(installed_plugin_root(skill_path))
     except PreflightError as exc:
-        # Скилл не внутри установленного плагина - сверять нечего, и это
-        # не повод останавливать проверку: путь уже проверен выше.
+        # The skill is not inside the installed plugin - nothing to compare,
+        # and no reason to stop the check: the path was verified above.
         cache_status, cache_detail = "WARN", str(exc)
     report("Plugin cache", cache_status, cache_detail)
     if cache_status == "FAIL":
@@ -359,11 +360,11 @@ def run_preflight(
 
         plugin_root = installed_plugin_root(skill_path)
         expected_plugin_id = installed_plugin_id(plugin_root)
-        # Проверка доверия Stop-хуку безусловна. Прежде она зависела от
-        # аргументов, которые в продукте всегда истинны, - то есть условие
-        # ничего не выбирало, но допускало зелёный префлайт при
-        # недоверенном хуке. Запуск принадлежит именно этому хуку: без
-        # доверия прогон не стартует, и зелёный префлайт был бы ложным.
+        # The Stop-hook trust check is unconditional. It used to depend on
+        # arguments that are always true in the product - the condition
+        # chose nothing, yet allowed a green preflight with an untrusted
+        # hook. The launch belongs to this very hook: without trust the run
+        # does not start, and a green preflight would be a lie.
         try:
             stop_hook = require_trusted_stop_hook(
                 client,
@@ -410,11 +411,12 @@ def run_preflight(
             )
 
         if desktop_project_id:
-            # Заранее созданные слоты были обходом вокруг мнимой
-            # невозможности завести видимую задачу через App Server.
-            # Замерено: thread/start с originator самого приложения даёт
-            # задачу, видимую в сайдбаре проекта - шесть воркеров приёмки
-            # 0.8.0 все оказались INSIDE. Механизм слотов снят в 0.8.1.
+            # Pre-created slots were a workaround for a supposed
+            # impossibility of creating a visible task through App Server.
+            # Measured: thread/start with the app's own originator yields a
+            # task visible in the project sidebar - all six 0.8.0 acceptance
+            # workers came out INSIDE. The slot mechanism was removed in
+            # 0.8.1.
             report(
                 "Desktop UI placement",
                 "OK",
@@ -536,8 +538,8 @@ def run_preflight(
         report("Project Memory transport", "OK", f"SQLite {memory_probe['sqlite']} + FTS5; local stdio MCP connected and target-bound")
 
         if emit:
-            # Пять минут молчания без единого признака жизни - это то,
-            # что человек видит как "ветка думает" и не знает, чего ждать.
+            # Five minutes of silence without a sign of life is what a person
+            # sees as "the thread is thinking", not knowing what to expect.
             emit(
                 f"Project Memory MCP: checking trust in the task «{MEMORY_PREFLIGHT_TITLE}» "
                 f"(up to {int(PROBE_TIMEOUT)} s per attempt, {PROBE_ATTEMPTS} attempts)"
@@ -572,8 +574,8 @@ def run_preflight(
                     try:
                         client.interrupt_turn(probe_thread_id, started_turn["turn"]["id"])
                     except Exception:
-                        # Прерывание - уборка, а не условие. Его отказ не
-                        # должен подменять собой причину таймаута.
+                        # The interrupt is cleanup, not a condition. Its
+                        # failure must not replace the timeout's reason.
                         pass
             if completed is None:
                 report("Project Memory MCP", "FAIL", str(last_timeout))
@@ -729,17 +731,17 @@ def run_preflight(
         if emit:
             emit(f"Routing: {result.routing}")
             emit(f"Next worker: {result.next_model} / {result.next_reasoning}")
-            # Человек не обязан знать ни своего тарифа, ни того, что число
-            # воркеров вообще задаётся. Сказать это один раз, назвав его
-            # собственное положение, честнее, чем молча поставить десятку
-            # из шаблона - именно так она и простояла весь прогон.
+            # A person need not know their plan, nor that the number of
+            # workers is settable at all. Saying it once, naming their own
+            # situation, is more honest than silently setting the template's
+            # ten - which is exactly how it stood for a whole run.
             try:
                 limits = client.rate_limits()
             except Exception:
                 limits = None
-            # Число считается заданным человеком, если оно отличается от
-            # умолчания: шаблон подставляет его сам, и молча выдать это за
-            # выбор пользователя было бы подменой.
+            # The number counts as set by the human if it differs from the
+            # default: the template fills it in itself, and passing that off
+            # as the user's choice would be a substitution.
             declared_workers = (
                 plan.max_parallel_workers
                 if plan.max_parallel_workers != DEFAULT_MAX_PARALLEL_WORKERS
@@ -898,13 +900,13 @@ def _reject_unprobed_capabilities(
         raise PreflightError(detail)
     report("Declared capabilities", "OK", "none require an additional trust probe")
 def _unexpected_approval_message(exc: BaseException) -> str:
-    """Назвать чужой approval человеческим языком, а не сырым JSON.
+    """Name a foreign approval in human language, not raw JSON.
 
-    Диспетчер не отвечает на approvals ни при каких условиях. Значит любой
-    approval, кроме доверия инструменту памяти, здесь - тупик: он висит в
-    интерфейсе, preflight его не закроет, и прогон не начнётся. Единственный
-    замеренный источник такого тупика - модель, которая сама приложила запрос
-    прав к команде `start-skill` и запустила её повторно.
+    The dispatcher never answers approvals under any conditions. So any
+    approval but trust for the memory tool is a dead end here: it hangs in
+    the interface, preflight will not close it, and the run will not start.
+    The only measured source of such a dead end is a model that attached a
+    permission request to the `start-skill` command itself and reran it.
     """
     payload = getattr(exc, "payload", None) or {}
     params = payload.get("params") or {}
@@ -998,7 +1000,7 @@ def _archive_replaced_workers(project: Path, client: Any, *, exclude: set[str]) 
 
 
 def plugin_cache_dirs(plugin_name: str) -> list[Path]:
-    """Копии плагина, которые видит Codex - не то, что лежит в установке."""
+    """The plugin copies Codex sees - not what lies in the installation."""
 
     home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
     base = home / "plugins" / "cache" / "codex-autopilot-local" / plugin_name
@@ -1008,15 +1010,15 @@ def plugin_cache_dirs(plugin_name: str) -> list[Path]:
 
 
 def plugin_cache_state(plugin_root: Path) -> tuple[str, str]:
-    """Совпадает ли то, что грузит Codex, с тем, что установлено.
+    """Does what Codex loads match what is installed.
 
-    Codex читает плагин из своего кэша, а рантайм - из каталога
-    установки. Пока в кэше оставалась прежняя копия, он грузил её: у
-    пользователя стоял 0.9.7, а работал 0.9.0 - с прежним объявлением
-    Interrupt на 30 секунд. Codex зажимает его до 3, переписывает файл,
-    хэш меняется, и доверие Stop-хука слетает на каждой загрузке. Со
-    стороны это выглядит как "хуки слетают сами", и починить это,
-    доверяя их заново, нельзя - через минуту слетят опять.
+    Codex reads the plugin from its cache, the runtime from the install
+    directory. While the old copy stayed in the cache, Codex loaded it: the
+    user had 0.9.7 installed and 0.9.0 running - with the old 30-second
+    Interrupt declaration. Codex clamps it to 3, rewrites the file, the hash
+    changes, and Stop-hook trust is lost on every load. From outside it looks
+    like "the hooks drop by themselves", and trusting them again does not
+    fix it - a minute later they drop again.
     """
 
     manifest = plugin_root / ".codex-plugin" / "plugin.json"
@@ -1024,8 +1026,8 @@ def plugin_cache_state(plugin_root: Path) -> tuple[str, str]:
     name = str(payload.get("name") or "")
     installed = str(payload.get("version") or "")
     if ".local." not in installed:
-        # Метку ставит установщик. Без неё перед нами исходное дерево, а
-        # не установка: сверять его с чужим кэшем бессмысленно.
+        # The marker is set by the installer. Without it this is a source
+        # tree, not an installation: comparing it with a cache is pointless.
         return "WARN", f"plugin {name} is not from the installation ({installed}) - nothing to compare"
     cached = plugin_cache_dirs(name)
     if not cached:

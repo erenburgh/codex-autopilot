@@ -53,11 +53,11 @@ class RunState:
     task_states: dict[str, str] = field(default_factory=dict)
     task_attempts: dict[str, int] = field(default_factory=dict)
     task_revisions: dict[str, int] = field(default_factory=dict)
-    # Сколько раз задача была перенанята: воркер сменён, а способ
-    # достижения поднят на ступень. План и DoD при этом не меняются.
+    # How many times the task was re-hired: the worker replaced, the way of
+    # reaching the result raised a step. The plan and DoD do not change.
     task_rehires: dict[str, int] = field(default_factory=dict)
-    # Ступень усилия, назначенная перенаймом поверх того, что записано
-    # в плане. Пусто, пока перенайма не было.
+    # The effort step assigned by a re-hire on top of what the plan records.
+    # Empty until a re-hire happened.
     task_effort: dict[str, str] = field(default_factory=dict)
     active_task_ids: list[str] = field(default_factory=list)
     scheduler_sequence: int = 0
@@ -70,26 +70,26 @@ class RunState:
     worker_sessions: list[dict[str, object]] = field(default_factory=list)
     task_retry_at: dict[str, int] = field(default_factory=dict)
     rate_limit_until: int | None = None
-    # Будильник: pid спящего процесса, который поднимет диспетчер по
-    # сроку повтора, и сам срок. Без него прогон с кончившимся лимитом
-    # стоял до слова человека - замерено на прогоне v1.0.
+    # The wake-up: the pid of the sleeping process that raises the
+    # dispatcher at the retry time, and the time itself. Without it a run
+    # out of limits stood until a human's word - measured on the v1.0 run.
     wake_pid: int | None = None
     wake_at: int | None = None
-    # Последний снимок лимитов от App Server. Нужен не для реакции на
-    # упор, а для планирования ёмкости: сколько воркеров имеет смысл
-    # держать параллельно прямо сейчас.
+    # The last rate-limit snapshot from App Server. Not for reacting to a
+    # hit limit but for capacity planning: how many workers make sense in
+    # parallel right now.
     rate_limits: dict[str, Any] | None = None
-    # Отказы протокола приёмки по задачам: вердикт верифаера, который не
-    # удалось прочитать. Копится, чтобы следующий верифаер увидел причину.
+    # Acceptance protocol refusals per task: a verifier verdict that could
+    # not be read. Accumulated so the next verifier sees the reason.
     verification_rejections: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     # A semantic verifier binds one exact graph digest before the scheduler may
     # admit production.  The counter drives periodic full revalidation after
     # accepted replacement-graph patches.
     plan_verification: dict[str, Any] | None = None
     accepted_plan_patches_since_full_revalidation: int = 0
-    # Решения человека снять остановку задачи: что, почему и когда.
-    # Остановка по нарушению правила не самозалечивается, но и не висит
-    # вечно - у неё есть названный автор.
+    # A human's decisions to lift a task's stop: what, why and when. A stop
+    # for a rule violation does not heal itself, but does not hang forever
+    # either - it has a named author.
     user_unblocks: list[dict[str, Any]] = field(default_factory=list)
     plan_change_sequence: int = 0
     active_plan_change_id: str | None = None
@@ -120,10 +120,10 @@ class RunState:
     relevant_memory_count: int | None = None
     preflight_completed_at: str | None = None
     prep_app_server_exited_at: str | None = None
-    # Счёт попыток по сигнатуре отказа (R23): ключ - failure_code, а не
-    # задача. Одна поломка у двух задач - одна поломка, поэтому в ключ не
-    # входит task_id. Прежний retry_count был скаляром, объявленным и ни
-    # с чем не сравниваемым, - снят вместе с иллюзией, что потолок есть.
+    # Attempt counts per failure signature (R23): the key is failure_code,
+    # not the task. One fault on two tasks is one fault, so task_id is not
+    # in the key. The old retry_count was a scalar, declared and compared
+    # with nothing - removed together with the illusion of a ceiling.
     failure_signature_attempts: dict[str, int] = field(default_factory=dict)
     retry_at: int | None = None
     reset_at: int | None = None
@@ -171,8 +171,8 @@ class StateStore:
 
     def load(self) -> RunState:
         if not self.path.exists():
-            # Снимок лимитов живёт отдельно от журнала и может появиться
-            # раньше него: событие приходит в первые же секунды хода.
+            # The rate-limit snapshot lives apart from the journal and may
+            # appear before it: the event arrives in the turn's first seconds.
             return RunState(rate_limits=self.read_rate_limits())
         data = json.loads(self.path.read_text(encoding="utf-8"))
         schema = data.get("schema_version")
@@ -192,7 +192,7 @@ class StateStore:
         return state
 
     def read_rate_limits(self) -> dict[str, Any] | None:
-        """Последний снимок лимитов, если он вообще был записан."""
+        """The last rate-limit snapshot, if one was ever recorded."""
 
         try:
             payload = json.loads(self.rate_limits_path.read_text(encoding="utf-8"))
@@ -201,13 +201,13 @@ class StateStore:
         return payload if isinstance(payload, dict) else None
 
     def record_rate_limits(self, snapshot: dict[str, Any]) -> bool:
-        """Запомнить снимок лимитов, не трогая сам журнал прогона.
+        """Remember the rate-limit snapshot without touching the run journal.
 
-        Событие приходит из читающего потока App Server, параллельно
-        диспетчеру. Если писать его в run-state.json, снимок пришлось бы
-        загружать и сохранять целиком - и запись, начатая до чужого
-        перехода сессии, затёрла бы этот переход. Отдельный файл имеет
-        ровно одного писателя и не может отменить ничего чужого.
+        The event arrives from App Server's reader thread, in parallel with
+        the dispatcher. Writing it into run-state.json would mean loading and
+        saving the whole snapshot - and a write started before someone
+        else's session transition would overwrite that transition. A
+        separate file has exactly one writer and can undo nothing of others.
         """
 
         if not isinstance(snapshot, dict) or not snapshot:
@@ -581,11 +581,11 @@ def _validate_state(state: RunState) -> None:
                 raise ValueError(
                     "pending worker sessions require a bound relay_owner_thread_id"
                 )
-            # Дежурный инженер чинит пайплайн, а не задачу: он назван её
-            # идентификатором только ради контекста - каталога, роли в
-            # заголовке и базовой линии области. Считать его вторым
-            # исполнителем значило бы запретить чинить ровно ту задачу,
-            # на которой пайплайн и сломался.
+            # The on-call engineer repairs the pipeline, not the task: it is
+            # named by the task's id only for context - the directory, the
+            # role in the title and the scope baseline. Counting it as a
+            # second executor would forbid repairing exactly the task the
+            # pipeline broke on.
             if str(item.get("kind") or "") != "pipeline_engineer":
                 pending_tasks.append(str(item["task_id"]))
     if len(tokens) != len(set(tokens)) or len(operations) != len(set(operations)):

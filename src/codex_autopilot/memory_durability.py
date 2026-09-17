@@ -1,8 +1,8 @@
-"""Долговечность Project Memory: снимки, восстановление, целостность.
+"""Project Memory durability: snapshots, recovery, integrity.
 
-Отделено от операций над записями. Здесь только то, что отвечает
-за сохранность базы, а не за её содержимое. В классе ProjectMemory
-оставлены тонкие делегирующие методы.
+Separated from operations on records. Only what keeps the database safe
+lives here, not what it holds. Thin delegating methods stay on the
+ProjectMemory class.
 """
 
 from __future__ import annotations

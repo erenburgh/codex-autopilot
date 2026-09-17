@@ -255,21 +255,22 @@ def _reserve_in_state(
         state.status = "WAITING"
         state.phase = "WAITING_RATE_LIMIT"
         return ()
-    # _prepare_state снимает истёкший барьер лимитов и поднимает задачи,
-    # чей срок повтора уже прошёл. Прежде он вызывался только внутри
-    # ветки барьера: прогон, у которого барьера нет вовсе, сроки повторов
-    # не пересматривал никогда.
+    # _prepare_state lifts an expired rate-limit barrier and raises tasks
+    # whose retry time has passed. It used to be called only inside the
+    # barrier branch: a run with no barrier at all never revisited its
+    # retry times.
     #
-    # Замерено: дежурный инженер закрыл инцидент и вышел, у M0 срок
-    # повтора истёк двенадцатью минутами ранее, задача осталась в
-    # RETRY_WAIT, резервирование смены плана увидело RETRY_WAIT и
-    # припарковало прогон в WAITING_RATE_LIMIT - при том что никакого
-    # лимита не было. Диспетчер вышел, будить стало некому, прогон из
-    # 24 задач встал навсегда с нулём выполненных.
+    # Measured: the on-call engineer closed the incident and exited, M0's
+    # retry time had expired twelve minutes earlier, the task stayed in
+    # RETRY_WAIT, the plan-change reservation saw RETRY_WAIT and parked the
+    # run in WAITING_RATE_LIMIT - with no rate limit in sight. The
+    # dispatcher exited, nobody was left to wake it, and a 24-task run
+    # stood forever with zero done.
     _prepare_state(plan, state, now_epoch=epoch)
-    # Сломанный пайплайн старше любой работы: пока инцидент доведён до
-    # дежурного инженера, новых задач не берём, а заводим инженера.
-    # Прежде эта фаза была только ярлыком в JSON, и прогон вставал молча.
+    # A broken pipeline outranks any work: while an incident is routed to
+    # the on-call engineer, no new tasks are taken - the engineer is
+    # reserved instead. This phase used to be only a label in JSON, and the
+    # run stood silently.
     engineer = _reserve_pipeline_engineer_in_state(
         cfg,
         plan,
@@ -279,9 +280,9 @@ def _reserve_in_state(
     )
     if engineer:
         return engineer
-    # Незакрытый инцидент больше не останавливает прогон целиком. Он
-    # держит только свои задачи; всё остальное, что готово к работе,
-    # идёт как обычно. Дежурный инженер закроет тикет своим ходом.
+    # An open incident no longer stops the whole run. It holds only its own
+    # tasks; everything else that is ready proceeds as usual. The on-call
+    # engineer closes the ticket in its own turn.
     paused = tasks_paused_by_incidents(cfg, plan)
     if state.active_plan_change_id is not None:
         change = active_plan_change(state)
@@ -320,7 +321,7 @@ def _reserve_in_state(
     )
     for task_id in decision.selected_task_ids:
         if task_id in paused:
-            # Задача ждёт своего инцидента. Остальные - нет.
+            # This task waits for its incident. The others do not.
             continue
         if any(
             item.get("task_id") == task_id
@@ -407,15 +408,15 @@ def _reserve_in_state(
     return tuple(descriptors)
 
 def tasks_paused_by_incidents(cfg: Config, plan: Plan) -> set[str]:
-    """Задачи, названные незакрытыми инцидентами - и только они.
+    """The tasks named by open incidents - and only those.
 
-    Прежде любой незакрытый инцидент останавливал ВЕСЬ прогон: пока
-    дежурный инженер разбирался с M0, не двигалось ничего, даже задачи,
-    к инциденту отношения не имеющие. Тикет о сорвавшемся транспорте на
-    одной ветке держал двадцать три чужие.
+    Any open incident used to stop the WHOLE run: while the on-call
+    engineer dealt with M0, nothing moved, not even tasks unrelated to the
+    incident. A ticket about a failed transport on one thread held
+    twenty-three others.
 
-    Инцидент называет свои задачи сам - `affected_task_ids`. Пауза
-    распространяется ровно на них.
+    An incident names its own tasks - `affected_task_ids`. The pause covers
+    exactly those.
     """
 
     from .pipeline_engineer import PipelineIncidentStore
@@ -431,7 +432,7 @@ def tasks_paused_by_incidents(cfg: Config, plan: Plan) -> set[str]:
 
 
 def open_pipeline_engineer_incident(cfg: Config) -> dict[str, Any] | None:
-    """Незакрытый инцидент, доведённый до дежурного инженера."""
+    """An open incident routed to the on-call engineer."""
 
     from .pipeline_engineer import IncidentPhase, PipelineIncidentStore
 
@@ -445,7 +446,7 @@ def open_pipeline_engineer_incident(cfg: Config) -> dict[str, Any] | None:
 
 
 def pipeline_engineer_package(cfg: Config, state: RunState) -> dict[str, Any]:
-    """Ограниченный пакет инцидента - единственный вход инженера в контекст."""
+    """The bounded incident package - the engineer's only entry into context."""
 
     from .pipeline_engineer import PipelineIncidentStore
 
@@ -467,16 +468,16 @@ def _reserve_pipeline_engineer_in_state(
     memory_audit_before: int,
     relay_owner_thread_id: str,
 ) -> tuple[LaunchDescriptor, ...]:
-    """Завести ровно одного дежурного инженера на открытый инцидент.
+    """Reserve exactly one on-call engineer for an open incident.
 
-    Инженер чинит пайплайн, а не задачу. Поэтому он намеренно НЕ берёт
-    ресурсы пострадавшей задачи: их может держать сорвавшаяся сессия, и
-    ожидание блокировки означало бы, что чинить приходит тот, кто сам
-    заблокирован. По той же причине состояние задачи не переводится и в
-    active_task_ids она не добавляется - инженер не занимает слот работы.
+    The engineer repairs the pipeline, not the task. So it deliberately does
+    NOT take the affected task's resources: the failed session may hold
+    them, and waiting on the lock would mean the repairer arrives blocked
+    itself. For the same reason the task state is not changed and the task
+    is not added to active_task_ids - the engineer takes no work slot.
 
-    Задача из инцидента нужна только как контекст: от неё берётся
-    каталог, роль в заголовке и базовая линия области.
+    The incident's task is needed only as context: its directory, the role
+    in the title and the scope baseline.
     """
 
     incident = open_pipeline_engineer_incident(cfg)
@@ -1310,7 +1311,7 @@ def _build_descriptor(
         else:
             key = logical_model(plan.model_strategy, execution_mode)
             model = MODEL_IDS[key]
-            # Перенайм поднимает ступень усилия поверх записанной в плане.
+            # A re-hire raises the effort step above the one recorded in the plan.
             thinking = task_effort(plan, state, task_id)
     if kind == "pipeline_engineer":
         package = pipeline_engineer_package(cfg, state)

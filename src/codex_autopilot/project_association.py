@@ -146,18 +146,18 @@ def _contains(root: Path, target: Path) -> bool:
     return True
 
 
-# --- R6: разрешение на мутацию корней сохранённого проекта -----------------
+# --- R6: permission to mutate the saved project's roots --------------------
 
 PROJECT_ROOT_AUTHORIZATION_PREFIX = "AUTOPILOT_PROJECT_ROOT_AUTHORIZATION"
 
 
 def project_root_authorization_statement(project_id: str, root: Path) -> str:
-    """Канонический текст разрешения на добавление корня в проект.
+    """The canonical text of the permission to add a root to the project.
 
-    Текст, а не флаг, потому что хранится он в Project Memory как решение
-    пользователя и должен опознаваться точным совпадением. Он называет
-    конкретный проект и конкретный корень: разрешение, данное одному
-    проекту, не открывает другой.
+    Text, not a flag, because it is stored in Project Memory as a user
+    decision and must be recognized by exact match. It names a specific
+    project and a specific root: a permission given to one project does not
+    open another.
     """
 
     canonical = Path(str(root)).expanduser().resolve()
@@ -168,13 +168,13 @@ def project_root_authorization_statement(project_id: str, root: Path) -> str:
 
 
 def project_root_mutation_authorized(memory: Any, project_id: str, root: Path) -> bool:
-    """Есть ли записанное решение пользователя на эту мутацию.
+    """Is there a recorded user decision for this mutation.
 
-    R6 отказывает по умолчанию. Прежде ``ensure_project_root`` при каждом
-    создании молча дописывал канонический корень в сохранённый проект -
-    то есть рантайм менял настройку пользователя, не спросив и не сказав.
-    Отсутствие памяти или ошибка чтения читаются как "разрешения нет":
-    закрытый отказ не должен зависеть от доступности хранилища.
+    R6 refuses by default. ``ensure_project_root`` used to silently append
+    the canonical root to the saved project on every creation - the runtime
+    changed the user's setting without asking or telling. A missing memory
+    or a read error reads as "no permission": a closed refusal must not
+    depend on the store being available.
     """
 
     if memory is None or not project_id:

@@ -38,12 +38,12 @@ def _is_within(target: Path, root: Path) -> bool:
 
 
 class ProjectRootDrift(AppServerError):
-    """Канонический корень отсутствует среди корней сохранённого проекта.
+    """The canonical root is missing from the saved project's roots.
 
-    R6: это расхождение состояния, а не задача клиента. Прежде оно молча
-    чинилось вызовом ``project/update``, то есть рантайм менял сохранённый
-    проект пользователя, ничего об этом не сказав. Теперь он отказывает,
-    а мутация остаётся отдельным, отдельно разрешённым действием.
+    R6: a state discrepancy, not the client's job. It used to be repaired
+    silently by calling ``project/update``, i.e. the runtime changed the
+    user's saved project without a word. Now it refuses, and the mutation
+    remains a separate, separately permitted action.
     """
 
     def __init__(self, project_id: str, root: Path, existing: tuple[Path, ...]) -> None:
@@ -57,24 +57,24 @@ class ProjectRootDrift(AppServerError):
         )
 
 
-# Как часто спрашивать сервер о состоянии собственного хода и сколько
-# ждать подтверждения, прежде чем считать его оборвавшимся.
+# How often to ask the server about our own turn's state, and how long to
+# wait for confirmation before treating it as broken off.
 TURN_PROBE_SECONDS = 60.0
 TURN_CONFIRM_SECONDS = 5.0
 TERMINAL_UNFINISHED_TURN_STATUSES = frozenset({"interrupted", "failed"})
 
 
 class TurnAbandoned(AppServerError):
-    """Ход кончился, но не успехом: ждать его завершения больше нечего."""
+    """The turn ended, but not in success: there is no completion left to wait for."""
 
 
 class TurnTimeout(AppServerError):
-    """Ход модели не уложился в бюджет, хотя App Server отвечал исправно.
+    """The model turn ran over its budget although App Server answered fine.
 
-    Прежде это место поднимало общий `Timed out waiting for App Server`.
-    На живом прогоне v1.0 оно дважды отправило и модель, и человека
-    чинить App Server и права, тогда как App Server был здоров: не
-    уложился ход модели, запущенный на усилии рабочего воркера.
+    This spot used to raise the generic `Timed out waiting for App Server`.
+    On the live v1.0 run it twice sent both the model and the human to
+    repair App Server and permissions while App Server was healthy: the
+    model turn, launched at the production worker's effort, ran over.
     """
 
 
@@ -98,11 +98,11 @@ class TurnResult:
     errors: list[dict[str, Any]]
 
 
-# Originator, которым само приложение поднимает свой App Server. Ветка,
-# созданная под другим значением, принадлежит "другому приложению": она
-# видна в сайдбаре, но требует ручного перехвата, а пайплайн нажать эту
-# кнопку не может. Значение взято из самого Codex Desktop, где оно стоит
-# значением по умолчанию для CODEX_INTERNAL_ORIGINATOR_OVERRIDE.
+# The originator the app itself starts its App Server with. A thread
+# created under another value belongs to "another application": it is
+# visible in the sidebar but demands a manual takeover, and the pipeline
+# cannot press that button. The value is taken from Codex Desktop itself,
+# where it is the default for CODEX_INTERNAL_ORIGINATOR_OVERRIDE.
 DESKTOP_ORIGINATOR = "Codex Desktop"
 
 
@@ -182,11 +182,11 @@ class AppServerClient:
                 "clientInfo": {
                     "name": "codex-autopilot",
                     "title": "Codex Autopilot Desktop Native",
-                    # Версия берётся из пакета, а не из прибитой строки.
-                    # Замерено на живом сервере: userAgent сообщал
-                    # "codex-autopilot; 0.8.0-beta", когда установлена была
-                    # 0.8.2. Ровно эта ошибка чинилась в 0.8.1 у
-                    # MCP-сервера памяти - здесь она осталась второй копией.
+                    # The version comes from the package, not a hard-coded
+                    # string. Measured on a live server: userAgent reported
+                    # "codex-autopilot; 0.8.0-beta" while 0.8.2 was installed.
+                    # Exactly this bug was fixed in 0.8.1 for the memory MCP
+                    # server - here it survived as a second copy.
                     "version": __version__,
                 },
                 "capabilities": {
@@ -194,12 +194,13 @@ class AppServerClient:
                     "mcpServerOpenaiFormElicitation": True,
                 },
             },
-            # Холодный старт App Server загружает каждый установленный плагин и
-            # каждый skill, включая чужие и сломанные. Замерено на живой машине:
-            # один плагин с невалидным YAML растянул рукопожатие за стандартные
-            # 60 секунд, preflight упал на "Timed out waiting for App Server", а
-            # модель приняла таймаут за отказ в правах. Бюджет рукопожатия
-            # отделён от обычного запроса именно поэтому.
+            # A cold App Server start loads every installed plugin and skill,
+            # foreign and broken ones included. Measured on a live machine:
+            # one plugin with invalid YAML stretched the handshake past the
+            # standard 60 seconds, preflight failed with "Timed out waiting
+            # for App Server", and the model took the timeout for a
+            # permission refusal. That is why the handshake budget is
+            # separate from an ordinary request.
             timeout=INITIALIZE_TIMEOUT,
         )
 
@@ -304,12 +305,12 @@ class AppServerClient:
             self.event_sink(method, params)
 
     def _turn_status(self, thread_id: str, turn_id: str) -> str:
-        """Состояние конкретного хода по данным сервера, а не по событиям."""
+        """The state of a specific turn per the server, not per events."""
 
         try:
             thread = self.read_thread(thread_id)
         except Exception:
-            # Недоступность чтения - не приговор ходу: ждём дальше.
+            # An unavailable read is no verdict on the turn: keep waiting.
             return ""
         for turn in thread.get("turns") or []:
             if turn.get("id") == turn_id:
@@ -327,13 +328,13 @@ class AppServerClient:
     ) -> TurnResult:
         deadline = time.monotonic() + timeout
         deferred: list[dict[str, Any]] = []
-        # Прерванный ход события `turn/completed` не пришлёт никогда. Без
-        # этой проверки диспетчер ждал его весь таймаут - четыре часа, -
-        # и прогон всё это время показывал "идёт". Замерено: дежурный
-        # инженер провёл ход в ожидании чужого окна повтора, ход
-        # оборвался, и никто этого не заметил.
+        # An interrupted turn will never send `turn/completed`. Without this
+        # check the dispatcher waited for it the whole timeout - four hours
+        # - and the run showed "running" all along. Measured: the on-call
+        # engineer spent a turn waiting for someone else's retry window, the
+        # turn broke off, and nobody noticed.
         #
-        # Раз в минуту, а не чаще: thread/read тянет всю ветку целиком.
+        # Once a minute, not more often: thread/read pulls the whole thread.
         next_probe = time.monotonic() + TURN_PROBE_SECONDS
         try:
             while True:
@@ -341,8 +342,8 @@ class AppServerClient:
                     next_probe = time.monotonic() + TURN_PROBE_SECONDS
                     status = self._turn_status(thread_id, turn_id)
                     if status in TERMINAL_UNFINISHED_TURN_STATUSES:
-                        # Подтверждение вторым чтением: мгновение перед
-                        # `completed` тот же ход виден прерванным.
+                        # Confirmed by a second read: an instant before
+                        # `completed` the same turn is seen as interrupted.
                         time.sleep(TURN_CONFIRM_SECONDS)
                         if self._turn_status(thread_id, turn_id) in TERMINAL_UNFINISHED_TURN_STATUSES:
                             raise TurnAbandoned(
@@ -351,14 +352,15 @@ class AppServerClient:
                                 "never return"
                             )
                 if pause_requested and pause_requested():
-                    # Пауза объявлена дренажной: `pause_desktop_run` пишет
-                    # `semantics: drain`, статус показывает `Pause: drain`,
-                    # и обещано, что идущие ходы доигрывают. Прежде здесь
-                    # шёл Interrupt, и пауза на деле убивала работающий ход
-                    # вместе с попыткой - шесть минут приёмки терялись от
-                    # нажатия, сделанного за мгновение до её конца.
-                    # Диспетчер перестаёт ждать; ход доигрывает сам, а его
-                    # завершение принимает доверенный Stop-хук.
+                    # The pause is declared a drain: `pause_desktop_run`
+                    # writes `semantics: drain`, the status shows
+                    # `Pause: drain`, and running turns are promised to
+                    # finish. An Interrupt used to go here, and the pause in
+                    # fact killed the running turn together with the attempt
+                    # - six minutes of acceptance lost to a press made an
+                    # instant before its end. The dispatcher stops waiting;
+                    # the turn plays out by itself, and the trusted Stop hook
+                    # accepts its completion.
                     raise PauseRequested("Pause requested")
                 try:
                     message = self.pending_events.popleft() if self.pending_events else self._get(deadline, maximum_wait=1)
@@ -423,9 +425,9 @@ class AppServerClient:
             params["runtimeWorkspaceRoots"] = [str(cwd)]
         if project_id is not None:
             params["projectId"] = project_id
-        # threadSource намеренно не передаётся и не принимается. Значение
-        # agent_created_thread помечало задачу созданной другим приложением
-        # и требовало ручного перехвата; v0.7 не передавала его вовсе.
+        # threadSource is deliberately neither passed nor accepted. The
+        # value agent_created_thread marked the task as created by another
+        # application and demanded a manual takeover; v0.7 never passed it.
         if model is not None:
             params["model"] = model
         result = self.request("thread/start", params)
@@ -610,11 +612,11 @@ class AppServerClient:
             for item in roots
             if isinstance(item, dict) and item.get("path")
         ]
-        # Членство - вложенность, а не равенство: ровно то правило, по
-        # которому проект выбирается в preflight (``_project_contains``).
-        # Прежняя проверка на равенство считала расхождением обычный
-        # случай, когда канонический каталог лежит внутри корня проекта,
-        # и дописывала туда ещё один корень при каждом создании.
+        # Membership is nesting, not equality: the very rule preflight picks
+        # the project by (``_project_contains``). The old equality check
+        # counted the ordinary case - the canonical directory inside the
+        # project root - as a discrepancy, and appended another root there
+        # on every creation.
         if any(_is_within(canonical_root, item) for item in existing_paths):
             return project
         raise ProjectRootDrift(project_id, canonical_root, tuple(existing_paths))

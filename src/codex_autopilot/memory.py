@@ -548,11 +548,11 @@ class ProjectMemory:
         self.initialize()
         kind = self._required(kind, "kind", 64)
         if kind not in EVIDENCE_KINDS:
-            # Отказ обязан называть допустимое. Замерено: воркер перебрал
-            # filesystem_verification, command_output, test_result и
-            # verification, каждый раз получая только "unsupported", потом
-            # ушёл читать исходники плагина. Шесть минут вместо сорока
-            # секунд.
+            # A refusal must name what is accepted. Measured: a worker tried
+            # filesystem_verification, command_output, test_result and
+            # verification, getting only "unsupported" each time, then went
+            # to read the plugin sources. Six minutes instead of forty
+            # seconds.
             raise MemoryValidationError(
                 f"unsupported evidence kind: {kind}. "
                 f"allowed kinds: {', '.join(sorted(EVIDENCE_KINDS))}"
@@ -917,9 +917,9 @@ class ProjectMemory:
             and origin != "user"
             and self._has_external_evidence(evidence_ids)
         ):
-            # Пользователь вправе принять решение, сославшись на внешний
-            # текст: решает он. Запрет закрывает другой путь - когда агент
-            # проводит найденную снаружи инструкцию как принятое решение.
+            # The user may make a decision citing external text: they decide.
+            # The ban closes another path - an agent passing off an
+            # instruction found outside as an accepted decision.
             raise MemoryValidationError(
                 "R18: a non-user decision resting on external content must "
                 "begin as proposed; external content does not decide"
@@ -927,7 +927,7 @@ class ProjectMemory:
         return self._create_record(category="decision", statement=statement, origin=origin, status=status, created_by=created_by, reason=reason, scope=scope, evidence_ids=evidence_ids, provider=provider, provider_thread_id=provider_thread_id)
 
     def _has_external_evidence(self, evidence_ids: Sequence[str]) -> bool:
-        """R18: опирается ли решение на evidence ниже порога Truth."""
+        """R18: does the decision rest on evidence below the Truth threshold."""
 
         if not evidence_ids:
             return False
@@ -943,12 +943,12 @@ class ProjectMemory:
         )
 
     def accepted_user_decision(self, statement: str) -> dict[str, Any] | None:
-        """Принятое решение пользователя с ровно таким текстом, или None.
+        """An accepted user decision with exactly this text, or None.
 
-        Точное совпадение, а не поиск: это лукап авторизации, и он не
-        должен срабатывать на похожую формулировку. Ограничение по
-        origin - часть проверки, а не фильтр для удобства: решение,
-        записанное агентом, авторизацией не является.
+        An exact match, not a search: this is an authorization lookup, and
+        it must not fire on a similar wording. The origin restriction is
+        part of the check, not a convenience filter: a decision recorded by
+        an agent is not an authorization.
         """
 
         text = self._required(statement, "statement")
@@ -968,9 +968,9 @@ class ProjectMemory:
 
     def add_constraint(self, *, statement: str, origin: str, created_by: str, scope: str = "project", reason: str | None = None, evidence_ids: Sequence[str] = ()) -> dict[str, Any]:
         if origin != "user" and self._has_external_evidence(evidence_ids):
-            # R18. У Constraint нет состояния "предложено": он действует
-            # с момента записи. Поэтому здесь отказ, а не понижение до
-            # proposed, как у решения: понижать нечего.
+            # R18. A Constraint has no "proposed" state: it is in force from
+            # the moment it is recorded. So this is a refusal, not a
+            # demotion to proposed as with a decision: nothing to demote.
             raise MemoryValidationError(
                 "R18: a non-user constraint cannot rest on external content; "
                 "record it as an observation and raise a Question instead"
@@ -1023,11 +1023,10 @@ class ProjectMemory:
             )
         return self.get_record(question_id)
 
-    # R18: состояния, в которых запись перестаёт быть предположением и
-    # начинает управлять работой. Переход в них - второй момент, когда
-    # заражение обязано быть перепроверено: проверка при приёме
-    # обходится в два вызова, если сначала записать "предложено", а
-    # потом просто сменить статус.
+    # R18: states in which a record stops being a supposition and starts
+    # governing the work. Entering them is the second moment when taint
+    # must be re-checked: the intake check is bypassed in two calls by
+    # first recording "proposed" and then simply changing the status.
     _BINDING_STATUSES = frozenset({"accepted", "active", "verified"})
 
     def _rests_on_external(self, db: sqlite3.Connection, record_id: str) -> bool:
@@ -1419,7 +1418,7 @@ class ProjectMemory:
             return []
         return [{"id": item["id"], "category": item["category"], "status": item["status"]} for item in page.records]
 
-    # --- делегаты в вынесенные модули ---------------------------------
+    # --- delegates to the extracted modules ----------------------------
     def render_views(self) -> None:
         from .memory_views import render_views
         return render_views(self)

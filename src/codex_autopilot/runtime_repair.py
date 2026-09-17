@@ -1,27 +1,28 @@
-"""Ограниченная починка рантайма самим рантаймом.
+"""Bounded repair of the runtime by the runtime itself.
 
-Задача перестаёт двигаться не только из-за проекта. Она встаёт из-за
-самого рантайма: ветка ушла не в ту фазу, ответ воркера не разобрался,
-диспетчер упал на собственной ошибке. До сих пор это чинил человек - и
-значит, у пользователя без такого человека прогон просто стоял.
+A task stops moving not only because of the project. It stops because of
+the runtime itself: a thread went into the wrong phase, a worker's reply
+did not parse, the dispatcher crashed on its own error. Until now a human
+repaired that - so for a user without such a human the run simply stood.
 
-Здесь дежурный инженер получает право править код рантайма, но не право
-объявлять починку. Правка проходит шлюз: тест-воспроизведение обязан
-УПАСТЬ на нынешнем коде и ПРОЙТИ на исправленном, весь набор тестов
-обязан остаться зелёным, а охранные функции - побайтно теми же. Если
-что-то из этого не так, живой установки правка не касается вовсе.
+Here the on-call engineer gets the right to edit the runtime's code, but
+not the right to declare a repair. An edit passes a gateway: the
+reproduction test must FAIL on the current code and PASS on the fixed
+one, the whole test suite must stay green, and the guarded functions must
+stay byte-identical. If any of that is not so, the live installation is
+not touched at all.
 
-Правка - это НАБОР изменений, а не одно. Так устроены настоящие
-починки: разделение ошибки модели и поломки машины на прогоне v1.0
-тронуло три модуля сразу, и по одному их не применить - после первого
-набор тестов красный, и шлюз справедливо отказал бы. По той же причине
-разрешено заводить новый модуль: снятие формата v0.8 потребовало вынести
-код в отдельный файл, потому что прежний упёрся в потолок размера.
+A repair is a SET of edits, not one. That is how real repairs are shaped:
+separating a model error from a machine fault on the v1.0 run touched
+three modules at once, and they cannot be applied one at a time - after
+the first the suite is red, and the gateway would rightly refuse. For the
+same reason a new module may be added: removing the v0.8 format required
+moving code into a separate file because the old one hit the size limit.
 
-Почему это работает без перезапуска: каждый ход диспетчера - отдельный
-процесс `python -m codex_autopilot.cli`, он читает исходники заново.
-Правка действует со следующего хода, и ничего не переустанавливается
-поверх работающего.
+Why this works without a restart: every dispatcher turn is a separate
+`python -m codex_autopilot.cli` process that reads the sources anew. The
+edit takes effect on the next turn, and nothing is reinstalled over a
+running one.
 """
 
 from __future__ import annotations
@@ -40,12 +41,12 @@ from typing import Sequence
 
 
 class RuntimeRepairError(Exception):
-    """Правка не прошла шлюз и до живой установки не дошла."""
+    """The edit did not pass the gateway and never reached the live installation."""
 
 
-# Модули, которые инженер не правит никогда. Полномочия и доверие не
-# меняет тот, кто ими пользуется, а шлюз не переписывает сам себя -
-# иначе первая же правка снимает все остальные проверки.
+# Modules the engineer never edits. Authority and trust are not changed by
+# the one who uses them, and the gateway does not rewrite itself -
+# otherwise the very first edit removes every other check.
 UNPATCHABLE_MODULES = frozenset(
     {
         "engineer_authority.py",
@@ -54,20 +55,19 @@ UNPATCHABLE_MODULES = frozenset(
     }
 )
 
-# Функции, текст которых обязан пережить любую правку без изменений.
-# Это те самые охранники, что отказывали по делу: владение веткой,
-# владение резервацией, принадлежность поверхности. Патч, задевший
-# любую из них, отклоняется целиком - даже когда тесты зелёные.
+# Functions whose text must survive any edit unchanged. These are the very
+# guards that refused for good reason: thread ownership, reservation
+# ownership, surface membership. A patch touching any of them is refused
+# whole - even when the tests are green.
 GUARDED_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("lifecycle_base.py", "_require_desktop_owned"),
     ("lifecycle_base.py", "_require_relay_executor"),
     ("lifecycle_base.py", "_dispatcher_owns_reservation"),
     ("cli.py", "_relay_executor_thread_id"),
-    # Бухгалтерию инцидентов инженер чинить вправе - там и случаются
-    # настоящие дефекты, один такой мы чинили руками на прогоне v1.0.
-    # Но не то, чем меряется его собственная работа: класс поломки,
-    # тождество тикета, словарь действий и обязательность проверки
-    # здоровья остаются как есть.
+    # The engineer may repair the incident bookkeeping - that is where real
+    # defects happen; we fixed one by hand on the v1.0 run. But not what its
+    # own work is measured by: the fault class, the ticket identity, the
+    # action vocabulary and the mandatory healthcheck stay as they are.
     ("pipeline_engineer.py", "classify_incident"),
     ("pipeline_engineer.py", "incident_signature"),
     ("pipeline_engineer.py", "escalate_to_user"),
@@ -80,7 +80,7 @@ TEST_TIMEOUT_SECONDS = 900
 
 @dataclass(frozen=True, slots=True)
 class RuntimeTree:
-    """Где лежит правимый рантайм и его доказательства."""
+    """Where the repairable runtime and its proofs live."""
 
     src: Path
     tests: Path
@@ -96,13 +96,13 @@ class RuntimeTree:
 
 @dataclass(frozen=True, slots=True)
 class Edit:
-    """Одно изменение внутри набора.
+    """One change within a set.
 
-    ``old`` - точный фрагмент, который заменяется, и он обязан
-    встречаться в модуле ровно один раз. ``old`` равный None означает
-    новый модуль: тогда ``new`` - всё его содержимое, а модуль не должен
-    существовать. Перезаписать существующий файл целиком нельзя: правка
-    называет место, а не подменяет файл.
+    ``old`` is the exact fragment being replaced, and it must occur in the
+    module exactly once. ``old`` equal to None means a new module: then
+    ``new`` is its whole content, and the module must not exist. An
+    existing file cannot be overwritten whole: an edit names a place, it
+    does not swap a file.
     """
 
     module: str
@@ -154,12 +154,12 @@ class PatchRecord:
 
 
 def resolve_runtime_tree(*, module_file: str | None = None) -> RuntimeTree:
-    """Дерево рантайма по собственному расположению этого модуля.
+    """The runtime tree, from this module's own location.
 
-    Одинаково работает в установке (<...>/runtime/src, <...>/runtime/tests)
-    и в рабочем дереве (repo/src, repo/tests): и там, и там тесты лежат
-    рядом с исходниками. Без тестов чинить нельзя - доказать, что правка
-    не сломала соседнее, будет нечем.
+    Works the same in an installation (<...>/runtime/src, <...>/runtime/tests)
+    and in a working tree (repo/src, repo/tests): in both, the tests live
+    next to the sources. Without tests no repair is possible - there would
+    be nothing to prove the edit broke nothing else.
     """
 
     here = Path(module_file or __file__).absolute()
@@ -176,18 +176,18 @@ def resolve_runtime_tree(*, module_file: str | None = None) -> RuntimeTree:
 
 
 def guard_hashes(src: Path) -> dict[str, str]:
-    """Хэши текста охранных функций - тождество, которое нельзя тронуть.
+    """Hashes of the guarded functions' text - an identity that cannot be touched.
 
-    Три вещи здесь стоят не случайно, каждую назвала проверяющая:
+    Three things here are not accidental; the reviewer named each:
 
-    - имя обязано встречаться в модуле ровно один раз. Python исполняет
-      ПОСЛЕДНЕЕ определение, а первая редакция хэшировала ПЕРВОЕ -
-      дубликат, дописанный после оригинала, проходил проверку;
-    - хэш считается от декораторов, а не от строки ``def``:
-      ``get_source_segment`` декораторы не включает, и обёртка над
-      охранником оставалась бы невидимой;
-    - считаются все определения с этим именем, включая вложенные: их
-      быть не должно вовсе.
+    - the name must occur in the module exactly once. Python executes the
+      LAST definition, and the first draft hashed the FIRST - a duplicate
+      appended after the original passed the check;
+    - the hash covers the decorators, not just the ``def`` line:
+      ``get_source_segment`` excludes decorators, and a wrapper around a
+      guard would have stayed invisible;
+    - every definition with this name counts, nested ones included: there
+      must be none at all.
     """
 
     hashes: dict[str, str] = {}
@@ -216,7 +216,7 @@ def _definitions(text: str, name: str) -> list[ast.FunctionDef | ast.AsyncFuncti
 
 
 def _decorated_segment(text: str, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    """Текст определения вместе с его декораторами."""
+    """The definition's text together with its decorators."""
 
     lines = text.splitlines(keepends=True)
     start = min([node.lineno, *(item.lineno for item in node.decorator_list)])
@@ -224,21 +224,21 @@ def _decorated_segment(text: str, node: ast.FunctionDef | ast.AsyncFunctionDef) 
     return "".join(lines[start - 1 : end])
 
 
-# Что в копию не едет. Свои же прошлые правки копировать незачем, а
-# состояние живого прогона в копии не должно оказаться вовсе: тесты
-# инженера там же и исполняются.
+# What does not go into the copy. Our own past patches need no copying,
+# and the live run's state must not end up in the copy at all: the
+# engineer's tests execute right there.
 STAGING_EXCLUDES = frozenset(
     {".git", ".codex-autopilot", "patches", "__pycache__", ".venv", "venv", "build", "dist"}
 )
 
 
 def _copy_runtime(tree: RuntimeTree, staging: Path) -> None:
-    """Скопировать дерево целиком, а не только исходники с тестами.
+    """Copy the whole tree, not only the sources and tests.
 
-    Так уже ошибались здесь: в копию клали src и tests, а трети набора
-    нужен ещё plugins - в копии тесты падали 94 раза подряд, и шлюз
-    отклонял бы ЛЮБУЮ правку, включая верную. Проверка обязана идти на
-    том же дереве, на котором идёт обычный прогон тестов.
+    This was already got wrong here: the copy held src and tests, while a
+    third of the suite also needs plugins - 94 tests failed in the copy, and
+    the gateway would have refused ANY edit, a correct one included. The
+    check must run on the same tree the ordinary test run does.
     """
 
     shutil.copytree(
@@ -251,10 +251,10 @@ def _copy_runtime(tree: RuntimeTree, staging: Path) -> None:
         raise RuntimeRepairError(f"the staged copy has no runtime sources: {staging}")
     if not (staging / "tests").is_dir():
         raise RuntimeRepairError(f"the staged copy has no test suite: {staging}")
-    # Копия обязана быть репозиторием: часть набора спрашивает git -
-    # Project Memory требует репозиторий, а проверка релиза смотрит
-    # .gitignore. Без этого шлюз отклонял бы верную правку по причине,
-    # к ней не относящейся. История не нужна, нужен сам репозиторий.
+    # The copy must be a repository: part of the suite asks git - Project
+    # Memory requires a repository, and the release check reads
+    # .gitignore. Without this the gateway would refuse a correct edit for a
+    # reason unrelated to it. No history is needed, only the repository.
     subprocess.run(
         [_git(), "init", "-q"],
         cwd=staging,
@@ -267,7 +267,7 @@ def _copy_runtime(tree: RuntimeTree, staging: Path) -> None:
 
 
 def _git() -> str:
-    """Git ищется в PATH: своей копии у рантайма нет."""
+    """Git is looked up in PATH: the runtime has no copy of its own."""
 
     found = shutil.which("git")
     if not found:
@@ -285,7 +285,7 @@ def apply_runtime_patch(
     at: str,
     tree: RuntimeTree | None = None,
 ) -> PatchRecord:
-    """Провести набор правок через шлюз и применить его целиком."""
+    """Take a set of edits through the gateway and apply it whole."""
 
     tree = tree or resolve_runtime_tree()
     if not edits:
@@ -310,8 +310,8 @@ def apply_runtime_patch(
                 "a repair is accepted only for a failure that can be shown first"
             )
 
-        # Набор применяется целиком и только в копии: пока он не доказан,
-        # живая установка о нём не знает.
+        # The set is applied whole and only in the copy: until it is proven,
+        # the live installation knows nothing of it.
         changes = _apply_edits(staging / "src" / "codex_autopilot", edits)
 
         after = _run_one_test(staging, test_name)
@@ -353,7 +353,7 @@ def apply_runtime_patch(
 
 
 def revert_runtime_patch(patch_id: str, *, tree: RuntimeTree | None = None) -> PatchRecord:
-    """Снять набор правок целиком вместе с его тестом."""
+    """Revert a set of edits whole, together with its test."""
 
     tree = tree or resolve_runtime_tree()
     folder = tree.root / "patches" / patch_id
@@ -383,7 +383,7 @@ def revert_runtime_patch(patch_id: str, *, tree: RuntimeTree | None = None) -> P
 
 
 def _apply_edits(package: Path, edits: Sequence[Edit]) -> tuple[ModuleChange, ...]:
-    """Наложить набор в копии и вернуть, что с чем стало."""
+    """Apply the set in the copy and return what became of what."""
 
     originals: dict[str, str | None] = {}
     for edit in edits:
@@ -426,9 +426,9 @@ def _apply_edits(package: Path, edits: Sequence[Edit]) -> tuple[ModuleChange, ..
 def _check_module_name(module: str) -> None:
     if module != Path(module).name or not module.endswith(".py"):
         raise RuntimeRepairError(f"a repair names modules of the runtime, not {module!r}")
-    # Имена модулей рантайма строчные, и сравнение идёт по строчной
-    # форме: файловая система установки не различает регистр, и
-    # ``Hook_Trust.py`` записался бы поверх hook_trust.py, минуя запрет.
+    # Runtime module names are lower case, and the comparison uses the
+    # lower-case form: the installation's file system is case-insensitive,
+    # and ``Hook_Trust.py`` would land on hook_trust.py, past the ban.
     if module != module.lower():
         raise RuntimeRepairError(
             f"runtime modules are named in lower case; {module!r} would land on "
@@ -475,11 +475,12 @@ def _run_suite(staging: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _run(command: list[str], staging: Path) -> subprocess.CompletedProcess[str]:
-    """Прогон в копии и без прав на живой прогон.
+    """A run in the copy, with no rights over the live run.
 
-    Тест пишет инженер, то есть это его код. Он выполняется в копии, а
-    окружение чистится от CODEX_*: без владеющей ветки любая попытка
-    тронуть живой прогон упрётся в того же охранника, что и всегда.
+    The engineer writes the test, so it is the engineer's code. It executes
+    in the copy, and the environment is scrubbed of CODEX_*: without the
+    owning thread any attempt to touch the live run hits the same guard as
+    always.
     """
 
     home = staging / "home"
@@ -533,11 +534,11 @@ def _sha256(text: str) -> str:
 
 
 def _tail(result: subprocess.CompletedProcess[str], *, limit: int = 1_500) -> str:
-    """Что именно упало - именами, а не последними байтами вывода.
+    """What exactly failed - by name, not by the last bytes of output.
 
-    Хвост вывода unittest - это предупреждения и точки; имена упавших
-    тестов стоят выше и в него не попадали. Отказ, не называющий
-    причину, заставляет угадывать (R31), поэтому имена идут первыми.
+    The tail of unittest output is warnings and dots; the names of failed
+    tests stand higher and never made it in. A refusal that does not name
+    the cause forces guessing (R31), so the names come first.
     """
 
     output = (result.stdout or "") + (result.stderr or "")

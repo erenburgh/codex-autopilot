@@ -376,10 +376,10 @@ def _combined_input_schema() -> dict[str, Any]:
         choices.append(
             {
                 "type": "object",
-                # Описание операции доходит до модели только отсюда: снаружи
-                # объявлен один инструмент, и подписи отдельных операций в
-                # него не попадали вовсе. Написанное в _ACTION_DEFINITIONS
-                # было мёртвым текстом.
+                # The operation description reaches the model only from here:
+                # one tool is declared outside, and the signatures of
+                # individual operations never made it in. What was written in
+                # _ACTION_DEFINITIONS was dead text.
                 "description": definition.get("description", ""),
                 "additionalProperties": False,
                 "properties": {
@@ -454,15 +454,15 @@ class MemoryMcpServer:
         return args
 
     def _resolve_current_task(self, plan: Any, state: Any, requested: Any) -> Any:
-        """Воркер получает свою задачу, а не первую попавшуюся.
+        """A worker gets its own task, not the first one at hand.
 
-        Прежняя строка `plan.milestones[state.milestone_index]` родом из
-        последовательной модели v0.7, где на весь прогон был один
-        указатель. На графе он остаётся нулём: в живом прогоне v1.0 из
-        23 задач с двумя параллельными слотами `milestone_index` равен 0,
-        и любой воркер получал в ответ M1 - чужую задачу под видом своей.
-        Проверка доверия в preflight эту дыру не ловила: она выполняется
-        до создания run-state и уходит в ветку `initialized: False`.
+        The old line `plan.milestones[state.milestone_index]` came from the
+        sequential v0.7 model, where one pointer served the whole run. On a
+        graph it stays zero: on the live 23-task v1.0 run with two parallel
+        slots `milestone_index` was 0, and every worker received M1 in
+        reply - someone else's task in the guise of its own. The preflight
+        trust probe did not catch this hole: it runs before run-state is
+        created and takes the `initialized: False` branch.
         """
 
         from .task_state import ACTIVE_TASK_STATES
@@ -483,16 +483,16 @@ class MemoryMcpServer:
             if value in {item.value for item in ACTIVE_TASK_STATES}
         )
         if not active:
-            # Выбирать не из чего - значит и догадки нет. Проба доверия в
-            # preflight зовёт `current` именно здесь: run-state ещё не имеет
-            # ни одной активной задачи, и своей задачи у пробы нет вовсе.
-            # Отказ в этой точке ломал запуск на ровном месте.
+            # Nothing to choose from means no guess either. The preflight
+            # trust probe calls `current` exactly here: run-state has no
+            # active task yet, and the probe has no task of its own at all.
+            # A refusal at this point broke the launch out of nowhere.
             return None
         if len(active) == 1:
             return plan.task_map[active[0]]
-        # Догадкой не разрешается только настоящая неоднозначность:
-        # несколько работающих задач. Прежний код молча отвечал про
-        # веху с индексом ноль, то есть про M1.
+        # Only real ambiguity is not resolved by guessing: several running
+        # tasks. The old code silently answered about the milestone at index
+        # zero, that is about M1.
         raise MemoryValidationError(
             "task_id is required on a task graph: this run has "
             f"{len(active)} active tasks ({', '.join(active)}) and the caller's task "
@@ -500,27 +500,27 @@ class MemoryMcpServer:
         )
 
     def _current(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Отдать задачу и заверенный исходный запрос пользователя.
+        """Hand over the task and the attested original user request.
 
-        Текст запроса не вкладывается в промпт копией - он велик и
-        неизменен на весь прогон, - поэтому воркер забирает его отсюда.
-        Прежде заверять его должен был сам воркер: сверить длину и
-        sha256 из своего промпта с полученным текстом. Это не работало
-        дважды.
+        The request text is not embedded in the prompt as a copy - it is
+        large and fixed for the whole run - so the worker fetches it here.
+        The worker itself used to have to attest it: compare the length and
+        sha256 from its prompt with the received text. That failed twice
+        over.
 
-        Во-первых, изолят постобработки Codex не имеет ни `crypto`, ни
-        `TextEncoder`: посчитать sha256 воркеру нечем. Контракт при этом
-        разрешает ровно один вызов, и повторить его нельзя. Получалась
-        ловушка - заверить нечем, повторить запрещено, - и задача честно
-        вставала с ENVIRONMENT_FAILURE. Так встали M4 и M11.
+        First, Codex's post-processing isolate has neither `crypto` nor
+        `TextEncoder`: the worker has nothing to compute sha256 with. The
+        contract allows exactly one call, which cannot be repeated. A trap:
+        nothing to attest with, repeating forbidden - and the task honestly
+        stopped with ENVIRONMENT_FAILURE. That is how M4 and M11 stopped.
 
-        Во-вторых, проверку, которую делает сам проверяемый, можно молча
-        не делать, и никто не заметит.
+        Second, a check done by the one being checked can be silently
+        skipped, and nobody would notice.
 
-        Теперь заверяет сервер: воркер передаёт ожидаемый хэш из своего
-        промпта, сервер считает хэш текста, который собирается отдать, и
-        либо отдаёт заверенный текст, либо падает закрыто. Считать и
-        сравнивать воркеру не нужно, а пропустить проверку - нельзя.
+        Now the server attests: the worker passes the expected hash from its
+        prompt, the server hashes the text it is about to return, and either
+        returns the attested text or fails closed. The worker need not
+        compute or compare, and cannot skip the check.
         """
 
         args = self._validate_keys(args, {"task_id", "expect_user_request_sha256"})
@@ -601,20 +601,20 @@ class MemoryMcpServer:
         return self.memory.record_evidence(**args)
 
     def _require_active_milestone_link(self, args: dict[str, Any]) -> None:
-        """Пока веха в работе, свидетельство обязано её называть.
+        """While a milestone is in progress, evidence must name it.
 
-        Ворота завершения спрашивают свидетельства, связанные с вехой.
-        Запись без milestone_id принималась молча, и отказ наступал уже
-        после того, как весь ход потрачен.
+        The completion gate asks for evidence linked to the milestone. A
+        record without milestone_id used to be accepted silently, and the
+        refusal came only after the whole turn was spent.
 
-        Замерено: воркер M2 записал четыре свидетельства, положив
-        идентификатор вехи в created_by ("M2-FILE-EXISTS") вместо
-        milestone_id. В milestone_evidence не легло ничего, завершение
-        отклонили, ход пропал целиком.
+        Measured: worker M2 recorded four pieces of evidence, putting the
+        milestone id into created_by ("M2-FILE-EXISTS") instead of
+        milestone_id. Nothing landed in milestone_evidence, completion was
+        refused, the turn was lost entirely.
 
-        Веха не подставляется за воркера: привязка, которую он не назвал,
-        была бы выдуманной. Вызов отклоняется с именем активной вехи,
-        чтобы он повторил его сам.
+        The milestone is not filled in for the worker: a link it did not
+        name would be invented. The call is refused with the active
+        milestone's name so it can repeat the call itself.
         """
 
         if str(args.get("milestone_id") or "").strip():

@@ -1,19 +1,18 @@
-"""Правило R7: работа не выходит за объявленную область.
+"""Rule R7: work stays inside the declared scope.
 
-Область задачи объявляется через её ResourceClaim с файловыми kind
-(path/directory/glob) и режимом доступа write или exclusive. Заявка с
-доступом read областью записи не является: прочитать файл можно, менять
-его - нет.
+A task's scope is declared through its ResourceClaims with file kinds
+(path/directory/glob) and access mode write or exclusive. A claim with
+read access is not a write scope: the file may be read, not changed.
 
-Задача, не объявившая ни одной файловой заявки на запись, не вправе
-менять ничего. Это не формальность: в живом прогоне v0.9 у ВСЕХ задач
-resources был пуст, поэтому выйти за область было невозможно по
-построению, и воркеры правили что угодно. Пустая заявка должна давать
-громкий дефект, а не молчаливое разрешение.
+A task that declared no file write claim may change nothing. That is not
+a formality: on the live v0.9 run ALL tasks had empty resources, so
+leaving the scope was impossible by construction, and workers edited
+anything. An empty claim must yield a loud defect, not a silent permit.
 
-Фактически изменённые пути берутся из git. Если наблюдение недоступно
-(проект не под git, git не установлен), аудит честно сообщает, что
-проверка не проводилась, вместо того чтобы вернуть "нарушений нет".
+The paths actually changed come from git. If the observation is
+unavailable (the project is not under git, git is not installed), the
+audit honestly reports that the check was not performed instead of
+returning "no violations".
 """
 
 from __future__ import annotations
@@ -43,34 +42,34 @@ __all__ = [
 
 
 class ScopeNotObservable(Exception):
-    """Изменённые пути наблюдать нечем; область не проверена."""
+    """No way to observe the changed paths; the scope was not checked."""
 
 
 def scope_baseline(root: Path) -> str | None:
-    """Ревизия на момент старта задачи, относительно которой считается диф."""
+    """The revision at task start, against which the diff is computed."""
 
     head = _git(root, "rev-parse", "HEAD")
     return head.strip() if head else None
 
 
 def observe_changed_paths(root: Path, baseline: str | None) -> tuple[str, ...]:
-    """Абсолютные пути, изменённые с baseline, включая незакоммиченное.
+    """Absolute paths changed since the baseline, uncommitted ones included.
 
-    Собственное состояние рантайма (.codex-autopilot) исключается: эти
-    файлы пишет не воркер, а сам автопилот - журнал, резервирования,
-    файлы передачи. Без исключения любая задача нарушала бы R7 всегда,
-    и правило превратилось бы в шум, который перестают читать.
+    The runtime's own state (.codex-autopilot) is excluded: those files are
+    written not by the worker but by Autopilot itself - the journal, the
+    reservations, the handoff files. Without the exclusion every task would
+    always violate R7, and the rule would turn into noise nobody reads.
 
-    Поднимает ScopeNotObservable, если наблюдение невозможно - вызывающий
-    обязан записать это как непроверенное, а не как чистый результат.
+    Raises ScopeNotObservable if observation is impossible - the caller
+    must record that as unchecked, not as a clean result.
     """
 
     root = root.resolve(strict=False)
     if _git(root, "rev-parse", "--show-toplevel") is None:
         raise ScopeNotObservable(f"{root} is not a git work tree")
-    # Имена берутся без разбора статус-префиксов: git отдаёт их как есть.
-    # --no-renames оставляет обе стороны переименования, потому что для
-    # области это два разных пути, а не один.
+    # Names are taken without parsing status prefixes: git returns them as
+    # is. --no-renames keeps both sides of a rename, because for the scope
+    # those are two different paths, not one.
     against = baseline or "HEAD"
     changed = _git(root, "diff", "--name-only", "--no-renames", against)
     if changed is None:
@@ -92,14 +91,14 @@ def _is_runtime_state(name: str) -> bool:
     head = Path(name).parts[:1]
     if not head:
         return False
-    # Рантайм сам кладёт рядом свои архивы: `.codex-autopilot.stuck-<время>`
-    # от --replace, снимки прежних прогонов. Имя у них другое, под точное
-    # сравнение они не попадали - и собственный мусор рантайма предъявлялся
-    # воркеру как запись вне объявленной области.
+    # The runtime places its own archives next door: `.codex-autopilot.stuck-<time>`
+    # from --replace, snapshots of earlier runs. Their name differs, so the
+    # exact comparison missed them - and the runtime's own litter was
+    # charged to the worker as a write outside the declared scope.
     #
-    # Замерено: задача M0 заблокирована по R7 за 37 путей, все до одного
-    # внутри .codex-autopilot.stuck-20260914T184420. Работы она там не
-    # вела; каталог создал установщик прогона.
+    # Measured: task M0 was blocked under R7 for 37 paths, every one inside
+    # .codex-autopilot.stuck-20260914T184420. It did no work there; the
+    # run's installer created the directory.
     return head[0] == STATE_DIR_NAME or head[0].startswith(STATE_DIR_NAME + ".")
 
 
@@ -109,7 +108,7 @@ def audit_declared_scope(
     *,
     project_root: Path,
 ) -> list[str]:
-    """Пути вне объявленной области - дефект с указанием R7 и перечнем."""
+    """Paths outside the declared scope - a defect citing R7 with the list."""
 
     writable = [
         claim

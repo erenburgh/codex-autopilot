@@ -1,9 +1,9 @@
-"""Представления над Project Memory.
+"""Views over Project Memory.
 
-Рендеринг PROJECT_STATE.md и DECISIONS.md - презентация, а не хранение.
-Вынесено из класса ProjectMemory: это операции НАД памятью, а не её
-внутреннее устройство. В классе оставлены тонкие делегирующие методы,
-поэтому API и все места вызова не изменились.
+Rendering PROJECT_STATE.md and DECISIONS.md is presentation, not storage.
+Moved out of the ProjectMemory class: these are operations OVER memory,
+not its internals. Thin delegating methods stay on the class, so the API
+and every call site are unchanged.
 """
 
 from __future__ import annotations

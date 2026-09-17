@@ -48,10 +48,10 @@ class VerificationIssue:
         allowed = ("code", "summary", "details", "dod_refs")
         unknown = set(raw) - set(allowed)
         if unknown:
-            # R31: отказ обязан называть допустимое. Замерено на чистом
-            # прогоне: проверяющий вернул finding/requirement/required_fix/
-            # severity/id/evidence_ids - все шесть правдоподобны, ни одного
-            # ему не называли, и весь вердикт отвергся целиком.
+            # R31: a refusal must name what is accepted. Measured on a clean
+            # run: the verifier returned finding/requirement/required_fix/
+            # severity/id/evidence_ids - all six plausible, none of them
+            # ever named to it, and the whole verdict was rejected.
             raise VerificationProtocolError(
                 f"verification issue has unknown fields: {sorted(unknown)}. "
                 f"an issue has exactly these fields: {', '.join(allowed)} "

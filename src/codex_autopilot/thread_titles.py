@@ -6,7 +6,7 @@ import re
 MAX_THREAD_TITLE_CHARS = 96
 SEPARATOR = " | "
 
-# M10-REF-002: точные формы из исходного запроса v0.9, разделы 27-30.
+# M10-REF-002: the exact forms from the original v0.9 request, sections 27-30.
 #
 #   implementation   <Role> | <Task ID> | <Short Task Title>
 #   verifier         <Role> Verifier | <Task ID> | Verify <Subject>
@@ -14,13 +14,13 @@ SEPARATOR = " | "
 #   planner          Planner | PLAN | <Short Project Goal>
 #   replanner        Planner | PC-<ID> | <Short Change Purpose>
 #
-# Предыдущая реализация рендерила "Role · Implement T44 · Title" и
-# документировала свой формат в docs/DESKTOP_RUNTIME.md как норму.
-# Документация была согласована с кодом, и обе расходились с запросом.
+# The previous implementation rendered "Role · Implement T44 · Title" and
+# documented its format in docs/DESKTOP_RUNTIME.md as the norm. The
+# documentation agreed with the code, and both disagreed with the request.
 
 LEGACY_ROLE_NAMES = {"legacy serial worker", "legacy-worker"}
 
-# Ведущий глагол постановки задачи, который заменяется на Verify/Revise:
+# The leading verb of a task statement, replaced by Verify/Revise:
 # "Create Weapon Model" -> "Verify Weapon Model".
 _ACTION_VERBS = {
     "add", "apply", "build", "configure", "connect", "create", "delete",
@@ -102,8 +102,8 @@ def revision_thread_title(
 
 def replanner_thread_title(plan_change_id: str, change_summary: str) -> str:
     identifier = _identifier(plan_change_id, "plan_change_id")
-    # Нормализуем к точной форме PC-<ID>: и "PC-04", и "PC1", и "04"
-    # дают "PC-04" / "PC-1" / "PC-04" соответственно.
+    # Normalize to the exact PC-<ID> form: "PC-04", "PC1" and "04" yield
+    # "PC-04" / "PC-1" / "PC-04" respectively.
     suffix = re.sub(r"^PC[-_ ]?", "", identifier, flags=re.IGNORECASE).strip()
     if not suffix:
         raise ThreadTitleError("plan_change_id must carry an identifier after PC")
@@ -127,11 +127,11 @@ def plan_verifier_thread_title(graph_version: int, mode: str) -> str:
 
 
 def pipeline_engineer_thread_title(incident_id: str, summary: str) -> str:
-    """Заголовок ветки дежурного инженера.
+    """The on-call engineer's thread title.
 
-    Идентификатор нормализуется к форме INC-<хвост>: тикеты приходят как
-    incident-8ea3ceca87b6c8a3, и в сайдбаре нужен короткий опознаваемый
-    префикс, а не сырой идентификатор хранилища.
+    The identifier is normalized to INC-<tail>: tickets arrive as
+    incident-8ea3ceca87b6c8a3, and the sidebar needs a short recognizable
+    prefix, not a raw store identifier.
     """
 
     identifier = _identifier(incident_id, "incident_id")
@@ -171,12 +171,12 @@ def task_phase_thread_title(
 
 
 def _role_segment(role_name: str | None) -> str:
-    """Роль обязательна: фазовый заголовок без роли запрещён (правило R9).
+    """The role is mandatory: a phase title without a role is forbidden (rule R9).
 
-    Generic legacy-роль остаётся допустимой и рендерится как есть - она
-    законна для по-настоящему безролевого плана schema-2. Запрет на
-    схлопывание КОНКРЕТНОЙ роли в legacy-worker - это инвариант плана,
-    и проверяться он должен валидацией плана, а не рендерером заголовка.
+    The generic legacy role stays allowed and renders as is - it is
+    legitimate for a genuinely role-less schema-2 plan. The ban on
+    collapsing a CONCRETE role into legacy-worker is a plan invariant, and
+    plan validation must check it, not the title renderer.
     """
     if role_name is None:
         raise ThreadTitleError("role_name is required: a phase-only title is not allowed")
@@ -191,14 +191,13 @@ def _verifier_role_segment(role_name: str | None) -> str:
 
 
 def _purpose(task_title: str, verb: str) -> str:
-    """Вывести формулировку цели приёмки из постановки задачи.
+    """Derive the acceptance subject from the task statement.
 
     "Create Weapon Model" -> "Verify Weapon Model".
 
-    Это эвристика: список глаголов постановки не может быть полным.
-    Если первое слово не распознано, глагол добавляется спереди, что
-    даёт более длинную, но корректную формулировку. Потеря смысла
-    при этом невозможна - теряется только краткость.
+    A heuristic: the list of statement verbs cannot be complete. If the
+    first word is not recognized, the verb is prepended, giving a longer
+    but correct wording. Meaning cannot be lost this way - only brevity.
     """
     subject = _text(task_title, "task_title")
     head, _, tail = subject.partition(" ")

@@ -31,8 +31,8 @@ from .models import MODEL_IDS, PUBLIC_REASONING
 from .plan import validate_migrating_plan
 from .preflight import PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, run_preflight
 from .run_state import StateStore
-# Отказ шлюза поднимается прямо здесь, поэтому и импортируется здесь:
-# NameError вместо отказа однажды стоил прогону часа.
+# The gateway's refusal is raised right here, so it is imported here: a
+# NameError instead of a refusal once cost a run an hour.
 from .runtime_repair import RuntimeRepairError
 
 
@@ -97,7 +97,7 @@ def parser() -> argparse.ArgumentParser:
     relay_fail.add_argument("--project", type=Path, default=Path.cwd())
     relay_fail.add_argument("--token", required=True)
     relay_fail.add_argument("--reason", required=True)
-    # Вид отказа называет вызывающий: по нему R23 считает повторы.
+    # The caller names the kind of failure: R23 counts repeats by it.
     relay_fail.add_argument("--failure-code", required=True)
     relay_fail.add_argument("--definitive", action="store_true")
     relay_fail.add_argument("--rate-limited", action="store_true")
@@ -116,10 +116,9 @@ def parser() -> argparse.ArgumentParser:
     relay_rearm = sub.add_parser("devops-rearm-relay-owner", help=argparse.SUPPRESS)
     relay_rearm.add_argument("--project", type=Path, default=Path.cwd())
     relay_rearm.add_argument("--incident-id")
-    # Починка кода рантайма. Набор правок и тест передаются файлами, а
-    # не строками: правка бывает многострочной и охватывает несколько
-    # модулей, и через аргументы командной строки она приезжала бы
-    # искажённой кавычками и переносами.
+    # A runtime code repair. The edit set and the test are passed as files,
+    # not strings: an edit can span lines and modules, and through
+    # command-line arguments it would arrive mangled by quotes and newlines.
     devops_repair = sub.add_parser("devops-repair-runtime", help=argparse.SUPPRESS)
     devops_repair.add_argument("--project", type=Path, default=Path.cwd())
     devops_repair.add_argument("--incident-id", required=True)
@@ -134,23 +133,21 @@ def parser() -> argparse.ArgumentParser:
     devops_resolve.add_argument("--incident-id", required=True)
     devops_resolve.add_argument("--healthcheck-name", required=True)
     devops_resolve.add_argument("--check", action="append", required=True)
-    # Чем починено - обязательно и идентификатором из словаря. Замерено
-    # на прогоне v1.0: флаг был необязательным, и все шестнадцать
-    # починок записались без единого действия либо прозой, поэтому по
-    # подписи с восемнадцатью повторами не выучилось ни одной процедуры.
-    # Сам словарь не дублируется здесь: имена проверяет реестр, у него
-    # они и живут.
+    # What repaired it - mandatory, and a vocabulary identifier. Measured on
+    # the v1.0 run: the flag was optional, and all sixteen repairs were
+    # recorded with no action or as prose, so a signature with eighteen
+    # repeats learned not one procedure. The vocabulary is not duplicated
+    # here: the ledger checks the names, and that is where they live.
     devops_resolve.add_argument("--action", action="append", required=True)
     devops_resolve.add_argument(
         "--note",
         default="",
         help="circumstances in prose: they explain the repair and change nothing",
     )
-    # Задача, остановленная нарушением правила, снимается только
-    # человеком и только с записанной причиной. Прежде снять её было
-    # нечем вовсе: "продолжи" отказывает на BLOCKED по любой причине,
-    # кроме эскалации, и правильно делает - но обратного пути не
-    # существовало, и прогон стоял навсегда.
+    # A task stopped by a rule violation is lifted only by a human and only
+    # with a recorded reason. There used to be no way to lift it at all:
+    # "resume" refuses on BLOCKED for any reason but an escalation, rightly
+    # - but no way back existed, and the run stood forever.
     unblock = sub.add_parser(
         "unblock",
         help="lift a task's stop by the user's decision, with a recorded reason",
@@ -201,12 +198,12 @@ def _relay_executor_thread_id() -> str:
 
 
 def _record_detached_dispatch_failure(cfg, token: str, error: BaseException) -> None:
-    """Отказ отсоединённого диспетчера должен быть виден, а не лежать в файле.
+    """A detached dispatcher's failure must be visible, not buried in a file.
 
-    Раньше падение этого процесса уходило только в
-    logs/automatic-relay-<токен>.log: ни записи в журнале прогона, ни
-    инцидента, ни сообщения пользователю. Прогон при этом выглядел
-    работающим - статус RUNNING, задача активна, - и стоял молча.
+    A crash of this process used to go only to
+    logs/automatic-relay-<token>.log: no run journal record, no incident, no
+    message to the user. The run looked alive meanwhile - status RUNNING,
+    task active - and stood silently.
     """
 
     from .pipeline_engineer import (
@@ -233,7 +230,7 @@ def _record_detached_dispatch_failure(cfg, token: str, error: BaseException) -> 
             None,
         )
         task_id = str((session or {}).get("task_id") or "")
-    except Exception:  # состояние нечитаемо - отчёт всё равно должен уйти
+    except Exception:  # the state is unreadable - the report must still go out
         task_id = ""
 
     try:
@@ -266,13 +263,13 @@ def _record_detached_dispatch_failure(cfg, token: str, error: BaseException) -> 
 
 
 def _ensure_wake(cfg, *, owner: str, owner_turn: str) -> None:
-    """Будильник - забота, а не контракт: его отказ не роняет ход."""
+    """The wake-up is a courtesy, not a contract: its failure does not fail the turn."""
 
     from .wake import ensure_wake
 
     try:
         ensure_wake(cfg, owner=owner, owner_turn=owner_turn)
-    except Exception as exc:  # noqa: BLE001 - будильник не вправе валить диспетчер
+    except Exception as exc:  # noqa: BLE001 - the alarm may not bring down the dispatcher
         print(f"wake scheduling failed: {exc}", flush=True)
 
 
@@ -285,12 +282,13 @@ def _run_automatic_relay_dispatch(
 ) -> int:
     """Run the v0.7-style local loop with one App Server process per task."""
 
-    # Цикл переходит от задачи к задаче, переприсваивая свой token. Снаружи
-    # оставался исходный, и отказ на поздней задаче приписывался первой:
-    # замерено, тикет incident-78e67b38680498f1 по отказу M2 назвал M1, а
-    # лестница "на отказе" напечатала шаги уже завершённой M1. Инженера
-    # послали бы чинить проверенную веху. Курсор общий: он всегда указывает
-    # на задачу, которую цикл ведёт сейчас.
+    # The loop moves from task to task, reassigning its token. Outside, the
+    # original one remained, and a failure on a later task was attributed to
+    # the first: measured, ticket incident-78e67b38680498f1 for the M2
+    # failure named M1, and the "on failure" ladder printed the steps of the
+    # already completed M1. The engineer would have been sent to repair a
+    # verified milestone. The cursor is shared: it always points at the task
+    # the loop drives now.
     cursor = _RelayCursor(token)
     try:
         return _automatic_relay_loop(
@@ -303,11 +301,11 @@ def _run_automatic_relay_dispatch(
 
 
 def _record_rate_limits(cfg, method: str, params: dict) -> None:
-    """Запомнить снимок лимитов, чтобы ёмкость считалась по свежим данным.
+    """Remember the rate-limit snapshot so capacity is computed from fresh data.
 
-    Планировщик сужает число воркеров по расходу окна. Без этой записи
-    он видел бы только то, что было на старте прогона, и продолжал бы
-    держать десяток, когда окно уже кончается.
+    The scheduler narrows the number of workers by window usage. Without
+    this record it would see only what was there at the start of the run,
+    and keep ten going while the window runs out.
     """
 
     if method != "account/rateLimits/updated":
@@ -318,16 +316,17 @@ def _record_rate_limits(cfg, method: str, params: dict) -> None:
     try:
         StateStore(cfg.state_dir).record_rate_limits(snapshot)
     except Exception:
-        # Ёмкость - оптимизация, а не контракт: её обновление никогда не
-        # должно валить ход, который в этот момент идёт.
+        # Capacity is an optimization, not a contract: updating it must never
+        # fail the turn that is running at that moment.
         return
 
 
 def _print_relay_timeline(cfg, token: str, headline: str) -> None:
-    """Печатать лестницу шагов из самого диспетчера, а не по запросу.
+    """Print the step ladder from the dispatcher itself, not on request.
 
-    Диспетчер - единственный, кто знает, что происходит, пока идёт работа.
-    Раньше он молчал до конца, и узнать ход дела можно было только спросив.
+    The dispatcher is the only one who knows what happens while the work
+    runs. It used to stay silent to the end, and the only way to learn the
+    progress was to ask.
     """
 
     from .launch_gate import render_launch_timeline
@@ -347,13 +346,13 @@ def _print_relay_timeline(cfg, token: str, headline: str) -> None:
             return
         print(f"\n=== {headline} ===")
         print(render_launch_timeline(state, [task_id]), flush=True)
-    except Exception as error:  # отчёт не вправе ронять работу
+    except Exception as error:  # the report may not fail the work
         print(f"codex-autopilot: the timeline is unavailable: {error}", flush=True)
 
 
 @dataclass
 class _RelayCursor:
-    """Задача, которую цикл ведёт прямо сейчас."""
+    """The task the loop is driving right now."""
 
     token: str
 
@@ -376,10 +375,10 @@ def _automatic_relay_loop(
         client = AppServerClient(
             cfg.desktop.binary,
             dispatcher_log,
-            # Лимиты приходят сами, событием, по ходу работы. Прежде
-            # ёмкость считалась от того, что preflight прочитал на старте:
-            # прогон на двадцать четыре задачи мог выесть окно и не узнать
-            # об этом до следующего запуска.
+            # Limits arrive by themselves, as events, during the work.
+            # Capacity used to be computed from what preflight read at the
+            # start: a 24-task run could eat the window and not learn of it
+            # until the next launch.
             event_sink=lambda method, params: _record_rate_limits(cfg, method, params),
         )
         with client:
@@ -400,8 +399,8 @@ def _automatic_relay_loop(
             dispatcher_pid=os.getpid(),
         )
         if not outcome.descriptors:
-            # Уходя, диспетчер оставляет будильник: повтор по сроку
-            # иначе некому поднять, и прогон стоит до слова человека.
+            # On its way out the dispatcher leaves a wake-up: otherwise
+            # nobody raises a due retry, and the run waits for a human word.
             _ensure_wake(cfg, owner=owner, owner_turn=owner_turn)
             return 0
         if len(outcome.descriptors) == 1:
@@ -445,10 +444,10 @@ def main(argv: list[str] | None = None) -> int:
             profile, skill = _profile_and_skill(args)
             language = normalize_language(args.language)
             raw = json.loads(args.plan_file.read_text(encoding="utf-8"))
-            # Тот же вопрос, что и у bootstrap: есть ли прогон, который
-            # мигрируют. План v0.8 впускается только как его миграция, и
-            # проверить это надо здесь тоже - иначе preflight принимал бы
-            # то, что bootstrap следом отвергнет.
+            # The same question bootstrap asks: is there a run being
+            # migrated. A v0.8 plan is admitted only as its migration, and
+            # that must be checked here too - or preflight would accept what
+            # bootstrap then rejects.
             checked_plan = validate_migrating_plan(
                 raw,
                 profile,
@@ -497,9 +496,9 @@ def main(argv: list[str] | None = None) -> int:
             print("Desktop reservation armed for this turn's Stop hook; the causal task performs the fixed relay.")
             return 0
         if args.command == "resume":
-            # Единственная поверхность - desktop_owned, и запуск в ней
-            # принадлежит доверенному Stop-хуку. Команда оставлена как
-            # указатель: молча отсутствующая resume заставляла бы искать.
+            # The only surface is desktop_owned, and launching in it belongs
+            # to the trusted Stop hook. The command stays as a pointer: a
+            # silently missing resume would send people searching.
             raise RuntimeError(
                 "resume is hook-owned: send the exact phrase "
                 "'Resume Codex Autopilot.' in a Codex task opened on this "
@@ -515,9 +514,9 @@ def main(argv: list[str] | None = None) -> int:
                 owner_turn=args.owner_turn,
             )
         if args.command == "_wake-sweep":
-            # Агент launchd: обход известных проектов. Ничего не
-            # запускает сам - только заводит будильник там, где повтор
-            # по сроку ждёт, а живого будильника нет.
+            # The launchd agent: a sweep of the known projects. It launches
+            # nothing itself - it only arms a wake-up where a due retry waits
+            # and no live wake-up exists.
             from .wake import sweep
 
             for root, decision in sweep().items():
@@ -532,10 +531,10 @@ def main(argv: list[str] | None = None) -> int:
                 owner_turn=args.initiator_turn,
             )
         if args.command == "unblock":
-            # Запуск этой команды и есть решение человека: она не
-            # проверяет, прав ли он, она записывает, что он решил. Без
-            # причины не работает - запись без причины ничем не лучше
-            # молчаливого снятия.
+            # Running this command is the human's decision: it does not
+            # check whether they are right, it records what they decided.
+            # Without a reason it does nothing - a record without a reason
+            # is no better than a silent lift.
             from .plan import load_plan
             from .run_state import utc_now
             from .task_state import TaskState, transition_task
@@ -572,9 +571,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == "devops-repair-runtime":
-            # Инженер правит код рантайма - но правку принимает шлюз, а
-            # не инженер. Требования те же, что у прочих команд
-            # восстановления: владеющая ветка и собственный тикет.
+            # The engineer edits the runtime's code - but the gateway accepts
+            # the edit, not the engineer. The requirements are those of every
+            # recovery command: the owning thread and its own ticket.
             from .pipeline_engineer import PipelineIncidentStore
             from .run_state import utc_now
             from .runtime_repair import Edit, apply_runtime_patch
@@ -582,9 +581,10 @@ def main(argv: list[str] | None = None) -> int:
             _relay_executor_thread_id()
             cfg = load_config(args.project)
             timestamp = utc_now()
-            # Тикет проверяется до правки, а не после: иначе чужой или
-            # закрытый тикет оставлял бы правку в живой установке и нигде
-            # не записанной - для следующего раза её бы не существовало.
+            # The ticket is checked before the edit, not after: otherwise a
+            # foreign or closed ticket would leave the edit applied in the
+            # live installation and recorded nowhere - non-existent for next
+            # time.
             incidents = PipelineIncidentStore(cfg.state_dir)
             incidents.require_engineer_incident(args.incident_id)
             raw = json.loads(args.patch_file.read_text(encoding="utf-8"))
@@ -623,10 +623,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(record.to_dict(), ensure_ascii=False))
             return 0
         if args.command == "devops-resolve-incident":
-            # Дежурный инженер закрывает свой тикет сам, но только с
-            # пройденной проверкой здоровья: закрытие без неё - это
-            # заявление, а не наблюдение. Мутация требует владеющей
-            # ветки, как и остальные команды восстановления.
+            # The on-call engineer closes its own ticket, but only with a
+            # passing healthcheck: closing without one is a claim, not an
+            # observation. The mutation requires the owning thread, like the
+            # other recovery commands.
             from .pipeline_engineer import HealthcheckResult, PipelineIncidentStore
             from .run_state import utc_now
 
@@ -649,10 +649,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"incident_id": args.incident_id, "phase": phase.value}, ensure_ascii=False))
             return 0
         if args.command == "authorize-project-root":
-            # R6: единственный вход, которым разрешается правка корней
-            # сохранённого проекта. Разрешение хранится как принятое
-            # решение пользователя и называет конкретный проект и
-            # конкретный корень - на другой проект оно не переносится.
+            # R6: the only entry that permits editing the saved project's
+            # roots. The permission is stored as an accepted user decision
+            # and names a specific project and a specific root - it does not
+            # carry over to another project.
             from .memory import ProjectMemory
             from .project_association import project_root_authorization_statement
 
@@ -847,7 +847,7 @@ def _wake_agent_plist() -> Path:
 
 
 def _remove_wake_agent() -> None:
-    """Снять агента обхода. Его отсутствие - не ошибка удаления."""
+    """Remove the sweep agent. Its absence is not an uninstall error."""
 
     plist = _wake_agent_plist()
     launchctl = shutil.which("launchctl")

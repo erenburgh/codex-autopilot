@@ -71,12 +71,12 @@ class LaunchRegistry:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 armed = _parse_time(data.get("armed_at"))
                 root = str(data.get("project_root") or "")
-                # Запрос на запуск проекта, которого больше нет, исполнить
-                # нельзя, а лежит он до истечения возраста и всё это время
-                # делает старт неоднозначным: Stop-хук отказывается
-                # запускать что-либо со словами "multiple Autopilot starts
-                # are armed". Ровно так прогон вставал из-за каталогов,
-                # оставшихся от чужих временных проектов.
+                # A launch request for a project that no longer exists cannot
+                # be executed, yet it lies there until it ages out and makes
+                # the start ambiguous all that time: the Stop hook refuses to
+                # launch anything with "multiple Autopilot starts are armed".
+                # Exactly so a run stood because of directories left behind
+                # by someone else's temporary projects.
                 stale_root = bool(root) and not Path(root).is_dir()
                 if (
                     data.get("schema_version") != REGISTRY_SCHEMA

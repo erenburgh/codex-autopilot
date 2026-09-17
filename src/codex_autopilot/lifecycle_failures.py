@@ -160,11 +160,10 @@ def record_desktop_failure(
     """Fail one reservation without corrupting or stopping independent work."""
 
     _require_desktop_owned(cfg)
-    # R23 считает повторы по сигнатуре отказа, а сигнатура в этом проекте
-    # отвечает на вопрос "что сломалось". Свободный текст reason на него
-    # не отвечает: str(exc) меняется от случая к случаю, и один и тот же
-    # отказ выглядел бы каждый раз новым. Поэтому вид отказа называет
-    # вызывающий, а не угадывает нормализатор.
+    # R23 counts repeats per failure signature, and a signature in this
+    # project answers "what broke". The free-text reason does not: str(exc)
+    # varies from case to case, and the same failure would look new every
+    # time. So the caller names the kind of failure; no normalizer guesses.
     if not isinstance(failure_code, str) or not failure_code.strip():
         raise DesktopLifecycleError(
             "failure_code must be a non-empty identifier of WHAT broke, "
@@ -181,10 +180,10 @@ def record_desktop_failure(
     store = StateStore(cfg.state_dir)
     plan = load_plan(cfg.state_dir, cfg.profile)
     coordinator = ResourceLockCoordinator(store, cfg.root)
-    # Три пути ниже завершаются раньше остальных. Возвращаться прямо из
-    # них больше нельзя: тикет на исчерпанном потолке заводится после
-    # транзакции и обязан завестись на любом из них, включая
-    # недоопределённый отказ.
+    # Three paths below finish earlier than the rest. Returning straight
+    # from them is no longer allowed: the ticket for an exhausted ceiling
+    # opens after the transaction and must open on any of them, the
+    # non-definitive failure included.
     early_exit = False
     exhausted = False
     descriptors: tuple[LaunchDescriptor, ...] = ()
@@ -214,12 +213,12 @@ def record_desktop_failure(
             event = "start_failed"
         _append_event(state, event, session, timestamp, detail=reason)
         task_id = str(session["task_id"])
-        # R23: попытка считается ЗДЕСЬ, до любого раннего возврата.
-        # Ниже три пути выходят раньше, и первый из них - недоопределённый
-        # отказ, которым продакшен передаёт worker_protocol_rejected:
-        # ровно ту протокольную ошибку, ради которой правило и написано.
-        # Пока счёт стоял после них, она не считалась ни разу, а потолок
-        # ловил только те сигнатуры, что доходили до RETRY_WAIT.
+        # R23: the attempt is counted HERE, before any early return. Three
+        # paths below exit earlier, and the first is the non-definitive
+        # failure production uses for worker_protocol_rejected: the very
+        # protocol error the rule was written for. While the count stood
+        # after them, it was never counted once, and the ceiling caught only
+        # signatures that reached RETRY_WAIT.
         attempts = int(state.failure_signature_attempts.get(failure_code, 0))
         if not rate_limited:
             attempts += 1
@@ -286,12 +285,13 @@ def record_desktop_failure(
                 session["automatic_dispatch_pid"] = None
                 session["automatic_dispatch_connection_pid"] = None
             session["failure_reason"] = reason
-            # Повторный отказ уже ожидающей задачи - не новое состояние.
-            # Прежде вторая запись отказа для той же задачи поднимала
-            # IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT, релей умирал,
-            # и поверх настоящей поломки открывался тикет о падении самого
-            # диспетчера. Машина состояний права, что запрещает самопереход;
-            # идемпотентной обязана быть запись отказа.
+            # A repeated failure of an already waiting task is not a new
+            # state. A second failure record for the same task used to raise
+            # IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT, the relay died,
+            # and a ticket about the dispatcher's own crash opened on top of
+            # the real fault. The state machine is right to forbid the
+            # self-transition; it is the failure record that must be
+            # idempotent.
             if state.task_states.get(task_id) != TaskState.RETRY_WAIT.value:
                 state.task_states = transition_task(
                     plan, state.task_states, task_id, TaskState.RETRY_WAIT
@@ -352,12 +352,12 @@ def record_desktop_failure(
             )
             store.save(state)
     if exhausted:
-        # Потолок исчерпан - к дежурному инженеру, а не сразу к человеку.
-        # R3: инфраструктурный сбой не уходит в BLOCKED, пока бюджет
-        # восстановления не исчерпан; исчерпание потолка и есть исчерпание
-        # ЭТОГО бюджета, но не инженерного. Тикет ставит задачу на паузу -
-        # именно она и разрывает цикл повторов; остановка прогона наступает
-        # дальше по пути инженера, когда исчерпан уже он.
+        # The ceiling is exhausted - to the on-call engineer, not straight
+        # to a human. R3: an infrastructure fault does not go to BLOCKED
+        # while the recovery budget lasts; exhausting the ceiling exhausts
+        # THIS budget, not the engineer's. The ticket pauses the task - that
+        # is what breaks the retry loop; the run stops further down the
+        # engineer's path, once the engineer too is exhausted.
         incident_store = PipelineIncidentStore(cfg.state_dir)
         incident = incident_store.open_incident(
             IncidentSignal(
@@ -370,9 +370,9 @@ def record_desktop_failure(
                     f"Last reason: {reason}"
                 ),
                 affected_task_ids=(task_id,),
-                # operation описывает мутирующую операцию транспорта и
-                # разрешён списком; исчерпание потолка - не она, поэтому
-                # поле не заполняется выдуманным значением.
+                # operation describes a mutating transport operation and is
+                # allow-listed; an exhausted ceiling is not one, so the field
+                # is not filled with an invented value.
                 side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
                 system_state={
                     "run_id": state.run_id,
@@ -587,7 +587,7 @@ def _record_app_server_create_failure(
     at: str | None,
     now_epoch: int | None,
 ) -> dict[str, Any]:
-    # поздний импорт: развязка обратной зависимости модулей
+    # late import: breaks a circular module dependency
     from .lifecycle_dispatch import app_server_creation_contract
     timestamp = at or utc_now()
     before = StateStore(cfg.state_dir).load()
@@ -603,8 +603,8 @@ def _record_app_server_create_failure(
         cfg,
         reservation_token,
         reason=reason,
-        # Отказ создания треда: определённость решает definitive, но
-        # сломалось одно и то же, поэтому сигнатура одна.
+        # A thread creation failure: definitive decides certainty, but the
+        # same thing broke, so the signature is one.
         failure_code="app_server_create_failed",
         definitive=definitive,
         now_epoch=now_epoch,
@@ -670,8 +670,8 @@ def _record_app_server_create_failure(
     incident_id = str(incident["incident_id"])
     phase = incident_store.route_incident(incident_id, at=timestamp)
     if phase is IncidentPhase.DEGRADED:
-        # Уровень 1: поломка уже известна, способ выучен - сессия модели
-        # не поднимается. Уровень 2 включается только если здесь не вышло.
+        # Level 1: the fault is known, the repair is learned - no model
+        # session is raised. Level 2 kicks in only if this did not work.
         incident_store.attempt_known_recovery(
             incident_id, at=timestamp, owner_id=reservation_token
         )
