@@ -373,6 +373,84 @@ class ActionTests(unittest.TestCase):
             )
         self.assertIn("guarded definitions", str(refusal.exception))
 
+    # --- находки проверяющей: дубликат, декоратор, регистр, набор ------
+
+    def test_a_duplicate_of_a_guard_appended_after_it_is_refused(self) -> None:
+        """Python исполняет последнее определение; первое - лишь текст."""
+
+        repro = '''
+import unittest
+
+from codex_autopilot.cli import _relay_executor_thread_id
+
+
+class GuardTests(unittest.TestCase):
+    def test_the_second_definition_wins(self) -> None:
+        self.assertEqual(_relay_executor_thread_id(), "anyone")
+'''
+        with self.assertRaises(RuntimeRepairError) as refusal:
+            self.repair(
+                module="cli.py",
+                old="    return thread_id\n",
+                new='    return thread_id\n\n\ndef _relay_executor_thread_id():\n    return "anyone"\n',
+                test_name="test_duplicate_guard",
+                test_source=repro,
+            )
+        self.assertIn("occurs 2 times", str(refusal.exception))
+        self.assertEqual(
+            (self.tree.package / "cli.py").read_text(encoding="utf-8").count("def _relay_executor_thread_id"),
+            1,
+        )
+
+    def test_a_decorator_wrapped_around_a_guard_is_refused(self) -> None:
+        """Обёртка над охранником - та же правка охранника."""
+
+        repro = '''
+import unittest
+
+from codex_autopilot.cli import _relay_executor_thread_id
+
+
+class GuardTests(unittest.TestCase):
+    def test_wrapped(self) -> None:
+        self.assertEqual(_relay_executor_thread_id(), "anyone")
+'''
+        with self.assertRaises(RuntimeRepairError) as refusal:
+            self.repair(
+                module="cli.py",
+                old="def _relay_executor_thread_id():",
+                new='def _anyone(fn):\n    return lambda: "anyone"\n\n\n@_anyone\ndef _relay_executor_thread_id():',
+                test_name="test_decorated_guard",
+                test_source=repro,
+            )
+        self.assertIn("guarded definitions", str(refusal.exception))
+
+    def test_an_unpatchable_module_cannot_be_reached_by_a_case_change(self) -> None:
+        """Файловая система установки не различает регистр."""
+
+        for spelling in ("Hook_Trust.py", "HOOK_TRUST.py", "Runtime_Repair.py"):
+            with self.assertRaises(RuntimeRepairError) as refusal:
+                self.repair(module=spelling)
+            self.assertIn("lower case", str(refusal.exception), spelling)
+
+    def test_a_set_that_passes_its_own_test_but_breaks_a_neighbour_is_refused(self) -> None:
+        """Ровно главный случай: набор, а не одиночная правка."""
+
+        repro = REPRO.replace(
+            "from codex_autopilot.arith import total",
+            "from codex_autopilot.report import summary",
+        ).replace("total([1, 2]), 3", 'summary([1, 2]), "total: 3"')
+        edits = (
+            Edit(module="arith.py", old="return sum(items) + 1", new="return sum(items) if items else -1"),
+            Edit(module="report.py", old=' + " (approx)"', new=""),
+        )
+        with self.assertRaises(RuntimeRepairError) as refusal:
+            self.repair(edits=edits, test_source=repro)
+        self.assertIn("breaks the rest of the runtime", str(refusal.exception))
+        self.assertIn("test_an_empty_bill_is_not_negative", str(refusal.exception))
+        self.assertIn("+ 1", (self.tree.package / "arith.py").read_text(encoding="utf-8"))
+        self.assertIn("approx", (self.tree.package / "report.py").read_text(encoding="utf-8"))
+
     def test_a_fragment_that_occurs_twice_is_refused(self) -> None:
         target = self.tree.package / "arith.py"
         target.write_text(
@@ -415,8 +493,6 @@ class GuardedDefinitionsTests(unittest.TestCase):
             self.assertIn(f"{module}:{name}", hashes)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class InstalledLayoutTests(unittest.TestCase):
@@ -451,3 +527,113 @@ class InstalledLayoutTests(unittest.TestCase):
         self.assertEqual(tree.tests.parent, tree.src.parent)
         self.assertEqual(tree.tests.name, "tests")
         self.assertEqual(tree.src.name, "src")
+
+
+class RepairCommandTests(unittest.TestCase):
+    """Команда devops-repair-runtime: порядок и разбор набора.
+
+    Проверяющая сломала чтение old_file (все правки считались новым
+    модулем) - всё осталось зелёным: путь команды не исполнялся нигде.
+    И порядок был неверным: правка применялась к установке ДО проверки
+    тикета, так что чужой или закрытый тикет оставлял её применённой и
+    нигде не записанной.
+    """
+
+    def setUp(self) -> None:
+        import json
+        from unittest import mock
+
+        from _gates import patch_hook_trust_gates
+        from _plan_contract import initialize_verified_project as initialize_project
+        from codex_autopilot.config import load_config
+        from codex_autopilot.pipeline_engineer import (
+            IncidentClass,
+            IncidentSignal,
+            PipelineIncidentStore,
+            SideEffectOutcome,
+        )
+        from test_desktop_lifecycle import graph, task
+
+        patch_hook_trust_gates(self)
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        (self.tmp / ".git").mkdir()
+        skill = self.tmp / "SKILL.md"
+        skill.write_text("# test skill\n", encoding="utf-8")
+        raw = graph(max_workers=1)
+        raw["tasks"] = [task("A", path="src/a")]
+        plan_file = self.tmp / "input-plan.json"
+        plan_file.write_text(json.dumps(raw), encoding="utf-8")
+        initialize_project(self.tmp, plan_file, profile="adaptive", skill_path=skill, desktop_project_id="desktop-project")
+        self.cfg = load_config(self.tmp)
+        self.store = PipelineIncidentStore(self.cfg.state_dir)
+        incident = self.store.open_incident(
+            IncidentSignal(
+                signal_id="s-1",
+                code="detached_dispatch_failed",
+                surface=IncidentClass.PIPELINE,
+                summary="dispatcher died",
+                affected_task_ids=("A",),
+                operation="create_thread",
+                side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
+            ),
+            at="t1",
+        )
+        self.incident_id = incident["incident_id"]
+        # Патч-набор с одной правкой существующего модуля и одним новым.
+        (self.tmp / "old.txt").write_text("OLD FRAGMENT", encoding="utf-8")
+        (self.tmp / "new.txt").write_text("NEW FRAGMENT", encoding="utf-8")
+        (self.tmp / "fresh.py").write_text("X = 1\n", encoding="utf-8")
+        (self.tmp / "patch.json").write_text(json.dumps({"edits": [
+            {"module": "status.py", "old_file": str(self.tmp / "old.txt"), "new_file": str(self.tmp / "new.txt")},
+            {"module": "fresh_module.py", "new_file": str(self.tmp / "fresh.py")},
+        ]}), encoding="utf-8")
+        (self.tmp / "test_repro.py").write_text("import unittest\n", encoding="utf-8")
+        self.applied: list[dict] = []
+        self.mock = mock
+
+    def run_command(self):
+        from codex_autopilot import cli
+        from codex_autopilot.runtime_repair import ModuleChange, PatchRecord
+
+        def fake_apply(**kwargs):
+            self.applied.append(kwargs)
+            return PatchRecord(
+                patch_id="patch-test",
+                changes=(ModuleChange(module="status.py", sha256_before="a", sha256_after="b"),),
+                test_name=kwargs["test_name"],
+                at=kwargs["at"],
+            )
+
+        with self.mock.patch.object(cli, "_relay_executor_thread_id", return_value="owner"), \
+             self.mock.patch("codex_autopilot.runtime_repair.apply_runtime_patch", side_effect=fake_apply):
+            return cli.main([
+                "devops-repair-runtime", "--project", str(self.tmp),
+                "--incident-id", self.incident_id,
+                "--patch-file", str(self.tmp / "patch.json"),
+                "--test-file", str(self.tmp / "test_repro.py"),
+                "--test-name", "test_repro",
+            ])
+
+    def test_the_patch_file_becomes_edits_with_their_fragments(self) -> None:
+        self.store.ensure_pipeline_engineer(self.incident_id, at="t2")
+        self.assertEqual(self.run_command(), 0)
+        self.assertEqual(len(self.applied), 1)
+        edits = {edit.module: edit for edit in self.applied[0]["edits"]}
+        self.assertEqual(edits["status.py"].old, "OLD FRAGMENT")
+        self.assertEqual(edits["status.py"].new, "NEW FRAGMENT")
+        self.assertIsNone(edits["fresh_module.py"].old, "без old_file - новый модуль")
+        self.assertEqual(edits["fresh_module.py"].new, "X = 1\n")
+        incident = next(item for item in self.store.load()["incidents"] if item["incident_id"] == self.incident_id)
+        self.assertEqual(incident["runtime_patches"][0]["patch_id"], "patch-test")
+
+    def test_a_ticket_not_held_by_the_engineer_stops_the_repair_before_it_is_applied(self) -> None:
+        """Тикет проверяется до правки: чужой тикет ничего не меняет."""
+
+        # main переводит отказ в код 2 и строку в stderr, а не в исключение.
+        self.assertEqual(self.run_command(), 2)
+        self.assertEqual(self.applied, [], "правка применилась до проверки тикета")
+
+
+if __name__ == "__main__":
+    unittest.main()

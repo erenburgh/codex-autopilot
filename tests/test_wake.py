@@ -35,6 +35,7 @@ from codex_autopilot.wake import (
     registered_projects,
     run_wake,
     sweep,
+    wake_command,
 )
 from test_desktop_lifecycle import graph, task
 
@@ -67,7 +68,7 @@ class WakeTests(unittest.TestCase):
         skill = self.root / "SKILL.md"
         skill.write_text("# test skill\n", encoding="utf-8")
         raw = graph(max_workers=1)
-        raw["tasks"] = [task("A", path="src/a")]
+        raw["tasks"] = [task("A", path="src/a"), task("B", path="src/b")]
         plan_file = self.root / "input-plan.json"
         plan_file.write_text(json.dumps(raw), encoding="utf-8")
         initialize_project(
@@ -127,6 +128,45 @@ class WakeTests(unittest.TestCase):
             sleep=clock.sleep,
             spawn_relay=self.fake_spawn_relay,
         )
+
+    def record_completed_owner_turn(self) -> None:
+        """Причинный владелец записал завершённый ход - как в живом прогоне."""
+
+        # Форма записи - та, которую требует _validate_state: сессия и
+        # запись журнала со всеми обязательными полями, иначе состояние
+        # не сохранится вовсе. Это и есть след, который оставляет
+        # настоящий завершённый ход.
+        state = self.store.load()
+        state.worker_sessions.append(
+            {
+                "task_id": "A",
+                "kind": "worker",
+                "thread_id": TEST_RELAY_OWNER,
+                "turn_id": OWNER_TURN,
+                "relay_owner_thread_id": TEST_RELAY_OWNER,
+                "status": "COMPLETED",
+                "reservation_token": "owner-reservation",
+                "operation_id": "owner-operation",
+                "client_user_message_id": "owner-message",
+                "created_at": "2026-09-17T00:00:00+00:00",
+                "attempt": 1,
+            }
+        )
+        state.lifecycle_journal_sequence += 1
+        state.lifecycle_journal.append(
+            {
+                "sequence": state.lifecycle_journal_sequence,
+                "event": "turn_completed",
+                "task_id": "A",
+                "attempt": 1,
+                "reservation_token": "owner-reservation",
+                "operation_id": "owner-operation",
+                "thread_id": TEST_RELAY_OWNER,
+                "turn_id": OWNER_TURN,
+                "at": "2026-09-17T00:00:00+00:00",
+            }
+        )
+        self.store.save(state)
 
     # --- что будильник делает ------------------------------------------
 
@@ -231,6 +271,35 @@ class WakeTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(calls, [])
 
+    def test_the_spawned_command_is_one_the_cli_parser_accepts(self) -> None:
+        """Настоящий запуск нигде не исполняется - так его и не проверяли.
+
+        Проверяющая сломала имя флага, и всё осталось зелёным. Теперь
+        аргументы, с которыми будильник порождается, прогоняются через
+        настоящий парсер CLI, и каждый обязан доехать до обработчика.
+        """
+
+        from codex_autopilot.cli import parser
+
+        command = wake_command(self.cfg, owner=TEST_RELAY_OWNER, owner_turn=OWNER_TURN, at_epoch=RESET_AT)
+        self.assertEqual(command[1:4], ["-m", "codex_autopilot.cli", "_wake"])
+        args = parser().parse_args(command[3:])
+        self.assertEqual(args.command, "_wake")
+        self.assertEqual(args.project, self.cfg.root)
+        self.assertEqual(args.at, RESET_AT)
+        self.assertEqual(args.owner, TEST_RELAY_OWNER)
+        self.assertEqual(args.owner_turn, OWNER_TURN)
+
+    def test_a_wake_that_fails_to_schedule_leaves_a_trace(self) -> None:
+        """Хук не падает, но и не молчит: след в логе, а не тишина."""
+
+        from unittest import mock
+
+        with mock.patch("codex_autopilot.wake.ensure_wake", side_effect=RuntimeError("no fork for you")):
+            control._ensure_wake_from_hook(self.cfg, owner=TEST_RELAY_OWNER, owner_turn=OWNER_TURN)
+        trace = (self.cfg.state_dir / "logs" / "wake-errors.log").read_text(encoding="utf-8")
+        self.assertIn("no fork for you", trace)
+
     # --- то, что нашла проверяющая --------------------------------------
 
     def test_revoked_hook_trust_stops_the_wake(self) -> None:
@@ -304,45 +373,6 @@ class SurvivesARebootTests(WakeTests):
     преемников, - а не из аргументов, которых после перезагрузки нет.
     """
 
-    def record_completed_owner_turn(self) -> None:
-        """Причинный владелец записал завершённый ход - как в живом прогоне."""
-
-        # Форма записи - та, которую требует _validate_state: сессия и
-        # запись журнала со всеми обязательными полями, иначе состояние
-        # не сохранится вовсе. Это и есть след, который оставляет
-        # настоящий завершённый ход.
-        state = self.store.load()
-        state.worker_sessions.append(
-            {
-                "task_id": "A",
-                "kind": "worker",
-                "thread_id": TEST_RELAY_OWNER,
-                "turn_id": OWNER_TURN,
-                "relay_owner_thread_id": TEST_RELAY_OWNER,
-                "status": "COMPLETED",
-                "reservation_token": "owner-reservation",
-                "operation_id": "owner-operation",
-                "client_user_message_id": "owner-message",
-                "created_at": "2026-09-17T00:00:00+00:00",
-                "attempt": 1,
-            }
-        )
-        state.lifecycle_journal_sequence += 1
-        state.lifecycle_journal.append(
-            {
-                "sequence": state.lifecycle_journal_sequence,
-                "event": "turn_completed",
-                "task_id": "A",
-                "attempt": 1,
-                "reservation_token": "owner-reservation",
-                "operation_id": "owner-operation",
-                "thread_id": TEST_RELAY_OWNER,
-                "turn_id": OWNER_TURN,
-                "at": "2026-09-17T00:00:00+00:00",
-            }
-        )
-        self.store.save(state)
-
     def test_the_owner_is_derived_from_the_journal(self) -> None:
         self.assertIsNone(derive_owner(self.store.load()), "без завершённого хода владельца нет")
         self.record_completed_owner_turn()
@@ -391,24 +421,112 @@ class SurvivesARebootTests(WakeTests):
         )
 
 
-class TheLastProcessLeavesAWakeTests(unittest.TestCase):
-    """Кто уходит последним, тот заводит будильник.
+class TheLastProcessLeavesAWakeTests(WakeTests):
+    """Кто уходит последним, тот заводит будильник - и это исполняется.
 
-    Два последних живых процесса прогона - диспетчер и Stop-хук. Если
-    любой из них уйдёт молча, повтор по сроку снова будет ждать человека.
+    Два последних живых процесса прогона - диспетчер и Stop-хук. Первая
+    редакция этих тестов читала исходник и искала подстроку: проверяющая
+    обернула все три вызова в ``if False:`` и всё осталось зелёным.
+    Теперь оба пути исполняются, а будильник подменён и считает вызовы.
     """
 
-    def test_the_dispatcher_schedules_a_wake_on_every_exit(self) -> None:
-        source = inspect.getsource(cli._automatic_relay_loop)
-        self.assertGreaterEqual(
-            source.count("_ensure_wake("),
-            2,
-            "у цикла диспетчера два выхода, и на обоих нужен будильник",
-        )
+    def test_the_dispatcher_arms_a_wake_when_it_exits_with_no_successor(self) -> None:
+        from unittest import mock
 
-    def test_the_stop_hook_schedules_a_wake_when_no_successor_follows(self) -> None:
-        source = inspect.getsource(control.handle_stop_hook)
-        self.assertIn("_ensure_wake_from_hook(", source)
+        from codex_autopilot import cli
+
+        class ClosedClient:
+            def __init__(inner, binary, log_path, **kwargs):
+                inner.closed = False
+                inner.proc = mock.Mock()
+                inner.proc.poll.side_effect = lambda: 0 if inner.closed else None
+
+            def __enter__(inner):
+                return inner
+
+            def __exit__(inner, *_args):
+                inner.closed = True
+
+        with mock.patch("codex_autopilot.cli.AppServerClient", ClosedClient), mock.patch(
+            "codex_autopilot.cli.run_automatic_app_server_turn",
+            return_value=mock.Mock(descriptors=()),
+        ), mock.patch("codex_autopilot.cli.record_automatic_app_server_exit"), mock.patch(
+            "codex_autopilot.cli._ensure_wake"
+        ) as ensure:
+            result = cli._run_automatic_relay_dispatch(
+                self.cfg, token="token-a", owner=TEST_RELAY_OWNER, owner_turn=OWNER_TURN
+            )
+        self.assertEqual(result, 0)
+        ensure.assert_called_once_with(self.cfg, owner=TEST_RELAY_OWNER, owner_turn=OWNER_TURN)
+
+    def test_the_dispatcher_arms_a_wake_after_fanning_out_successors(self) -> None:
+        """Второй выход цикла - несколько преемников - тоже заводит будильник."""
+
+        from unittest import mock
+
+        from codex_autopilot import cli
+
+        class ClosedClient:
+            def __init__(inner, binary, log_path, **kwargs):
+                inner.closed = False
+                inner.proc = mock.Mock()
+                inner.proc.poll.side_effect = lambda: 0 if inner.closed else None
+
+            def __enter__(inner):
+                return inner
+
+            def __exit__(inner, *_args):
+                inner.closed = True
+
+        self.record_completed_owner_turn()
+        # Две резервации-преемника, у которых владелец - завершённый ход.
+        state = self.store.load()
+        for token, task_id in (("succ-1", "A"), ("succ-2", "B")):
+            state.worker_sessions.append(
+                {
+                    "task_id": task_id,
+                    "kind": "worker",
+                    "status": "CREATE_REQUESTED",
+                    "reservation_token": token,
+                    "operation_id": f"op-{token}",
+                    "client_user_message_id": f"msg-{token}",
+                    "relay_owner_thread_id": TEST_RELAY_OWNER,
+                    "created_at": "2026-09-17T00:00:00+00:00",
+                    "attempt": 1,
+                }
+            )
+        self.store.save(state)
+        successors = (mock.Mock(reservation_token="succ-1"), mock.Mock(reservation_token="succ-2"))
+        with mock.patch("codex_autopilot.cli.AppServerClient", ClosedClient), mock.patch(
+            "codex_autopilot.cli.run_automatic_app_server_turn",
+            return_value=mock.Mock(descriptors=successors),
+        ), mock.patch("codex_autopilot.cli.record_automatic_app_server_exit"), mock.patch(
+            "codex_autopilot.cli.spawn_automatic_app_server_relay", return_value=1
+        ), mock.patch("codex_autopilot.cli._ensure_wake") as ensure:
+            result = cli._run_automatic_relay_dispatch(
+                self.cfg, token="token-a", owner=TEST_RELAY_OWNER, owner_turn=OWNER_TURN
+            )
+        self.assertEqual(result, 0)
+        ensure.assert_called_once()
+
+    def test_the_stop_hook_arms_a_wake_when_no_successor_follows(self) -> None:
+        from unittest import mock
+
+        with mock.patch(
+            "codex_autopilot.control.complete_desktop_worker",
+            return_value=mock.Mock(matched=True, descriptors=()),
+        ), mock.patch("codex_autopilot.control._ensure_wake_from_hook") as ensure:
+            result = control.handle_stop_hook(
+                {
+                    "hook_event_name": "Stop",
+                    "cwd": str(self.root),
+                    "session_id": TEST_RELAY_OWNER,
+                    "turn_id": OWNER_TURN,
+                    "last_assistant_message": "AUTOPILOT_STATUS: ROTATE",
+                }
+            )
+        self.assertEqual(result, {})
+        ensure.assert_called_once_with(self.cfg, owner=TEST_RELAY_OWNER, owner_turn=OWNER_TURN)
 
 
 if __name__ == "__main__":

@@ -207,17 +207,17 @@ def _pid_alive(pid: Any) -> bool:
     return True
 
 
-def _spawn_wake(cfg: Config, *, owner: str, owner_turn: str, at_epoch: int) -> int:
-    log_dir = cfg.state_dir / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log = (log_dir / f"wake-{at_epoch}.log").open("a", encoding="utf-8")
-    env = dict(os.environ)
-    source_root = str(Path(__file__).resolve().parents[1])
-    entries = [item for item in str(env.get("PYTHONPATH") or "").split(os.pathsep) if item]
-    if source_root not in entries:
-        entries.insert(0, source_root)
-    env["PYTHONPATH"] = os.pathsep.join(entries)
-    command = [
+
+def wake_command(cfg: Config, *, owner: str, owner_turn: str, at_epoch: int) -> list[str]:
+    """Аргументы спящего процесса - ровно те, что примет парсер ``_wake``.
+
+    Вынесено из запуска, чтобы это можно было проверить: проверяющая
+    сломала имя флага, и 947 тестов остались зелёными, потому что
+    настоящий запуск нигде не исполнялся. Теперь тест прогоняет эти
+    аргументы через настоящий парсер CLI.
+    """
+
+    return [
         sys.executable,
         "-m",
         "codex_autopilot.cli",
@@ -231,9 +231,21 @@ def _spawn_wake(cfg: Config, *, owner: str, owner_turn: str, at_epoch: int) -> i
         "--owner-turn",
         owner_turn,
     ]
+
+
+def _spawn_wake(cfg: Config, *, owner: str, owner_turn: str, at_epoch: int) -> int:
+    log_dir = cfg.state_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log = (log_dir / f"wake-{at_epoch}.log").open("a", encoding="utf-8")
+    env = dict(os.environ)
+    source_root = str(Path(__file__).resolve().parents[1])
+    entries = [item for item in str(env.get("PYTHONPATH") or "").split(os.pathsep) if item]
+    if source_root not in entries:
+        entries.insert(0, source_root)
+    env["PYTHONPATH"] = os.pathsep.join(entries)
     try:
         proc = subprocess.Popen(
-            command,
+            wake_command(cfg, owner=owner, owner_turn=owner_turn, at_epoch=at_epoch),
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,

@@ -176,24 +176,52 @@ def resolve_runtime_tree(*, module_file: str | None = None) -> RuntimeTree:
 
 
 def guard_hashes(src: Path) -> dict[str, str]:
-    """Хэши текста охранных функций - тождество, которое нельзя тронуть."""
+    """Хэши текста охранных функций - тождество, которое нельзя тронуть.
+
+    Три вещи здесь стоят не случайно, каждую назвала проверяющая:
+
+    - имя обязано встречаться в модуле ровно один раз. Python исполняет
+      ПОСЛЕДНЕЕ определение, а первая редакция хэшировала ПЕРВОЕ -
+      дубликат, дописанный после оригинала, проходил проверку;
+    - хэш считается от декораторов, а не от строки ``def``:
+      ``get_source_segment`` декораторы не включает, и обёртка над
+      охранником оставалась бы невидимой;
+    - считаются все определения с этим именем, включая вложенные: их
+      быть не должно вовсе.
+    """
 
     hashes: dict[str, str] = {}
     for module, name in GUARDED_DEFINITIONS:
         text = (src / "codex_autopilot" / module).read_text(encoding="utf-8")
-        node = _definition(text, name)
-        if node is None:
+        found = _definitions(text, name)
+        if not found:
             raise RuntimeRepairError(f"guarded definition disappeared: {module}:{name}")
-        body = ast.get_source_segment(text, node) or ""
-        hashes[f"{module}:{name}"] = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if len(found) > 1:
+            raise RuntimeRepairError(
+                f"guarded definition {module}:{name} occurs {len(found)} times; "
+                "a duplicate would be the one Python actually runs"
+            )
+        hashes[f"{module}:{name}"] = hashlib.sha256(
+            _decorated_segment(text, found[0]).encode("utf-8")
+        ).hexdigest()
     return hashes
 
 
-def _definition(text: str, name: str) -> ast.AST | None:
-    for node in ast.walk(ast.parse(text)):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return node
-    return None
+def _definitions(text: str, name: str) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    return [
+        node
+        for node in ast.walk(ast.parse(text))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    ]
+
+
+def _decorated_segment(text: str, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """Текст определения вместе с его декораторами."""
+
+    lines = text.splitlines(keepends=True)
+    start = min([node.lineno, *(item.lineno for item in node.decorator_list)])
+    end = node.end_lineno or node.lineno
+    return "".join(lines[start - 1 : end])
 
 
 # Что в копию не едет. Свои же прошлые правки копировать незачем, а
@@ -398,6 +426,14 @@ def _apply_edits(package: Path, edits: Sequence[Edit]) -> tuple[ModuleChange, ..
 def _check_module_name(module: str) -> None:
     if module != Path(module).name or not module.endswith(".py"):
         raise RuntimeRepairError(f"a repair names modules of the runtime, not {module!r}")
+    # Имена модулей рантайма строчные, и сравнение идёт по строчной
+    # форме: файловая система установки не различает регистр, и
+    # ``Hook_Trust.py`` записался бы поверх hook_trust.py, минуя запрет.
+    if module != module.lower():
+        raise RuntimeRepairError(
+            f"runtime modules are named in lower case; {module!r} would land on "
+            f"{module.lower()!r} on a case-insensitive file system"
+        )
     if module in UNPATCHABLE_MODULES:
         raise RuntimeRepairError(
             f"{module} is out of reach for a repair: authority, trust and this gateway "

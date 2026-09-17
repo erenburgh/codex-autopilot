@@ -500,6 +500,18 @@ class PipelineIncidentStore:
 
         return _copy(self.load().get("signatures", {}))
 
+    def require_engineer_incident(self, incident_id: str) -> dict[str, Any]:
+        """Тикет, который инженер держит прямо сейчас, - или отказ."""
+
+        state = self.load()
+        incident = _incident(state, incident_id)
+        if IncidentPhase(str(incident["phase"])) is not IncidentPhase.PIPELINE_ENGINEER:
+            raise PipelineIncidentError(
+                f"incident {incident_id} is in phase {incident['phase']}: "
+                "a runtime repair belongs to the engineer holding the incident"
+            )
+        return _copy(incident)
+
     def record_runtime_patch(
         self, incident_id: str, *, patch: Mapping[str, str], at: str
     ) -> dict[str, Any]:

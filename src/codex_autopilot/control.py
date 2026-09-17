@@ -938,7 +938,20 @@ def _ensure_wake_from_hook(cfg: Any, *, owner: str, owner_turn: str) -> None:
         return
     try:
         ensure_wake(cfg, owner=owner, owner_turn=owner_turn)
-    except Exception:  # noqa: BLE001 - хук обязан ответить Codex в любом случае
+    except Exception as exc:  # noqa: BLE001 - хук обязан ответить Codex в любом случае
+        # Молчать нельзя: будильник, который не завёлся, - это прогон,
+        # который снова ждёт человека. Хук не роняем, но след оставляем.
+        _note_wake_failure(cfg, exc)
+        return
+
+
+def _note_wake_failure(cfg: Any, exc: BaseException) -> None:
+    try:
+        log_dir = cfg.state_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with (log_dir / "wake-errors.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"{utc_now()} wake scheduling failed: {exc!r}\n")
+    except Exception:  # noqa: BLE001 - запись следа сама не вправе ронять хук
         return
 
 

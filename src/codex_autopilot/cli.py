@@ -582,6 +582,11 @@ def main(argv: list[str] | None = None) -> int:
             _relay_executor_thread_id()
             cfg = load_config(args.project)
             timestamp = utc_now()
+            # Тикет проверяется до правки, а не после: иначе чужой или
+            # закрытый тикет оставлял бы правку в живой установке и нигде
+            # не записанной - для следующего раза её бы не существовало.
+            incidents = PipelineIncidentStore(cfg.state_dir)
+            incidents.require_engineer_incident(args.incident_id)
             raw = json.loads(args.patch_file.read_text(encoding="utf-8"))
             if not isinstance(raw, dict) or not isinstance(raw.get("edits"), list):
                 raise RuntimeRepairError(
@@ -607,9 +612,7 @@ def main(argv: list[str] | None = None) -> int:
                 test_source=args.test_file.read_text(encoding="utf-8"),
                 at=timestamp,
             )
-            PipelineIncidentStore(cfg.state_dir).record_runtime_patch(
-                args.incident_id, patch=record.to_dict(), at=timestamp
-            )
+            incidents.record_runtime_patch(args.incident_id, patch=record.to_dict(), at=timestamp)
             print(json.dumps(record.to_dict(), ensure_ascii=False))
             return 0
         if args.command == "devops-revert-runtime-patch":
