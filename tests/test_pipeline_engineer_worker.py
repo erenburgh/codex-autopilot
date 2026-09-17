@@ -908,25 +908,25 @@ class ResolvedIncidentResumesTheRunItselfTests(unittest.TestCase):
         return SimpleNamespace(worker_sessions=sessions)
 
     def test_a_reservation_without_a_thread_is_picked_up(self) -> None:
-        from codex_autopilot.lifecycle_completion import _orphaned_pending_descriptors
+        from codex_autopilot.lifecycle_completion import _relayable_descriptors_without_a_thread
 
-        found = _orphaned_pending_descriptors(self.state([self.orphan()]))
+        found = _relayable_descriptors_without_a_thread(self.state([self.orphan()]))
         self.assertEqual([item.task_id for item in found], ["M1"])
 
     def test_a_reservation_that_already_has_a_thread_is_left_alone(self) -> None:
         """Ветка есть - побочный эффект был, поднимать заново нельзя."""
 
-        from codex_autopilot.lifecycle_completion import _orphaned_pending_descriptors
+        from codex_autopilot.lifecycle_completion import _relayable_descriptors_without_a_thread
 
-        found = _orphaned_pending_descriptors(
+        found = _relayable_descriptors_without_a_thread(
             self.state([self.orphan(thread_id="01a0-real")])
         )
         self.assertEqual(found, ())
 
     def test_a_running_session_is_not_a_leftover(self) -> None:
-        from codex_autopilot.lifecycle_completion import _orphaned_pending_descriptors
+        from codex_autopilot.lifecycle_completion import _relayable_descriptors_without_a_thread
 
-        found = _orphaned_pending_descriptors(self.state([self.orphan(status="ACTIVE")]))
+        found = _relayable_descriptors_without_a_thread(self.state([self.orphan(status="ACTIVE")]))
         self.assertEqual(found, ())
 
 

@@ -465,6 +465,17 @@ class TaskStateContractTests(unittest.TestCase):
     def setUp(self):
         self.plan = validate_plan(graph(), "adaptive")
 
+    def test_the_transition_table_does_not_promise_what_the_gate_refuses(self):
+        """Таблица разрешала IMPLEMENTED -> VERIFIED, а гейт отклонял всегда.
+
+        Две правды об одном ребре: читатель таблицы верил, что переход
+        есть. Теперь таблица говорит то же, что R29.
+        """
+
+        from codex_autopilot.task_state import TASK_TRANSITIONS
+
+        self.assertNotIn(TaskState.VERIFIED, TASK_TRANSITIONS[TaskState.IMPLEMENTED])
+
     def test_implemented_is_not_verified_when_verification_is_required(self):
         states = initial_task_states(self.plan)
         states = transition_task(self.plan, states, "A", TaskState.RUNNING)

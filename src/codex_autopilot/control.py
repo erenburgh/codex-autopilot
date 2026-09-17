@@ -934,7 +934,7 @@ def _open_launch_incident(
     )
 
 
-def _orphaned_pending_descriptors(cfg: Config) -> tuple[Any, ...]:
+def _reservations_without_a_live_dispatcher(cfg: Config) -> tuple[Any, ...]:
     """Резервации, под которые ветку так и не создали.
 
     Сессия остаётся в ожидании создания, а диспетчера у неё нет: процесс
@@ -1075,7 +1075,7 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
         # уйти вперёд в этом же ходе - например, в PLAN_CHANGE_DRAINING, -
         # и тогда возобновление исчезало без следа. Если при этом есть
         # резервация без живого диспетчера, поднимаем именно её.
-        stalled = _orphaned_pending_descriptors(cfg)
+        stalled = _reservations_without_a_live_dispatcher(cfg)
         if not stalled:
             return {}
         pids = _spawn_automatic_descriptors(
@@ -1106,7 +1106,7 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
         # Резерв уже сделан раньше, а ветку под него никто не создал:
         # прежний диспетчер умер, не подхватив преемника. Тихий возврат
         # здесь и оставлял прогон стоять без единой записи в журнале.
-        descriptors = _orphaned_pending_descriptors(cfg)
+        descriptors = _reservations_without_a_live_dispatcher(cfg)
         if not descriptors:
             return {}
     pids = _spawn_automatic_descriptors(
@@ -1284,9 +1284,12 @@ def _answer_escalation(cfg, state) -> tuple[str, ...]:
     отказывало ровно потому, что прогон в BLOCKED. Человеку, который
     уже всё починил, сказать об этом было нечем.
 
-    Закрываются только эскалированные тикеты. BLOCKED по любой другой
-    причине остаётся отказом: "продолжи" не должно быть кнопкой,
-    стирающей неразобранную поломку.
+    Закрываются тикеты, которые ждут человека: объявившие
+    ESCALATE_TO_USER и застрявшие в PIPELINE_ENGINEER - у второго
+    закрыть было некому, ни инженеру, ни человеку, и именно им прогон
+    разблокировался 16.09 (авторитет - incident_ids_awaiting_the_user).
+    BLOCKED по любой другой причине остаётся отказом: "продолжи" не
+    должно быть кнопкой, стирающей неразобранную поломку.
     """
 
 
@@ -1412,7 +1415,7 @@ def _desktop_relay_continuation(
     *,
     relay_owner_thread_id: str,
     relay_owner_turn_id: str,
-) -> str:
+) -> dict[str, Any]:
     """Поднять уже зарезервированный релей и отчитаться лентой."""
 
     if not relay_owner_thread_id or not relay_owner_turn_id:

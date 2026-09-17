@@ -49,8 +49,10 @@ TASK_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
             TaskState.CANCELLED,
         }
     ),
+    # VERIFIED здесь намеренно нет: IMPLEMENTED -> VERIFIED отклоняется
+    # всегда (R29), и таблица, разрешавшая это ребро, говорила неправду.
     TaskState.IMPLEMENTED: frozenset(
-        {TaskState.VERIFYING, TaskState.VERIFIED, TaskState.BLOCKED, TaskState.CANCELLED}
+        {TaskState.VERIFYING, TaskState.BLOCKED, TaskState.CANCELLED}
     ),
     TaskState.VERIFYING: frozenset(
         {
@@ -154,6 +156,13 @@ def validate_transition(
         raise IllegalTaskTransition(
             f"task {task_id} current state does not match the durable state map"
         )
+    # R29 называется раньше общей таблицы: отказ обязан сказать, чего не
+    # хватает - независимой верификации, - а не только «ребра нет».
+    if source is TaskState.IMPLEMENTED and destination is TaskState.VERIFIED:
+        raise IllegalTaskTransition(
+            f"task {task_id} requires independent verification; "
+            "IMPLEMENTED cannot transition directly to VERIFIED"
+        )
     if destination not in TASK_TRANSITIONS[source]:
         raise IllegalTaskTransition(
             f"illegal task transition for {task_id}: {source.value} -> {destination.value}"
@@ -168,11 +177,6 @@ def validate_transition(
         # This explicit edge is the only successful implementer-completion edge.
         # It prevents a worker result from being conflated with verification.
         return destination
-    if source is TaskState.IMPLEMENTED and destination is TaskState.VERIFIED:
-        raise IllegalTaskTransition(
-            f"task {task_id} requires independent verification; "
-            "IMPLEMENTED cannot transition directly to VERIFIED"
-        )
     return destination
 
 

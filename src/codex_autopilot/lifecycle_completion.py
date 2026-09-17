@@ -871,7 +871,7 @@ def parse_pipeline_engineer_status(message: str) -> tuple[str, str]:
     return "ESCALATE_TO_USER", parts[1]
 
 
-def _orphaned_pending_descriptors(state: RunState) -> tuple[Any, ...]:
+def _relayable_descriptors_without_a_thread(state: RunState) -> tuple[Any, ...]:
     """Зарезервированная работа, которую некому поднять.
 
     После инцидента остаются сессии в состояниях, пригодных к релею:
@@ -1038,7 +1038,7 @@ def _complete_pipeline_engineer(
             # руками. Именно это и делало пайплайн неавтоматическим -
             # каждая починка требовала оператора.
             if not descriptors:
-                descriptors = _orphaned_pending_descriptors(state)
+                descriptors = _relayable_descriptors_without_a_thread(state)
             if dispatcher_authorized:
                 # Тот же учёт владения переходом, что и у обычного воркера.
                 # Прежде инженер назначал преемника и не отмечал его у себя:
