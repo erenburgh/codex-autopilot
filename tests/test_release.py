@@ -123,7 +123,10 @@ class ReleaseTests(unittest.TestCase):
         # из архива и отсутствие в git - разные механизмы, и нужны оба.
         import subprocess
 
-        for internal in ("docs/V1_TARGET.md", "docs/V1_RUN.md"):
+        # Про git можно спрашивать только репозиторий. Установленная копия
+        # рантайма - не он: там проверяется состав архива, а не история.
+        repository = (ROOT / ".git").exists() and (ROOT / ".gitignore").is_file()
+        for internal in ("docs/V1_TARGET.md", "docs/V1_RUN.md") if repository else ():
             tracked = subprocess.run(
                 ["git", "ls-files", internal],
                 cwd=ROOT, capture_output=True, text=True,
@@ -168,6 +171,30 @@ class ReleaseTests(unittest.TestCase):
                 self.assertNotEqual(
                     tracked, 0, f"{secret} не должен отслеживаться публичным репозиторием"
                 )
+
+    def test_the_user_archive_ships_what_the_installer_and_the_engineer_need(self):
+        """Установщик кладёт рантайм деревом формы репозитория.
+
+        Набор тестов доказывает поведение только на таком дереве: ему
+        нужны plugins, scripts, pyproject и документация, а не один src.
+        Пользовательский архив без них не устанавливался и не годился
+        инженеру для доказательства починки. Каталог patches - состояние
+        машины, где чинили, - в исходный архив не едет.
+        """
+
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_release_shape", ROOT / "scripts/build_release.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for item in ("tests", "scripts", "build_backend", "pyproject.toml", "plugins"):
+            self.assertIn(item, module.USER_ITEMS, item)
+        self.assertIn("patches", module.SOURCE_EXCLUDES)
+        installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+        for item in ("tests", "scripts", "plugins", "pyproject.toml"):
+            self.assertRegex(installer, r"for item in [^\n]*\b" + item.replace(".", r"\.") + r"\b")
 
     def test_run_state_never_reaches_the_source_archive(self):
         """Состояние прогона принадлежит тому, кто здесь работал.

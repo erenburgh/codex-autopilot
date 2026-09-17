@@ -54,10 +54,14 @@ target="$install_root/$version"
 mkdir -p "$install_root"
 rm -rf "$target"
 mkdir -p "$target/runtime" "$target/bin"
-cp -R "$source_dir/src" "$target/runtime/src"
-# Тесты едут в установку вместе с кодом: без них дежурный инженер не
-# сможет доказать починку рантайма, а недоказанную шлюз не примет.
-cp -R "$source_dir/tests" "$target/runtime/tests"
+# Рантайм устанавливается деревом той же формы, что и репозиторий: не
+# только src, а всё, чем набор тестов доказывает поведение - тесты,
+# плагины, документация, установщик, pyproject. Дежурный инженер
+# доказывает починку прогоном этого набора на копии установленного
+# дерева; из одного src он не собирался вовсе: 94 падения на месте.
+for item in src tests scripts build_backend plugins .agents .gitignore docs install.sh pyproject.toml README.md GETTING_STARTED.md CHANGELOG.md LICENSE; do
+  [ -e "$source_dir/$item" ] && cp -R "$source_dir/$item" "$target/runtime/$item"
+done
 cp -R "$source_dir/plugins" "$target/plugins"
 cp -R "$source_dir/.agents" "$target/.agents"
 cp "$source_dir/README.md" "$source_dir/GETTING_STARTED.md" "$source_dir/LICENSE" "$target/"

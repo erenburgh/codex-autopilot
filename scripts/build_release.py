@@ -29,7 +29,10 @@ def _package_version() -> str:
 
 
 VERSION = _package_version()
-USER_ITEMS = [".agents", "plugins", "src", "docs", "install.sh", "README.md", "GETTING_STARTED.md", "CHANGELOG.md", "LICENSE"]
+# Тесты едут пользователю вместе с исходниками: установщик кладёт их рядом
+# с рантаймом, а дежурный инженер доказывает ими починку. Архив без них
+# не устанавливался вовсе - install.sh падал на копировании tests.
+USER_ITEMS = [".agents", ".gitignore", "plugins", "src", "tests", "scripts", "build_backend", "pyproject.toml", "docs", "install.sh", "README.md", "GETTING_STARTED.md", "CHANGELOG.md", "LICENSE"]
 # Внутренние документы, которые живут в репозитории ради воркеров, но не
 # уезжают пользователю: целевая спецификация следующей версии - это
 # рабочий план и коммерческое позиционирование, а не документация продукта.
@@ -49,7 +52,9 @@ INTERNAL_DOCS = {
 # память проекта, логи. Оно принадлежит тому, кто здесь работал, и в
 # исходный архив попадать не должно ни при каких условиях. Защита
 # релиза ловила его по абсолютным путям, но ловить надо не следствие.
-SOURCE_EXCLUDES = {"__pycache__", ".git", ".DS_Store", ".venv", "dist", "build", ".codex-autopilot"}
+# patches - каталог применённых правок рантайма: состояние машины, на
+# которой чинили, а не исходник.
+SOURCE_EXCLUDES = {"__pycache__", ".git", ".DS_Store", ".venv", "dist", "build", ".codex-autopilot", "patches"}
 BANNED_PARTS = {"__pycache__", ".git", ".venv", "venv", "logs"}
 BANNED_SUFFIXES = {".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".wal", ".shm"}
 

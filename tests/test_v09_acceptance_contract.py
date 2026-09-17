@@ -265,12 +265,20 @@ class AIStudioAcceptanceShapeTests(unittest.TestCase):
         # везде читает решение по deferred.
         self.assertIn("capability_capacity:computer_use", deferred.reasons)
 
-        runtime = AIStudioRuntime(
-            plan,
-            Path.cwd(),
-            language="en",
-            skill_path=Path(__file__),
-        )
+        # Project Memory требует репозиторий. Path.cwd() был им только в
+        # рабочем дереве; на установленной копии рантайма - нет, и тест
+        # падал по причине, к маршрутизации не относящейся.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            (project / ".git").mkdir()
+            runtime = AIStudioRuntime(
+                plan,
+                project,
+                language="en",
+                skill_path=Path(__file__),
+            )
         self.assertEqual(runtime.route("code").model_id, "gpt-5.6-sol")
         self.assertEqual(runtime.route("gui-a").model_id, "gpt-6-astra")
         self.assertEqual(

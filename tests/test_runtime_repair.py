@@ -433,16 +433,18 @@ class InstalledLayoutTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         script = (root / "install.sh").read_text(encoding="utf-8")
-        copies = dict(
-            re.findall(r'cp -R "\$source_dir/([^"]+)" "\$target/([^"]+)"', script)
-        )
-        self.assertEqual(copies.get("src"), "runtime/src")
-        self.assertEqual(
-            copies.get("tests"),
-            "runtime/tests",
-            "без набора тестов в установке devops-repair-runtime откажет на "
-            "первом же обращении: доказывать починку будет нечем",
-        )
+        # Рантайм копируется деревом формы репозитория одним циклом; в нём
+        # обязаны быть и исходники, и тесты, и всё, чем тесты доказывают.
+        loop = re.search(r"for item in ([^;\n]+); do\n\s*\[ -e \"\$source_dir/\$item\" \] && cp -R \"\$source_dir/\$item\" \"\$target/runtime/\$item\"", script)
+        self.assertIsNotNone(loop, "установщик не копирует дерево рантайма циклом по элементам")
+        items = loop.group(1).split()
+        for required in ("src", "tests", "plugins", "scripts", "pyproject.toml"):
+            self.assertIn(
+                required,
+                items,
+                f"без {required} в установке набор тестов красный, и devops-repair-runtime "
+                "откажет на первом же обращении: доказывать починку будет нечем",
+            )
 
     def test_the_gateway_looks_for_the_suite_where_the_installer_puts_it(self) -> None:
         tree = resolve_runtime_tree()

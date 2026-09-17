@@ -496,5 +496,19 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _tail(result: subprocess.CompletedProcess[str], *, limit: int = 2_000) -> str:
-    return ((result.stdout or "") + (result.stderr or ""))[-limit:]
+def _tail(result: subprocess.CompletedProcess[str], *, limit: int = 1_500) -> str:
+    """Что именно упало - именами, а не последними байтами вывода.
+
+    Хвост вывода unittest - это предупреждения и точки; имена упавших
+    тестов стоят выше и в него не попадали. Отказ, не называющий
+    причину, заставляет угадывать (R31), поэтому имена идут первыми.
+    """
+
+    output = (result.stdout or "") + (result.stderr or "")
+    named = [
+        line.strip()
+        for line in output.splitlines()
+        if line.startswith(("FAIL:", "ERROR:", "Ran ", "FAILED", "OK"))
+    ]
+    head = "\n".join(named[:24])
+    return (head + "\n...\n" if head else "") + output[-limit:]

@@ -54,6 +54,11 @@ class InstallerTests(unittest.TestCase):
                 (install_root / "current/plugins/codex-autopilot-adaptive/.codex-plugin/plugin.json").read_text(encoding="utf-8")
             )["version"])
         self.assertTrue((install_root / "current/bin/codex-autopilot").is_file())
+        # Рантайм установлен деревом формы репозитория: без этого набор
+        # тестов на установленной копии красный, и инженер не докажет ни
+        # одной починки.
+        for item in ("src", "tests", "scripts", "plugins", "docs", "pyproject.toml", "install.sh"):
+            self.assertTrue((install_root / "current/runtime" / item).exists(), item)
         # Агент будильника пишется под подменённый HOME и зовёт стабильный
         # путь рантайма - тот, что переживает обновление версии.
         import plistlib
