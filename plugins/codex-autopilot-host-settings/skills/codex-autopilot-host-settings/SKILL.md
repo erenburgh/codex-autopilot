@@ -33,6 +33,53 @@ Project Memory is the canonical knowledge store. Use the built-in `memory` MCP t
 
 The execution mode documents what the Definition of Done requires, but this profile does not select a capability. Use Computer Use only when the current host-selected model provides it and the prompt says `Effective execution mode: computer_use`. Otherwise return `BLOCKED` if the Definition of Done cannot be completed.
 
+## Onboarding: what the user must hear before the first worker starts
+
+The first run is the only moment the user is looking. Before the first worker
+is created - after preflight, in the same initiating turn - tell them the
+following, in the run language, as a short block they can come back to. Do not
+paraphrase it into three lines and do not pad it into a lecture; every point
+below answers a question users actually asked.
+
+1. **Two decisions are Codex's, not Autopilot's.** Trust the Autopilot **Stop**
+   hook once in Codex `/hooks`, and answer **Always** when the preflight task
+   asks to approve the bundled `memory` tool. Both are asked before the first
+   milestone, never in the middle of one. Autopilot never answers an approval
+   for the user, never changes trust and never edits global Codex settings. If
+   Codex keeps asking for approvals during the run, the user can switch that
+   project to the approval mode that lets Codex act for them - that is a Codex
+   setting the user changes, and it is worth saying so here.
+2. **How to look.** Tasks of the run appear in the Desktop sidebar only after
+   the hook answers, so the way to see them is to ask: `статус` / `status` for
+   a short card, `подробный статус` / `detailed status` for the full report,
+   `задачи` / `tasks` for the same card when the word that comes to mind is
+   "tasks". `останови` / `stop` pauses after the current turn; `продолжи` /
+   `resume` continues; `удали Codex Autopilot` / `uninstall Codex Autopilot`
+   removes the plugin and keeps the project - removal needs the full name.
+3. **What a running task means.** While a milestone runs, its thread is held by
+   Autopilot until the task ends with a status line; do not type into it. Thread
+   titles say who is working and on what: `<Role> | <task id> | <phase>`, with
+   `Verifier` and `Verify` for the independent check. When a task is finished
+   or rejected, that thread is ordinary: the user may open it and correct the
+   result by hand, and the next verification judges the corrected state.
+4. **The plan is not frozen.** New work that was not in the plan is added as a
+   plan change, not by editing files in `.codex-autopilot/`: ask for it in a
+   fresh task, and the planner records the change with its provenance. Never
+   hand-edit `plan.json`, `run-state.json` or `pipeline-incidents.json`.
+5. **What happens when something breaks.** A rejected result is revised by a
+   fresh worker and, when revisions run out, re-hired one effort step up; only
+   an exhausted ladder stops a task, and then the run says so with the issues
+   named. An infrastructure fault - a dispatcher that died, a thread that
+   drifted, a defect in Autopilot's own code - becomes a ticket for the
+   on-call Pipeline Engineer, which repairs it, proves the repair with tests,
+   records what it did and returns the task to work. A run that ran out of
+   Codex limits resumes by itself when the window resets. The user is asked
+   only for the things listed in point 1 and for decisions that are genuinely
+   theirs: an unknown side effect on the Codex side, a product or architecture
+   choice, a dangerous permission.
+6. **Where to read more.** `GETTING_STARTED.md` in the installed runtime, and
+   `docs/` next to it, hold the same explanations at length.
+
 ## Start a run
 
 The target is the Codex project you are working in. Resolve it as that project's own root, and take the Desktop project id from the same place: the two always belong together, because every created task is placed in that project and verified there.

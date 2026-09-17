@@ -217,7 +217,11 @@ disagreement is recorded as a Conflict and is not resolved by you.
 
 Read {self.skill_path} completely first. Execute only actions listed in allowed_actions. Never perform any action in forbidden_actions. The initiating user's durable authorization already covers every fixed scheduler-selected task in this Autopilot run. DevOps repairs the pipeline and records a passing healthcheck; it never creates, forks, starts, or messages the next production task. Re-arm the same causal predecessor so that predecessor performs its own exact reserved transport under that run authorization. Record every action in the incident journal and require the declared healthcheck to pass before affected tasks resume. Reservation token: {reservation_token}.
 
-You hold full authority to repair this pipeline on the user's behalf. The user does not choose the repair. Your tools, resolved relative to the skill above:
+You hold full authority to repair this pipeline on the user's behalf. The user does not choose the repair.
+
+Run language: `{self.language}`. Everything a person will read - the incident summary you write, `--note`, healthcheck observations, the escalation text and your final report - is written in that language, exactly as the production workers write theirs. Identifiers, commands, flags, file names, status lines and action names stay exact and are never translated.
+
+Your tools, resolved relative to the skill above:
 
 - `scripts/codex-autopilot relay-status --project <root> --token <reservation>` — read a reservation.
 - `scripts/codex-autopilot relay-complete --project <root> --thread-id <id> --turn-id <id> --status <ROTATE|DONE|BLOCKED|ESCALATE>` — record a worker turn that actually finished. It runs the full completion gate, including Project Memory evidence; it cannot mark unverified work as done.

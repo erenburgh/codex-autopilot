@@ -1160,14 +1160,27 @@ PAUSE_PROMPTS = _phrases(
     "stop {product}",
     "приостанови {product}",
     "останови {product}",
-)
+) | {
+    # Одинокое слово - то же намерение, что и у "статус": совпадение идёт
+    # по всему вводу целиком, случайно внутрь фразы оно не попадает.
+    # Удаление сюда не входит намеренно: оно необратимо и требует имени.
+    "останови",
+    "пауза",
+    "stop",
+    "pause",
+}
 RESUME_PROMPTS = _phrases(
     "resume {product}",
     "continue {product}",
     "возобнови {product}",
     "продолжи {product}",
     "продолжить {product}",
-)
+) | {
+    "продолжи",
+    "возобнови",
+    "resume",
+    "continue",
+}
 DETAILED_STATUS_PROMPTS = _phrases(
     "{product} status detail",
     "подробный статус {product}",
@@ -1191,6 +1204,13 @@ STATUS_PROMPTS = _phrases(
     "статус",
     "status",
     "статус автопилота",
+    # Ещё одно слово для того же взгляда: в Desktop задачи прогона видны
+    # только после ответа хука, и человек, который ищет "задачи", а не
+    # "статус", не должен уходить ни с чем.
+    "задачи",
+    "tasks",
+    "покажи задачи",
+    "show tasks",
 }
 UNINSTALL_PROMPTS = _phrases(
     "uninstall {product}",
