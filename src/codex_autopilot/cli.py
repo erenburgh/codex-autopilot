@@ -73,6 +73,11 @@ def parser() -> argparse.ArgumentParser:
     automatic_relay.add_argument("--token", required=True)
     automatic_relay.add_argument("--initiator-thread", required=True)
     automatic_relay.add_argument("--initiator-turn", required=True)
+    wake = sub.add_parser("_wake", help=argparse.SUPPRESS)
+    wake.add_argument("--project", type=Path, required=True)
+    wake.add_argument("--at", type=int, required=True)
+    wake.add_argument("--owner", required=True)
+    wake.add_argument("--owner-turn", required=True)
     recreate_archived = sub.add_parser("recreate-archived-retry", help=argparse.SUPPRESS)
     recreate_archived.add_argument("--project", type=Path, required=True)
     recreate_archived.add_argument("--reservation-token", required=True)
@@ -258,6 +263,18 @@ def _record_detached_dispatch_failure(cfg, token: str, error: BaseException) -> 
         print(f"codex-autopilot: тикет завести не удалось: {incident_error}")
 
 
+
+def _ensure_wake(cfg, *, owner: str, owner_turn: str) -> None:
+    """Будильник - забота, а не контракт: его отказ не роняет ход."""
+
+    from .wake import ensure_wake
+
+    try:
+        ensure_wake(cfg, owner=owner, owner_turn=owner_turn)
+    except Exception as exc:  # noqa: BLE001 - будильник не вправе валить диспетчер
+        print(f"wake scheduling failed: {exc}", flush=True)
+
+
 def _run_automatic_relay_dispatch(
     cfg,
     *,
@@ -382,6 +399,9 @@ def _automatic_relay_loop(
             dispatcher_pid=os.getpid(),
         )
         if not outcome.descriptors:
+            # Уходя, диспетчер оставляет будильник: повтор по сроку
+            # иначе некому поднять, и прогон стоит до слова человека.
+            _ensure_wake(cfg, owner=owner, owner_turn=owner_turn)
             return 0
         if len(outcome.descriptors) == 1:
             successor = outcome.descriptors[0]
@@ -413,6 +433,7 @@ def _automatic_relay_loop(
                 initiator_thread_id=relay_owner,
                 initiator_turn_id=str(predecessor["turn_id"]),
             )
+        _ensure_wake(cfg, owner=owner, owner_turn=owner_turn)
         return 0
 
 
@@ -482,6 +503,15 @@ def main(argv: list[str] | None = None) -> int:
                 "resume is hook-owned: send the exact phrase "
                 "'Resume Codex Autopilot.' in a Codex task opened on this "
                 "project, so its trusted Stop hook launches the dispatcher"
+            )
+        if args.command == "_wake":
+            from .wake import run_wake
+
+            return run_wake(
+                load_config(args.project),
+                at_epoch=args.at,
+                owner=args.owner,
+                owner_turn=args.owner_turn,
             )
         if args.command == "_relay_dispatch":
             cfg = load_config(args.project)

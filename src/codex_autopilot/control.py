@@ -915,6 +915,20 @@ def _orphaned_pending_descriptors(cfg: Config) -> tuple[Any, ...]:
     )
 
 
+
+def _ensure_wake_from_hook(cfg: Any, *, owner: str, owner_turn: str) -> None:
+    """Будильник из Stop-хука: забота, а не контракт, хук не роняет."""
+
+    from .wake import ensure_wake
+
+    if not owner or not owner_turn:
+        return
+    try:
+        ensure_wake(cfg, owner=owner, owner_turn=owner_turn)
+    except Exception:  # noqa: BLE001 - хук обязан ответить Codex в любом случае
+        return
+
+
 def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     registry = LaunchRegistry()
     root = find_project_root(Path(str(payload.get("cwd") or ".")))
@@ -972,6 +986,14 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
                     ),
                     timeout=15.0,
                 )
+            # Ход закончился, преемников нет. Если кто-то ждёт повтора по
+            # сроку, поднять его будет некому - хук и есть последний
+            # живой процесс. Он оставляет будильник.
+            _ensure_wake_from_hook(
+                cfg,
+                owner=str(payload.get("session_id") or ""),
+                owner_turn=str(payload.get("turn_id") or ""),
+            )
             return {}
         continuation = _desktop_relay_continuation(
             cfg,

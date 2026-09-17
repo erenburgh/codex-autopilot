@@ -70,6 +70,11 @@ class RunState:
     worker_sessions: list[dict[str, object]] = field(default_factory=list)
     task_retry_at: dict[str, int] = field(default_factory=dict)
     rate_limit_until: int | None = None
+    # Будильник: pid спящего процесса, который поднимет диспетчер по
+    # сроку повтора, и сам срок. Без него прогон с кончившимся лимитом
+    # стоял до слова человека - замерено на прогоне v1.0.
+    wake_pid: int | None = None
+    wake_at: int | None = None
     # Последний снимок лимитов от App Server. Нужен не для реакции на
     # упор, а для планирования ёмкости: сколько воркеров имеет смысл
     # держать параллельно прямо сейчас.
@@ -607,6 +612,12 @@ def _validate_state(state: RunState) -> None:
         or state.rate_limit_until < 0
     ):
         raise ValueError("rate_limit_until must be a non-negative integer or null")
+    for name in ("wake_pid", "wake_at"):
+        value = getattr(state, name)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            raise ValueError(f"{name} must be a non-negative integer or null")
     if (
         isinstance(state.plan_change_sequence, bool)
         or not isinstance(state.plan_change_sequence, int)
