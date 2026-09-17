@@ -106,6 +106,16 @@ def _runtime_environment() -> dict[str, str]:
     return env
 
 
+
+def _register_for_wake(root: Path) -> None:
+    from .wake import register_project
+
+    try:
+        register_project(root)
+    except Exception:  # noqa: BLE001 - реестр обхода не вправе валить запуск
+        return
+
+
 def arm(root: Path) -> None:
     cfg = load_config(root)
     store = StateStore(cfg.state_dir)
@@ -122,6 +132,9 @@ def arm(root: Path) -> None:
     request_id = LaunchRegistry().add(payload)
     payload["request_id"] = request_id
     store.arm(payload)
+    # Проект попадает в обход агента будильника: с этого момента повтор
+    # по сроку поднимут и после перезагрузки.
+    _register_for_wake(cfg.root)
     state.status = "READY"
     state.phase = "ARMED"
     store.save(state)

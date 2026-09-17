@@ -27,7 +27,15 @@ from codex_autopilot.config import load_config
 from codex_autopilot.lifecycle_base import PENDING_SESSION_STATUSES
 from codex_autopilot.lifecycle_failures import record_desktop_failure
 from codex_autopilot.run_state import StateStore
-from codex_autopilot.wake import due_wake_epoch, ensure_wake, run_wake
+from codex_autopilot.wake import (
+    derive_owner,
+    due_wake_epoch,
+    ensure_wake,
+    register_project,
+    registered_projects,
+    run_wake,
+    sweep,
+)
 from test_desktop_lifecycle import graph, task
 
 OWNER_TURN = "turn-of-the-owner"
@@ -222,6 +230,102 @@ class WakeTests(unittest.TestCase):
         )
         self.assertIsNone(result)
         self.assertEqual(calls, [])
+
+
+class SurvivesARebootTests(WakeTests):
+    """Агент обхода делает то же, что будильник, но после перезагрузки.
+
+    Спящий процесс умирает вместе с машиной. Агент раз в пять минут
+    обходит известные проекты и заводит будильник там, где повтор по
+    сроку ждёт. Владельца он берёт из журнала - как диспетчер для своих
+    преемников, - а не из аргументов, которых после перезагрузки нет.
+    """
+
+    def record_completed_owner_turn(self) -> None:
+        """Причинный владелец записал завершённый ход - как в живом прогоне."""
+
+        # Форма записи - та, которую требует _validate_state: сессия и
+        # запись журнала со всеми обязательными полями, иначе состояние
+        # не сохранится вовсе. Это и есть след, который оставляет
+        # настоящий завершённый ход.
+        state = self.store.load()
+        state.worker_sessions.append(
+            {
+                "task_id": "A",
+                "kind": "worker",
+                "thread_id": TEST_RELAY_OWNER,
+                "turn_id": OWNER_TURN,
+                "relay_owner_thread_id": TEST_RELAY_OWNER,
+                "status": "COMPLETED",
+                "reservation_token": "owner-reservation",
+                "operation_id": "owner-operation",
+                "client_user_message_id": "owner-message",
+                "created_at": "2026-09-17T00:00:00+00:00",
+                "attempt": 1,
+            }
+        )
+        state.lifecycle_journal_sequence += 1
+        state.lifecycle_journal.append(
+            {
+                "sequence": state.lifecycle_journal_sequence,
+                "event": "turn_completed",
+                "task_id": "A",
+                "attempt": 1,
+                "reservation_token": "owner-reservation",
+                "operation_id": "owner-operation",
+                "thread_id": TEST_RELAY_OWNER,
+                "turn_id": OWNER_TURN,
+                "at": "2026-09-17T00:00:00+00:00",
+            }
+        )
+        self.store.save(state)
+
+    def test_the_owner_is_derived_from_the_journal(self) -> None:
+        self.assertIsNone(derive_owner(self.store.load()), "без завершённого хода владельца нет")
+        self.record_completed_owner_turn()
+        self.assertEqual(derive_owner(self.store.load()), (TEST_RELAY_OWNER, OWNER_TURN))
+
+    def test_a_sweep_arms_a_wake_where_a_retry_waits(self) -> None:
+        self.hit_the_limit()
+        self.record_completed_owner_turn()
+        calls: list[dict] = []
+        outcome = sweep(
+            roots=[str(self.root)],
+            spawn=lambda cfg, **kw: calls.append(kw) or os.getpid(),
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["owner"], TEST_RELAY_OWNER)
+        self.assertEqual(calls[0]["owner_turn"], OWNER_TURN)
+        self.assertTrue(outcome[str(self.root)].startswith("wake "))
+
+    def test_a_sweep_leaves_alone_what_needs_no_wake(self) -> None:
+        calls: list[dict] = []
+        spawn = lambda cfg, **kw: calls.append(kw) or 1  # noqa: E731
+        gone = str(self.root / "no-such-project")
+        outcome = sweep(roots=[str(self.root), gone], spawn=spawn)
+        self.assertEqual(outcome[str(self.root)], "nothing due")
+        self.assertEqual(outcome[gone], "gone")
+        self.hit_the_limit()
+        self.store.request_pause()
+        self.assertEqual(sweep(roots=[str(self.root)], spawn=spawn)[str(self.root)], "stopped")
+        self.assertEqual(calls, [])
+
+    def test_a_retry_without_a_completed_owner_is_not_woken_on_anyones_behalf(self) -> None:
+        self.hit_the_limit()
+        calls: list[dict] = []
+        outcome = sweep(roots=[str(self.root)], spawn=lambda cfg, **kw: calls.append(kw) or 1)
+        self.assertEqual(outcome[str(self.root)], "no completed owner")
+        self.assertEqual(calls, [])
+
+    def test_projects_are_registered_once_and_survive_rereading(self) -> None:
+        registry = self.root / "projects.json"
+        register_project(self.root, path=registry)
+        register_project(self.root, path=registry)
+        register_project(self.root / "other", path=registry)
+        self.assertEqual(
+            registered_projects(path=registry),
+            sorted({str(self.root), str((self.root / "other").resolve())}),
+        )
 
 
 class TheLastProcessLeavesAWakeTests(unittest.TestCase):

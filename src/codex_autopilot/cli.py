@@ -78,6 +78,7 @@ def parser() -> argparse.ArgumentParser:
     wake.add_argument("--at", type=int, required=True)
     wake.add_argument("--owner", required=True)
     wake.add_argument("--owner-turn", required=True)
+    sub.add_parser("_wake-sweep", help=argparse.SUPPRESS)
     recreate_archived = sub.add_parser("recreate-archived-retry", help=argparse.SUPPRESS)
     recreate_archived.add_argument("--project", type=Path, required=True)
     recreate_archived.add_argument("--reservation-token", required=True)
@@ -513,6 +514,15 @@ def main(argv: list[str] | None = None) -> int:
                 owner=args.owner,
                 owner_turn=args.owner_turn,
             )
+        if args.command == "_wake-sweep":
+            # Агент launchd: обход известных проектов. Ничего не
+            # запускает сам - только заводит будильник там, где повтор
+            # по сроку ждёт, а живого будильника нет.
+            from .wake import sweep
+
+            for root, decision in sweep().items():
+                print(f"{root}: {decision}", flush=True)
+            return 0
         if args.command == "_relay_dispatch":
             cfg = load_config(args.project)
             return _run_automatic_relay_dispatch(
@@ -825,6 +835,29 @@ def doctor(project: Path) -> int:
     return 0 if all(ok for _, ok, _ in checks) else 1
 
 
+
+WAKE_AGENT_LABEL = "com.codex-autopilot.wake"
+
+
+def _wake_agent_plist() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{WAKE_AGENT_LABEL}.plist"
+
+
+def _remove_wake_agent() -> None:
+    """Снять агента обхода. Его отсутствие - не ошибка удаления."""
+
+    plist = _wake_agent_plist()
+    launchctl = shutil.which("launchctl")
+    if launchctl and plist.is_file():
+        subprocess.run(
+            [launchctl, "bootout", f"gui/{os.getuid()}", str(plist)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    plist.unlink(missing_ok=True)
+
+
 def uninstall(args) -> int:
     if not args.yes:
         print("Re-run with --yes. Project source and state remain unless --purge-project-state is also provided.", file=sys.stderr)
@@ -850,6 +883,7 @@ def uninstall(args) -> int:
         if args.project is None:
             raise ValueError("--purge-project-state requires --project")
         purge_project_state(args.project)
+    _remove_wake_agent()
     install_root = os.environ.get("CODEX_AUTOPILOT_INSTALL_ROOT")
     if install_root:
         root = Path(install_root).expanduser().resolve()

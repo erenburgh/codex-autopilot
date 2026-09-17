@@ -77,6 +77,40 @@ export CODEX_AUTOPILOT_RUNTIME="$install_root/current/bin/codex-autopilot"
 exec "$base/venv/bin/python" -m codex_autopilot.cli "$@"
 EOF
 chmod 755 "$target/bin/codex-autopilot"
+
+# Агент будильника. Спящий процесс, который поднимает повтор по сроку,
+# не переживает перезагрузку; агент launchd раз в пять минут обходит
+# известные проекты и заводит будильник там, где он нужен. Без него
+# прогон, уснувший на лимите, ждал бы слова человека до следующего запуска.
+if [ "$(uname -s)" = "Darwin" ]; then
+  agents_dir="$HOME/Library/LaunchAgents"
+  mkdir -p "$agents_dir"
+  wake_plist="$agents_dir/com.codex-autopilot.wake.plist"
+  cat > "$wake_plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.codex-autopilot.wake</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$install_root/current/bin/codex-autopilot</string>
+    <string>_wake-sweep</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>300</integer>
+  <key>StandardOutPath</key><string>$install_root/wake-sweep.log</string>
+  <key>StandardErrorPath</key><string>$install_root/wake-sweep.log</string>
+</dict>
+</plist>
+EOF
+  # В тестах установщика HOME подменён: грузить агента в настоящий launchd
+  # оттуда нельзя, и переменная это запрещает.
+  if [ -z "${CODEX_AUTOPILOT_SKIP_LAUNCHD:-}" ] && command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)" "$wake_plist" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$(id -u)" "$wake_plist" >/dev/null 2>&1 || true
+  fi
+fi
 "$python_bin" - "$target" <<'PY'
 from datetime import datetime, timezone
 import json

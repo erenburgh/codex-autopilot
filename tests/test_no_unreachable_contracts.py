@@ -230,7 +230,7 @@ class EveryCommandHasAConsumerTests(unittest.TestCase):
     # Машинные входы: их зовёт Codex или сам рантайм, а не человек.
     # _wake порождает сам диспетчер перед уходом: будильник повтора по
     # сроку. Человек его не набирает, как и _relay_dispatch.
-    MACHINE = {"hook", "memory-mcp", "_relay_dispatch", "_dispatch", "_wake"}
+    MACHINE = {"hook", "memory-mcp", "_relay_dispatch", "_dispatch", "_wake", "_wake-sweep"}
     # Пользовательские команды: описаны в README и GETTING_STARTED.
     USER = {"status", "stop", "resume", "logs", "doctor", "uninstall"}
     # Внутренние шаги start-skill, у каждой своя справка в --help.

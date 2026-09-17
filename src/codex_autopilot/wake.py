@@ -221,3 +221,123 @@ def _spawn_wake(cfg: Config, *, owner: str, owner_turn: str, at_epoch: int) -> i
     finally:
         log.close()
     return proc.pid
+
+
+# ---------------------------------------------------------------------------
+# Переживает перезагрузку: обход по расписанию вместо одного спящего процесса
+# ---------------------------------------------------------------------------
+#
+# Спящий процесс умирает вместе с машиной. Поэтому рядом с ним есть второй
+# путь, которого перезагрузка не касается: агент launchd раз в несколько
+# минут обходит известные проекты и заводит будильник там, где повтор по
+# сроку ждёт, а живого будильника нет. Владелец и ход берутся из самого
+# состояния прогона - из последнего завершённого хода причинного владельца,
+# ровно так же, как их находит диспетчер для своих преемников.
+
+
+def projects_registry_path() -> Path:
+    """Список проектов, которые обходит агент.
+
+    Лежит в корне установки, а не рядом с реестром запуска: тот живёт во
+    временном каталоге, который macOS чистит при перезагрузке - а агент
+    нужен ровно после неё. Удаление рантайма уносит список вместе с ним.
+    """
+
+    configured = os.environ.get("CODEX_AUTOPILOT_INSTALL_ROOT")
+    root = (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / "Library" / "Application Support" / "CodexAutopilot"
+    )
+    return root / "projects.json"
+
+
+def register_project(root: Path, *, path: Path | None = None) -> None:
+    """Запомнить проект для обхода. Повторная запись - не ошибка."""
+
+    import json
+
+    target = path or projects_registry_path()
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    roots = set(registered_projects(path=target))
+    roots.add(str(Path(root).resolve()))
+    target.write_text(json.dumps(sorted(roots), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def registered_projects(*, path: Path | None = None) -> list[str]:
+    import json
+
+    target = path or projects_registry_path()
+    if not target.is_file():
+        return []
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [str(item) for item in raw if isinstance(item, str)] if isinstance(raw, list) else []
+
+
+def derive_owner(state: Any) -> tuple[str, str] | None:
+    """Причинный владелец для будильника - из журнала, не из аргументов.
+
+    Тот же критерий, что у диспетчера для преемников: последняя сессия,
+    чей владелец relay записал завершённый ход. Если такого нет, будить
+    некого от чьего-либо имени - и агент молча пропускает проект.
+    """
+
+    completed = {
+        (str(item.get("thread_id") or ""), str(item.get("turn_id") or ""))
+        for item in state.lifecycle_journal
+        if str(item.get("event") or "") == "turn_completed"
+    }
+    for session in reversed(state.worker_sessions):
+        owner = str(session.get("relay_owner_thread_id") or "")
+        if not owner:
+            continue
+        for candidate in reversed(state.worker_sessions):
+            if str(candidate.get("thread_id") or "") != owner:
+                continue
+            turn = str(candidate.get("turn_id") or "")
+            if turn and (owner, turn) in completed:
+                return owner, turn
+    return None
+
+
+def sweep(
+    *,
+    roots: list[str] | None = None,
+    spawn: Callable[..., int] | None = None,
+    load: Callable[[Path], Config] | None = None,
+) -> dict[str, str]:
+    """Один обход: для каждого проекта - завести будильник, если он нужен.
+
+    Возвращает, что решено по каждому корню; агент печатает это в свой лог.
+    """
+
+    from .config import load_config as _load_config
+
+    outcome: dict[str, str] = {}
+    for raw in roots if roots is not None else registered_projects():
+        root = Path(raw)
+        if not (root / ".codex-autopilot" / "config.toml").is_file():
+            outcome[raw] = "gone"
+            continue
+        try:
+            cfg = (load or _load_config)(root)
+            state = StateStore(cfg.state_dir).load()
+        except Exception as exc:  # noqa: BLE001 - один больной проект не рушит обход
+            outcome[raw] = f"unreadable: {exc}"
+            continue
+        if state.status in {"BLOCKED", "DONE"} or StateStore(cfg.state_dir).pause_requested():
+            outcome[raw] = "stopped"
+            continue
+        if due_wake_epoch(state) is None:
+            outcome[raw] = "nothing due"
+            continue
+        owner = derive_owner(state)
+        if owner is None:
+            outcome[raw] = "no completed owner"
+            continue
+        pid = ensure_wake(cfg, owner=owner[0], owner_turn=owner[1], spawn=spawn)
+        outcome[raw] = f"wake {pid}"
+    return outcome

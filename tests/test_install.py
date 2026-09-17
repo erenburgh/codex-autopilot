@@ -39,7 +39,7 @@ class InstallerTests(unittest.TestCase):
         fake_codex.write_text(f'''#!/bin/sh\necho "$*" >> "{calls}"\ncase "$1 $2" in\n  "app-server --help"|"login status") exit 0 ;;\n  *) exit 0 ;;\nesac\n''', encoding="utf-8")
         fake_codex.chmod(0o755)
         env = os.environ.copy()
-        env.update({"HOME": str(home), "CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root), "CODEX_AUTOPILOT_CODEX_BIN": str(fake_codex), "CODEX_AUTOPILOT_PYTHON": os.environ.get("PYTHON", "python3")})
+        env.update({"HOME": str(home), "CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root), "CODEX_AUTOPILOT_CODEX_BIN": str(fake_codex), "CODEX_AUTOPILOT_PYTHON": os.environ.get("PYTHON", "python3"), "CODEX_AUTOPILOT_SKIP_LAUNCHD": "1"})
         hook_commands = []
         installed_versions = []
         for _ in range(2):
@@ -54,6 +54,20 @@ class InstallerTests(unittest.TestCase):
                 (install_root / "current/plugins/codex-autopilot-adaptive/.codex-plugin/plugin.json").read_text(encoding="utf-8")
             )["version"])
         self.assertTrue((install_root / "current/bin/codex-autopilot").is_file())
+        # Агент будильника пишется под подменённый HOME и зовёт стабильный
+        # путь рантайма - тот, что переживает обновление версии.
+        import plistlib
+
+        plist = home / "Library/LaunchAgents/com.codex-autopilot.wake.plist"
+        self.assertTrue(plist.is_file(), "агент будильника не установлен")
+        agent = plistlib.loads(plist.read_bytes())
+        self.assertEqual(agent["Label"], "com.codex-autopilot.wake")
+        self.assertEqual(
+            agent["ProgramArguments"],
+            [str(install_root / "current/bin/codex-autopilot"), "_wake-sweep"],
+        )
+        self.assertEqual(agent["StartInterval"], 300)
+        self.assertTrue(agent["RunAtLoad"])
         mcp = (install_root / "current/plugins/codex-autopilot-adaptive/.mcp.json").read_text(encoding="utf-8")
         self.assertNotIn("__CODEX_AUTOPILOT_RUNTIME__", mcp)
         stable_runtime = (
