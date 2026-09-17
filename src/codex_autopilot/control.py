@@ -12,6 +12,7 @@ from typing import Any, Sequence
 from . import lifecycle as lifecycle_runtime
 from .appserver import AppServerClient  # sentinel: DevOps recovery must never construct it
 from .config import (
+    Config,
     DESKTOP_OWNED_SURFACE,
     STATE_DIR_NAME,
     load_config,
