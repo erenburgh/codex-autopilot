@@ -55,6 +55,9 @@ mkdir -p "$install_root"
 rm -rf "$target"
 mkdir -p "$target/runtime" "$target/bin"
 cp -R "$source_dir/src" "$target/runtime/src"
+# Тесты едут в установку вместе с кодом: без них дежурный инженер не
+# сможет доказать починку рантайма, а недоказанную шлюз не примет.
+cp -R "$source_dir/tests" "$target/runtime/tests"
 cp -R "$source_dir/plugins" "$target/plugins"
 cp -R "$source_dir/.agents" "$target/.agents"
 cp "$source_dir/README.md" "$source_dir/GETTING_STARTED.md" "$source_dir/LICENSE" "$target/"

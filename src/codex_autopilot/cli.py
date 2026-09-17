@@ -107,6 +107,20 @@ def parser() -> argparse.ArgumentParser:
     relay_rearm = sub.add_parser("devops-rearm-relay-owner", help=argparse.SUPPRESS)
     relay_rearm.add_argument("--project", type=Path, default=Path.cwd())
     relay_rearm.add_argument("--incident-id")
+    # Починка кода рантайма. Фрагменты и тест передаются файлами, а не
+    # строками: правка бывает многострочной, и через аргументы командной
+    # строки она приезжала бы искажённой кавычками и переносами.
+    devops_repair = sub.add_parser("devops-repair-runtime", help=argparse.SUPPRESS)
+    devops_repair.add_argument("--project", type=Path, default=Path.cwd())
+    devops_repair.add_argument("--incident-id", required=True)
+    devops_repair.add_argument("--module", required=True)
+    devops_repair.add_argument("--old-file", type=Path, required=True)
+    devops_repair.add_argument("--new-file", type=Path, required=True)
+    devops_repair.add_argument("--test-file", type=Path, required=True)
+    devops_repair.add_argument("--test-name", required=True)
+    devops_revert = sub.add_parser("devops-revert-runtime-patch", help=argparse.SUPPRESS)
+    devops_revert.add_argument("--project", type=Path, default=Path.cwd())
+    devops_revert.add_argument("--patch-id", required=True)
     devops_resolve = sub.add_parser("devops-resolve-incident", help=argparse.SUPPRESS)
     devops_resolve.add_argument("--project", type=Path, default=Path.cwd())
     devops_resolve.add_argument("--incident-id", required=True)
@@ -514,6 +528,37 @@ def main(argv: list[str] | None = None) -> int:
                 f"{task_id}: остановка снята решением пользователя — {reason}\n"
                 "Продолжи прогон фразой «Resume Codex Autopilot.» в задаче Codex."
             )
+            return 0
+        if args.command == "devops-repair-runtime":
+            # Инженер правит код рантайма - но правку принимает шлюз, а
+            # не инженер. Требования те же, что у прочих команд
+            # восстановления: владеющая ветка и собственный тикет.
+            from .pipeline_engineer import PipelineIncidentStore
+            from .run_state import utc_now
+            from .runtime_repair import apply_runtime_patch
+
+            _relay_executor_thread_id()
+            cfg = load_config(args.project)
+            timestamp = utc_now()
+            record = apply_runtime_patch(
+                module=args.module,
+                old=args.old_file.read_text(encoding="utf-8"),
+                new=args.new_file.read_text(encoding="utf-8"),
+                test_name=args.test_name,
+                test_source=args.test_file.read_text(encoding="utf-8"),
+                at=timestamp,
+            )
+            PipelineIncidentStore(cfg.state_dir).record_runtime_patch(
+                args.incident_id, patch=record.to_dict(), at=timestamp
+            )
+            print(json.dumps(record.to_dict(), ensure_ascii=False))
+            return 0
+        if args.command == "devops-revert-runtime-patch":
+            from .runtime_repair import revert_runtime_patch
+
+            _relay_executor_thread_id()
+            record = revert_runtime_patch(args.patch_id)
+            print(json.dumps(record.to_dict(), ensure_ascii=False))
             return 0
         if args.command == "devops-resolve-incident":
             # Дежурный инженер закрывает свой тикет сам, но только с

@@ -563,6 +563,35 @@ class PipelineIncidentStore:
 
         return _copy(self.load().get("signatures", {}))
 
+    def record_runtime_patch(
+        self, incident_id: str, *, patch: Mapping[str, str], at: str
+    ) -> dict[str, Any]:
+        """Записать правку кода рантайма в журнал тикета.
+
+        Починка, которой нет в журнале, для следующего раза не
+        существует. Правка кода не становится раннбуком - повторять её
+        вслепую нельзя, - но остаётся видимой: что за модуль, какие
+        хэши до и после, каким тестом доказано.
+        """
+
+        with self._transaction() as state:
+            incident = _incident(state, incident_id)
+            if IncidentPhase(str(incident["phase"])) is not IncidentPhase.PIPELINE_ENGINEER:
+                raise PipelineIncidentError(
+                    "a runtime repair belongs to the engineer holding the incident"
+                )
+            patches = incident.setdefault("runtime_patches", [])
+            patches.append(dict(patch))
+            incident["updated_at"] = at
+            _append_event(
+                state,
+                "runtime_patched",
+                at,
+                incident=incident,
+                detail=json.dumps(dict(patch), ensure_ascii=False, sort_keys=True),
+            )
+            return _copy(incident)
+
     def ensure_pipeline_engineer(self, incident_id: str, *, at: str) -> dict[str, Any]:
         """Idempotently route an infrastructure incident to one engineer lane.
 
