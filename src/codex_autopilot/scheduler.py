@@ -158,6 +158,35 @@ def schedule(
         worker_limit = 1
         if len(state.active_task_ids) > 1:
             raise ValueError("serial scheduler cannot contain more than one active task")
+    if budget.workers is None and worker_limit > state.max_parallel_workers:
+        # Потолок в состоянии идёт ЗА бюджетом. Прежде фронтир брал
+        # столько задач, сколько открыл граф, а потолок оставался
+        # прежним - и следующая же проверка состояния падала с
+        # "active tasks exceed run-state max_parallel_workers". Это
+        # ValueError, а не DesktopLifecycleError, поэтому хук его не
+        # ловил: диспетчер умирал, а поверх работы открывался тикет о
+        # его падении.
+        #
+        # Лечится не урезанием бюджета: у безлимитного аккаунта число
+        # воркеров не ограничивается. R22 при этом запрещает молча
+        # приводить состояние в соответствие, поэтому подъём - это
+        # записанное решение с прежним значением, новым и основанием.
+        # Импорт локальный, и это не забытый остаток: модульный даёт
+        # кольцо scheduler -> resilience -> resources -> scheduler, где
+        # resources берёт отсюда SchedulerAvailability. Одноимённого
+        # модульного импорта здесь нет, затенять нечего.
+        from .resilience import append_resilience_event
+
+        append_resilience_event(
+            state,
+            "worker_cap_followed_budget",
+            detail={
+                "from": state.max_parallel_workers,
+                "to": worker_limit,
+                "reason": budget.reason,
+            },
+        )
+        state.max_parallel_workers = worker_limit
     open_slots = max(0, worker_limit - len(state.active_task_ids))
 
     critical_paths, fan_out = _graph_relevance(plan)
