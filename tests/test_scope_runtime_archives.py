@@ -38,3 +38,14 @@ class RuntimeArchiveScopeTests(unittest.TestCase):
         """Совпадение префикса без точки - чужой каталог, не наш архив."""
 
         self.assertFalse(_is_runtime_state(f"{STATE_DIR_NAME}-notes/plan.md"))
+
+
+class SnapshotSiblingsAreRuntimeStateTests(unittest.TestCase):
+    def test_replace_and_purge_snapshots_are_runtime_state(self) -> None:
+        """R28-снимки лежат соседями состояния и не должны стать записью вне области (R7)."""
+
+        from codex_autopilot.config import STATE_DIR_NAME
+        from codex_autopilot.scope import _is_runtime_state
+
+        self.assertTrue(_is_runtime_state(f"{STATE_DIR_NAME}.replaced-20260918T000000Z-0123abcd/plan.json"))
+        self.assertTrue(_is_runtime_state(f"{STATE_DIR_NAME}.purged-20260918T000000Z-0123abcd/SNAPSHOT.md"))

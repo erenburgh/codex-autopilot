@@ -48,6 +48,7 @@ IMPLEMENTED = {
     "R19": "test_no_unreachable_contracts.py::NoUnreachableContractTests",
     "R23": "test_retry_budget.py::RetryBudgetTests",
     "R29": "test_task_graph.py::test_implemented_is_not_verified_when_verification_is_required",
+    "R28": "test_core.py::PurgeAndReplaceSnapshotTests",
 }
 
 # Правила, проверка которых ещё не написана. Список намеренно явный:
@@ -55,7 +56,7 @@ IMPLEMENTED = {
 PENDING = {
     "R3", "R4", "R10", "R11", "R12",
     "R14", "R15", "R20", "R22",
-    "R24", "R25", "R26", "R27", "R28", "R30",
+    "R24", "R25", "R26", "R27", "R30",
 }
 
 

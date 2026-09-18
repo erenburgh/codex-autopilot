@@ -190,7 +190,7 @@ reading the whole transcript.
 
 This removes v0.8 plugin registrations, the v0.8 runtime, a `current` symlink that points to v0.8, and the v0.8 temporary launch registry. It preserves v0.6, v0.7, shared Python/Codex/Homebrew/Git installations, legacy backups, source repositories, and project state.
 
-To remove one project's Autopilot state too:
+To set one project's Autopilot state aside too (it is moved to a sibling `.codex-autopilot.purged-<stamp>`, never deleted; the path is printed, and you remove the sibling yourself when you are sure):
 
 ```bash
 "$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" uninstall --yes --purge-project-state --project /absolute/path/to/project

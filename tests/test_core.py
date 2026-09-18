@@ -371,6 +371,133 @@ class BusyOnceProjectSlotClient(ProjectSlotClient):
         return super().resume_thread(thread_id)
 
 
+class PurgeAndReplaceSnapshotTests(unittest.TestCase):
+    """R28: удаление или перезапись состояния без снимка отклоняется.
+
+    Замерено 18.09: ``purge_project_state`` - три строки с ``shutil.rmtree``
+    без копии, переименования и записи; ``initialize_project(replace=True)``
+    сносит logs/, перезаписывает run-state, plan, config, ROADMAP.md в
+    корне, откладывая одни только инциденты. Правило ENFORCED, проверки
+    не было, ветку purge не исполнял ни один тест.
+
+    Снимок ложится СОСЕДОМ каталога состояния - вне того, что сносится, -
+    по соглашению ``.codex-autopilot.<причина>-<штамп>``, которое рантайм
+    уже распознаёт как своё (scope.py, staging). Purge - атомарный
+    rename: снимок и есть прежний каталог. Replace - копия: память и
+    handoff/ обязаны остаться жить в состоянии нового прогона.
+    """
+
+    def _replace(self, root: Path) -> None:
+        state_dir = root / ".codex-autopilot"
+        plan_file = state_dir / "bootstrap-plan.json"
+        replacement = json.loads((state_dir / "plan.json").read_text(encoding="utf-8"))
+        replacement["goal"] = "new"
+        replacement["user_request"] = "new exactly as specified"
+        replacement["tasks"][0]["title"] = "new"
+        replacement["tasks"][0]["objective"] = "new"
+        replacement["tasks"][0]["definition_of_done"] = ["done"]
+        plan_file.write_text(json.dumps(replacement), encoding="utf-8")
+        initialize_project(root, plan_file, profile="adaptive", skill_path=ADAPTIVE_SKILL, replace=True)
+
+    def _snapshots(self, root: Path, reason: str) -> list[Path]:
+        # purge отдаёт root.resolve(): на macOS /var - ссылка на /private/var.
+        return sorted(item.resolve() for item in root.glob(f".codex-autopilot.{reason}-*"))
+
+    # --- purge -----------------------------------------------------------
+
+    def test_purge_moves_state_aside_instead_of_deleting_it(self):
+        from codex_autopilot.bootstrap import purge_project_state
+
+        root = make_project()
+        (root / ".codex-autopilot" / "marker.txt").write_text("keep", encoding="utf-8")
+        snapshot = purge_project_state(root)
+        self.assertFalse((root / ".codex-autopilot").exists())
+        self.assertEqual(self._snapshots(root, "purged"), [snapshot])
+        self.assertEqual((snapshot / "marker.txt").read_text(encoding="utf-8"), "keep")
+        self.assertTrue((snapshot / "run-state.json").is_file())
+        self.assertTrue((snapshot / "SNAPSHOT.md").is_file(), "снимок без манифеста не восстановим по памяти")
+
+    def test_uninstall_with_purge_prints_snapshot_path(self):
+        import contextlib
+        import io
+
+        root = make_project()
+        install_root = Path(tempfile.mkdtemp(prefix="codex-autopilot-uninstall-"))
+        args = SimpleNamespace(yes=True, project=root, purge_project_state=True)
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root)}), mock.patch("codex_autopilot.cli.pid_alive", return_value=False), mock.patch("codex_autopilot.cli.shutil.which", return_value=None), contextlib.redirect_stdout(out):
+            self.assertEqual(uninstall(args), 0)
+        (snapshot,) = self._snapshots(root, "purged")
+        self.assertIn(str(snapshot), out.getvalue(), "путь снимка не назван человеку")
+
+    def test_purge_refuses_while_dispatcher_is_alive(self):
+        from codex_autopilot.bootstrap import purge_project_state
+
+        root = make_project()
+        store = StateStore(root / ".codex-autopilot")
+        state = store.load()
+        state.status = "RUNNING"
+        state.dispatcher_pid = os.getpid()
+        store.save(state)
+        with self.assertRaises(RuntimeError):
+            purge_project_state(root)
+        self.assertTrue((root / ".codex-autopilot" / "run-state.json").is_file())
+        self.assertEqual(self._snapshots(root, "purged"), [])
+
+    def test_purge_without_state_directory_creates_nothing(self):
+        from codex_autopilot.bootstrap import purge_project_state
+
+        root = Path(tempfile.mkdtemp(prefix="codex-autopilot-bare-"))
+        self.assertIsNone(purge_project_state(root))
+        self.assertEqual(list(root.iterdir()), [])
+
+    # --- replace ---------------------------------------------------------
+
+    def test_replace_snapshots_previous_state_before_any_mutation(self):
+        root = make_project()
+        state_dir = root / ".codex-autopilot"
+        (state_dir / "BLOCKED.json").write_text("{}")
+        (state_dir / "logs").mkdir()
+        (state_dir / "logs" / "old.log").write_text("old")
+        (root / "ROADMAP.md").write_text("old roadmap", encoding="utf-8")
+        old_plan = (state_dir / "plan.json").read_text(encoding="utf-8")
+        self._replace(root)
+        (snapshot,) = self._snapshots(root, "replaced")
+        self.assertEqual((snapshot / "logs" / "old.log").read_text(), "old", "логи снесены до снимка")
+        self.assertTrue((snapshot / "BLOCKED.json").is_file())
+        self.assertEqual((snapshot / "ROADMAP.md").read_text(encoding="utf-8"), "old roadmap")
+        self.assertEqual((snapshot / "plan.json").read_text(encoding="utf-8"), old_plan)
+        self.assertTrue((snapshot / "SNAPSHOT.md").is_file())
+        self.assertFalse((state_dir / "logs").exists(), "новый прогон начинается с чистых логов, как и прежде")
+
+    def test_replace_journals_previous_state_path_in_the_new_run_state(self):
+        root = make_project()
+        self._replace(root)
+        state = StateStore(root / ".codex-autopilot").load()
+        events = [e for e in state.resilience_journal if e["event"] == "state_replaced"]
+        self.assertEqual(len(events), 1, "путь снимка не записан в журнал нового состояния")
+        (snapshot,) = self._snapshots(root, "replaced")
+        self.assertEqual(Path(events[0]["detail"]["previous_state"]), snapshot.resolve())
+
+    def test_replace_keeps_live_memory_and_handoff_in_place(self):
+        root = make_project()
+        state_dir = root / ".codex-autopilot"
+        self.assertTrue((state_dir / "memory.sqlite3").is_file(), "фикстура: память инициализирована")
+        (state_dir / "handoff").mkdir(exist_ok=True)
+        (state_dir / "handoff" / "M1.md").write_text("checkpoint", encoding="utf-8")
+        self._replace(root)
+        self.assertTrue((state_dir / "memory.sqlite3").is_file(), "replace унёс живую память")
+        self.assertEqual((state_dir / "handoff" / "M1.md").read_text(encoding="utf-8"), "checkpoint")
+        (snapshot,) = self._snapshots(root, "replaced")
+        self.assertTrue((snapshot / "memory.sqlite3").is_file())
+
+    def test_replace_without_existing_state_creates_no_snapshot(self):
+        root = make_project()
+        (root / ".codex-autopilot" / "run-state.json").unlink()
+        self._replace(root)
+        self.assertEqual(self._snapshots(root, "replaced"), [], "снимок пустого прошлого - мусорный сосед на каждом первом запуске")
+
+
 class CoreTests(unittest.TestCase):
     def tearDown(self):
         FakeClient.instances.clear()

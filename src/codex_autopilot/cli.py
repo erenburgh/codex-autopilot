@@ -747,7 +747,9 @@ def uninstall(args) -> int:
     if args.purge_project_state:
         if args.project is None:
             raise ValueError("--purge-project-state requires --project")
-        purge_project_state(args.project)
+        snapshot = purge_project_state(args.project)
+        if snapshot is not None:
+            print(f"Project state moved aside: {snapshot}")
     install_root = os.environ.get("CODEX_AUTOPILOT_INSTALL_ROOT")
     if install_root:
         root = Path(install_root).expanduser().resolve()
