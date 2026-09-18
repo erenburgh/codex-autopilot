@@ -146,18 +146,38 @@ def schedule(
     reconcile_ready_tasks(plan, state)
 
     strategy = _effective_strategy(plan, state)
-    # The declared number is the ceiling and the user's decision.
-    # Adaptation may only lower it, and only when the limit is really
-    # near: someone on auto-billing has nothing to cut, they pay as they go.
-    declared = min(plan.max_parallel_workers, state.max_parallel_workers)
-    budget = worker_budget(declared, getattr(state, "rate_limits", None))
-    # None means no ceiling: on an unlimited account the graph itself sets
-    # the concurrency, not an invented number.
-    worker_limit = len(plan.tasks) if budget.workers is None else budget.workers
-    if strategy == "serial":
-        worker_limit = 1
-        if len(state.active_task_ids) > 1:
-            raise ValueError("serial scheduler cannot contain more than one active task")
+    budget = _worker_budget_for(plan, state)
+    worker_limit = effective_worker_limit(plan, state)
+    if strategy == "serial" and len(state.active_task_ids) > 1:
+        raise ValueError("serial scheduler cannot contain more than one active task")
+    if budget.workers is None and worker_limit > state.max_parallel_workers:
+        # The ceiling in the state FOLLOWS the budget. The frontier used to
+        # take as many tasks as the graph opened while the ceiling stayed as
+        # it was - and the very next state check failed with "active tasks
+        # exceed run-state max_parallel_workers". That is a ValueError, not a
+        # DesktopLifecycleError, so the hook did not catch it: the dispatcher
+        # died, and a ticket about its crash opened on top of the work.
+        #
+        # The cure is not cutting the budget: on an unlimited account the
+        # number of workers is not bounded. R22 forbids silently bringing the
+        # state into line, so the raise is a recorded decision with the old
+        # value, the new one and the grounds. The import is local, and that is
+        # not a forgotten leftover: a module-level one gives the ring
+        # scheduler -> resilience -> resources -> scheduler, where resources
+        # takes SchedulerAvailability from here. There is no module-level
+        # import of the same name here, so nothing is shadowed.
+        from .resilience import append_resilience_event
+
+        append_resilience_event(
+            state,
+            "worker_cap_followed_budget",
+            detail={
+                "from": state.max_parallel_workers,
+                "to": worker_limit,
+                "reason": budget.reason,
+            },
+        )
+        state.max_parallel_workers = worker_limit
     open_slots = max(0, worker_limit - len(state.active_task_ids))
 
     critical_paths, fan_out = _graph_relevance(plan)
@@ -262,6 +282,36 @@ def _graph_relevance(plan: Plan) -> tuple[dict[str, int], dict[str, int]]:
     for task in reversed(plan.tasks):
         visit(task.id)
     return critical_paths, {task_id: len(items) for task_id, items in descendants.items()}
+
+
+def _worker_budget_for(plan: Plan, state: RunState):
+    # The declared number is the ceiling and the user's decision.
+    # Adaptation may only lower it, and only when the limit is really near:
+    # someone on auto-billing has nothing to cut, they pay as they go.
+    declared = min(plan.max_parallel_workers, state.max_parallel_workers)
+    return worker_budget(declared, getattr(state, "rate_limits", None))
+
+
+def effective_worker_limit(plan: Plan, state: RunState) -> int:
+    """How many workers may run now - one answer for every reader.
+
+    There used to be three answers: this calculation here, min(plan, state)
+    in the status card, and the same min in the reservation's followups
+    gate. After A2 the ceiling in the state follows the budget, and on an
+    unlimited account the last two diverged from the first. Measured on
+    17 Sep: the scheduler takes 3 tasks, min(plan, state) gives 2 - status
+    showed "3/2", and a completed implementation got no verifier reserved,
+    because "two active have already hit the declared two".
+
+    None from the budget means no ceiling: on an unlimited account the graph
+    itself sets the concurrency, not an invented number. The serial strategy
+    outranks any budget.
+    """
+
+    if _effective_strategy(plan, state) == "serial":
+        return 1
+    budget = _worker_budget_for(plan, state)
+    return len(plan.tasks) if budget.workers is None else budget.workers
 
 
 def _effective_strategy(plan: Plan, state: RunState) -> str:

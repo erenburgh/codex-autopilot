@@ -10,6 +10,7 @@ from .pipeline_engineer import PipelineIncidentStore, render_pipeline_status
 from .config import _install_root
 from .run_state import RunState
 from .runtime_patch_log import render_applied_patches
+from .scheduler import effective_worker_limit
 from .task_state import TaskState, unmet_dependencies
 from .thread_titles import task_phase_thread_title
 
@@ -69,12 +70,9 @@ def project_status_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[st
     verified = sum(
         value == TaskState.VERIFIED.value for value in state.task_states.values()
     )
-    worker_limit = min(plan.max_parallel_workers, state.max_parallel_workers)
-    if plan.legacy_serial or "serial" in {
-        plan.execution_strategy,
-        state.execution_strategy,
-    }:
-        worker_limit = 1
+    # The same calculation as the scheduler's: otherwise, on an unlimited
+    # account, the card showed "3/2", computing the limit as min(plan, state).
+    worker_limit = effective_worker_limit(plan, state)
     worker_used = len(state.active_task_ids)
     computer_use_limit = min(plan.computer_use_slots, state.computer_use_slots)
     computer_use_used = _computer_use_used(state, sessions)

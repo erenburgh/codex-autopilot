@@ -12,6 +12,7 @@ from typing import Any, Sequence
 from . import lifecycle as lifecycle_runtime
 from .appserver import AppServerClient  # sentinel: DevOps recovery must never construct it
 from .config import (
+    Config,
     DESKTOP_OWNED_SURFACE,
     STATE_DIR_NAME,
     load_config,
@@ -25,9 +26,9 @@ from .pipeline_engineer import (
     SideEffectOutcome,
 )
 from .launch_gate import (
+    LaunchCheck,
     LaunchVerdict,
     await_launch,
-    launch_confirmed,
     launch_verdict,
     render_launch_checklist,
     render_launch_timeline,
@@ -582,27 +583,68 @@ def reactivate_desktop_relay_owner(root: Path, *, incident_id: str | None = None
     # Otherwise "REARMED" would mean only "the relay process was spawned" -
     # exactly the claim-instead-of-observation the gate was written against.
     checks = await_launch(cfg, task_ids=[task_id], timeout=15.0)
-    confirmed = launch_confirmed(checks)
-    if not confirmed:
-        # Not confirmed by observation: the incident stays open, or the
-        # repair would certify itself.
-        package = incident_store.incident_package(incident_id)["incident"]
-        if package["phase"] == IncidentPhase.RESOLVED.value:
-            incident_store.invalidate_pipeline_engineer_resolution(
-                incident_id,
-                at=utc_now(),
-                reason="re-armed relay did not pass the launch checklist",
-            )
+    settled = _settle_rearmed_launch(incident_store, incident_id, checks, at=utc_now())
     return {
         "incident_id": incident_id,
         "owner_thread_id": owner_thread_id,
         "destination_task_id": task_id,
         "reservation_token": descriptor.reservation_token,
         "destination_title": descriptor.title,
-        "status": "REARMED" if confirmed else "LAUNCH_NOT_CONFIRMED",
-        "launch_confirmed": confirmed,
+        **settled,
         "launch_checklist": render_launch_checklist(checks),
         "automatic_dispatch_pid": pid,
+    }
+
+
+def _settle_rearmed_launch(
+    incident_store: PipelineIncidentStore,
+    incident_id: str,
+    checks: Sequence[LaunchCheck],
+    *,
+    at: str,
+) -> dict[str, Any]:
+    """What the re-arm says about the launch - in three words, not two.
+
+    The tail used to read the boolean ``launch_confirmed`` ("every item
+    True") and on False invalidated the engineer's resolution. But a re-arm
+    arms the run so that the predecessor executes the turn on its NEXT
+    Stop: by construction there can be no thread inside the waiting window.
+    Measured on a constructed "just re-armed" state: the three-valued
+    verdict answers IN_PROGRESS, the boolean answers False. A gate that
+    cannot pass inside its own window cancelled every repair.
+
+    One gate had two consumers with different semantics: the Stop hook
+    (:802) told three verdicts apart, the re-arm did not. Now the decision
+    is one:
+
+    - FAILED - a deciding item is broken; the engineer's resolution was not
+      confirmed by observation, the incident opens again, otherwise the
+      repair would certify itself;
+    - IN_PROGRESS - no refusals, some steps still ahead; neither invalidate
+      nor declare confirmed. R26: exactly what is not yet observable is
+      named in ``pending_checks``, not swallowed;
+    - CONFIRMED - confirmed.
+    """
+
+    verdict = launch_verdict(checks)
+    if verdict is LaunchVerdict.FAILED:
+        package = incident_store.incident_package(incident_id)["incident"]
+        if package["phase"] == IncidentPhase.RESOLVED.value:
+            incident_store.invalidate_pipeline_engineer_resolution(
+                incident_id,
+                at=at,
+                reason="re-armed relay failed the launch checklist",
+            )
+    status = {
+        LaunchVerdict.CONFIRMED: "REARMED",
+        LaunchVerdict.IN_PROGRESS: "LAUNCH_IN_PROGRESS",
+        LaunchVerdict.FAILED: "LAUNCH_NOT_CONFIRMED",
+    }[verdict]
+    return {
+        "status": status,
+        "launch_verdict": verdict.value,
+        "launch_confirmed": verdict is LaunchVerdict.CONFIRMED,
+        "pending_checks": [item.id for item in checks if item.passed is not True],
     }
 
 
@@ -906,7 +948,7 @@ def _open_launch_incident(
     )
 
 
-def _orphaned_pending_descriptors(cfg: Config) -> tuple[Any, ...]:
+def _reservations_without_a_live_dispatcher(cfg: Config) -> tuple[Any, ...]:
     """Reservations for which the thread was never created.
 
     The session stays waiting for creation, and it has no dispatcher: the
@@ -1083,7 +1125,7 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
         # state may have moved on within this turn - into PLAN_CHANGE_DRAINING,
         # say - and the resume vanished without a trace. If a reservation
         # without a live dispatcher exists, that is the one we raise.
-        stalled = _orphaned_pending_descriptors(cfg)
+        stalled = _reservations_without_a_live_dispatcher(cfg)
         if not stalled:
             return {}
         pids = _spawn_automatic_descriptors(
@@ -1115,7 +1157,7 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
         # it: the previous dispatcher died without picking up the successor.
         # A silent return here is what left the run standing with not one
         # journal record.
-        descriptors = _orphaned_pending_descriptors(cfg)
+        descriptors = _reservations_without_a_live_dispatcher(cfg)
         if not descriptors:
             return {}
     pids = _spawn_automatic_descriptors(
@@ -1135,101 +1177,14 @@ def handle_stop_hook(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-# The product name spelled the way people actually say it. Russian dictation
-# inevitably yields Cyrillic: a control phrase must not depend on whether the
-# speaker switched the keyboard layout mid-sentence.
-PRODUCT_ALIASES = ("codex autopilot", "кодекс автопайлот", "кодекс автопилот")
-
-# Marks that speech and dictation add without changing the command.
-_STRIPPED_PUNCTUATION = ",.!?;:"
-
-
-# Filler words speech adds at the start without changing the command. The
-# list is deliberately short: matching stays exact, or the hook would start
-# intercepting ordinary user requests.
-_LEADING_FILLERS = frozenset({"просто", "давай", "давайте", "пожалуйста", "just", "please"})
-
-
-def _normalized_prompt(value: str) -> str:
-    text = value.strip().lower()
-    for mark in _STRIPPED_PUNCTUATION:
-        text = text.replace(mark, " ")
-    words = text.split()
-    while words and words[0] in _LEADING_FILLERS:
-        words.pop(0)
-    return " ".join(words)
-
-
-def _phrases(*templates: str) -> set[str]:
-    """Expand the templates over every spelling of the product name."""
-
-    return {
-        template.format(product=product)
-        for template in templates
-        for product in PRODUCT_ALIASES
-    }
-
-
-PAUSE_PROMPTS = _phrases(
-    "pause {product}",
-    "stop {product}",
-    "приостанови {product}",
-    "останови {product}",
-) | {
-    # A bare word is the same intent as with "status": the match covers the
-    # whole input, so it cannot land inside a phrase by accident. Uninstall
-    # is deliberately not here: it is irreversible and requires the name.
-    "останови",
-    "пауза",
-    "stop",
-    "pause",
-}
-RESUME_PROMPTS = _phrases(
-    "resume {product}",
-    "continue {product}",
-    "возобнови {product}",
-    "продолжи {product}",
-    "продолжить {product}",
-) | {
-    "продолжи",
-    "возобнови",
-    "resume",
-    "continue",
-}
-DETAILED_STATUS_PROMPTS = _phrases(
-    "{product} status detail",
-    "подробный статус {product}",
-) | {
-    "подробный статус",
-    "статус подробно",
-    "detailed status",
-    "status detail",
-}
-STATUS_PROMPTS = _phrases(
-    "{product} status",
-    "what is {product} doing right now",
-    "что сейчас делает {product}",
-    "статус {product}",
-) | DETAILED_STATUS_PROMPTS | {
-    # The skill promises the user exactly one word: "ask `status`". The hook
-    # knew four expanded forms and none of this one, and the promised visible
-    # path did not work as written. The match covers the whole input, so a
-    # bare word is an intent, not an accidental hit inside a phrase.
-    "статус",
-    "status",
-    "статус автопилота",
-    # One more word for the same look: in Desktop the run's tasks are visible
-    # only after the hook answers, and a person who reaches for "tasks" rather
-    # than "status" must not leave empty-handed.
-    "задачи",
-    "tasks",
-    "покажи задачи",
-    "show tasks",
-}
-UNINSTALL_PROMPTS = _phrases(
-    "uninstall {product}",
-    "remove {product}",
-    "удали {product}",
+from .control_phrases import (  # noqa: F401  (re-exported: the hook and the tests import them from here)
+    DETAILED_STATUS_PROMPTS,
+    PAUSE_PROMPTS,
+    PRODUCT_ALIASES,
+    RESUME_PROMPTS,
+    STATUS_PROMPTS,
+    UNINSTALL_PROMPTS,
+    _normalized_prompt,
 )
 
 
@@ -1313,7 +1268,11 @@ def _answer_escalation(cfg, state) -> tuple[str, ...]:
     because the run was BLOCKED. A person who had already fixed everything
     had no way to say so.
 
-    Only escalated tickets are closed. BLOCKED for any other reason remains a
+    The tickets closed are those waiting for a human: the ones that declared
+    ESCALATE_TO_USER and the ones stuck in PIPELINE_ENGINEER - the second had
+    nobody left to close it, neither the engineer nor the human, and it is
+    exactly those that unblocked the run on 16 Sep (the authority is
+    incident_ids_awaiting_the_user). BLOCKED for any other reason remains a
     refusal: "resume" must not be a button that erases an unexamined fault.
     """
 
@@ -1440,7 +1399,7 @@ def _desktop_relay_continuation(
     *,
     relay_owner_thread_id: str,
     relay_owner_turn_id: str,
-) -> str:
+) -> dict[str, Any]:
     """Raise an already reserved relay and report with the timeline."""
 
     if not relay_owner_thread_id or not relay_owner_turn_id:

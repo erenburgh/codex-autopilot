@@ -227,6 +227,32 @@ class ResumeChainTests(unittest.TestCase):
         _atomic_json(store.path, raw)
         return incident_id
 
+    def test_resume_answers_the_escalation_whatever_phase_the_run_is_in(self) -> None:
+        """Ответ на эскалацию не зависит от фазы прогона - исполнением.
+
+        Прежде это проверялось чтением исходника ``_answer_escalation``:
+        что в теле нет сравнения с ``PIPELINE_ENGINEER_ESCALATED`` и есть
+        обращение к ``incident_ids_awaiting_the_user``. Такой тест зелен и
+        тогда, когда нужная строка стоит под ``if False:``. Здесь прогон
+        остановлен эскалацией в фазе, которую выставляет НЕ завершение
+        инженера, - и возобновление обязано закрыть тикет всё равно.
+        """
+
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        incident_id = self._escalate()
+        state = self.store.load()
+        state.status = "BLOCKED"
+        state.phase = "DESKTOP_WORKERS_ACTIVE"
+        self.store.save(state)
+
+        self.resume()
+
+        after = self.store.load()
+        self.assertEqual((after.status, after.phase), ("READY", "ARMED"))
+        phase = PipelineIncidentStore(self.cfg.state_dir).incident_package(incident_id)["incident"]["phase"]
+        self.assertEqual(phase, "RESOLVED", "тикет остался открытым из-за фазы прогона")
+
     def test_answering_the_escalation_clears_the_blocked_reason(self) -> None:
         """Причина остановки снималась в памяти и возвращалась с диска.
 
@@ -378,12 +404,6 @@ class PlanChangePredecessorIsAcceptedTests(unittest.TestCase):
     def test_an_unfinished_turn_is_still_refused(self) -> None:
         self.assertFalse(self.accepts(self.state("ACTIVE", journal=False)))
 
-    def test_the_dispatcher_barrier_uses_the_shared_predicate(self) -> None:
-        """Две копии проверки - и чинить пришлось дважды."""
-
-        import inspect
-
-        from codex_autopilot import lifecycle_dispatch
-
-        body = inspect.getsource(lifecycle_dispatch.adopt_automatic_dispatcher_successor)
-        self.assertIn("causal_predecessor(state, owner)", body)
+    # "The dispatcher barrier uses the shared predicate" is now checked by
+    # execution in test_desktop_lifecycle: a substituted causal_predecessor
+    # makes adopt_automatic_dispatcher_successor fail with that very refusal.

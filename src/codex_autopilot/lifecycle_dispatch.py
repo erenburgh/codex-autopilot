@@ -24,7 +24,7 @@ from .project_association import (
     project_root_mutation_authorized,
 )
 from .resources import ResourceLockCoordinator
-from .run_state import StateStore, utc_now
+from .run_state import RunState, StateStore, utc_now
 
 from .lifecycle_base import (
     CompletionOutcome,

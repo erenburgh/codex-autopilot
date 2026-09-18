@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import uuid
 from datetime import datetime, timezone
 
 from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, durable_skill_path
@@ -11,6 +12,7 @@ from .language import DEFAULT_LANGUAGE, is_russian, normalize_language
 from .memory import ProjectMemory
 from .migration import detect_v07, migrate_v07
 from .plan import Plan, save_plan, validate_migrating_plan
+from .resilience import append_resilience_event
 from .plan_verification import (
     DEFAULT_FULL_REVALIDATION_PATCHES,
     PlanVerificationReceipt,
@@ -64,6 +66,18 @@ def initialize_project(
         require_evidence=False,
     )
     state_dir.mkdir(parents=True, exist_ok=True)
+    # R28: overwriting the state without a snapshot is refused. The
+    # snapshot is taken BEFORE the first mutation - below, the logs are
+    # removed and the plan, the state, the config and ROADMAP.md are
+    # overwritten. A copy, not a move: memory and handoff/ must go on living
+    # for the new run. With no previous run-state there is nothing to
+    # snapshot: a copy of an empty past is a junk neighbour on every first
+    # launch.
+    previous_state = (
+        archive_state_dir(state_dir, reason="replaced", move=False)
+        if replace and existing_raw
+        else None
+    )
     migration = migrate_v07(root, plan) if detect_v07(state_dir) else None
     completed = migration.preserved_completed if migration else 0
     for stale in ("BLOCKED.json", "pause-requested", "launch-request.json"):
@@ -166,6 +180,15 @@ def initialize_project(
         completed_at=utc_now() if completed == len(plan.milestones) else None,
         plan_verification=finalized_plan_verification,
     )
+    if previous_state is not None:
+        # The previous state's journal went with it; the path is recorded in
+        # the very first event of the new one - otherwise the snapshot is
+        # recoverable only from the memory that it existed.
+        append_resilience_event(
+            state,
+            "state_replaced",
+            detail={"previous_state": str(previous_state), "reason": "--replace"},
+        )
     store = StateStore(state_dir)
     store.save(state)
     plan_file.unlink(missing_ok=True)
@@ -340,7 +363,66 @@ def _initial_handoff(language: str) -> str:
     )
 
 
-def purge_project_state(root: Path) -> None:
+def purge_project_state(root: Path) -> Path | None:
+    """Отложить состояние проекта в сторону, а не удалить (R28).
+
+    Прежде - три строки с rmtree: без копии, без записи, ветку не
+    исполнял ни один тест. Снимок - это сам прежний каталог, атомарно
+    переименованный в соседа; удалять его или нет, решает человек.
+    """
+
     state_dir = root.resolve() / STATE_DIR_NAME
-    if state_dir.exists():
-        shutil.rmtree(state_dir)
+    if not state_dir.exists():
+        return None
+    # A live run is not removed: uninstall stops the dispatcher itself, but
+    # the function is public, and the guard stands where the data is.
+    state_path = state_dir / "run-state.json"
+    try:
+        existing = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else None
+    except (OSError, ValueError):
+        existing = None
+    if existing and existing.get("status") == "RUNNING" and _pid_alive(existing.get("dispatcher_pid")):
+        raise RuntimeError("Codex Autopilot is still running in this project; stop it before purging its state")
+    return archive_state_dir(state_dir, reason="purged", move=True)
+
+
+def archive_state_dir(state_dir: Path, *, reason: str, move: bool) -> Path:
+    """Восстановимый снимок каталога состояния - соседом, вне сносимого.
+
+    Имя ``<state>.<причина>-<штамп>`` - то же соглашение, что у
+    ``.codex-autopilot.stuck-<время>``: рантайм уже считает такие каталоги
+    своими (scope._is_runtime_state, копия в стейджинг), так что снимок не
+    предъявляется воркеру как запись вне области. Штамп - как у миграции:
+    время плюс восемь hex, чтобы два снимка в одну секунду не столкнулись.
+
+    ``move`` - переименование: атомарно, и снимок есть сам прежний каталог
+    (purge). Иначе копия: прежний каталог остаётся жить (replace).
+    """
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    snapshot = state_dir.with_name(f"{state_dir.name}.{reason}-{stamp}")
+    if move:
+        state_dir.rename(snapshot)
+    else:
+        shutil.copytree(state_dir, snapshot, symlinks=True)
+        # ROADMAP.md lies in the project root and is overwritten together
+        # with the state - without it the snapshot is incomplete.
+        roadmap = state_dir.parent / "ROADMAP.md"
+        if roadmap.is_file():
+            shutil.copy2(roadmap, snapshot / "ROADMAP.md")
+    restore = (
+        f"mv {snapshot} {state_dir}"
+        if move
+        else f"остановить новый прогон, затем rm -rf {state_dir} && mv {snapshot} {state_dir} "
+        f"(и вернуть ROADMAP.md из снимка в {state_dir.parent})"
+    )
+    (snapshot / "SNAPSHOT.md").write_text(
+        "# Снимок состояния Codex Autopilot\n\n"
+        f"- причина: {reason}\n"
+        f"- когда: {stamp[:16]} UTC\n"
+        f"- откуда: {state_dir}\n"
+        f"- как: {'перенос целиком' if move else 'копия; прежний каталог продолжает жить'}\n\n"
+        f"Восстановить: `{restore}`\n",
+        encoding="utf-8",
+    )
+    return snapshot

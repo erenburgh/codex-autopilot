@@ -34,7 +34,7 @@ IMPLEMENTED = {
     "R2": "test_r2_codex_app_task_api_is_absent_from_production",
     "R8": "test_r8_self_acceptance_is_rejected_by_plan_validation",
     "R21": "tests/test_clean_environment.py",
-    "R9": "thread_titles._role_segment + test_workspace_ux",
+    "R9": "test_workspace_ux.py::test_production_title_dispatch_rejects_a_missing_role",
     "R17": "test_r17_rules_come_before_specifications_and_are_not_truncatable",
     "R13": "test_r13_escalation_requires_a_reason_from_the_closed_list",
     "R6": "test_r6_preflight_rejects_a_target_outside_desktop_root_paths",
@@ -45,14 +45,18 @@ IMPLEMENTED = {
     "R18": "test_rule_contract_and_external_input.py::ExternalInputTests",
     "R32": "test_user_unblock.py::R32InterventionIsRecorded",
     "R31": "test_early_gate.py::EarlyMilestoneLinkTests",
+    "R19": "test_no_unreachable_contracts.py::NoUnreachableContractTests",
+    "R23": "test_retry_budget.py::RetryBudgetTests",
+    "R29": "test_task_graph.py::test_implemented_is_not_verified_when_verification_is_required",
+    "R28": "test_core.py::PurgeAndReplaceSnapshotTests",
 }
 
 # Rules whose check is not yet written. The list is deliberately explicit:
 # an empty line here would mean everything is covered, which is untrue.
 PENDING = {
     "R3", "R4", "R10", "R11", "R12",
-    "R14", "R15", "R19", "R20", "R22", "R23",
-    "R24", "R25", "R26", "R27", "R28", "R29", "R30",
+    "R14", "R15", "R20", "R22",
+    "R24", "R25", "R26", "R27", "R30",
 }
 
 
@@ -81,6 +85,37 @@ class RuleRegistryTests(unittest.TestCase):
             set(IMPLEMENTED) & PENDING,
             "правило не может быть одновременно реализованным и ожидающим",
         )
+
+    def test_every_implemented_pointer_names_a_test_that_exists(self) -> None:
+        """Указатель на проверку - обещание; висячий указатель его обнуляет.
+
+        Аудит 15.09 (D4) нашёл карту неверной в обе стороны: R19, R29
+        числились ожидающими при готовых проверках, а указатель R9 вёл
+        в «thread_titles._role_segment + test_workspace_ux» - ни файла,
+        ни теста с таким именем. Замерено 17.09: 13 из 14 указателей
+        разрешались, один - нет. Отныне каждый обязан разрешаться:
+        ``file.py::name`` - в def или class внутри этого файла,
+        ``tests/file.py`` - в файл, голое ``test_...`` - в def в любом
+        тестовом файле.
+        """
+
+        import re
+
+        tests_dir = Path(__file__).resolve().parent
+        sources = {path.name: path.read_text(encoding="utf-8") for path in tests_dir.glob("test_*.py")}
+        dangling: list[str] = []
+        for rule_id, pointer in IMPLEMENTED.items():
+            if "::" in pointer:
+                file_name, _, name = pointer.partition("::")
+                text = sources.get(file_name)
+                found = text is not None and re.search(rf"^\s*(def|class) {re.escape(name)}\b", text, re.M)
+            elif pointer.startswith("tests/"):
+                found = pointer.removeprefix("tests/") in sources
+            else:
+                found = any(re.search(rf"^\s*def {re.escape(pointer)}\b", text, re.M) for text in sources.values())
+            if not found:
+                dangling.append(f"{rule_id} -> {pointer}")
+        self.assertEqual(dangling, [], "указатели IMPLEMENTED никуда не ведут: " + "; ".join(dangling))
 
     def test_no_rule_is_silently_downgraded(self) -> None:
         """Понижение режима запрещено: ENFORCED не становится CHECKED."""

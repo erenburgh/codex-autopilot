@@ -871,7 +871,7 @@ def parse_pipeline_engineer_status(message: str) -> tuple[str, str]:
     return "ESCALATE_TO_USER", parts[1]
 
 
-def _orphaned_pending_descriptors(state: RunState) -> tuple[Any, ...]:
+def _relayable_descriptors_without_a_thread(state: RunState) -> tuple[Any, ...]:
     """Reserved work that nobody is left to raise.
 
     After an incident, sessions remain in states fit for a relay: the thread
@@ -1036,7 +1036,7 @@ def _complete_pipeline_engineer(
             # made the pipeline non-automatic - every repair needed an
             # operator.
             if not descriptors:
-                descriptors = _orphaned_pending_descriptors(state)
+                descriptors = _relayable_descriptors_without_a_thread(state)
             if dispatcher_authorized:
                 # The same transition-ownership bookkeeping as for an
                 # ordinary worker. The engineer used to assign a successor

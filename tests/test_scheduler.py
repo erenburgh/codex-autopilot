@@ -9,7 +9,7 @@ from codex_autopilot.plan import (
     Plan,
     validate_plan,
 )
-from codex_autopilot.run_state import RunState, StateStore
+from codex_autopilot.run_state import RunState, StateStore, _validate_state
 from codex_autopilot.scheduler import (
     SchedulerAvailability,
     compute_ready_task_ids,
@@ -258,6 +258,127 @@ class CapacityAndStrategyTests(unittest.TestCase):
         self.assertEqual(decision.open_worker_slots, 1)
         self.assertEqual(decision.selected_task_ids, ("B",))
         self.assertIn("worker_capacity", deferral_reasons(decision, "C"))
+
+    def test_an_unlimited_account_raises_the_state_cap_instead_of_breaking_it(self):
+        """Безлимит снимает потолок - и состояние обязано это пережить.
+
+        На аккаунте с автосписанием бюджет возвращает workers=None, и
+        фронтир берёт столько задач, сколько открыл граф. Потолок в
+        состоянии при этом оставался прежним, и следующая же проверка
+        состояния падала: "active tasks exceed run-state
+        max_parallel_workers". Это ValueError, а не DesktopLifecycleError,
+        поэтому хук его не ловит - диспетчер умирал, а поверх настоящей
+        работы открывался тикет о его падении.
+
+        Лечится не урезанием бюджета: у безлимитного аккаунта число
+        воркеров не ограничивается, это решение владелицы. Лечится тем,
+        что потолок в состоянии следует за бюджетом.
+        """
+
+        plan = make_plan([raw_task("A"), raw_task("B"), raw_task("C")], max_workers=2)
+        state = make_state(plan)
+        state.rate_limits = {"credits": {"hasCredits": True}}
+
+        decision = schedule(plan, state)
+
+        self.assertEqual(decision.worker_limit, len(plan.tasks))
+        self.assertEqual(
+            state.max_parallel_workers,
+            len(plan.tasks),
+            "потолок в состоянии не пошёл за бюджетом",
+        )
+        self.assertEqual(decision.selected_task_ids, ("A", "B", "C"))
+
+        # The state itself must stay valid with every task taken: this is
+        # exactly where the run used to fail.
+        state.task_states = {task.id: TaskState.RUNNING.value for task in plan.tasks}
+        state.active_task_ids = [task.id for task in plan.tasks]
+        _validate_state(state)
+
+    def test_raising_the_cap_is_a_recorded_decision_not_a_silent_repair(self):
+        """R22: гейт не вправе молча привести систему в соответствие.
+
+        Поднятый потолок - изменение сохранённого состояния. Без видимой
+        записи о том, что именно изменено и на каком основании, это
+        самозалечивание, которое правило запрещает прямо.
+        """
+
+        plan = make_plan([raw_task("A"), raw_task("B"), raw_task("C")], max_workers=2)
+        state = make_state(plan)
+        state.rate_limits = {"credits": {"hasCredits": True}}
+
+        schedule(plan, state)
+
+        raised = [
+            item
+            for item in state.resilience_journal
+            if item.get("event") == "worker_cap_followed_budget"
+        ]
+        self.assertEqual(len(raised), 1, "подъём потолка не записан")
+        detail = raised[0].get("detail") or {}
+        self.assertEqual(detail.get("from"), 2)
+        self.assertEqual(detail.get("to"), len(plan.tasks))
+        self.assertIn("unlimited billing", detail.get("reason", ""))
+
+    def test_the_effective_limit_is_one_function_for_every_reader(self):
+        """B6: у предела воркеров был три расчёта; теперь один, и он равен решению."""
+
+        from codex_autopilot.scheduler import effective_worker_limit
+
+        plan = make_plan([raw_task("A"), raw_task("B"), raw_task("C")], max_workers=2)
+        for limits in ({}, {"credits": {"hasCredits": True}}, {"primary": {"usedPercent": 80.0}}):
+            with self.subTest(limits=limits):
+                state = make_state(plan); state.rate_limits = limits
+                expected = effective_worker_limit(plan, state)
+                self.assertEqual(schedule(plan, state).worker_limit, expected)
+        serial = make_state(plan); serial.execution_strategy = "serial"
+        self.assertEqual(effective_worker_limit(plan, serial), 1)
+
+    def test_a_budget_that_keeps_a_cap_never_exceeds_the_state_cap(self):
+        """Инвариант, на котором держится подъём потолка.
+
+        Проверка подъёма стоит под двумя условиями: бюджет снял потолок
+        И новый предел больше сохранённого. Второе сегодня выводится из
+        первого: все ветки worker_budget, оставляющие потолок, возвращают
+        не больше ``declared``, а ``declared = min(plan, state)`` не
+        больше сохранённого потолка. То есть условие про None избыточно,
+        и мутация, снимающая его, ничего не меняет - я это замерила.
+
+        Раз так, проверять надо не само условие, а инвариант под ним.
+        Если однажды появится ветка бюджета, выдающая больше заявленного,
+        упадёт этот тест и назовёт причину - а не тот, кто потом будет
+        разбирать, почему потолок поднялся на ограниченном аккаунте.
+        """
+
+        plan = make_plan([raw_task("A"), raw_task("B"), raw_task("C")], max_workers=2)
+        for limits in (
+            {"primary": {"usedPercent": 10.0}},
+            {"primary": {"usedPercent": 60.0}},
+            {"primary": {"usedPercent": 80.0}},
+            {"primary": {"usedPercent": 95.0}},
+            {"spendControlReached": True},
+            {"rateLimitReachedType": "primary"},
+            {},
+        ):
+            with self.subTest(limits=limits):
+                state = make_state(plan)
+                state.rate_limits = limits
+                decision = schedule(plan, state)
+
+                self.assertLessEqual(
+                    decision.worker_limit,
+                    state.max_parallel_workers,
+                    "бюджет с потолком выдал больше сохранённого предела",
+                )
+                self.assertEqual(state.max_parallel_workers, 2, "потолок поднят зря")
+                self.assertEqual(
+                    [
+                        item
+                        for item in state.resilience_journal
+                        if item.get("event") == "worker_cap_followed_budget"
+                    ],
+                    [],
+                )
 
     def test_durable_state_can_tighten_a_parallel_plan_to_serial(self):
         plan = make_plan([raw_task("A"), raw_task("B")], max_workers=2)

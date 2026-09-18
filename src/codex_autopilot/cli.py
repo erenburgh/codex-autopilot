@@ -18,6 +18,7 @@ from .control import arm, find_project_root, handle_interrupt_hook, handle_post_
 from .hook_trust import HookPreflightError, HookTrustApprovalRequired
 from .lifecycle import (
     adopt_automatic_dispatcher_successor,
+    causal_predecessor,
     complete_desktop_worker,
     pause_desktop_run,
     record_automatic_app_server_exit,
@@ -420,13 +421,18 @@ def _automatic_relay_loop(
                 if item.get("reservation_token") == descriptor.reservation_token
             )
             relay_owner = str(session.get("relay_owner_thread_id") or "")
-            predecessor = next(
-                item
-                for item in reversed(state.worker_sessions)
-                if item.get("thread_id") == relay_owner
-                and item.get("status") == "COMPLETED"
-                and item.get("turn_id")
-            )
+            # The same predicate as the single branch above and the Stop
+            # hook. There used to be a selection of its own here by
+            # status == "COMPLETED": an owner that ended its turn with
+            # BLOCKED/ESCALATE never gets the COMPLETED status
+            # (lifecycle_completion keeps worker_status) while turn_completed
+            # is written - and the fan-out over its successors failed with a
+            # bare StopIteration. Measured on 18 Sep by going through all
+            # five candidates for "the turn is over": the drift was here
+            # alone, the others answer different questions.
+            predecessor = causal_predecessor(state, relay_owner)
+            if predecessor is None:
+                raise RuntimeError("automatic relay has no completed causal predecessor")
             spawn_automatic_app_server_relay(
                 cfg.root,
                 reservation_token=descriptor.reservation_token,
@@ -885,7 +891,9 @@ def uninstall(args) -> int:
     if args.purge_project_state:
         if args.project is None:
             raise ValueError("--purge-project-state requires --project")
-        purge_project_state(args.project)
+        snapshot = purge_project_state(args.project)
+        if snapshot is not None:
+            print(f"Project state moved aside: {snapshot}")
     _remove_wake_agent()
     install_root = os.environ.get("CODEX_AUTOPILOT_INSTALL_ROOT")
     if install_root:

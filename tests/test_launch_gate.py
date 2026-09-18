@@ -507,7 +507,7 @@ class OrphanedReservationTests(unittest.TestCase):
     def test_a_reservation_without_a_live_dispatcher_is_revived(self) -> None:
         from unittest import mock
 
-        from codex_autopilot.control import _orphaned_pending_descriptors
+        from codex_autopilot.control import _reservations_without_a_live_dispatcher
 
         cfg = mock.Mock(state_dir=Path('/tmp'))
         alive = mock.Mock(
@@ -525,13 +525,13 @@ class OrphanedReservationTests(unittest.TestCase):
             "codex_autopilot.control.pid_alive", side_effect=lambda pid: pid == 111
         ):
             store.return_value.load.return_value = state
-            revived = _orphaned_pending_descriptors(cfg)
+            revived = _reservations_without_a_live_dispatcher(cfg)
         self.assertEqual([item.reservation_token for item in revived], ["orphan"])
 
     def test_nothing_is_revived_while_a_dispatcher_is_alive(self) -> None:
         from unittest import mock
 
-        from codex_autopilot.control import _orphaned_pending_descriptors
+        from codex_autopilot.control import _reservations_without_a_live_dispatcher
 
         alive = mock.Mock(reservation_token="live", task_id="A")
         state = mock.Mock()
@@ -542,7 +542,7 @@ class OrphanedReservationTests(unittest.TestCase):
             "codex_autopilot.control.pending_descriptors", return_value=(alive,)
         ), mock.patch("codex_autopilot.control.pid_alive", return_value=True):
             store.return_value.load.return_value = state
-            self.assertEqual(_orphaned_pending_descriptors(mock.Mock(state_dir=Path('/tmp'))), ())
+            self.assertEqual(_reservations_without_a_live_dispatcher(mock.Mock(state_dir=Path('/tmp'))), ())
 
 
 class CausalPredecessorTests(unittest.TestCase):
