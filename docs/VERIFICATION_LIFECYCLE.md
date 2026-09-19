@@ -14,15 +14,18 @@ dependency-ineligible while local checks run or a fresh verifier is active.
 | `independent` | Always create a new verifier task. Declared local checks never short-circuit this policy. |
 | `auto` | Select deterministic verification when coverage is sufficient, self-check for low-risk work, or a fresh independent verifier for important/subjective/high-impact work. |
 
-`required=false` may allow an evidence-backed `IMPLEMENTED` result to satisfy a
-dependency. Independent verification remains mandatory only when the declared
-policy selects it. Implementer-authored tests are evidence, never a substitute
-for the original request or Definition of Done.
+A dependency unlocks on one state and no other: `dependency_state_satisfies`
+(`src/codex_autopilot/task_state.py`) returns true only for `VERIFIED`.
+`required=false` does not change that, and an evidence-backed `IMPLEMENTED`
+result never satisfies a dependency. Implementer-authored tests are evidence,
+never a substitute for the original request or Definition of Done.
 
-The current candidate does not yet implement this matrix: successful `self`,
-passing `deterministic`, and `auto` tasks all reserve a fresh verifier, while
-the dependency gate ignores `required=false`. The behavior is covered by a red
-independent contract regression and must be revised before release.
+The matrix above describes policies the runtime does not offer for a canonical
+task: `_validate_canonical_acceptance` (`src/codex_autopilot/plan.py`) refuses
+`self`, `deterministic` and `auto` outright under R8/R29, so
+every canonical task reserves a fresh independent verifier. The page is kept
+for the vocabulary it defines; the behaviour to rely on is the paragraph above
+this one. There is no outstanding regression behind it - the suite is green.
 
 ## Deterministic checks
 

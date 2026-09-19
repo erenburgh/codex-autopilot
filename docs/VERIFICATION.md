@@ -61,7 +61,7 @@ does not override a contradictory source requirement.
 | App Server `thread/start` uses the canonical cwd/App Server project namespace and verifies returned metadata | PASS |
 | Exact predecessor Stop → automatic App Server task creation → automatic production turn → process exit | PASS |
 | Known create failure → one stable incident → DevOps healthcheck → exact predecessor dispatcher re-arm; DevOps never launches the destination itself | PASS |
-| `self`, `deterministic`, `independent`, and `auto` implement their distinct acceptance/cost semantics | **FAIL — candidate forces all policies through a fresh verifier** |
+| `self`, `deterministic`, `independent`, and `auto` implement their distinct acceptance/cost semantics | **Withdrawn — a canonical task is refused any policy but `independent` (`validate_plan`), so every task reserves a fresh verifier by design** |
 | Authoritative Desktop Stop/Interrupt journal identities | PASS |
 | One-worker rate limit preserves independent active work and deterministic retry | PASS |
 | Desktop mode rejects model/chat relay; automatic App Server production remains causal and bounded | PASS |
@@ -91,9 +91,9 @@ v0.7 real App Server runs observed Sol-only three-worker rotation, mixed Sol/Ast
 - A complete multi-worker Desktop-owned live run remains for final acceptance; deterministic M4 tests exercise the exact Codex App launch payload and ownership boundary.
 - Host Settings proves field omission; cross-build inheritance of another task's UI choice is unverified.
 - Deterministic rate-limit recovery is tested. A v0.8 live run observed a real rate-limit error, an exact reset timestamp, automatic waiting, and a fresh retry of the same milestone. A complete multi-hour wait and weekly exhaustion remain unverified.
-- Reboot recovery requires explicit Resume.
+- Reboot recovery is automatic for a task waiting on a rate-limit retry: the wake-up launch agent sweeps the armed projects at login and arms the wake-up again (`install.sh`, `src/codex_autopilot/wake.py`). A run with nothing due, or one a human paused or stopped, is not woken and still needs an explicit Resume. The multi-hour wait itself remains unverified live.
 - Transparent recovery of an MCP process inside the same active turn is not promised; a new worker starts a new server.
-- A separate external clean Mac has not yet validated the v0.8 package. Local clean-state App Server probes and a real restricted permission-denial run cover the discovered failure path.
+- A separate external clean Mac has not yet validated the packaged build. Local clean-state App Server probes and a real restricted permission-denial run cover the discovered failure path.
 - App Server exposes the `Always` choice for MCP tool trust, but a human has not yet repeated the final packaged first-use flow on an external Mac. This remains an onboarding acceptance item.
 
 The implementation is clean-room. No source code from Agent Memory Engine is copied, linked, or packaged; see [Project Memory](PROJECT_MEMORY.md).

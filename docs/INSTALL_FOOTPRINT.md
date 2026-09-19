@@ -63,6 +63,11 @@ ROADMAP.md
 ├── DECISIONS.md
 ├── memory.sqlite3             # WAL/SHM may exist while open
 ├── memory-backups/latest.sqlite3
+├── handoff/                  # one checkpoint per task; the completion gate reads it
+├── launches/
+├── pipeline-incidents.json   # the on-call engineer's tickets
+├── rate-limits.json
+├── bootstrap-plan.json
 ├── logs/
 └── migrations/               # only when migrating old state
 ```

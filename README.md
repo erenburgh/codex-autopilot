@@ -10,7 +10,7 @@ persistent manager LLM.
 **Fresh workers prevent context decay; evidence-backed Project Memory prevents context corruption.**
 
 Codex Autopilot is a Codex plugin plus a deterministic dependency scheduler. The
-initiating task turns a goal into tasks. In the v0.9 `desktop_owned` surface,
+initiating task turns a goal into tasks. In the `desktop_owned` surface,
 the scheduler atomically reserves only the READY frontier and records exact
 causal provenance. The trusted Stop hook starts one local dispatcher under the
 authorization the user already gave; that dispatcher performs persistent App
@@ -82,7 +82,7 @@ The Adaptive profile uses `auto` by default:
 
 Explicit strategies are `Sol only` and `Astra only`. The Host Settings profile sends neither a model nor an effort field; App Server applies its current defaults to every fresh task.
 
-Exact no-model controls are:
+The no-model controls are:
 
 - `status` - a few lines: progress, what is running, what blocks it.
 - `status detail` - the full report: every task, its state, and the reason it is waiting.
@@ -90,7 +90,11 @@ Exact no-model controls are:
 - `Resume Codex Autopilot.` It is also the user's answer to an escalation: it
   closes an incident the Pipeline Engineer handed over and returns a task whose
   worker is no longer alive to retry.
-- `Uninstall Codex Autopilot.`
+- `Uninstall Codex Autopilot.` This one requires the full product name.
+- `tasks` / `задачи` answers with the same card as `status`. The bare words
+  `stop`, `pause`, `resume`, `continue` and their Russian forms are accepted
+  like a bare `status`; the exact vocabulary is in
+  `src/codex_autopilot/control_phrases.py`.
 
 Each control is answered by the hook itself, without a model turn. Codex marks
 such an answer as a blocked message: that label means the hook replied instead
@@ -118,4 +122,4 @@ Not verified live and openly outstanding: a real multi-hour rate-limit wake-up, 
 
 Desktop cannot be told that a task started. Its App Server is a separate process from the one Autopilot drives, and the two share only the filesystem, so the sidebar refreshes on the app's own schedule. A created task becomes listable about a second after its turn starts; until the app re-reads, `runtime.desktop_notifications = true` is the only way to learn that work began or finished.
 
-Read [Getting Started](GETTING_STARTED.md), [Project Memory](docs/PROJECT_MEMORY.md), [Architecture](docs/ARCHITECTURE.md), [v0.9 task graph](docs/DEPENDENCY_GRAPH.md), [parallel execution](docs/PARALLEL_EXECUTION.md), [roles](docs/ROLES.md), [resource locks](docs/RESOURCE_LOCKS.md), [thread naming](docs/THREAD_NAMING.md), [project association](docs/PROJECT_ASSOCIATION.md), [plan evolution and recovery](docs/PLAN_EVOLUTION_AND_RECOVERY.md), [v0.8 → v0.9 migration](docs/MIGRATION_0.8_TO_0.9.md), [MCP](docs/MCP.md), [Security](docs/SECURITY.md), [Testing](docs/TESTING.md), and [Verification](docs/VERIFICATION.md).
+Read [Getting Started](GETTING_STARTED.md), [Project Memory](docs/PROJECT_MEMORY.md), [Architecture](docs/ARCHITECTURE.md), [task graph](docs/DEPENDENCY_GRAPH.md), [parallel execution](docs/PARALLEL_EXECUTION.md), [roles](docs/ROLES.md), [resource locks](docs/RESOURCE_LOCKS.md), [thread naming](docs/THREAD_NAMING.md), [project association](docs/PROJECT_ASSOCIATION.md), [plan evolution and recovery](docs/PLAN_EVOLUTION_AND_RECOVERY.md), [v0.8 → v0.9 migration](docs/MIGRATION_0.8_TO_0.9.md), [MCP](docs/MCP.md), [Security](docs/SECURITY.md), [Testing](docs/TESTING.md), and [Verification](docs/VERIFICATION.md).

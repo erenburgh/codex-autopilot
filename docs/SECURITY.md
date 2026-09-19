@@ -52,8 +52,10 @@ any of this does not hold, the installation is not touched at all.
 `runtime_repair.py`, `hook_trust.py`. Authority, this gateway, and hook trust
 are not rewritten by the one that uses them, and a module name differing only
 in case is refused too. A repair is a set of edits and applies whole or not at
-all; a file is never handed over entire, an edit names the fragment it
-replaces, and that fragment must occur exactly once in the module. Every
+all; an existing file is never handed over entire - an edit names the fragment
+it replaces, and that fragment must occur exactly once in the module. A new
+module is the one case where whole content is supplied, and the gateway refuses
+it if a file of that name already exists. Every
 accepted set is written to `runtime/patches/<patch-id>` with each module's
 previous text and a manifest of before/after hashes, and
 `devops-revert-runtime-patch` takes the set back together with its test; the
@@ -61,8 +63,10 @@ revert refuses when a module changed after the patch was applied. Reinstalling
 a version whose `runtime/patches` is not empty renames that installation to
 `<version>.repaired-<UTC timestamp>`, prints the path, and leaves it in place;
 the archive step skips such directories. An accepted repair takes effect on the
-next dispatched turn, because each turn is a fresh process; nothing is
-reinstalled under a running one. The repair reaches only the runtime's own
+next dispatched turn, because each turn is a fresh process. A turn already
+running keeps the code it imported, except where the runtime imports a module
+lazily inside a call; the command does not check for live processes, so a
+repair during a turn is not promised to be invisible to it. The repair reaches only the runtime's own
 package: the project's code is the workers' work, and repairing production
 quality is on the forbidden list.
 

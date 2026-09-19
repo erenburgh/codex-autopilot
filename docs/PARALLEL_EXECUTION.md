@@ -1,6 +1,6 @@
 # Parallel execution
 
-The v0.9 candidate has a deterministic, non-LLM scheduler. For a schema-3 plan
+The scheduler is deterministic and uses no model. For a schema-3 plan
 configured as `parallel` or `auto`, it can reserve multiple independent READY
 tasks up to the lower of the plan and durable-state `max_parallel_workers`
 limits. It admits only tasks whose dependencies, capabilities, Computer Use
