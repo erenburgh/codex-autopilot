@@ -9,7 +9,12 @@ metadata:
 <Role> | <Task ID>-R<revision> | <Short Revision Title>
 Planner | PLAN | <Short Project Goal>
 Planner | PC-<ID> | <Short Change Purpose>
+Screening | Hire <Task ID> | <Short Task Title>
 ```
+
+`Screening` appears only in a run that has turned hiring on
+(`runtime.skill_screening`); it is the thread that decides which skills the
+task's worker will carry, and it runs before that worker exists.
 
 For the reference task, the exact titles are:
 

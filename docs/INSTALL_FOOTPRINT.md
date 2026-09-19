@@ -69,8 +69,11 @@ ROADMAP.md
 ├── rate-limits.json
 ├── bootstrap-plan.json
 ├── logs/
+├── skills/                   # installed Skill Pack manifests, if any
 └── migrations/               # only when migrating old state
 ```
+
+`skills/` is read, never written, by Autopilot: one JSON manifest per exact Skill Pack revision, put there by you. It is the second half of the skill catalog, beside the packs a plan declares. Initialization does not create it.
 
 Preflight creates no project run-state when it fails. Its disposable SQLite/FTS5 probe is removed.
 

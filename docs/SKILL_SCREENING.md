@@ -76,6 +76,30 @@ task becomes READY
        -> the stack enters the prompt through resolve_skill_stack
 ```
 
+In code: `lifecycle_screening.screening_gate`, called from the frontier loop
+in `lifecycle_reservations._reserve_in_state` before the implementation
+reservation, and `lifecycle_screening.complete_screening_session`, dispatched
+from `lifecycle_completion.complete_desktop_worker` by session kind.
+
+## Whether a run screens at all
+
+`runtime.skill_screening` in `config.toml`:
+
+| mode | when a task is screened |
+| --- | --- |
+| `never` | never — **the default** |
+| `auto` | when the plan or the installed library holds at least one pack |
+| `always` | every task, including with an empty library |
+
+The default is off for the same reason `desktop_notifications` is off: one
+screening is one more Codex thread per task out of the user's limits, and
+spending them is the user's decision, not a default. `auto` is the setting
+most projects want — with nothing to hire from, a screening turn can only
+answer "nothing available", so `auto` costs nothing until a pack exists and
+starts working the moment one does. `always` is for a project that wants its
+unmet needs on record from the first run, which is the intake for qualifying
+new skills.
+
 ### What the screener may see at that moment
 
 * The task contract: objective, definition of done, execution mode, role,
@@ -113,9 +137,11 @@ failure policy is asymmetric:
   unscreened, with an empty stack, and the run records that it ran unscreened
   and why.
 
-A bounded number of screening attempts per task per graph version enforces the
-second half. Without it, a screener that always fails would hold the frontier
-forever — which is exactly the failure mode the constraint forbids.
+`MAX_SCREENING_ATTEMPTS` (two: the first try, and one more after a refusal
+whose reason the screener can read) enforces the second half. Without it, a
+screener that always fails would hold the frontier forever — which is exactly
+the failure mode the constraint forbids. After the ceiling the task is
+reserved unscreened and `task_hiring[<task>].unscreened` says why.
 
 ## The requisition
 
@@ -205,8 +231,9 @@ authority, and it is durable, attributable and auditable, not a runtime guess.
 
 ## What is recorded
 
-Per task, per graph version, in run state through the state API (never by
-editing a journal by hand):
+In `run-state.json` under `task_hiring`, keyed by task id and bound to the
+graph version the hire was made for, written through `StateStore` inside the
+same transaction as every other state change:
 
 * the requisition as the screener returned it, verbatim, including every
   `rationale`;
@@ -305,9 +332,16 @@ screener's own prompt, not assumed.
 
 ## What is not built
 
-* Acquisition of any kind (option B or C). The seam exists and denies.
+* Acquisition of any kind (option B or C). A requisition item that nothing
+  installed satisfies is recorded `unmet` with its `search_intent`, and no
+  network access, download or install happens. That is the seam, and it
+  currently denies.
 * Attaching a hired skill as a real Codex `{"type":"skill"}` turn input beside
   Autopilot's own. `turn/start` takes a list and today receives exactly one
-  such item (`appserver.py:513`); whether App Server accepts several has not
+  such item (`appserver.py`); whether App Server accepts several has not
   been measured, and nothing here depends on it. The measured, working binding
   path is the prompt envelope.
+* Joining a hire with the task's eventual verdict. The record carries the
+  choice, its grounds and its author; nothing yet reads it back alongside
+  PASS/REVISE counts to say which choices paid off. The `unmet` and
+  `withheld` entries are already the queue for qualification work.
