@@ -8,16 +8,14 @@ build/
 .codex-autopilot/
 
 
-# Дорожная карта генерируется автопайлотом в каждом проекте.
-# В репозитории самого скилла это остаток прогона, которым его строили.
+# Autopilot generates a roadmap in every project it runs in. In this
+# repository it is the leftover of the run that built the product.
 ROADMAP.md
 
-# Внутренние документы линии v1.0: целевая спецификация и инициирующий
-# запрос прогона. Рабочий план и коммерческое позиционирование, а не
-# документация продукта. Лежат в рабочем дереве, но не в публичном
-# репозитории; из пользовательских архивов их исключает INTERNAL_DOCS.
+# Working notes that are not part of the product.
 docs/V1_TARGET.md
 docs/V1_RUN.md
 
-# Каталог применённых правок рантайма: состояние машины, а не исходник.
+# The catalogue of applied runtime patches: the state of a machine that
+# repaired itself, not source.
 patches/

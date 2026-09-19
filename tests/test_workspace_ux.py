@@ -553,3 +553,47 @@ class ShortStatusTests(SemanticStatusTests):
             Path(__file__).resolve().parents[1] / "src/codex_autopilot/control.py"
         ).read_text(encoding="utf-8")
         self.assertIn("detailed=prompt in DETAILED_STATUS_PROMPTS", source)
+
+
+class TheHelpShowsWhatAPersonRunsTests(unittest.TestCase):
+    """`--help` is the first thing a stranger types, and it was wrong.
+
+    A subparser is hidden by having NO help, not by help=SUPPRESS:
+    argparse lists a subparser whenever `help` is present. So the sixteen
+    machine entry points - the relay, the wake-up, the DevOps repairs -
+    were listed with the literal text "==SUPPRESS==", while status, stop,
+    resume, logs, doctor and uninstall, which passed no help at all, were
+    the six the listing left out. The user saw the internals and not the
+    commands.
+    """
+
+    def _help(self) -> str:
+        import io
+        import contextlib
+
+        from codex_autopilot.cli import parser
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            try:
+                parser().parse_args(["--help"])
+            except SystemExit:
+                pass
+        return buffer.getvalue()
+
+    def test_the_sentinel_never_reaches_the_user(self) -> None:
+        self.assertNotIn("SUPPRESS", self._help())
+
+    def test_the_commands_a_person_runs_are_listed_with_their_purpose(self) -> None:
+        text = self._help()
+        for command in ("status", "stop", "resume", "logs", "doctor", "uninstall"):
+            with self.subTest(command=command):
+                self.assertRegex(text, rf"\n\s+{command}\s+\S")
+
+    def test_machine_entry_points_stay_out_of_the_listing(self) -> None:
+        """Codex and the runtime call these; a person never types them."""
+
+        text = self._help()
+        for command in ("_relay_dispatch", "_wake", "hook", "memory-mcp"):
+            with self.subTest(command=command):
+                self.assertNotIn(command, text)

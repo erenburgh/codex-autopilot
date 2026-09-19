@@ -34,16 +34,11 @@ VERSION = _package_version()
 # An archive without them did not install at all - install.sh failed
 # copying tests.
 USER_ITEMS = [".agents", ".gitignore", "plugins", "src", "tests", "scripts", "build_backend", "pyproject.toml", "docs", "install.sh", "README.md", "GETTING_STARTED.md", "CHANGELOG.md", "LICENSE"]
-# Internal documents that live in the repository for the workers but do
-# not ship to the user: the target specification of the next version is a
-# working plan and commercial positioning, not product documentation.
+# Working notes that stay in the repository and are not part of what the
+# user receives. The list is a build input, not a description of anything.
 INTERNAL_DOCS = {
-    # The next version's target specification: a working plan and
-    # commercial positioning, not product documentation.
     "docs/V1_TARGET.md",
     "docs/V1_RUN.md",
-    # Records of how the skill itself was built. The user does not need
-    # them: audits of our own runs and reports on repairing milestones.
     "docs/RELEASE_VERIFICATION_0.9.0-beta.md",
     "docs/M11_COMPLETION.md",
     "docs/M11_CONTRACT_CHECKPOINT.md",
@@ -55,6 +50,12 @@ INTERNAL_DOCS = {
 # paths, but the consequence is not what to catch. patches is the
 # directory of applied runtime patches: the state of the machine that
 # repaired, not source.
+# The live-acceptance harness carries the only flags in this repository
+# that can answer an approval. docs/SECURITY.md tells the reader it is not
+# in the user archive; it was, which made a security document say something
+# untrue about what the reader had just installed.
+DEV_ONLY = {"scripts/live_acceptance.py"}
+
 SOURCE_EXCLUDES = {"__pycache__", ".git", ".DS_Store", ".venv", "dist", "build", ".codex-autopilot", "patches"}
 BANNED_PARTS = {"__pycache__", ".git", ".venv", "venv", "logs"}
 BANNED_SUFFIXES = {".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".wal", ".shm"}
@@ -105,7 +106,7 @@ def main() -> int:
     if release_tree.exists(): shutil.rmtree(release_tree)
     release_tree.mkdir(parents=True)
     for item in USER_ITEMS: copy_clean(ROOT / item, release_tree / item)
-    for internal in INTERNAL_DOCS:
+    for internal in INTERNAL_DOCS | DEV_ONLY:
         (release_tree / internal).unlink(missing_ok=True)
     validate(release_tree)
     user_zip = output / f"codex-autopilot-{VERSION}-macos.zip"

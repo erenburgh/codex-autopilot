@@ -52,9 +52,9 @@ RULES: tuple[Rule, ...] = (
         check="every task-creation event carries in the journal a causal reference to "
         "the predecessor's `turn_completed`. A creation whose nearest cause is a user "
         "message in the current session is refused, citing R1.",
-        source="«задача не может быть создана из этой или любой другой сессии, где я даю "
-        "прямое распоряжение создать эту задачу. Она должна создаваться "
-        "автоматически по пайплайну. Если это M8, то M8 должен её создать.»",
+        source="The owner's requirement: a task is never created from a session "
+        "where a human gives the order; the pipeline creates it, and the task "
+        "that owns the step creates the next one.",
     ),
     Rule(
         id="R2",
@@ -78,10 +78,10 @@ RULES: tuple[Rule, ...] = (
         "is one of {PIPELINE, RUNTIME, INTEGRATION, TOOLING} and the recovery budget is "
         "not exhausted. BLOCKED is allowed only for the classes {PRODUCTION, POLICY} or "
         "after AUTO_RECOVERY_FAILED followed by an exhausted DevOps.",
-        source="«Если он её не создал, он должен дать отчёт DevOps-у, который создаётся "
-        "после этого, проводит расследование, почему задача не была создана, "
-        "фиксит эту проблему, отдаёт ответ M8, и снова M8 должна запустить то же "
-        "самое.»",
+        source="The owner's requirement: a create that did not happen is reported to "
+        "DevOps, which is raised afterwards, finds why the task was not "
+        "created, repairs it, answers the owner task, and lets that task run "
+        "the same step again.",
     ),
     Rule(
         id="R4",
@@ -93,8 +93,9 @@ RULES: tuple[Rule, ...] = (
         "operations. An attempt to send the user a confirmation request for an "
         "operation on that list is refused, citing R4. The list of covered operations "
         "is fixed and versioned.",
-        source="«у неё уже есть все апрувы... Она не должна постоянно запрашивать моё "
-        "подтверждение, она должна создаваться сама.»",
+        source="The owner's requirement: a run that already carries the approvals "
+        "stops asking for confirmation on every step - what the approval "
+        "covers is created by the runtime itself.",
     ),
     Rule(
         id="R5",
@@ -108,8 +109,9 @@ RULES: tuple[Rule, ...] = (
         "defect citing R5, not a silent continuation. The status distinguishes "
         "«projectId is set» from «the task is visible in the project» and never "
         "presents the first as the second.",
-        source="«ЕСЛИ ЗАДАЧУ НЕЛЬЗЯ СОЗДАТЬ СРАЗУ В ПРОЕКТЕ ТО ЕЁ МОЖНО ПЕРЕНЕСТИ В НЕГО "
-        "ПОСЛЕ СОЗДАНИЯ», «ДОВЕДИ ЗАДАЧУ ДО UI В ПРОЕКТЕ».",
+        source="The owner's requirement: a task that cannot be created inside the "
+        "project directly is moved into it afterwards, and carried through "
+        "until it is visible in the project.",
     ),
     Rule(
         id="R6",
@@ -135,7 +137,8 @@ RULES: tuple[Rule, ...] = (
         "that discovers work is needed outside the scope must file a "
         "PLAN_CHANGE_REQUEST and finish; widening the scope by its own decision is "
         "refused.",
-        source="«ты должна действовать согласно пайплайну а не делать отсебятину».",
+        source="The owner's requirement: the runtime acts by the pipeline rather "
+        "than improvising.",
     ),
     Rule(
         id="R8",
@@ -148,10 +151,9 @@ RULES: tuple[Rule, ...] = (
         "error. A transition to VERIFIED is refused without a recorded verdict of an "
         "independent verifier, or the full set of passed deterministic checks for "
         "tasks of the deterministic-complete class.",
-        source="«задача не может быть принята без верификации. какого хуя какие-то "
-        "задачи были пройдены и завершены без того, чтобы они были кем-то "
-        "апрувлены. Если в спецификациях задачи написано сделать одно, а ветка "
-        "делает совершенно другое.»",
+        source="The owner's requirement, after tasks had been completed and closed "
+        "with nobody approving them and a branch doing something other than "
+        "its specification: no task is accepted without verification.",
     ),
     Rule(
         id="R9",
@@ -183,7 +185,8 @@ RULES: tuple[Rule, ...] = (
         check="operations on a task in RUNNING, VERIFYING or REVISING require an "
         "explicit flag with a stated reason and are journaled. A call without the "
         "flag is refused.",
-        source="«Я не просила останавливать M8».",
+        source="The owner's requirement, after a task was halted without being "
+        "asked: the runtime does not stop a run on its own initiative.",
     ),
     Rule(
         id="R12",
@@ -193,7 +196,8 @@ RULES: tuple[Rule, ...] = (
         check="a task in a terminal state that has a dependency-eligible successor and "
         "no active task for longer than N seconds is a defect citing R12. This is "
         "checked by reconciliation, not only at the moment of transition.",
-        source="«M5 должен запуститься от M4 почему ты про это забываешь?»",
+        source="The owner's requirement, after a successor was repeatedly left "
+        "unraised: a dependent task starts from the task it depends on.",
     ),
     Rule(
         id="R13",
@@ -205,8 +209,9 @@ RULES: tuple[Rule, ...] = (
         "DANGEROUS_PERMISSION, GLOBAL_CONFIG_CHANGE, PROJECT_DAMAGE_RISK, "
         "RECOVERY_EXHAUSTED, PRODUCT_DECISION, ARCHITECTURE_DECISION. An escalation "
         "without a code, or with a code outside the list, is refused.",
-        source="«девопс и так от моего имени вносит эти баги, я не должна участвовать на "
-        "уровне принятия решений фикса багов и конфликтов».",
+        source="The owner's requirement: DevOps decides infrastructure fixes and "
+        "their conflicts on the owner's behalf, and the owner takes no part "
+        "in choosing them.",
     ),
     Rule(
         id="R14",
@@ -229,8 +234,9 @@ RULES: tuple[Rule, ...] = (
         check="a report on such a task without the correspondence table is a defect "
         "citing R15. A function declared as ported verbatim is compared with its "
         "source by diff.",
-        source="«возьми прям код, который уже работал, вставь его туда, где он должен "
-        "быть».",
+        source="The owner's requirement: code that is known to have worked is "
+        "reinstated where it belongs instead of being written again from "
+        "scratch.",
     ),
     Rule(
         id="R16",
@@ -437,10 +443,10 @@ RULES: tuple[Rule, ...] = (
         "sources. Acceptance sign: a record that would not pass the completion gate "
         "is refused by its own tool at once, in the same call, and the refusal text is "
         "enough to correct it without reading code.",
-        source="«нужно так же сделать не просто фикс а правило, чтобы такого больше "
-        "не возникло» - после того, как воркер M2 записал четыре свидетельства с "
-        "milestone_id: null, положив идентификатор вехи в created_by, и потерял "
-        "весь ход на отказе ворот завершения.",
+        source="The owner's requirement - a rule, not a one-off fix - after a worker "
+        "recorded four pieces of evidence with milestone_id: null, putting "
+        "the milestone identifier into created_by, and lost the whole turn at "
+        "the completion gate.",
     ),
     Rule(
         id="R32",
@@ -460,10 +466,10 @@ RULES: tuple[Rule, ...] = (
         "acceptance bar silently — that is a defect. Acceptance sign: the full list of "
         "interventions with reasons can be reconstructed from the run state, and an "
         "intervention without a reason is refused by the tool at once.",
-        source="«Я ХОЧУ ЧТОБЫ ОН РАБОТАЛ БЕЗ МЕНЯ НО И ЕСЛИ Я ЗАХОЧУ ВКЛЮЧИТЬСЯ "
-        "НИЧЕГО НЕ ДОЛЖНО СЛОМАТЬСЯ» - 15 сентября 2026, после суток, в которых "
-        "человеку четырежды пришлось снимать остановку вручную, и каждый раз это "
-        "работало только потому, что решение записывалось с причиной.",
+        source="The owner's requirement after a day in which a stop had to be lifted "
+        "by hand four times, each time working only because the decision was "
+        "recorded with a reason: the run goes on without the owner, and "
+        "nothing breaks when the owner steps in.",
     ),
 )
 

@@ -202,6 +202,51 @@ class ReleaseTests(unittest.TestCase):
         for item in ("tests", "scripts", "plugins", "pyproject.toml"):
             self.assertRegex(installer, r"for item in [^\n]*\b" + item.replace(".", r"\.") + r"\b")
 
+    def test_the_approval_answering_harness_stays_out_of_the_user_archive(self):
+        """docs/SECURITY.md says it is excluded. It has to be true.
+
+        The live-acceptance harness carries the only flags in this
+        repository that can answer an approval. The security document -
+        the section whose whole job is to assure a reader there is no
+        approval bypass in what they installed - stated that the harness
+        is excluded from the macOS user ZIP. It was not: scripts/ ships
+        whole, so the file was there, and the reassurance rested on an
+        exclusion that never happened.
+        """
+
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_release_dev_only", ROOT / "scripts/build_release.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertIn("scripts/live_acceptance.py", module.DEV_ONLY)
+        security = (ROOT / "docs/SECURITY.md").read_text(encoding="utf-8")
+        self.assertIn("excluded from the macOS user ZIP", security)
+
+    def test_rule_provenance_carries_no_private_language(self):
+        """A rule says where it came from, not what was said in private.
+
+        The provenance fields held twelve verbatim quotations of the
+        owner's own messages, profanity and a dated personal account of a
+        bad night among them. Nothing in production reads the field; it is
+        read by people. Provenance survives in English and in the third
+        person - what was required, and what had happened - and the
+        private words do not travel.
+        """
+
+        import re
+
+        from codex_autopilot.rules import RULES
+
+        cyrillic = re.compile(r"[\u0400-\u04FF]")
+        carried = [item.id for item in RULES if item.source and cyrillic.search(item.source)]
+        self.assertEqual(carried, [], "rule provenance must not quote private messages")
+        # Depersonalising is not deleting: every rule that said where it
+        # came from still says it.
+        self.assertEqual(len([item for item in RULES if item.source]), 12)
+
     def test_run_state_never_reaches_the_source_archive(self):
         """Run state belongs to whoever worked here.
 
