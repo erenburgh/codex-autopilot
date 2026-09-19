@@ -19,6 +19,7 @@ from .plan import GRAPH_PLAN_FIELDS, Plan, Task, plan_to_dict
 from .resilience import PLAN_CHANGE_RESULT_PREFIX
 from .rules import rules_for_prompt
 from .run_state import RunState
+from .skill_screening import recorded_hiring
 from .task_state import TaskState
 from .verification import VerificationIssue
 
@@ -205,6 +206,12 @@ def _worker_prompt(
         phase=phase,
         task_states=state.task_states,
         reservation_token=token,
+        # The hire made for this exact task contract. A verifier receives the
+        # same stack as the worker it judges: it cannot weigh work against
+        # procedures it was never shown.
+        hiring=recorded_hiring(
+            state.task_hiring, task_id=task_id, graph_version=state.graph_version
+        ),
         verification_round=verification_round,
         revision_number=revision_number,
         issues=verification_issues,

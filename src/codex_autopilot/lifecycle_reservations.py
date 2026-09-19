@@ -38,6 +38,7 @@ from .resources import (
     acquire_resources_in_state,
     build_scheduler_availability,
 )
+from .lifecycle_screening import screening_gate
 from .scope import scope_baseline
 from .run_state import RunState, StateStore, utc_now
 from .scheduler import effective_worker_limit, schedule
@@ -50,6 +51,7 @@ from .task_state import (
 from .thread_titles import (
     plan_verifier_thread_title,
     pipeline_engineer_thread_title,
+    screening_thread_title,
     replanner_thread_title,
     task_phase_thread_title,
 )
@@ -322,6 +324,23 @@ def _reserve_in_state(
     for task_id in decision.selected_task_ids:
         if task_id in paused:
             # This task waits for its incident. The others do not.
+            continue
+        # Hiring runs one reservation before the worker exists: the prompt,
+        # and with it the skill stack, is frozen into the descriptor below,
+        # inside this lock-held transaction that asks no model anything.
+        gate = screening_gate(
+            cfg,
+            plan,
+            state,
+            task_id=task_id,
+            memory_audit_before=memory_audit_before,
+            relay_owner_thread_id=relay_owner_thread_id,
+            build_descriptor=_build_descriptor,
+        )
+        if gate.action == "wait":
+            continue
+        if gate.action == "reserve" and gate.descriptor is not None:
+            descriptors.append(gate.descriptor)
             continue
         if any(
             item.get("task_id") == task_id
@@ -1289,7 +1308,7 @@ def _build_descriptor(
         model = route.model_id
         thinking = route.reasoning
         execution_mode = route.execution_mode
-    elif kind in {"replanner", "plan_verifier", "pipeline_engineer"}:
+    elif kind in {"replanner", "plan_verifier", "pipeline_engineer", "screening"}:
         execution_mode = "code"
         if plan.model_strategy == "host-settings":
             model = None
@@ -1325,6 +1344,14 @@ def _build_descriptor(
             language=cfg.language,
             skill_path=cfg.skill_path,
         ).build_pipeline_engineer_prompt(package, reservation_token=token)
+    elif kind == "screening":
+        title = screening_thread_title(task.id, task.title)
+        prompt = AIStudioRuntime(
+            plan,
+            cfg.root,
+            language=cfg.language,
+            skill_path=cfg.skill_path,
+        ).build_screening_prompt(task.id, reservation_token=token)
     elif kind == "replanner":
         change = active_plan_change(state)
         title = replanner_thread_title(

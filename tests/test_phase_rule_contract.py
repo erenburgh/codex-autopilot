@@ -61,7 +61,7 @@ class ConflictIsNotResolvedByTheWorkerTests(unittest.TestCase):
         (self.root / ".git").mkdir()
 
     def test_the_conflict_opens_against_the_recorded_statement(self) -> None:
-        from codex_autopilot.lifecycle_completion import _rule_statement_record
+        from codex_autopilot.lifecycle_rule_audit import _rule_statement_record
         from codex_autopilot.memory import ProjectMemory
         from codex_autopilot.rules import rule
 

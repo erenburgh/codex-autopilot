@@ -247,6 +247,18 @@ class SkillPack:
         }
 
 
+def skill_identifier(value: Any, label: str) -> str:
+    """Validate a catalog identifier by the one rule the catalog uses.
+
+    The hiring layer names capabilities that may not exist in any pack yet,
+    so it cannot check them against the catalog. Sharing this function keeps
+    one regex: a capability a screener may ask for is spelled exactly like a
+    capability a pack may declare.
+    """
+
+    return _identifier(value, label)
+
+
 def skill_reference_from_raw(raw: Any, label: str = "skill reference") -> SkillReference:
     if not isinstance(raw, Mapping):
         raise SkillPackError(f"{label} must be an object")

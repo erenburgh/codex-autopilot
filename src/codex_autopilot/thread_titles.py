@@ -141,6 +141,16 @@ def pipeline_engineer_thread_title(incident_id: str, summary: str) -> str:
     return _compose("Pipeline Engineer", f"INC-{suffix[:12]}", _text(summary, "summary"))
 
 
+def screening_thread_title(task_id: str, task_title: str) -> str:
+    """The hiring thread's title, before that task has any worker at all."""
+
+    return _compose(
+        "Screening",
+        f"Hire {_identifier(task_id, 'task_id')}",
+        _text(task_title, "task_title"),
+    )
+
+
 def task_phase_thread_title(
     *,
     task_id: str,

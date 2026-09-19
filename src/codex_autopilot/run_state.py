@@ -30,6 +30,7 @@ WORKER_SESSION_KINDS = {
     "replanner",
     "plan_verifier",
     "pipeline_engineer",
+    "screening",
 }
 
 
@@ -59,6 +60,11 @@ class RunState:
     # The effort step assigned by a re-hire on top of what the plan records.
     # Empty until a re-hire happened.
     task_effort: dict[str, str] = field(default_factory=dict)
+    # Which skills each task's worker was hired with, on what grounds, and by
+    # which screening session. Keyed by task id and bound to the graph
+    # version the hire was made for: a replan rewrites task contracts under
+    # the same ids, so an old hire says nothing about the new work.
+    task_hiring: dict[str, dict[str, Any]] = field(default_factory=dict)
     active_task_ids: list[str] = field(default_factory=list)
     scheduler_sequence: int = 0
     task_ready_since: dict[str, int] = field(default_factory=dict)
@@ -387,6 +393,27 @@ def _validate_state(state: RunState) -> None:
         raise ValueError("run-state task_states must map non-empty task ids to states")
     for value in state.task_states.values():
         coerce_task_state(value)
+    if not isinstance(state.task_hiring, dict):
+        raise ValueError("run-state task_hiring must map task ids to hiring records")
+    for task_id, record in state.task_hiring.items():
+        if not isinstance(task_id, str) or not task_id or not isinstance(record, dict):
+            raise ValueError("run-state task_hiring must map task ids to hiring records")
+        if record.get("task_id") != task_id:
+            raise ValueError(
+                f"run-state hiring record under {task_id!r} names task "
+                f"{record.get('task_id')!r}"
+            )
+        version = record.get("graph_version")
+        if isinstance(version, bool) or not isinstance(version, int) or version <= 0:
+            raise ValueError(
+                f"run-state hiring record for {task_id!r} needs the positive graph "
+                "version it was made for"
+            )
+        # Reading it back is what decides the worker's skills, so the record
+        # is validated where it is stored rather than only where it is used.
+        from .skill_screening import hiring_decision_from_raw
+
+        hiring_decision_from_raw(record.get("decision"))
     if not isinstance(state.active_task_ids, list) or not all(
         isinstance(task_id, str) and task_id for task_id in state.active_task_ids
     ):

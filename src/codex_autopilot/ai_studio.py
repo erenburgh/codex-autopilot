@@ -26,7 +26,17 @@ from .pipeline_engineer import (
 )
 from .rules import rules_for_prompt
 from .plan import Plan, RoleProfile, Task
-from .skill_packs import SkillPackError, resolve_skill_stack
+from .skill_packs import SkillPack, SkillPackError, resolve_skill_stack
+from .skill_screening import (
+    MAX_REQUISITION_ITEMS,
+    SCREENING_PREFIX,
+    SKILL_LIBRARY_DIRNAME,
+    HiringDecision,
+    SkillLibraryError,
+    inventory_entry,
+    load_skill_library,
+    skill_catalog,
+)
 from .task_state import dependency_state_satisfies
 from .verification import VerificationIssue, verifier_route
 
@@ -130,6 +140,115 @@ class AIStudioRuntime:
         # The state directory is needed only for the rule-violation history:
         # rules violated more often come higher in the context (R17).
         self.state_dir = self.project_root / ".codex-autopilot"
+
+    def build_screening_prompt(self, task_id: str, *, reservation_token: str) -> str:
+        """Build the hiring brief for one task about to get a worker.
+
+        The screener sees what the task is and what this machine has, and
+        nothing else: no worker transcript exists yet, which is the whole
+        reason this runs before the worker is created.  It produces a
+        requisition and no work; the runtime decides what the requisition
+        can actually become.
+        """
+
+        task = self._task(task_id)
+        role = self.plan.role_map[task.role]
+        try:
+            inventory = [inventory_entry(pack) for pack in self._skill_catalog()]
+        except SkillLibraryError as exc:
+            raise ContextBoundaryError(
+                f"task {task.id} cannot be screened: {exc}"
+            ) from exc
+        envelope = {
+            # R17: the rules stand before the specification they judge.
+            "rules": rules_for_prompt(self.state_dir),
+            **(
+                {"goal_contract": self.plan.goal_contract.to_dict()}
+                if self.plan.goal_contract is not None
+                else {}
+            ),
+            "phase": "screening",
+            "task": self._task_contract(task),
+            "definition_of_done": list(task.definition_of_done),
+            "resources": [
+                {"id": item.id, "kind": item.kind, "access": item.access}
+                for item in task.resources
+            ],
+            "role": {
+                "id": role.id,
+                "name": role.name,
+                "responsibilities": list(role.responsibilities),
+                "skill_requirements": [
+                    item.to_dict() for item in role.skill_requirements
+                ],
+            },
+            "installed_skills": inventory,
+            "limits": {"max_capabilities": MAX_REQUISITION_ITEMS},
+        }
+        payload = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+        example = (
+            '{"task_id":"' + task.id + '","items":[{"capability":"<capability>",'
+            '"rationale":"<why THIS task needs it>","necessity":"required",'
+            '"candidates":[{"id":"<installed id>","version":"<exact version>"}]}]}'
+        )
+        russian = is_russian(self.language)
+        duty = (
+            "Ты нанимаешь исполнителя для одной задачи. Реши, какие навыки помогут "
+            "именно этому исполнителю дойти до цели, и назови их."
+            if russian
+            else "You are hiring the worker for one task. Decide which skills would "
+            "help this particular worker reach the goal, and name them."
+        )
+        honesty = (
+            "Autopilot ничего не скачивает и не устанавливает. Если в installed_skills "
+            "нет ничего подходящего, оставь candidates пустым и напиши в search_intent, "
+            "что именно понадобилось бы: это будет записано как незакрытая потребность."
+            if russian
+            else "Autopilot downloads and installs nothing. If installed_skills holds "
+            "nothing suitable, leave candidates empty and say in search_intent what "
+            "would have been needed: it is recorded as an unmet need."
+        )
+        return f"""Codex Autopilot AI Studio Runtime - Screening · Hiring.
+
+{duty}
+
+AUTOPILOT_BRIEF: {payload}
+
+Read {self.skill_path} completely first, then read enough of this project to judge
+what the task above actually requires. You do no production work in this turn: you
+change no file the task is about, record no evidence, and start no other task.
+
+Pick only from `installed_skills`, by exact id and version. Every item needs a
+`rationale` written in terms of THIS task - not a general endorsement of the skill.
+Ask for at most {MAX_REQUISITION_ITEMS} capabilities, each capability once. Asking
+for nothing is a valid answer when the task needs nothing.
+
+{honesty}
+
+A skill you name is still checked by the runtime before it reaches the worker: a
+pack that is not trusted, or whose qualification is not on record for its exact
+revision, is withheld and recorded as withheld. You are not the authority for that.
+
+Run language: `{self.language}`. Identifiers, ids, versions and capability names stay
+exact and are never translated. Reservation token: {reservation_token}.
+
+End your turn with exactly one final line:
+
+{SCREENING_PREFIX}{example}
+"""
+
+    def _skill_catalog(self) -> tuple[SkillPack, ...]:
+        """The plan's catalog plus the packs installed on this machine.
+
+        Read at prompt assembly rather than at plan load: a pack promoted to
+        trusted after the plan was written is usable by the next worker
+        without rewriting the graph.
+        """
+
+        return skill_catalog(
+            self.plan.skill_packs,
+            load_skill_library(self.state_dir / SKILL_LIBRARY_DIRNAME),
+        )
 
     def route(self, task_id: str, *, phase: str = "implementation") -> RuntimeRoute:
         """Route solely from capability/model strategy, never from role identity."""
@@ -283,6 +402,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         issues: Sequence[VerificationIssue | Mapping[str, Any]] = (),
         evidence: Sequence[Mapping[str, Any]] = (),
         deterministic_results: Sequence[Mapping[str, Any]] = (),
+        hiring: HiringDecision | None = None,
     ) -> str:
         """Build a fresh bounded phase prompt; no prior messages are accepted."""
 
@@ -310,13 +430,21 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         )
         try:
             implementation_role = self.plan.role_map[task.role]
+            # A hire is the second authority for loading a skill, beside the
+            # role's plan-declared requirements. No plan can name the skills
+            # a task needs - it is written before anyone has seen the code -
+            # so without this the requirement gate refuses every hire and the
+            # worker keeps the empty stack the plan gave it.
+            hired = hiring.hired if hiring is not None else ()
+            declared = {item.id for item in task.loaded_skills}
             loaded_skills = resolve_skill_stack(
-                self.plan.skill_packs,
-                task.loaded_skills,
-                requirements=implementation_role.skill_requirements,
+                self._skill_catalog(),
+                task.loaded_skills
+                + tuple(item for item in hired if item.id not in declared),
+                requirements=implementation_role.skill_requirements + hired,
                 qualification_evidence_store=self.memory,
             )
-        except SkillPackError as exc:
+        except (SkillLibraryError, SkillPackError) as exc:
             raise ContextBoundaryError(
                 f"task {task.id} skill stack cannot be resolved: {exc}"
             ) from exc
@@ -335,6 +463,26 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             "task": self._task_contract(task),
             "role": self._role_contract(role, department_reference),
             "loaded_skills": [item.to_prompt_dict() for item in loaded_skills],
+            # The honest half of a hire. A capability that was asked for and
+            # not filled is told to the worker with the reason, so it knows
+            # it is working without a procedure somebody judged it needed -
+            # instead of silently receiving a shorter list than was chosen.
+            **(
+                {
+                    "unfilled_skill_needs": [
+                        {
+                            "capability": outcome.capability,
+                            "necessity": outcome.necessity,
+                            "status": outcome.status,
+                            "rationale": outcome.rationale,
+                            **({"reason": outcome.reason} if outcome.reason else {}),
+                        }
+                        for outcome in hiring.unfilled
+                    ]
+                }
+                if hiring is not None and hiring.unfilled
+                else {}
+            ),
             "definition_of_done": definition_of_done,
             **(
                 {"recorded_human_decisions": decisions}
