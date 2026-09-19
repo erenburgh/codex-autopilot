@@ -45,6 +45,8 @@ from codex_autopilot.skill_screening import (
     hiring_decision_from_raw,
     load_skill_library,
     parse_screening_result,
+    record_hiring,
+    recorded_hiring,
     resolve_requisition,
     skill_catalog,
 )
@@ -1042,3 +1044,100 @@ def _config_with(state_dir: Path, runtime_line: str) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+class HiringRecordTests(unittest.TestCase):
+    """The record is keyed by task contract, not by task id alone."""
+
+    def decision(self) -> HiringDecision:
+        return HiringDecision(
+            task_id="M1",
+            outcomes=(
+                HiringOutcome(
+                    capability="python",
+                    rationale="M1 edits Python.",
+                    necessity="required",
+                    status="hired",
+                    skill=SkillReference("python-testing", "1.0.0"),
+                ),
+            ),
+        )
+
+    def test_a_hire_made_for_an_older_graph_version_is_not_reused(self) -> None:
+        """A replan rewrites task contracts under the same ids. Reusing the
+        old hire would put skills chosen for vanished work in front of a
+        worker doing different work."""
+
+        records: dict[str, Any] = {}
+        record_hiring(
+            records,
+            task_id="M1",
+            graph_version=1,
+            decision=self.decision(),
+            requisition=None,
+            screened_by={"thread_id": "screening-M1"},
+            at="2026-09-20T00:00:00+00:00",
+        )
+
+        self.assertEqual(
+            recorded_hiring(records, task_id="M1", graph_version=1),
+            self.decision(),
+        )
+        self.assertIsNone(recorded_hiring(records, task_id="M1", graph_version=2))
+
+    def test_a_record_that_names_another_task_is_refused_at_the_write(self) -> None:
+        with self.assertRaisesRegex(ScreeningProtocolError, "M2"):
+            record_hiring(
+                {},
+                task_id="M2",
+                graph_version=1,
+                decision=self.decision(),
+                requisition=None,
+                screened_by={},
+                at="2026-09-20T00:00:00+00:00",
+            )
+
+
+class ScreeningInFlightTests(AttestedProjectCase):
+    """A frontier pass while a screening is still in flight.
+
+    Reachable whenever anything else raises the frontier before the screener
+    has answered - another task completing in a parallel run, a wake-up, a
+    re-arm. Without the wait branch the task falls through to the ordinary
+    reservation check, which sees the pending screening session and refuses
+    the whole pass with "already has a pending reservation".
+    """
+
+    def _before_last_acceptance(self) -> None:
+        library = self.root / ".codex-autopilot" / SKILL_LIBRARY_DIRNAME
+        library.mkdir(parents=True, exist_ok=True)
+        (library / "vetted-runtime.json").write_text(
+            json.dumps(_candidate_manifest()), encoding="utf-8"
+        )
+        config = self.root / ".codex-autopilot" / "config.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                "[runtime]", '[runtime]\nskill_screening = "always"', 1
+            ),
+            encoding="utf-8",
+        )
+
+    def test_the_frontier_waits_instead_of_refusing_the_whole_pass(self) -> None:
+        self._qualified_pack(trailing_task=_trailing_task())
+        pending = self.last_descriptors
+        self.assertEqual([item.kind for item in pending], ["screening"])
+        cfg = load_config(self.root)
+
+        again = reserve_ready_frontier(cfg)
+
+        self.assertEqual(again, ())
+        sessions = json.loads(
+            (self.root / ".codex-autopilot" / "run-state.json").read_text(
+                encoding="utf-8"
+            )
+        )["worker_sessions"]
+        screenings = [item for item in sessions if item["kind"] == "screening"]
+        self.assertEqual(len(screenings), 1, "the pass must not re-hire the screener")
+        self.assertEqual(
+            screenings[0]["reservation_token"], pending[0].reservation_token
+        )

@@ -272,63 +272,188 @@ A `withheld: not yet qualified` item is the intake for this loop: it names a
 pack that something wanted, in a task that needed it, with a rationale. That is
 a better queue for qualification work than any list a human would maintain.
 
-## Source trust — the open decision
+## Screening the market
 
-Obtaining a skill that is not on the machine is a supply-chain path into the
-user's Codex. It is the owner's decision, not the runtime's, so the obtaining
-path sits behind a named seam and currently obtains nothing: a requisition item
-that nothing installed satisfies is recorded `unmet` with its `search_intent`,
-and no network access, download or install happens.
+The owner's requirement, in her words: *"Skills are not only inside the system.
+Skills are on the internet, on GitHub, wherever people publish them. Using only
+the known ones is weak. The market has to be screened."*
 
-The options, concretely:
+So the screening step is not a lookup in a bundled catalogue. It is research at
+hiring time: the model goes and finds what would actually help this worker with
+this task, and comes back with a specification naming the skills and why each
+one.
 
-**A — Local only (what is built today).** A skill may come only from the
-installed library on this machine, put there by the user. The screener
-selects; it never acquires. Recorded: nothing new. Revocation: the user deletes
-the manifest. Approval: none needed, because nothing crosses a boundary.
-*Cost:* the hiring layer is only as good as what the user installed, and the
-model's ability to research what exists is unused.
+### A skill here is text, not code
 
-**B — Synthesis from what the model already knows.** The screener may *author*
-a pack — procedures, checklists, failure modes, quality criteria, deterministic
-checks — without fetching anything. It enters as `source: "synthesized"`,
-`status: "candidate"`, and reaches a worker only after the independent
-promotion `skill_packs.py` already demands. Recorded: the full manifest, its
-revision sha256, and the session that authored it. Revocation: demote to
-candidate, and every dependent binding fails closed at the next prompt
-assembly. Approval: a single policy decision, once, because no external content
-is ever admitted.
-*Cost:* the model writes from memory, which may be stale or wrong — which is
-precisely what the qualification checks and the independent promotion exist to
-catch.
+A `SkillPack` is procedures, checklists, failure modes, quality criteria,
+required tools, required MCP servers, deterministic checks and evidence roles.
+It reaches the worker through `to_prompt_dict()`. Nothing is installed, and the
+pack itself does not execute. So "fetching a skill from the market" means
+fetching **text** and qualifying it into a pack.
 
-**C — Fetch from named, allow-listed origins.** The screener may fetch skill
-material from origins on a user-maintained allow-list (for example, a
-specific set of repositories or registries). Content is admitted as
-`source: "vetted"`, `status: "candidate"`, pinned by content digest, and still
-requires an independent source attestation plus qualification before binding.
-Recorded: origin URL, fetch time, content digest, and the attesting session.
-Revocation: remove the origin from the allow-list; every pack from it is
-demoted, and all bindings fail closed. Approval: the user approves each
-**origin** once, not each skill — approving per skill would put Autopilot in
-the position of asking the user to adjudicate things it was hired to decide,
-and approving a whole category once would be an open door.
-*Cost:* this is the real supply-chain surface. Everything fetched is untrusted
-content that a model will read and act on, and prompt injection inside a
-fetched skill is a live risk that the digest and the attestation reduce but do
-not eliminate.
+That splits the obtaining path in two, and they are not equally risky:
 
-**Recommendation: build A now, ship B next, and hold C until the owner
-explicitly opens it.**
+* **(A) A pack built from fetched text.** No installation, fully recorded,
+  revertible by deleting one manifest. This is what the existing machinery was
+  built for.
+* **(B) A real Codex skill bundle installed into Codex so a worker can invoke
+  its scripts.** Third-party code on the machine, colliding with the runtime's
+  own plugin-cache and hook-trust discipline. Not built, and behind a named
+  seam.
 
-A is already the honest floor. B gives the owner most of what she described —
-the model working out what this worker needs and writing it down as a real
-pack — without admitting one byte of external content, and the existing
-promotion gate already governs it end to end. C is the only option that needs a
-new trust boundary, and it should not be opened by inference from "the model
-can research this". If she wants C, the per-origin allow-list is the shape to
-build, and the fetched-content-is-untrusted rule has to be written into the
-screener's own prompt, not assumed.
+### What the trust ladder already decides — measured, not assumed
+
+Run against `trust.py` and `skill_packs.py` on 20 Sep 2026:
+
+```text
+external  ->  external_text / unverified
+meets TRUTH_THRESHOLD (what _require_deterministic_trust demands):  False
+promote TRUSTED_SKILL on external text alone:  refused
+    - supporting evidence is below human_verified: external:external_text/unverified
+    - trusted Skill promotion requires evidence of improved outcome
+Truth evidence kinds: artifact, build, file, test, tool      (external is not one)
+
+authoritative_documentation backed by kind="external"  ->  REFUSED
+authoritative_documentation backed by kind="file"      ->  ACCEPTED
+```
+
+The second block is worth stating plainly: `_validate_qualifying_evidence` lists
+`external` as an acceptable kind for `authoritative_documentation`, and then
+`_require_deterministic_trust`, one line later, refuses every `external` record.
+**That branch is unreachable.** Either it is dead code, or it was meant to admit
+fetched documentation and the trust gate closed it; either way, nothing today
+can promote a pack by citing where its text came from.
+
+So the rule the design must obey — already in the code, not added here:
+**the market may suggest; only running the thing and having the outcome
+independently verified can make it trusted.**
+
+A market-sourced pack is therefore `source: "synthesized"`, `status:
+"candidate"`. Not `vetted` and not `project_generated`: both demand an
+independent *source* attestation, which is a claim about origin, and no origin
+on the open internet earns that by being fetched. `synthesized` is the honest
+label — the screener wrote the pack; the fetched text was its input, never its
+authority — and its promotion route already requires `independent_verification`
+plus a deterministic test, a real tool, or a verified work outcome.
+
+### The requisition item that names the market
+
+Today an item names candidates from the inventory, or a `search_intent` when
+nothing fits. The market extension adds a third form: the screener returns a
+**draft pack** together with where it read.
+
+```json
+{"capability":"svelte",
+ "rationale":"M7 writes Svelte 5 components and this project has no procedure for runes.",
+ "necessity":"required",
+ "candidates":[],
+ "draft":{"id":"svelte-runes","version":"0.1.0","source":"synthesized","status":"candidate", "...":"a full pack manifest"},
+ "sources":[{"provider":"github.com/<owner>/<repo>","locator":"docs/runes.md","digest":"sha256:..."}]}
+```
+
+What the **runtime** does with it — never the screener:
+
+1. Parse `draft` through `skill_pack_from_raw`, the same validator a
+   plan-declared pack passes. A draft that is not a well-formed pack is refused
+   and named.
+2. Force `status: "candidate"`, and refuse `source` in `{vetted,
+   project_generated}` outright — those claim an origin review nobody did.
+3. Record each entry of `sources` as Project Memory evidence of kind `external`
+   with its `provider` set. The trust ladder requires a provider for external
+   evidence and pins the result at `external_text/unverified`, permanently.
+4. Write the manifest into the project library — recorded, and revertible by
+   deleting that one file.
+5. Record the item in the hiring decision as `withheld: newly drafted, not yet
+   qualified`. **It does not reach the worker that asked for it.**
+6. It is now the intake for a qualification task, which is where the learning
+   loop already starts.
+
+### R18: a fetched pack shapes HOW, never WHETHER
+
+External content may influence how work is done and must never become the
+authority for whether work is accepted. The surfaces where a market pack could
+leak into acceptance, named exactly:
+
+* `build_prompt` resolves the same stack for every phase, so a pack's
+  `quality_criteria` and `checklists` reach the **verification** prompt too. A
+  market-sourced pack could whisper to the acceptor.
+* `require_allowed_skill_evidence_role` widens which evidence roles may be
+  written for a task using the loaded packs' `evidence_roles`.
+* A pack's `deterministic_checks` are its own qualification and not the task's
+  acceptance. That separation already holds and must stay.
+
+The enforcement has a precedent in this repository:
+`department_acceptance.omit_conflicting_rubric_guidance` and
+`redact_conflicting_rubric_identity` already perform this exact surgery on
+superseded rubric identity before a verifier launches. The same seam:
+
+* a pack whose provenance chain includes an `external` source is omitted from
+  the **verification**-phase stack, and the verifier is told which capabilities
+  the worker carried and that their text was withheld from it — so it is
+  informed, not blinded;
+* such a pack contributes no `evidence_roles`;
+* the acceptance gate and the definition of done are untouched by any pack.
+
+### The sharp edge, which is not the text
+
+`deterministic_checks.argv` is executed. Measured at the call site:
+
+```python
+subprocess.run(list(check.argv), cwd=root, capture_output=True,
+               text=True, timeout=check.timeout_seconds, check=False, shell=False)
+```
+
+and `validate_plan_skill_attestations` requires a qualification task's check to
+match the pack's `argv` and expected exit code **exactly**. So a market-sourced
+draft that declares `argv` is proposing a command to run on the user's machine,
+in the project root. No shell, but any binary the vector names.
+
+There is already a real gate in front of it: the argv reaches execution only
+through a plan that contains a matching qualification task, and plans are
+written by the replanner and judged by an independent plan verifier. That is a
+model-in-the-loop gate, not a deterministic one.
+
+**This, and not the provenance of the prose, is the supply-chain question.**
+
+## The owner's decision
+
+Three questions, sharpest first.
+
+**1. May a market-sourced draft declare its own `deterministic_checks.argv`?**
+
+* *No (recommended).* The runtime refuses a draft whose argv is not drawn from
+  a small allowlist the project already trusts — its own test command, its
+  linter, its build. A market pack then contributes procedures and quality
+  criteria, and proves itself against checks the project already runs. This
+  keeps everything the owner asked for and gives up nothing she described.
+* *Yes, with approval.* The argv is shown to the user once per exact pack
+  revision and runs only after they approve. Honest, but it puts the user in
+  the loop of something Autopilot was hired to decide, once per skill.
+* *Yes.* The plan verifier is treated as sufficient. I do not recommend it: it
+  is a model judging whether a fetched command is safe to run.
+
+**2. May the screening thread reach the network at all?**
+
+Autopilot does not grant network access and must not try to; the screener runs
+under the project's `:workspace` permission profile and whatever the user's
+Codex settings already allow. The question is whether the screener is *told* to
+go and look. Recommended: yes, for reading — that is what screening the market
+means, and with question 1 answered "no" the fetched text cannot make itself
+trusted or run anything.
+
+**3. Open web, or an allow-list of origins?**
+
+Recommended: **open web for reading.** Once a fetched pack cannot promote
+itself and cannot propose a command, an origin allow-list adds friction without
+much safety, and it is exactly the "use only the known ones" weakness the owner
+objected to. The residual risk it would reduce is prompt injection reaching the
+qualification task's context — real, but bounded by that task running only
+project-trusted commands and by an independent verifier that never sees the
+fetched text.
+
+If she wants an allow-list anyway, the shape is per-origin approval recorded
+once, not per-skill, and every pack from a revoked origin demotes to candidate
+and fails closed at the next prompt assembly.
 
 ## What is not built
 
