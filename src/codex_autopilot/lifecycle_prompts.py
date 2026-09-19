@@ -17,6 +17,7 @@ from .language import is_russian
 from .memory import ProjectMemory
 from .plan import GRAPH_PLAN_FIELDS, Plan, Task, plan_to_dict
 from .resilience import PLAN_CHANGE_RESULT_PREFIX
+from .rules import rules_for_prompt
 from .run_state import RunState
 from .task_state import TaskState
 from .verification import VerificationIssue
@@ -58,6 +59,13 @@ def _replanner_prompt(
         for item in (change.get("rejections") or [])
     ]
     envelope = {
+        # R17: the rules stand before any specification they judge, and this
+        # is the phase that rewrites the whole graph. It was asked to report
+        # the rule ids it applied while its prompt carried no rules at all -
+        # the only phase judged by rules it never saw. The block is never
+        # truncated: if the budget cannot hold it, the check below refuses
+        # the launch rather than quietly dropping it.
+        "rules": rules_for_prompt(cfg.state_dir),
         "phase": "replanning",
         "request_id": change["id"],
         "base_graph_version": plan.graph_version,

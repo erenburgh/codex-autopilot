@@ -314,26 +314,33 @@ def registered_projects(*, path: Path | None = None) -> list[str]:
 def derive_owner(state: Any) -> tuple[str, str] | None:
     """The causal owner for the wake-up - from the journal, not from arguments.
 
-    The same criterion the dispatcher uses for successors: the latest session
-    whose relay owner recorded a completed turn. If there is none, there is
-    nobody on whose behalf to wake - and the agent skips the project quietly.
+    The question is the dispatcher's own, so the answer is too: this asks
+    ``causal_predecessor``, the single predicate for "the owner's turn is
+    over". It used to keep a narrower copy that accepted only a
+    ``turn_completed`` event, while the dispatcher accepts three proofs - the
+    event, a closed session carrying the same turn, and an observed
+    interrupt. An interrupted turn is exactly the case that leaves nobody to
+    raise the successor, and for it this returned None: after a reboot the
+    sweep skipped the project quietly and the retry waited for a human, the
+    one thing the alarm exists to prevent.
+
+    If there is no such owner, there is nobody on whose behalf to wake - and
+    the agent skips the project quietly.
+
+    The import is local: wake is reached from the hook and the CLI, and
+    lifecycle pulls control back in, so a module-level import here would
+    close a ring.
     """
 
-    completed = {
-        (str(item.get("thread_id") or ""), str(item.get("turn_id") or ""))
-        for item in state.lifecycle_journal
-        if str(item.get("event") or "") == "turn_completed"
-    }
+    from .lifecycle import causal_predecessor
+
     for session in reversed(state.worker_sessions):
         owner = str(session.get("relay_owner_thread_id") or "")
         if not owner:
             continue
-        for candidate in reversed(state.worker_sessions):
-            if str(candidate.get("thread_id") or "") != owner:
-                continue
-            turn = str(candidate.get("turn_id") or "")
-            if turn and (owner, turn) in completed:
-                return owner, turn
+        predecessor = causal_predecessor(state, owner)
+        if predecessor is not None and str(predecessor.get("turn_id") or ""):
+            return owner, str(predecessor["turn_id"])
     return None
 
 

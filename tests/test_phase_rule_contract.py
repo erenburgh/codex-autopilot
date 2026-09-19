@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+import pathlib
 import unittest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "codex_autopilot"
@@ -108,6 +109,113 @@ class EveryPhaseCarriesTheContractTests(unittest.TestCase):
             with self.subTest(anchor=anchor[:30]):
                 tail = self.studio[self.studio.index(anchor):][:800]
                 self.assertIn("AUTOPILOT_RULES", tail)
+
+    def test_the_replanner_prompt_really_carries_the_rules(self) -> None:
+        """Asking for applied rule ids is not the same as sending the rules.
+
+        R17 is declared ENFORCED, and the replanner was asked to report the
+        ids it applied - while its prompt was assembled with no rules block
+        at all. It is the one phase that rewrites the whole graph, and the
+        only phase that never saw the rules it is judged by. Measured by
+        building the production prompt, not by reading the source: a check
+        that greps for a line stays green when the line stops running.
+        """
+
+        import json
+        import tempfile
+
+        from codex_autopilot.config import load_config
+        from codex_autopilot.lifecycle_prompts import _replanner_prompt
+        from codex_autopilot.plan import load_plan
+        from codex_autopilot.run_state import StateStore
+        from codex_autopilot.rules import RULES
+        from _plan_contract import (
+            TEST_OUTCOME_ID,
+            canonical_verification,
+            canonicalize_plan,
+            initialize_verified_project,
+        )
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            (root / ".git").mkdir()
+            skill = root / "SKILL.md"
+            skill.write_text("# skill\n", encoding="utf-8")
+            plan_file = root / "plan.json"
+            plan_file.write_text(
+                json.dumps(
+                    canonicalize_plan(
+                        {
+                            "schema_version": 3,
+                            "graph_version": 1,
+                            "goal": "Exercise the replanner prompt.",
+                            "user_request": "Exercise the replanner prompt.",
+                            "model_strategy": "auto",
+                            "execution_strategy": "parallel",
+                            "max_parallel_workers": 1,
+                            "computer_use_slots": 1,
+                            "roles": [
+                                {
+                                    "id": "builder",
+                                    "name": "Builder",
+                                    "responsibilities": ["Build one task."],
+                                }
+                            ],
+                            "tasks": [
+                                {
+                                    "id": "A",
+                                    "title": "Task A",
+                                    "objective": "Complete A.",
+                                    "definition_of_done": ["A is verified."],
+                                    "execution_mode": "code",
+                                    "execution_mode_reason": "Files and tests suffice.",
+                                    "reasoning": "medium",
+                                    "role": "builder",
+                                    "depends_on": [],
+                                    "priority": 0,
+                                    "verification": canonical_verification(),
+                                    "resources": [],
+                                    "required_capabilities": [],
+                                    "context": {},
+                                    "outputs": [],
+                                    "tags": [],
+                                    "produces_outcomes": [TEST_OUTCOME_ID],
+                                    "acceptance_class": "mixed",
+                                }
+                            ],
+                        }
+                    )
+                ),
+                encoding="utf-8",
+            )
+            initialize_verified_project(
+                root,
+                plan_file,
+                profile="adaptive",
+                skill_path=skill,
+                desktop_project_id="desktop-project",
+            )
+            cfg = load_config(root)
+            plan = load_plan(cfg.state_dir, cfg.profile)
+            state = StateStore(cfg.state_dir).load()
+            prompt = _replanner_prompt(
+                cfg,
+                plan,
+                state,
+                {
+                    "id": "PC-01",
+                    "request": {"purpose": "Add a task.", "evidence_ids": []},
+                    "rejections": [],
+                },
+                "reservation-token",
+            )
+
+        enforced = [item.id for item in RULES if item.mode == "ENFORCED"]
+        self.assertTrue(enforced)
+        for rule_id in enforced:
+            self.assertIn(rule_id, prompt)
+        # R17: the rules stand before any specification they judge.
+        self.assertLess(prompt.index('"rules"'), prompt.index('"current_plan"'))
 
     def test_the_engineer_receives_the_rules_block_not_just_a_promise(self) -> None:
         """Обещание «те же правила» без блока правил - обещание без исполнения."""

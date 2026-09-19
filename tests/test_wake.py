@@ -169,6 +169,47 @@ class WakeTests(unittest.TestCase):
         )
         self.store.save(state)
 
+    def record_interrupted_owner_turn(self) -> None:
+        """The owner's turn ended on an interrupt - it ended all the same.
+
+        No turn_completed will ever come for an interrupted turn, so waiting
+        for one means waiting forever. The dispatcher has accepted that proof
+        for a long time (control._turn_is_completed); the alarm kept a
+        narrower copy of the same question.
+        """
+
+        state = self.store.load()
+        state.worker_sessions.append(
+            {
+                "task_id": "A",
+                "kind": "worker",
+                "thread_id": TEST_RELAY_OWNER,
+                "turn_id": OWNER_TURN,
+                "relay_owner_thread_id": TEST_RELAY_OWNER,
+                "status": "INTERRUPTED",
+                "reservation_token": "owner-reservation",
+                "operation_id": "owner-operation",
+                "client_user_message_id": "owner-message",
+                "created_at": "2026-09-17T00:00:00+00:00",
+                "attempt": 1,
+            }
+        )
+        state.lifecycle_journal_sequence += 1
+        state.lifecycle_journal.append(
+            {
+                "sequence": state.lifecycle_journal_sequence,
+                "event": "interrupt_observed",
+                "task_id": "A",
+                "attempt": 1,
+                "reservation_token": "owner-reservation",
+                "operation_id": "owner-operation",
+                "thread_id": TEST_RELAY_OWNER,
+                "turn_id": OWNER_TURN,
+                "at": "2026-09-17T00:00:00+00:00",
+            }
+        )
+        self.store.save(state)
+
     # --- what the alarm does -------------------------------------------
 
     def test_the_wake_sleeps_until_the_retry_and_then_dispatches(self) -> None:
@@ -377,6 +418,21 @@ class SurvivesARebootTests(WakeTests):
     def test_the_owner_is_derived_from_the_journal(self) -> None:
         self.assertIsNone(derive_owner(self.store.load()), "без завершённого хода владельца нет")
         self.record_completed_owner_turn()
+        self.assertEqual(derive_owner(self.store.load()), (TEST_RELAY_OWNER, OWNER_TURN))
+
+    def test_the_owner_of_an_interrupted_turn_is_still_an_owner(self) -> None:
+        """One question, one answer - the alarm asks the dispatcher's predicate.
+
+        derive_owner accepted only a turn_completed event. The dispatcher
+        accepts three proofs that a turn ended, an interrupt among them -
+        and an interrupted turn is exactly the case that leaves nobody to
+        raise the successor. So a run whose owner was interrupted had no
+        owner for the alarm: after a reboot the sweep skipped the project
+        quietly and the retry waited for a human, which is the one thing the
+        alarm exists to prevent.
+        """
+
+        self.record_interrupted_owner_turn()
         self.assertEqual(derive_owner(self.store.load()), (TEST_RELAY_OWNER, OWNER_TURN))
 
     def test_a_sweep_arms_a_wake_where_a_retry_waits(self) -> None:
