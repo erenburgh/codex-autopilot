@@ -44,7 +44,8 @@ class VerifierIssueContractTests(unittest.TestCase):
                 self.assertIn(field, message)
 
     def test_the_prompt_names_the_shape_before_the_first_attempt(self) -> None:
-        """Назвать поля в отказе мало: ход проверяющего уже закончился."""
+        """Naming the fields in the refusal is not enough: the verifier's
+        turn has already ended."""
 
         source = (
             Path(__file__).resolve().parents[1] / "src/codex_autopilot/ai_studio.py"
@@ -56,7 +57,7 @@ class VerifierIssueContractTests(unittest.TestCase):
         self.assertIn("Лишнее поле отвергает весь вердикт целиком", source)
 
     def test_the_named_shape_actually_parses(self) -> None:
-        """Обещанное в промпте обязано проходить парсер."""
+        """What the prompt promises must pass the parser."""
 
         from codex_autopilot.verification import VerificationIssue
 

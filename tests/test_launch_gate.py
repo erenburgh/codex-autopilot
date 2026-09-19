@@ -25,7 +25,7 @@ class Runtime:
 
 
 class Cfg:
-    """Минимальная подстановка: каталог состояния и требование размещения."""
+    """Minimal stand-in: the state directory and the placement rule."""
 
     def __init__(
         self, state_dir: Path, required_thread_placement: str = "in_project"
@@ -121,7 +121,7 @@ class ChecklistTests(unittest.TestCase):
         self.assertFalse(self.check(checks, "thread_bound").passed)
 
     def test_a_thread_that_never_acknowledged_the_send_is_not_confirmed(self) -> None:
-        """Именно так выглядела зависшая задача: ветка есть, работа не идёт."""
+        """This is how the stuck task looked: a thread exists, no work runs."""
 
         checks = launch_checklist(
             self.cfg,
@@ -158,7 +158,7 @@ class ChecklistTests(unittest.TestCase):
         self.assertFalse(launch_confirmed(checks))
 
     def test_an_unassessable_check_is_not_a_pass(self) -> None:
-        """"Проверить не удалось" и "проверено" - разные вещи."""
+        """"Could not be checked" and "checked" are different things."""
 
         checks = launch_checklist(
             self.cfg,
@@ -185,7 +185,8 @@ class ChecklistTests(unittest.TestCase):
 
 
 class DesktopVisibilityTests(ChecklistTests):
-    """R5: успех App Server не означает, что ветка видна в сайдбаре."""
+    """R5: an App Server success does not mean the sidebar shows the
+    thread."""
 
     def visibility(self, checks) -> LaunchCheck:
         return self.check(checks, "visible_in_desktop")
@@ -205,14 +206,15 @@ class DesktopVisibilityTests(ChecklistTests):
         self.assertTrue(self.visibility(self.checks_now()).passed)
 
     def test_a_thread_outside_the_project_is_reported(self) -> None:
-        """Ровно этот случай: задача идёт, а в проекте её нет."""
+        """Exactly this case: the task runs, but it is not in the project."""
 
         check = self.visibility(self.checks_now("OUTSIDE"))
         self.assertFalse(check.passed)
         self.assertIn("outside the project", check.detail)
 
     def test_a_vanished_thread_is_reported(self) -> None:
-        """Ветка без хода на сервере не сохраняется - замерено на пробах."""
+        """A thread with no turn on the server is not persisted -
+        measured on probes."""
 
         check = self.visibility(self.checks_now("ABSENT"))
         self.assertFalse(check.passed)
@@ -222,13 +224,13 @@ class DesktopVisibilityTests(ChecklistTests):
         self.assertIsNone(self.visibility(self.checks_now("")).passed)
 
     def test_an_unmeasured_placement_never_becomes_a_ticket(self) -> None:
-        """Между созданием ветки и записью размещения есть окно: отказ по
-        нему снова плодил бы ложные тикеты."""
+        """There is a window between creating the thread and recording
+        the placement: failing on it would breed false tickets again."""
 
         self.assertIs(launch_verdict(self.checks_now("")), LaunchVerdict.IN_PROGRESS)
 
     def test_a_config_that_allows_outside_does_not_get_a_ticket(self) -> None:
-        """Тикет на то, что конфиг разрешил, - ложный тикет."""
+        """A ticket for what the config allowed is a false ticket."""
 
         relaxed = Cfg(self.cfg.state_dir, required_thread_placement="visible")
         checks = launch_checklist(
@@ -245,12 +247,13 @@ class DesktopVisibilityTests(ChecklistTests):
         self.assertIsNot(launch_verdict(checks), LaunchVerdict.FAILED)
 
     def test_a_measured_mismatch_does_become_a_ticket(self) -> None:
-        """M11-R5: измеренное расхождение - результат, а не окно.
+        """M11-R5: a measured mismatch is a result, not a window.
 
-        Прежде OUTSIDE и ABSENT не меняли вердикта вовсе: он держался в
-        IN_PROGRESS, тикет не заводился, и задача, созданная мимо
-        проекта, просто стояла. Окно защищено отдельно - неизмеренностью,
-        а не слепотой к измерению.
+        Before this, OUTSIDE and ABSENT did not change the verdict at
+        all: it held at IN_PROGRESS, no ticket was opened, and a task
+        created outside the project simply sat there. The window is
+        guarded separately - by being unmeasured, not by blindness to
+        the measurement.
         """
 
         self.assertIs(launch_verdict(self.checks_now("OUTSIDE")), LaunchVerdict.FAILED)
@@ -258,10 +261,11 @@ class DesktopVisibilityTests(ChecklistTests):
 
 
 class VerdictTests(ChecklistTests):
-    """Три состояния: подтверждён, ещё идёт, отказал."""
+    """Three states: confirmed, still in progress, failed."""
 
     def test_a_launch_still_creating_its_thread_is_in_progress(self) -> None:
-        """Создание ветки занимает десятки секунд - это не отказ."""
+        """Creating a thread takes tens of seconds - that is not a
+        failure."""
 
         checks = launch_checklist(
             self.cfg,
@@ -310,7 +314,8 @@ class VerdictTests(ChecklistTests):
 
 
 class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
-    """Задача не поднялась - сессия не чинит сама, а заводит тикет."""
+    """The task did not come up - the session does not repair it
+    itself, it opens a ticket."""
 
     def setUp(self) -> None:
         from unittest import mock
@@ -356,8 +361,8 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
         )
 
     def test_a_launch_in_progress_does_not_open_a_ticket(self) -> None:
-        """Ложный тикет на идущий запуск - тот самый шум, из-за которого
-        проверки перестают читать."""
+        """A false ticket on a launch in progress is exactly the noise
+        that makes checks stop being read."""
 
         from codex_autopilot.pipeline_engineer import PipelineIncidentStore
         from unittest import mock
@@ -413,14 +418,15 @@ class UnconfirmedLaunchGoesToDevOpsTests(unittest.TestCase):
         self.assertIn("Do not repair the launch in this turn", self.report()["reason"])
 
     def test_the_ticket_does_not_claim_an_owner_that_does_not_exist(self) -> None:
-        """Ссылка на несуществующего девопса - ложь, а не маршрутизация."""
+        """Pointing at a devops who does not exist is a lie, not
+        routing."""
 
         reason = self.report()["reason"]
         self.assertIn("No automatic executor was raised", reason)
         self.assertNotIn("владелец — DevOps", reason)
 
     def test_the_same_failure_twice_is_one_signature(self) -> None:
-        """Нормализованная подпись: повтор опознаётся как повтор."""
+        """A normalized signature: a repeat is recognized as a repeat."""
 
         from codex_autopilot.pipeline_engineer import PipelineIncidentStore
 
@@ -435,12 +441,14 @@ if __name__ == "__main__":
 
 
 class PlacementGateTests(unittest.TestCase):
-    """Размещение спрашивается у сервера: из его списка рисуется сайдбар.
+    """Placement is asked of the server: the sidebar is drawn from its
+    list.
 
-    Прежняя версия читала ключи .codex-global-state.json и называла OUTSIDE
-    три ветки, которые человек видел в сайдбаре глазами. Прибор ни разу не
-    был сверен с заведомо видимой веткой, и на его показаниях был построен
-    ложный вывод, что видимую задачу через App Server завести нельзя.
+    The previous version read keys out of .codex-global-state.json and
+    called OUTSIDE three threads that a human saw in the sidebar with his
+    own eyes. The instrument was never checked against a thread known to
+    be visible, and on its readings a false conclusion was built: that a
+    visible task cannot be created through the App Server.
     """
 
     def client(self, thread=None, error=None):
@@ -480,7 +488,8 @@ class PlacementGateTests(unittest.TestCase):
         self.assertEqual(placement, OUTSIDE)
 
     def test_a_vanished_thread_is_absent(self) -> None:
-        """Ветка без единого хода на сервере не сохраняется."""
+        """A thread without a single turn is not persisted by the
+        server."""
 
         from codex_autopilot.launch_gate import ABSENT, desktop_placement
 
@@ -502,7 +511,8 @@ class PlacementGateTests(unittest.TestCase):
         )
         self.assertEqual(placement, INSIDE)
 class OrphanedReservationTests(unittest.TestCase):
-    """Резервация есть, ветки нет, диспетчер умер — прогон обязан ожить."""
+    """A reservation exists, no thread, the dispatcher died - the run
+    must come back to life."""
 
     def test_a_reservation_without_a_live_dispatcher_is_revived(self) -> None:
         from unittest import mock
@@ -546,7 +556,8 @@ class OrphanedReservationTests(unittest.TestCase):
 
 
 class CausalPredecessorTests(unittest.TestCase):
-    """Завершённость хода доказывается журналом, а не статусом сессии."""
+    """A turn is proved completed by the journal, not by the session
+    status."""
 
     def state(self, status: str):
         from unittest import mock
@@ -561,7 +572,7 @@ class CausalPredecessorTests(unittest.TestCase):
         return state
 
     def test_a_plan_change_requester_is_a_valid_predecessor(self) -> None:
-        """Задача, запросившая смену плана, свой ход завершила."""
+        """A task that requested a plan change has completed its turn."""
 
         from codex_autopilot.control import _turn_is_completed
 
@@ -593,14 +604,14 @@ class CausalPredecessorTests(unittest.TestCase):
 
 
 class AFastLaunchIsStillALaunchTests(ChecklistTests):
-    """Быстрый воркер не должен объявляться незапущенным.
+    """A fast worker must not be declared unlaunched.
 
-    Живой прогон получил тикет `launch_not_confirmed: dispatcher_alive,
-    send_acknowledged` при том, что в том же чек-листе стояло «ход
-    завершён». Оба пункта были ложны ИМЕННО потому, что работа успела
-    закончиться: статус сессии ушёл дальше ACTIVE, а диспетчер штатно
-    вышел. Чем быстрее веха, тем вероятнее ложный отказ - и каждый такой
-    отказ требовал оператора.
+    A live run got the ticket `launch_not_confirmed: dispatcher_alive,
+    send_acknowledged` while the same checklist said "turn completed".
+    Both items were false EXACTLY because the work had managed to finish:
+    the session status had moved past ACTIVE, and the dispatcher exited
+    normally. The faster the milestone, the more likely the false
+    failure - and every such failure needed an operator.
     """
 
     FINISHED = LAUNCHED + ((6, "turn_completed"),)
@@ -629,7 +640,7 @@ class AFastLaunchIsStillALaunchTests(ChecklistTests):
         self.assertTrue(self.check(checks, "send_acknowledged").passed)
 
     def test_a_dead_dispatcher_without_a_finished_turn_still_fails(self) -> None:
-        """Ослабление не должно прятать настоящую смерть диспетчера."""
+        """The relaxation must not hide a real dispatcher death."""
 
         checks = launch_checklist(
             self.cfg,

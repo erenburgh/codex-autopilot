@@ -298,23 +298,27 @@ class SemanticStatusTests(unittest.TestCase):
             self.assertIn(expected, rendered)
 
     def test_worker_slots_follow_the_budget_on_an_unlimited_account(self) -> None:
-        """B6: карточка считала предел как min(plan, state) и на безлимите показывала «3/2»."""
+        """B6: the card took the limit as min(plan, state).
+
+        On an account with no limit that showed "3/2".
+        """
 
         self.state.rate_limits = {"credits": {"hasCredits": True}}
         snapshot = project_status_snapshot(self.cfg, self.state, self.plan)
         self.assertEqual(snapshot["worker_slots"]["total"], len(self.plan.tasks))
 
     def test_the_runtime_line_does_not_invent_a_model_it_never_recorded(self) -> None:
-        """R26: отображается только измеренное.
+        """R26: only what was measured is displayed.
 
-        ``selected_model_display`` и ``selected_reasoning`` не пишет ни
-        один продакшен-путь: все шесть полей выбора модели в RunState
-        мертвы, записей вне ``run_state.py`` - ноль. Статус подставлял
-        вместо них "Host default", и это было утверждение без замера -
-        оно печаталось одинаково на любом прогоне, в том числе на том,
-        где хост шёл на другой модели и другом уровне рассуждения.
-        Настоящий выбор модели живёт на задаче, в маршрутизации
-        AIStudioRuntime, и в прогонное состояние не попадает вовсе.
+        No production path writes ``selected_model_display`` or
+        ``selected_reasoning``: all six model-selection fields in
+        RunState are dead, and there are zero writes outside
+        ``run_state.py``. The status put "Host default" in their place,
+        and that was a claim without a measurement - it printed the same
+        on every run, including one where the host was on a different
+        model and a different reasoning level. The real model choice
+        lives on the task, in AIStudioRuntime routing, and never reaches
+        the run state at all.
         """
 
         self.assertIsNone(self.state.selected_model_display)
@@ -338,7 +342,7 @@ class SemanticStatusTests(unittest.TestCase):
 
 
 class WaitingReasonTests(unittest.TestCase):
-    """Раздел 33: статус обязан называть причину ожидания."""
+    """Section 33: the status has to name the reason for waiting."""
 
     def test_a_task_blocked_by_a_held_resource_says_who_holds_it(self) -> None:
         from pathlib import Path
@@ -462,11 +466,12 @@ if __name__ == "__main__":
 
 
 class ShortStatusTests(SemanticStatusTests):
-    """Ответ хука приходит одним куском: длина - часть контракта.
+    """The hook's answer arrives in one piece: length is part of it.
 
-    Полный отчёт - двадцать пять строк с путями и метаданными. В
-    терминале это уместно, в переписке читается как стена и прячет
-    единственное, что нужно знать: что идёт и что мешает.
+    The full report is twenty-five lines with paths and metadata. In a
+    terminal that is fine; in a conversation it reads as a wall and
+    hides the only thing worth knowing: what is running and what is in
+    the way.
     """
 
     def test_the_short_form_names_progress_work_and_blocker(self) -> None:
@@ -478,14 +483,15 @@ class ShortStatusTests(SemanticStatusTests):
         self.assertTrue(callable(render_short_status))
 
     def test_the_card_never_calls_the_dispatcher_dead_during_verification(self) -> None:
-        """Карточка не имеет права противоречить сама себе.
+        """The card has no right to contradict itself.
 
-        Диспетчер - короткоживущий процесс: он поднимается на переход
-        между задачами и гаснет, пока воркер или верификатор ведёт ход.
-        Условие смотрело только на «идёт» и забывало про «проверяется»,
-        поэтому посреди идущей приёмки карточка писала «Диспетчер не
-        работает» - строкой ниже собственного «Проверяется: M1».
-        Единственное место, куда пользователь смотрит за правдой, врало.
+        The dispatcher is a short-lived process: it comes up for the
+        transition between tasks and goes out while a worker or a
+        verifier is taking its turn. The condition looked only at
+        "running" and forgot about "verifying", so in the middle of an
+        acceptance under way the card wrote "dispatcher is not running"
+        - one line below its own "Verifying: M1". The one place the user
+        looks at for the truth was lying.
         """
 
         from dataclasses import replace
@@ -504,7 +510,7 @@ class ShortStatusTests(SemanticStatusTests):
         self.assertNotIn("dispatcher is not running", card)
 
     def test_the_card_says_plainly_when_nobody_is_working(self) -> None:
-        """Тишина должна быть названа тишиной, а не скрыта."""
+        """Silence has to be called silence, not hidden."""
 
         from dataclasses import replace
 
@@ -520,7 +526,7 @@ class ShortStatusTests(SemanticStatusTests):
         self.assertIn("Nobody is working", card)
 
     def test_the_short_form_points_at_the_full_one(self) -> None:
-        """Сокращение без выхода к полному - потеря, а не краткость."""
+        """A short form with no way out to the full one is loss."""
 
         source = (
             Path(__file__).resolve().parents[1] / "src/codex_autopilot/status.py"

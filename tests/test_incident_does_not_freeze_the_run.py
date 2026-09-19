@@ -57,7 +57,7 @@ class IncidentScopeTests(unittest.TestCase):
     def test_the_run_keeps_going_while_one_task_waits_for_its_incident(self) -> None:
         first = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")
         busy = {item.task_id for item in first}
-        self.assertEqual(len(busy), 2, "два слота заняты")
+        self.assertEqual(len(busy), 2, "two slots are taken")
         stuck = sorted(busy)[0]
         token = next(item.reservation_token for item in first if item.task_id == stuck)
 
@@ -108,15 +108,15 @@ class IncidentScopeTests(unittest.TestCase):
             self.cfg, relay_owner_thread_id="owner-3", now_epoch=2_000_000_000
         )
         started = {item.task_id for item in later if item.to_dict()["kind"] != "pipeline_engineer"}
-        self.assertNotIn(stuck, started, "задача инцидента обязана ждать")
+        self.assertNotIn(stuck, started, "the incident task must wait")
         self.assertTrue(
             started,
-            "независимая задача обязана пойти, пока тикет висит незакрытым",
+            "an independent task must go while the ticket is still open",
         )
 
 
     def test_the_pause_covers_exactly_the_tasks_the_incident_names(self) -> None:
-        """Ни больше, ни меньше: список задач даёт сам тикет."""
+        """No more, no less: the ticket itself gives the task list."""
 
         from codex_autopilot.lifecycle_reservations import tasks_paused_by_incidents
         from codex_autopilot.pipeline_engineer import (
@@ -172,10 +172,11 @@ if __name__ == "__main__":
 
 
 class RecoverySlotStatusTests(unittest.TestCase):
-    """Статус обязан читаться и когда слот восстановления занят.
+    """Status must read even when the recovery slot is taken.
 
-    Писатель клал в слот два ключа, читатель просил третий - и `status`
-    падал KeyError ровно тогда, когда человек приходил разбираться.
+    The writer put two keys into the slot, the reader asked for a third -
+    and `status` failed with KeyError exactly when a human came to look
+    into it.
     """
 
     def test_a_busy_recovery_slot_still_renders(self) -> None:

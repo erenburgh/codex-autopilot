@@ -24,7 +24,7 @@ from codex_autopilot.task_state import ACTIVE_TASK_STATES, TaskState
 
 class ReconcileIdempotenceTests(unittest.TestCase):
     def test_retry_wait_is_not_an_active_state(self) -> None:
-        """Условие отказа опиралось именно на это."""
+        """The refusal condition rested on exactly this."""
 
         self.assertNotIn(TaskState.RETRY_WAIT, ACTIVE_TASK_STATES)
 
@@ -98,11 +98,11 @@ class ReconcileIdempotenceTests(unittest.TestCase):
         )
 
     def test_a_pending_session_on_an_already_reconciled_task_is_accepted(self) -> None:
-        """Задача уже в целевом состоянии - сверке нечего делать.
+        """The task is already in the target state - nothing to reconcile.
 
-        Прежде здесь поднимался конфликт, и возобновить прогон было
-        нечем: единственный путь запуска отказывался сделать уже
-        сделанное.
+        This used to raise a conflict, and there was nothing left to
+        resume the run with: the only launch path refused to do what had
+        already been done.
         """
 
         from codex_autopilot.resilience import reconcile_running_work
@@ -117,14 +117,14 @@ class ReconcileIdempotenceTests(unittest.TestCase):
         self.assertIsNotNone(result)
 
     def test_a_stuck_engineer_session_never_demands_an_active_task(self) -> None:
-        """Инженер чинит инцидент, а не выполняет задачу.
+        """The engineer repairs an incident, it does not run a task.
 
-        Его сессия намеренно создаётся без перевода задачи в активное
-        состояние. Прежде сверка требовала активности от любой
-        pending-сессии, и зависший ход инженера делал возобновление
-        невозможным: 16.09.2026 M8 был READY, а каждый `Resume`
-        отвечал «pending session for M8 is not in an active task
-        state». Прогон нельзя было запустить ничем.
+        The engineer's session is created deliberately without moving the
+        task into an active state. Reconciliation used to demand activity
+        from any pending session, and a hung engineer turn made resuming
+        impossible: on 16.09.2026 M8 was READY, and every `Resume`
+        answered "pending session for M8 is not in an active task
+        state". Nothing could start the run.
         """
 
         from codex_autopilot.resilience import reconcile_running_work
@@ -141,7 +141,7 @@ class ReconcileIdempotenceTests(unittest.TestCase):
         self.assertEqual(state.worker_sessions[0]["status"], "RETRY_WAIT")
 
     def test_a_genuinely_wrong_state_is_still_a_conflict(self) -> None:
-        """Идемпотентность не должна превратиться в всепрощение."""
+        """Idempotence must not turn into forgiving everything."""
 
         from codex_autopilot.resilience import (
             PlanChangeConflictError,

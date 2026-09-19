@@ -47,7 +47,7 @@ def _undefined(path: Path) -> list[str]:
 
 
 def _bound_at_module_level(tree: ast.Module) -> set[str]:
-    """Всё, что модуль связывает сам: импорты, def, class, присваивания."""
+    """Everything the module binds itself: imports, def, class, assignments."""
 
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -121,18 +121,20 @@ class UndefinedNameTests(unittest.TestCase):
         self.assertEqual(problems, [], "имена без определения в модуле: " + "; ".join(problems))
 
     def test_every_annotation_names_only_what_the_module_knows(self) -> None:
-        """Аннотации - слепое пятно symtable, и оно уже стоило правки.
+        """Annotations are a blind spot of symtable; it already cost a fix.
 
-        При ``from __future__ import annotations`` аннотация становится
-        строкой и не исполняется: symtable не видит в ней обращения, и
-        имя, которое забыли импортировать, живёт в модуле незамеченным.
-        Замерено 17.09: ``LaunchCheck`` в аннотации новой функции control.py
-        не был импортирован - набор зелёный; тем же способом в модулях
-        стояли ``Config`` и ``RunState`` без импорта, пять мест.
+        With ``from __future__ import annotations`` an annotation becomes
+        a string and is not executed: symtable sees no reference in it,
+        and a name someone forgot to import lives on in the module
+        unnoticed. Measured on 17 Sep: ``LaunchCheck`` in the annotation
+        of a new function in control.py was not imported - the suite was
+        green; the same way ``Config`` and ``RunState`` stood in modules
+        without an import, five places.
 
-        NameError здесь не случится, пока аннотации не исполняют. Но
-        первый же ``typing.get_type_hints`` - или снятие future-импорта -
-        уронит модуль там, где тест обещал, что имён без определения нет.
+        No NameError happens here while annotations are not executed. But
+        the first ``typing.get_type_hints`` - or dropping the future
+        import - breaks the module exactly where the test promised there
+        are no undefined names.
         """
 
         problems: list[str] = []

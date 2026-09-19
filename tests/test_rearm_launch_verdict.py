@@ -104,20 +104,24 @@ class RearmedLaunchVerdictTests(unittest.TestCase):
         return _settle_rearmed_launch(self.store, self.incident_id, checks, at="t3")
 
     def test_a_launch_still_in_progress_keeps_the_engineers_resolution(self) -> None:
-        """Ровно тот случай, в котором гейт отменял каждую починку."""
+        """Exactly the case where the gate cancelled every repair."""
 
         outcome = self.settle(IN_PROGRESS)
         self.assertEqual(outcome["launch_verdict"], LaunchVerdict.IN_PROGRESS.value)
         self.assertEqual(outcome["status"], "LAUNCH_IN_PROGRESS")
-        self.assertFalse(outcome["launch_confirmed"], "идущий запуск не выдаётся за подтверждённый")
+        self.assertFalse(
+            outcome["launch_confirmed"],
+            "a launch in progress is not passed off as confirmed",
+        )
         self.assertEqual(
             self.phase(),
             IncidentPhase.RESOLVED,
-            "решение инженера аннулировано за то, что ветка не появилась за 15 секунд",
+            "the engineer's decision was voided because the thread did"
+            " not appear within 15 seconds",
         )
 
     def test_a_failed_launch_still_reopens_the_incident(self) -> None:
-        """Смягчение не должно превратиться во всепрощение."""
+        """A softening must not turn into forgiving everything."""
 
         outcome = self.settle(FAILED)
         self.assertEqual(outcome["launch_verdict"], LaunchVerdict.FAILED.value)
@@ -133,7 +137,7 @@ class RearmedLaunchVerdictTests(unittest.TestCase):
         self.assertEqual(self.phase(), IncidentPhase.RESOLVED)
 
     def test_the_pending_steps_are_named_not_hidden(self) -> None:
-        """R26: что именно ещё не наблюдаемо - названо, а не проглочено."""
+        """R26: what is not observable yet is named, not swallowed."""
 
         outcome = self.settle(IN_PROGRESS)
         pending = outcome["pending_checks"]

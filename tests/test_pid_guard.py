@@ -54,7 +54,7 @@ class CorruptPidTests(unittest.TestCase):
                     _pid_alive(value)
 
     def test_a_boolean_is_refused(self) -> None:
-        """True прошёл бы как pid 1: init жив всегда."""
+        """True would pass as pid 1: init is always alive."""
 
         with self.assertRaises(DesktopLifecycleError):
             _pid_alive(True)
@@ -70,17 +70,18 @@ if __name__ == "__main__":
 
 
 class OrphanedThreadIsLoadedBeforeTheTurnTests(unittest.TestCase):
-    """Ход стартует только на ветке, загруженной ЭТИМ соединением.
+    """A turn starts only on a thread loaded by THIS connection.
 
-    Условие прежде спрашивало "своё ли у нас соединение". Это другой
-    вопрос: реле всегда передаёт готовый клиент, и ветка, созданная
-    прежним - умершим - диспетчером, оставалась незагруженной.
+    The condition used to ask "is the connection ours". That is a
+    different question: the relay always hands over a ready client, and a
+    thread created by the previous - dead - dispatcher stayed unloaded.
 
-    Замерено на живом прогоне M11: ветка реплэннера 01a0970c читается и
-    резюмируется, а turn/start отвечает "thread not found". Воспроизведено
-    на одноразовой ветке: создать, закрыть процесс-создатель, стартовать
-    ход из нового соединения - тот же отказ. Ветка без единого хода вдобавок
-    не заводит rollout, и thread/resume отвечает "no rollout found".
+    Measured on the live run M11: the replanner thread 01a0970c is read
+    and summarised, while turn/start answers "thread not found".
+    Reproduced on a throwaway thread: create it, kill the creating
+    process, start a turn from a new connection - the same refusal. On top
+    of that a thread without a single turn starts no rollout, and
+    thread/resume answers "no rollout found".
     """
 
     def test_the_condition_asks_whether_the_thread_is_loaded(self) -> None:
@@ -97,7 +98,7 @@ class OrphanedThreadIsLoadedBeforeTheTurnTests(unittest.TestCase):
         self.assertNotIn("if connected_client is None:\n                resumed", source)
 
     def test_a_thread_this_connection_created_is_not_resumed(self) -> None:
-        """Лишний resume на своей ветке - лишний вызов, а не починка."""
+        """An extra resume on our own thread is an extra call, not a fix."""
 
         from codex_autopilot.appserver import AppServerClient
 
@@ -106,12 +107,12 @@ class OrphanedThreadIsLoadedBeforeTheTurnTests(unittest.TestCase):
         self.assertIn("thread-a", client.subscribed_thread_ids)
 
     def test_the_client_forgets_a_thread_it_unsubscribed(self) -> None:
-        """После unsubscribe ветка снова требует загрузки - исполнением.
+        """After unsubscribe the thread needs loading again - by execution.
 
-        Прежде искалась подстрока ``subscribed_thread_ids.discard`` в
-        исходнике метода. Здесь настоящий ``unsubscribe_thread`` зовётся
-        на клиенте с заглушенным транспортом, и ветка обязана исчезнуть
-        из подписок.
+        This used to look for the substring ``subscribed_thread_ids.discard``
+        in the source of the method. Here the real ``unsubscribe_thread`` is
+        called on a client with a stubbed transport, and the thread has to
+        disappear from the subscriptions.
         """
 
         from codex_autopilot.appserver import AppServerClient

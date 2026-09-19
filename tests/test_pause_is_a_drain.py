@@ -23,11 +23,11 @@ from codex_autopilot.appserver import AppServerClient, PauseRequested
 
 
 class _TransportExhausted(Exception):
-    """Признак того, что ожидание продолжилось, а не оборвалось паузой."""
+    """Marks that the wait went on instead of being cut off by a pause."""
 
 
 class _RecordingClient(AppServerClient):
-    """Настоящий клиент без процесса: транспорт и запросы записываются."""
+    """A real client with no process: transport and requests are recorded."""
 
     def __init__(self, log_path: Path) -> None:
         super().__init__("codex", log_path)
@@ -70,9 +70,11 @@ class PauseIsADrainTests(unittest.TestCase):
         self.assertNotIn(
             "turn/interrupt",
             client.requests,
-            "пауза объявлена дренажной и не имеет права прерывать идущий ход",
+            "the pause is a drain and must not interrupt the running turn",
         )
-        self.assertEqual(client.requests, [], "пауза не шлёт серверу ничего")
+        self.assertEqual(
+            client.requests, [], "the pause sends nothing to the server"
+        )
 
     def test_without_a_pause_the_wait_keeps_going(self) -> None:
         client = self._client()
@@ -83,7 +85,9 @@ class PauseIsADrainTests(unittest.TestCase):
                 timeout=30,
                 pause_requested=lambda: False,
             )
-        self.assertGreater(client.polls, 1, "ожидание обязано продолжаться без паузы")
+        self.assertGreater(
+            client.polls, 1, "the wait must keep going without a pause"
+        )
         self.assertNotIn("turn/interrupt", client.requests)
 
 

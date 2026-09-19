@@ -101,7 +101,7 @@ class LostThreadTests(unittest.TestCase):
         )
 
     def test_a_transport_error_is_not_treated_as_missing(self) -> None:
-        """Иначе временный сбой связи раздвоил бы работу живой ветки."""
+        """A passing link failure would double a live thread's work."""
 
         client = self.client_raising(OSError("connection reset"))
         self.assertFalse(
@@ -128,7 +128,7 @@ class LostThreadTests(unittest.TestCase):
         self.assertIsNone(session["app_server_create_exited_at"])
 
     def test_reset_keeps_the_reservation_and_its_causal_owner(self) -> None:
-        """Пересоздаётся ветка, а не задача: владелец и слот те же."""
+        """The thread is recreated, not the task: same owner, same slot."""
 
         before = self.session()
         _reset_to_create_requested(self.cfg, self.token)
@@ -155,17 +155,17 @@ if __name__ == "__main__":
 
 
 class OwnerTurnBarrierTests(unittest.TestCase):
-    """Ворота открывает ход, который действительно кончился.
+    """The gate is opened by a turn that has really ended.
 
-    Пока синхронный Stop-хук работает, второй App Server наблюдает тот же
-    ход как "interrupted". Замерено в рабочем прогоне 0.7: ход
-    01a097aa-4832 виден сначала interrupted, затем completed. Принимать
-    одно лишь interrupted значило бы открывать ворота ровно в тот момент,
-    от которого барьер и защищает.
+    While the synchronous Stop hook is running, a second App Server sees
+    the same turn as "interrupted". Measured on the 0.7 working run: turn
+    01a097aa-4832 is seen first as interrupted, then as completed. To
+    accept interrupted on its own would be to open the gate at exactly
+    the moment the barrier protects against.
 
-    Исключение ровно одно и оно доказуемо: прерывание, записанное в наш
-    собственный журнал для этого же хода. Такой ход не станет completed
-    никогда, и ждать его - значит ждать вечно.
+    There is exactly one exception and it is provable: an interrupt
+    written into our own journal for that same turn. Such a turn will
+    never become completed, and waiting for it means waiting forever.
     """
 
     @staticmethod
@@ -189,7 +189,7 @@ class OwnerTurnBarrierTests(unittest.TestCase):
         )
 
     def test_a_bare_interrupt_keeps_the_gate_shut(self) -> None:
-        """Тот самый миг перед completed, ради которого барьер и написан."""
+        """The very moment before completed that the barrier is written for."""
 
         from codex_autopilot.lifecycle_dispatch import causal_gate_open
 
@@ -203,7 +203,7 @@ class OwnerTurnBarrierTests(unittest.TestCase):
         )
 
     def test_a_journalled_interrupt_opens_the_gate(self) -> None:
-        """Прерывание записано нами - ход кончился и completed не станет."""
+        """We wrote the interrupt - the turn ended, completed never comes."""
 
         from codex_autopilot.lifecycle_dispatch import causal_gate_open
 
@@ -235,10 +235,11 @@ class OwnerTurnBarrierTests(unittest.TestCase):
         )
 
     def test_a_journalled_interrupt_also_counts_as_a_finished_turn(self) -> None:
-        """Тот же вывод на втором барьере - при выборе предшественника.
+        """The same conclusion at the second barrier - picking a predecessor.
 
-        Оба гейта ждали `turn_completed`. Прерванный ход его не пишет, и
-        преемника было некому поднять ни здесь, ни в диспетчере.
+        Both gates waited for `turn_completed`. An interrupted turn does
+        not write it, and there was nobody to raise the successor, not
+        here and not in the dispatcher.
         """
 
         from codex_autopilot.control import _turn_is_completed
@@ -268,7 +269,7 @@ class OwnerTurnBarrierTests(unittest.TestCase):
         self.assertIn('return {"continue": True, "systemMessage": report}', body)
 
     def test_the_worker_result_check_stays_strict(self) -> None:
-        """Успех самой работы по-прежнему только "completed"."""
+        """Success of the work itself is still only "completed"."""
 
         source = (
             Path(__file__).resolve().parents[1]

@@ -28,12 +28,13 @@ class ReleaseTests(unittest.TestCase):
             self.assertNotIn(token, text, token)
 
     def test_the_notification_exemption_automates_nothing(self):
-        """Исключение именное: банер разрешён, управление приложением - нет.
+        """The exemption is by name: the banner yes, driving an app no.
 
-        Прежняя архитектура водила Codex через Accessibility и подставные
-        клики, и запрет на AppleScript стоит именно против неё. Уведомление
-        ничего не автоматизирует, поэтому оно из-под запрета выведено - но
-        ровно в этих границах, и границы проверяются здесь, а не на слово.
+        The old architecture drove Codex through Accessibility and staged
+        clicks, and the AppleScript ban stands against exactly that. The
+        notification automates nothing, so it is taken out from under the
+        ban - but only within these bounds, and the bounds are checked
+        here, not taken on trust.
         """
 
         text = self.NOTIFICATION_EXEMPT.read_text(encoding="utf-8")
@@ -51,14 +52,14 @@ class ReleaseTests(unittest.TestCase):
                 self.assertNotIn(forbidden, text)
 
     def test_the_notifier_is_off_unless_the_user_turns_it_on(self):
-        """Побочный эффект на машине человека молча не включают."""
+        """A side effect on a person's machine is never turned on silently."""
 
         from codex_autopilot.config import RuntimeConfig
 
         self.assertFalse(RuntimeConfig().desktop_notifications)
 
     def test_the_notifier_passes_text_as_arguments(self):
-        """Склейка строк в AppleScript - инъекция, вопрос только когда."""
+        """Gluing strings into AppleScript is injection, only when is open."""
 
         text = self.NOTIFICATION_EXEMPT.read_text(encoding="utf-8")
         self.assertIn("item 1 of argv", text)
@@ -99,12 +100,12 @@ class ReleaseTests(unittest.TestCase):
 
 
     def test_internal_docs_do_not_ship_to_users(self):
-        """Целевая спецификация следующей версии - рабочий план, не документация.
+        """The target spec of the next version is a working plan, not docs.
 
-        Она живёт в репозитории ради воркеров прогона и содержит
-        коммерческое позиционирование. В пользовательский архив ей
-        нельзя, и защита релиза это уже поймала однажды - по имени
-        частного проекта внутри.
+        It lives in the repository for the sake of the run's workers and
+        contains commercial positioning. It must not go into the user
+        archive, and the release guard caught this once already - by the
+        name of a private project inside it.
         """
 
         import importlib.util
@@ -131,12 +132,14 @@ class ReleaseTests(unittest.TestCase):
                 ["git", "ls-files", internal],
                 cwd=ROOT, capture_output=True, text=True,
             ).stdout.strip()
-            self.assertEqual(tracked, "", f"{internal} снова отслеживается git")
+            self.assertEqual(tracked, "", f"{internal} is under git again")
             ignored = subprocess.run(
                 ["git", "check-ignore", internal],
                 cwd=ROOT, capture_output=True, text=True,
             ).returncode
-            self.assertEqual(ignored, 0, f"{internal} не защищён .gitignore")
+            self.assertEqual(
+                ignored, 0, f"{internal} is not protected by .gitignore"
+            )
         # Records of developing the skill itself: audits of our runs and
         # reports on repairing milestones. A thousand lines of internal history
         # the user downloaded together with the skill.
@@ -169,17 +172,20 @@ class ReleaseTests(unittest.TestCase):
                     cwd=ROOT, capture_output=True, text=True,
                 ).returncode
                 self.assertNotEqual(
-                    tracked, 0, f"{secret} не должен отслеживаться публичным репозиторием"
+                    tracked,
+                    0,
+                    f"{secret} must not be tracked by the public repository",
                 )
 
     def test_the_user_archive_ships_what_the_installer_and_the_engineer_need(self):
-        """Установщик кладёт рантайм деревом формы репозитория.
+        """The installer lays the runtime out as a repository-shaped tree.
 
-        Набор тестов доказывает поведение только на таком дереве: ему
-        нужны plugins, scripts, pyproject и документация, а не один src.
-        Пользовательский архив без них не устанавливался и не годился
-        инженеру для доказательства починки. Каталог patches - состояние
-        машины, где чинили, - в исходный архив не едет.
+        The test suite proves behaviour only on such a tree: it needs
+        plugins, scripts, pyproject and the documentation, not src alone.
+        A user archive without them did not install and was no use to the
+        engineer for proving a repair. The patches directory - the state
+        of the machine where the repair happened - does not travel in the
+        source archive.
         """
 
         import importlib.util
@@ -197,11 +203,12 @@ class ReleaseTests(unittest.TestCase):
             self.assertRegex(installer, r"for item in [^\n]*\b" + item.replace(".", r"\.") + r"\b")
 
     def test_run_state_never_reaches_the_source_archive(self):
-        """Состояние прогона принадлежит тому, кто здесь работал.
+        """Run state belongs to whoever worked here.
 
-        Защита релиза ловила его по абсолютным путям внутри plan.json -
-        то есть по следствию. Ловить надо причину: каталог состояния
-        исключается из исходного архива целиком.
+        The release guard used to catch it by absolute paths inside
+        plan.json - that is, by the symptom. The cause is what has to be
+        caught: the state directory is excluded from the source archive
+        whole.
         """
 
         import importlib.util
@@ -219,10 +226,11 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("ROADMAP.md", module.GENERATED_FILES)
 
     def test_the_repository_ships_no_generated_roadmap(self):
-        """ROADMAP.md автопайлот генерирует в каждом проекте сам.
+        """The autopilot generates ROADMAP.md in every project itself.
 
-        В репозитории скилла это остаток прогона, которым его строили:
-        одиннадцать вех чужой работы со всеми DoD.
+        In the skill's own repository it is a leftover of the run that
+        built it: eleven milestones of someone else's work with all their
+        DoD.
         """
 
         import subprocess
@@ -231,7 +239,7 @@ class ReleaseTests(unittest.TestCase):
             ["git", "ls-files", "ROADMAP.md"],
             cwd=ROOT, capture_output=True, text=True,
         ).stdout.strip()
-        self.assertEqual(tracked, "", "ROADMAP.md снова под git")
+        self.assertEqual(tracked, "", "ROADMAP.md is under git again")
 
     def test_no_separate_model_quota_or_silent_fallback_claim(self):
         text = "\n".join(path.read_text(encoding="utf-8", errors="replace") for base in (ROOT / "src", ROOT / "plugins", ROOT / "docs", ROOT / "README.md") for path in ([base] if base.is_file() else base.rglob("*")) if path.is_file())

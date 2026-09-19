@@ -25,7 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _pep440(version: str) -> str:
-    """X.Y.Z-beta -> X.Y.Zb0: та же версия в записи, которую требует pyproject."""
+    """X.Y.Z-beta -> X.Y.Zb0: the same version in the spelling pyproject
+    requires."""
 
     return version.replace("-beta", "b0")
 
@@ -57,11 +58,13 @@ class VersionSingleSourceTests(unittest.TestCase):
         self.assertNotIn('VERSION = "0.8', text)
 
     def test_no_test_hardcodes_a_version_literal(self) -> None:
-        """Тест с прибитой версией ломается при подъёме - и ломался дважды.
+        """A test with a hard-coded version breaks on a bump - and broke
+        twice.
 
-        test_install и test_mcp сверяли версию строкой и оба упали на
-        переходе к 0.9.0. Это тот же дефект, что и в продакшене, только
-        дороже: он срабатывает ровно в момент релиза.
+        test_install and test_mcp compared the version as a string and
+        both failed on the move to 0.9.0. It is the same defect as in
+        production, only more expensive: it fires exactly at the moment
+        of release.
         """
 
         # The CURRENT version is what is searched for: old numbers in
@@ -83,7 +86,8 @@ class VersionSingleSourceTests(unittest.TestCase):
         )
 
     def test_no_module_hardcodes_a_version_literal(self) -> None:
-        """Единственное место, где версия записана буквой, - сам пакет."""
+        """The only place where the version is written out in letters is
+        the package itself."""
 
         pattern = re.compile(r'"\d+\.\d+\.\d+(-beta|b\d+)?"')
         offenders = []

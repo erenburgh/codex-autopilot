@@ -87,10 +87,10 @@ def _trees() -> dict[str, ast.Module]:
 
 
 def _public_definitions(trees: dict[str, ast.Module]) -> dict[str, tuple[str, str]]:
-    """Публичные определения продакшена: имя для отчёта -> (модуль, имя для счёта).
+    """Public production definitions: reported name -> (module, short name).
 
-    Функция верхнего уровня отчитывается как ``модуль.имя``, метод - как
-    ``Класс.имя``: по нему его и ищут глазами.
+    A top-level function is reported as ``module.name``, a method as
+    ``Class.name``: that is the form a reader looks for by eye.
     """
 
     found: dict[str, tuple[str, str]] = {}
@@ -109,10 +109,11 @@ def _public_definitions(trees: dict[str, ast.Module]) -> dict[str, tuple[str, st
 
 
 def _references(trees: dict[str, ast.Module]) -> tuple[set[str], set[str]]:
-    """Имена и атрибуты, употреблённые где-либо в продакшене.
+    """Names and attributes used anywhere in production.
 
-    Строковые константы попадают в оба набора: доступ через getattr и
-    диспетчеризация по имени - тоже вызов, и молчать о них нельзя.
+    String constants go into both sets: access through getattr and
+    dispatch by name are calls too, and staying silent about them is not
+    allowed.
     """
 
     names: set[str] = set()
@@ -134,7 +135,7 @@ def _references(trees: dict[str, ast.Module]) -> tuple[set[str], set[str]]:
 
 
 def _orphans() -> dict[str, str]:
-    """Публичные определения без единой ссылки в продакшене."""
+    """Public definitions without a single reference in production."""
 
     trees = _trees()
     names, attributes = _references(trees)
@@ -159,15 +160,16 @@ class NoUnreachableContractTests(unittest.TestCase):
         self.assertEqual(
             surprises,
             [],
-            "написано и никем не вызывается — либо подключить, либо снять, "
-            "либо внести в ALLOWED с причиной: " + ", ".join(surprises),
+            "written and called by nobody - either wire it up, remove it, "
+            "or add it to ALLOWED with a reason: " + ", ".join(surprises),
         )
 
     def test_the_debt_list_only_shrinks(self) -> None:
-        """Запись, переставшая быть мёртвой, обязана уйти из долга.
+        """An entry that stopped being dead has to leave the debt list.
 
-        Иначе список превращается в свалку, которая once-and-for-all
-        глушит проверку: ровно так подстрочный счёт и прятал пятерых.
+        Otherwise the list turns into a dump that silences the check once
+        and for all: that is exactly how the substring count hid five of
+        them.
         """
 
         orphans = _orphans()
@@ -175,18 +177,18 @@ class NoUnreachableContractTests(unittest.TestCase):
         self.assertEqual(
             healed,
             [],
-            "больше не мёртвое — убрать из KNOWN_DEBT: " + ", ".join(healed),
+            "no longer dead - remove it from KNOWN_DEBT: " + ", ".join(healed),
         )
 
     def test_every_exemption_carries_a_reason(self) -> None:
-        """Список исключений - контракт. Пустая причина его обнуляет."""
+        """The exemption list is a contract. An empty reason voids it."""
 
         for name, reason in {**ALLOWED, **KNOWN_DEBT}.items():
             with self.subTest(name=name):
                 self.assertTrue(reason.strip(), name)
 
     def test_the_exemption_list_has_no_stale_entries(self) -> None:
-        """Исключение для того, чего уже нет, прячет следующую дыру."""
+        """An exemption for something that is gone hides the next hole."""
 
         defined = {short for _module, short in _public_definitions(_trees()).values()}
         for name in ALLOWED:
@@ -194,12 +196,12 @@ class NoUnreachableContractTests(unittest.TestCase):
                 self.assertIn(name, defined)
 
     def test_the_counter_sees_methods_and_does_not_count_substrings(self) -> None:
-        """Обе прежние болезни сразу, на живом дереве.
+        """Both former diseases at once, on the live tree.
 
-        ``replanner_thread_title`` содержит в себе ``planner_thread_title``;
-        подстрочный счёт объявлял второй живым. И методы классов должны
-        попадать в разбор - иначе шесть методов координатора снова
-        проживут незамеченными.
+        ``replanner_thread_title`` contains ``planner_thread_title``; the
+        substring count declared the second one alive. And class methods
+        have to reach the parse - otherwise six coordinator methods live
+        on unnoticed again.
         """
 
         trees = _trees()
@@ -209,7 +211,7 @@ class NoUnreachableContractTests(unittest.TestCase):
         self.assertIn(
             "ResourceLockCoordinator.transaction",
             definitions,
-            "методы классов не попали в разбор",
+            "class methods did not reach the parse",
         )
 
 
@@ -218,11 +220,12 @@ if __name__ == "__main__":
 
 
 class EveryCommandHasAConsumerTests(unittest.TestCase):
-    """Шестой пункт аудита 0.8.0: команды CLI, которые никому не нужны.
+    """Item six of the 0.8.0 audit: CLI commands nobody needs.
 
-    Команда без названного потребителя - это либо инструмент, о котором
-    никто не знает, либо остаток снятого пути. Оба случая одинаково
-    вредны: первый не используют, второй продолжают поддерживать.
+    A command without a named consumer is either a tool nobody knows
+    about or the remains of a path that was removed. Both cases are
+    equally harmful: the first one is not used, the second one is still
+    maintained.
     """
 
     ROOT = Path(__file__).resolve().parents[1]
@@ -264,6 +267,6 @@ class EveryCommandHasAConsumerTests(unittest.TestCase):
         self.assertEqual(
             orphans,
             [],
-            "команда есть, а потребителя нет — описать там, где её вызывают, "
-            "или снять: " + ", ".join(orphans),
+            "the command exists and the consumer does not - describe it "
+            "where it is called, or remove it: " + ", ".join(orphans),
         )

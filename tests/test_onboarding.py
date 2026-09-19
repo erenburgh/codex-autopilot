@@ -19,7 +19,7 @@ SKILLS = sorted((ROOT / "plugins").rglob("SKILL.md"))
 
 
 def onboarding_block(text: str) -> str:
-    """Блок онбординга одной строкой: переносы внутри абзацев не считаются."""
+    """Onboarding as one line: breaks inside paragraphs do not count."""
 
     start = text.index("## Onboarding")
     end = text.index("\n## ", start + 5)
@@ -54,7 +54,7 @@ class OnboardingTests(unittest.TestCase):
                 self.assertIn(needle, block, f"{path.name}: в онбординге нет «{needle}»")
 
     def test_every_phrase_the_onboarding_promises_is_one_the_hook_knows(self) -> None:
-        """Обещанное слово, которого хук не знает, - сломанная дверь."""
+        """A promised word the hook does not know is a broken door."""
 
         known = {
             control._normalized_prompt(item)

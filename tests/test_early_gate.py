@@ -66,7 +66,7 @@ class EarlyMilestoneLinkTests(unittest.TestCase):
         self.assertIn("created_by", text)
 
     def test_the_milestone_is_never_substituted_for_the_worker(self) -> None:
-        """Связь, которую воркер не назвал, была бы выдуманной."""
+        """A link the worker did not name would be an invented one."""
 
         with self.assertRaises(MemoryValidationError):
             self.server._record_evidence(self.evidence())
@@ -103,7 +103,7 @@ class EarlyMilestoneLinkTests(unittest.TestCase):
         self.assertTrue(result)
 
     def test_without_an_active_milestone_the_link_stays_optional(self) -> None:
-        """Вне вехи свидетельство привязывать не к чему."""
+        """Outside a milestone there is nothing to link the evidence to."""
 
         self.set_active([])
         self.assertTrue(self.server._record_evidence(self.evidence()))
@@ -114,13 +114,14 @@ if __name__ == "__main__":
 
 
 class FailureNamesTheFailingTaskTests(unittest.TestCase):
-    """Тикет называет задачу, на которой произошёл отказ.
+    """The ticket names the task the failure happened on.
 
-    Цикл диспетчера переходит от задачи к задаче, переприсваивая свой
-    token. Обработчик отказа снаружи держал исходный, и отказ на поздней
-    задаче приписывался первой. Замерено: тикет incident-78e67b38680498f1
-    по отказу M2 назвал affected_task_ids=['M1'], а лестница "on failure"
-    напечатала шаги уже проверенной M1.
+    The dispatcher loop moves from task to task, reassigning its own
+    token. The failure handler outside the loop held the initial one, and
+    a failure on a later task was attributed to the first one. Measured:
+    ticket incident-78e67b38680498f1 for the M2 failure named
+    affected_task_ids=['M1'], and the "on failure" ladder printed the
+    steps of M1, which had already been verified.
     """
 
     def test_the_cursor_follows_the_loop(self) -> None:
@@ -149,14 +150,14 @@ class FailureNamesTheFailingTaskTests(unittest.TestCase):
 
 
 class RefusalNamesWhatIsAcceptedTests(unittest.TestCase):
-    """R31: отказа должно хватать, чтобы исправиться без чтения исходников.
+    """R31: the refusal must be enough to recover without reading sources.
 
-    Замерено на живом прогоне M1: девять отказов подряд. Воркер перебирал
-    имена видов свидетельств - filesystem_verification, command_output,
-    test_result, verification, - каждый раз получая только "unsupported
-    evidence kind", затем угадывал параметр пути, затем ушёл читать
-    исходники плагина командой rg. Шесть минут против двадцати трёх секунд
-    у v0.7, где памяти не было вовсе.
+    Measured on a live M1 run: nine refusals in a row. The worker went
+    through evidence kind names - filesystem_verification, command_output,
+    test_result, verification - each time getting only "unsupported
+    evidence kind", then guessed at the path parameter, then went off to
+    read the plugin sources with rg. Six minutes against twenty-three
+    seconds in v0.7, where there was no memory at all.
     """
 
     def setUp(self) -> None:
@@ -207,13 +208,13 @@ class RefusalNamesWhatIsAcceptedTests(unittest.TestCase):
 
 
 class PlacementDeadlineTests(unittest.TestCase):
-    """M11-R5: неизмеренное размещение не остаётся неопределённым вечно.
+    """M11-R5: an unmeasured placement does not stay undecided forever.
 
-    OUTSIDE и ABSENT уже были решающими и уходили в один нормализованный
-    тикет. А вот случай "nobody is left to measure it" - диспетчер умер между
-    созданием ветки и гейтом размещения - держал вердикт в IN_PROGRESS
-    навсегда: тикет не заводился, задача не двигалась, и снаружи это
-    выглядело как будто запуск всё ещё идёт.
+    OUTSIDE and ABSENT were already decisive and went into one normalized
+    ticket. But the case "nobody is left to measure it" - the dispatcher
+    died between creating the thread and the placement gate - held the
+    verdict in IN_PROGRESS forever: no ticket was opened, the task did not
+    move, and from outside it looked as if the launch was still running.
     """
 
     def _check(self, session, *, now):
@@ -222,7 +223,7 @@ class PlacementDeadlineTests(unittest.TestCase):
         return _desktop_visibility("T1", "thread-1", session, now=lambda: now)
 
     def test_a_fresh_unmeasured_placement_stays_undecided(self) -> None:
-        """Окно между созданием и записью размещения - не отказ."""
+        """The window between creation and recording is not a failure."""
 
         check = self._check(
             {"create_acknowledged_at": "2026-09-13T12:00:00+00:00"},
@@ -247,13 +248,13 @@ class PlacementDeadlineTests(unittest.TestCase):
         self.assertIn("nobody is left to measure it", check.detail)
 
     def test_without_a_creation_stamp_nothing_is_declared_overdue(self) -> None:
-        """Нет отметки - нет срока. Подменять одно другим здесь нельзя."""
+        """No stamp, no deadline. One cannot stand in for the other."""
 
         check = self._check({}, now=datetime(2030, 1, 1, tzinfo=timezone.utc).timestamp())
         self.assertIsNone(check.passed)
 
     def test_a_failed_placement_reaches_the_normalized_ticket(self) -> None:
-        """Отрицательный пункт обязан ронять вердикт, иначе тикета нет."""
+        """A failed check must drop the verdict, or there is no ticket."""
 
         from codex_autopilot.launch_gate import (
             LaunchCheck,
@@ -269,12 +270,12 @@ class PlacementDeadlineTests(unittest.TestCase):
 
 
 class HandoffObservationTests(unittest.TestCase):
-    """M11-R5, вторая половина: редактируемость наблюдается, а не гейтится.
+    """M11-R5, second half: editability is observed, not gated on.
 
-    Замерено на живом сервере: canAcceptDirectInput приходит null и в
-    thread/read незагруженной ветки, и во всех тридцати строках
-    thread/list. На таком поле гейт не строится - оно не различает
-    "нельзя править" и "никто не держит".
+    Measured on a live server: canAcceptDirectInput comes back null both
+    in thread/read of a thread that is not loaded and in all thirty rows
+    of thread/list. A gate cannot be built on such a field - it does not
+    tell "cannot be edited" from "nobody is holding it".
     """
 
     def test_the_observation_carries_what_the_server_said(self) -> None:

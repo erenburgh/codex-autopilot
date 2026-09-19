@@ -67,7 +67,7 @@ class NoSilentFallbackTests(unittest.TestCase):
         self.assertIn("no fallback", text.lower())
 
     def test_a_renamed_model_is_a_refusal(self) -> None:
-        """Реестр ждёт точный идентификатор; чужой — отказ, не подмена."""
+        """The registry wants the exact id; a foreign one is a refusal."""
 
         wrong = [{"id": MODEL_IDS["sol"], "model": "gpt-somethingelse"}]
         with self.assertRaises(ModelRoutingError):
@@ -85,13 +85,13 @@ if __name__ == "__main__":
 
 
 class OnlyOneAstraAtATimeTests(unittest.TestCase):
-    """Две Астры одновременно недопустимы при любой стратегии.
+    """Two Astras at once are not allowed under any strategy.
 
-    Они делят одну поверхность Computer Use, перехватывают управление
-    друг у друга и жгут лимиты. При стратегии `auto` Астра выбирается
-    ровно для execution_mode="computer_use", и слот держал это сам. При
-    `astra-only` на Астру уходят ВСЕ задачи, включая code, - и слот их
-    не удерживал.
+    They share one Computer Use surface, take control away from each
+    other and burn through limits. Under the `auto` strategy Astra is
+    chosen exactly for execution_mode="computer_use", and the slot held
+    that on its own. Under `astra-only` ALL tasks go to Astra, code
+    included - and the slot did not hold those.
     """
 
     def capabilities(self, strategy: str, mode: str) -> tuple[str, ...]:
@@ -112,7 +112,7 @@ class OnlyOneAstraAtATimeTests(unittest.TestCase):
         self.assertNotIn("computer_use", self.capabilities("auto", "code"))
 
     def test_a_code_task_on_astra_only_takes_the_surface(self) -> None:
-        """Именно эта дыра и оставляла две Астры рядом."""
+        """This is the hole that left two Astras side by side."""
 
         self.assertIn("computer_use", self.capabilities("astra-only", "code"))
 
@@ -121,11 +121,11 @@ class OnlyOneAstraAtATimeTests(unittest.TestCase):
 
 
 class TheWorkerCeilingIsNotTheTemplateDefaultTests(unittest.TestCase):
-    """Потолок воркеров - решение пользователя, а не число из шаблона.
+    """The worker ceiling is the user's decision, not a template number.
 
-    Двойка стояла умолчанием и попадала в шаблон плана, откуда
-    планировщик копировал её не глядя: граф из 24 задач с четырьмя
-    независимыми ветками исполнялся по две.
+    Two was the default and it got into the plan template, from where
+    the planner copied it without looking: a graph of 24 tasks with four
+    independent branches ran two at a time.
     """
 
     def test_the_default_allows_real_parallelism(self) -> None:
@@ -134,7 +134,7 @@ class TheWorkerCeilingIsNotTheTemplateDefaultTests(unittest.TestCase):
         self.assertGreaterEqual(DEFAULT_MAX_PARALLEL_WORKERS, 10)
 
     def test_the_skill_template_matches_the_default(self) -> None:
-        """Иначе планировщик снова впишет старое число."""
+        """Otherwise the planner writes the old number back in."""
 
         import json
         from pathlib import Path
@@ -152,7 +152,7 @@ class TheWorkerCeilingIsNotTheTemplateDefaultTests(unittest.TestCase):
                 )
 
     def test_the_computer_use_slot_stays_at_one(self) -> None:
-        """Поднятый потолок не должен пускать вторую Астру."""
+        """A raised ceiling must not let a second Astra through."""
 
         from codex_autopilot.plan import DEFAULT_COMPUTER_USE_SLOTS
 

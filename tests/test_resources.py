@@ -201,16 +201,18 @@ class ResourceMatchingTests(unittest.TestCase):
 
 
 class _ResourceHarness:
-    """Тот же путь, которым резервирует продакшен.
+    """The same path production reserves through.
 
-    lifecycle_reservations держит ``coordinator.transaction()`` и внутри
-    зовёт функции модуля: замок берёт транзакция, решение принимают
-    acquire_resources_in_state и release_resources_in_state. Своей логики
-    здесь нет - конфликты, журнал и слоты считают они же.
+    lifecycle_reservations holds ``coordinator.transaction()`` and calls
+    the module functions inside it: the transaction takes the lock, and
+    acquire_resources_in_state and release_resources_in_state make the
+    decision. There is no logic of its own here - conflicts, the journal
+    and the slots are counted by those functions.
 
-    Раньше на их месте стояли одноимённые методы координатора. Они
-    повторяли этот путь и не вызывались из продакшена ни разу, поэтому
-    сняты; тесты переставлены на функции, которые работают на самом деле.
+    Coordinator methods with the same names used to stand in their
+    place. They repeated this path and were never called from
+    production, so they are gone; the tests are moved onto the functions
+    that actually run.
     """
 
     def __init__(self, state_store: StateStore, project_root: Path) -> None:

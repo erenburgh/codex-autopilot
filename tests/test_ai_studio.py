@@ -129,20 +129,22 @@ def context_payload(prompt: str) -> dict:
 
 
 class RunbookIsExecutableTests(unittest.TestCase):
-    """Команду из рантбука дежурный инженер исполняет дословно.
+    """The on-call engineer runs a runbook command literally.
 
-    ``--failure-code`` стал обязательным у ``relay-fail``, а строка в
-    рантбуке осталась прежней. Инженер выполнил бы её как написано и
-    получил "error: the following arguments are required: --failure-code",
-    exit 2. Состояние при этом цело - argparse падает до любой работы, -
-    но ход сгорает целиком, а на прогоне инженер поднимается первым.
+    ``--failure-code`` became required for ``relay-fail``, and the line
+    in the runbook stayed as it was. The engineer would run it as
+    written and get "error: the following arguments are required:
+    --failure-code", exit 2. The state stays whole - argparse fails
+    before any work - but the whole turn burns, and on a run the
+    engineer is the first to come up.
 
-    Проверяется класс, а не случай: у каждой команды, названной в
-    рантбуке, каждый обязательный флаг обязан стоять в его тексте. Тогда
-    следующий обязательный флаг не разойдётся с промптом молча.
+    The class is checked, not the case: for every command named in the
+    runbook, every required flag must stand in its text. Then the next
+    required flag will not drift from the prompt in silence.
 
-    Промпт здесь строится, а не читается из исходника: сверять текст
-    файла значит проверять, как написано, вместо того что выполнится.
+    The prompt is built here, not read from the source: comparing the
+    text of the file would check how it is written instead of what will
+    run.
     """
 
     def prompt(self) -> str:
@@ -187,7 +189,7 @@ class RunbookIsExecutableTests(unittest.TestCase):
         # over the whole text would stay green even with the flag removed from
         # the command - the same substring blindness that hid dead code.
         invocations = re.findall(r"`scripts/codex-autopilot (\S+)([^`]*)`", text)
-        self.assertTrue(invocations, "рантбук не называет ни одной команды")
+        self.assertTrue(invocations, "the runbook names no command at all")
 
         subparsers = {}
         for action in parser()._actions:
@@ -372,13 +374,14 @@ class AIStudioRuntimeTests(unittest.TestCase):
         self.assertIn("PASS is allowed only after this independent check", prompt)
 
     def test_a_recorded_human_decision_reaches_the_worker(self):
-        """Решение, которого никто не читает, ничем не лучше реплики.
+        """A decision nobody reads is no better than a chat message.
 
-        Причина разблокировки ложилась в `user_unblocks` и никуда больше:
-        поле встречалось только там, где записывается. Владелец за сутки
-        сняла шесть остановок, каждый раз объясняя почему, и ни одно
-        объяснение не дошло до воркера, который продолжал задачу. R32
-        требует записанного решения - но решение обязано ещё и дойти.
+        The unblock reason went into `user_unblocks` and nowhere else:
+        the field occurred only where it is written. In one day the
+        owner lifted six stops, explaining why each time, and not one
+        explanation reached the worker that went on with the task. R32
+        requires a recorded decision - but the decision must also
+        arrive.
         """
 
         import json as _json
@@ -407,14 +410,15 @@ class AIStudioRuntimeTests(unittest.TestCase):
         self.assertNotIn("Чужое решение", _json.dumps(payload, ensure_ascii=False))
 
     def test_no_phase_ever_asks_the_worker_to_hash_the_request(self):
-        """Ни одна фаза не требует считать хэш самому.
+        """No phase asks the worker to compute the hash itself.
 
-        Требование заверить длину и sha256 своими силами останавливало
-        задачи наглухо: в изоляте постобработки Codex нет ни `crypto`, ни
-        `TextEncoder`, а контракт разрешает ровно один вызов Project
-        Memory и повторить его нельзя. На живом прогоне так встали M4,
-        M11 и доработка M11 - последняя уже после того, как я закрыла
-        первое из четырёх мест. Класс держится тестом, а не памятью.
+        Requiring it to certify the length and sha256 on its own stopped
+        tasks dead: the Codex post-processing isolate has neither
+        `crypto` nor `TextEncoder`, and the contract allows exactly one
+        Project Memory call, which cannot be repeated. On a live run M4,
+        M11 and the M11 follow-up stood still that way - the last one
+        already after I had closed the first of the four places. The
+        class is held by a test, not by memory.
         """
 
         raw_task = task("code-a", "integrator", verifier_role="reviewer")

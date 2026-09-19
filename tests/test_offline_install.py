@@ -28,17 +28,17 @@ class OfflineSourceInstallTests(unittest.TestCase):
         self.assertEqual(
             build_system.get("requires"),
             [],
-            "внешнее требование сборки закрывает установку без сети",
+            "an external build requirement blocks installing without a network",
         )
         backend_path = build_system.get("backend-path")
-        self.assertTrue(backend_path, "backend обязан лежать в дереве")
+        self.assertTrue(backend_path, "the backend must live in the tree")
         module = build_system["build-backend"].split(":", 1)[0].split(".", 1)[0]
         located = [
             ROOT / entry / f"{module}.py" for entry in backend_path
         ] + [ROOT / entry / module / "__init__.py" for entry in backend_path]
         self.assertTrue(
             any(path.is_file() for path in located),
-            f"backend {module!r} не найден ни в одном из {backend_path}",
+            f"backend {module!r} was not found in any of {backend_path}",
         )
 
     def test_a_fresh_offline_install_of_the_sources_succeeds(self) -> None:
@@ -63,11 +63,11 @@ class OfflineSourceInstallTests(unittest.TestCase):
             self.assertEqual(
                 completed.returncode,
                 0,
-                f"установка без сети упала:\n{completed.stdout}\n{completed.stderr}",
+                f"the offline install failed:\n{completed.stdout}\n{completed.stderr}",
             )
             self.assertTrue((target / "codex_autopilot" / "cli.py").is_file())
             dist_info = list(target.glob("codex_autopilot-*.dist-info"))
-            self.assertEqual(len(dist_info), 1, "ровно один dist-info ожидается")
+            self.assertEqual(len(dist_info), 1, "exactly one dist-info is expected")
             entry_points = (dist_info[0] / "entry_points.txt").read_text(encoding="utf-8")
             self.assertIn("codex-autopilot = codex_autopilot.cli:main", entry_points)
 

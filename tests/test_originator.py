@@ -36,8 +36,8 @@ class OriginatorTests(unittest.TestCase):
         self.assertEqual(DESKTOP_ORIGINATOR, "Codex Desktop")
 
     def test_a_client_created_without_arguments_uses_it(self) -> None:
-        """Раньше по умолчанию originator не ставился вовсе, и ветка
-        оказывалась чужой."""
+        """The originator used to be left unset by default, and the
+        thread came out foreign."""
 
         env = self.env_of_spawned_client()
         self.assertEqual(
@@ -51,7 +51,7 @@ class OriginatorTests(unittest.TestCase):
         )
 
     def test_no_call_site_uses_the_old_private_originator(self) -> None:
-        """codex_work_desktop не совпадал с originator приложения."""
+        """codex_work_desktop did not match the application's originator."""
 
         from pathlib import Path
 

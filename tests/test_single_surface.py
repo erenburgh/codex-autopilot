@@ -44,7 +44,8 @@ class StaleConfigTests(unittest.TestCase):
 
 class WrittenConfigTests(unittest.TestCase):
     def test_bootstrap_writes_the_surface_explicitly(self) -> None:
-        """Поле пишется явно, чтобы конфиг читался без знания умолчаний."""
+        """The field is written out, so the config reads without knowing
+        the defaults."""
 
         from pathlib import Path
 
@@ -70,11 +71,12 @@ if __name__ == "__main__":
 
 
 class FacadeBoundaryTests(unittest.TestCase):
-    """Фасад реэкспортирует ровно то, что через него импортируют.
+    """The facade re-exports exactly what is imported through it.
 
-    Механическое разрезание монолита протащило в фасад 91 имя, из них 47
-    приватных. Приватный помощник публичным API не был никогда, а его
-    присутствие делало границу модуля неотличимой от его содержимого.
+    Cutting up the monolith mechanically dragged 91 names into the
+    facade, 47 of them private. A private helper was never a public API,
+    and its presence made the boundary of the module indistinguishable
+    from its contents.
     """
 
     def test_the_facade_exports_no_private_names(self) -> None:

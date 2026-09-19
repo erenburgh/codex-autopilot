@@ -23,7 +23,7 @@ def _flat(path: Path) -> str:
 
 
 class RemovedConceptsTests(unittest.TestCase):
-    """Снятое из кода не должно оставаться обещанным в тексте."""
+    """What was taken out of the code must not stay promised in the text."""
 
     REMOVED = (
         "headless_app_server",
@@ -40,7 +40,8 @@ class RemovedConceptsTests(unittest.TestCase):
                     self.assertNotIn(concept, text)
 
     def test_no_user_doc_pins_a_stale_install_directory(self) -> None:
-        """Каталог установки называется версией, а версия меняется."""
+        """The install directory is named after the version, and the
+        version changes."""
 
         for path in USER_DOCS:
             with self.subTest(doc=path.name):
@@ -69,7 +70,7 @@ class ControlsAreRealTests(unittest.TestCase):
                 self.assertIn(_normalized_prompt(phrase), known)
 
     def test_the_readme_explains_the_blocked_label(self) -> None:
-        """Иначе штатный ответ хука читается как поломка."""
+        """Otherwise the normal answer of the hook reads as a breakdown."""
 
         self.assertIn("the hook replied instead of the model", _flat(README))
 
@@ -81,7 +82,7 @@ class MeasuredClaimsTests(unittest.TestCase):
         self.assertIn("Not verified live and openly outstanding", text)
 
     def test_the_readme_states_the_sidebar_limit_with_its_cause(self) -> None:
-        """Ограничение без причины через месяц объявят дефектом."""
+        """A limit with no reason given will be called a defect in a month."""
 
         text = _flat(README)
         self.assertIn("separate process", text)
@@ -99,12 +100,13 @@ if __name__ == "__main__":
 
 
 class OneSentenceInstallTests(unittest.TestCase):
-    """Установка — одна фраза пользователя, а не список шагов.
+    """Installation is one phrase from the user, not a list of steps.
 
-    Человек открывает свой проект в Codex и говорит: скачай и установи
-    этот скилл, потом начни работу по проекту. Всё остальное делает
-    Codex. Каталог не выбирается: цель — тот проект, в котором человек
-    находится, потому что каждая созданная задача размещается в нём.
+    A person opens their own project in Codex and says: download and
+    install this skill, then start work on the project. Codex does
+    everything else. The directory is not chosen: the target is the
+    project the person is in, because every task created is placed in
+    it.
     """
 
     def test_both_docs_lead_with_the_sentence(self) -> None:
@@ -121,7 +123,8 @@ class OneSentenceInstallTests(unittest.TestCase):
                 self.assertIn("the project you are in", text)
 
     def test_the_trust_steps_are_named_as_codex_own(self) -> None:
-        """Их нельзя убрать, но можно не прятать и спросить заранее."""
+        """They cannot be removed, but they can be named and asked about
+        in advance."""
 
         text = _flat(README) + " " + _flat(GETTING_STARTED)
         self.assertIn("Autopilot never answers them for you", text)

@@ -83,10 +83,10 @@ class PromptBudgetTests(unittest.TestCase):
         )
 
     def test_ceiling_is_derived_from_the_observed_context_window(self) -> None:
-        """Число обосновано, а не выдумано.
+        """The number is derived, not invented.
 
-        Прежние 64 000 не имели ни комментария, ни строки в docs/, и
-        составляли примерно шестую часть того, что модель принимает.
+        The old 64 000 had neither a comment nor a line in docs/, and
+        came to about a sixth of what the model accepts.
         """
 
         self.assertEqual(
@@ -99,10 +99,10 @@ class PromptBudgetTests(unittest.TestCase):
         )
 
     def test_a_large_request_no_longer_decides_whether_a_task_can_run(self) -> None:
-        """Главная проверка: подробное ТЗ больше не запрещает прогон.
+        """The main check: a detailed spec no longer forbids a run.
 
-        Пятьдесят тысяч символов запроса раньше означали, что ни одна
-        задача плана не соберётся никогда.
+        Fifty thousand characters of request used to mean that not one
+        task of the plan would ever be assembled.
         """
 
         self.assertGreater(len(HUGE_REQUEST), 49_000)
@@ -126,12 +126,12 @@ class PromptBudgetTests(unittest.TestCase):
         self.assertIn('"operation":"current"', prompt)
 
     def test_the_named_server_is_the_one_preflight_verifies(self) -> None:
-        """Разойдись имена - воркер звал бы сервер, которого нет."""
+        """If the names drift, the worker calls a server that is not there."""
 
         self.assertEqual(MEMORY_SERVER_NAME, PREFLIGHT_MEMORY_SERVER_NAME)
 
     def test_an_oversized_prompt_names_the_block_that_is_too_big(self) -> None:
-        """Прежнее сообщение отправляло сужать задачу в 395 символов."""
+        """The old message sent you to narrow a task down to 395 characters."""
 
         runtime = self.runtime("Сделай ровно то, о чём сказано.")
         oversized = "x" * (MAX_PROMPT_CHARS + 1_000)
@@ -177,7 +177,7 @@ class CurrentAddressingTests(unittest.TestCase):
         self.store.save(state)
 
     def test_the_schema_lets_a_worker_name_its_task(self) -> None:
-        """Без объявления в схеме аргумент невозможно передать."""
+        """Without a schema declaration the argument cannot be passed."""
 
         current = next(
             choice
@@ -194,13 +194,14 @@ class CurrentAddressingTests(unittest.TestCase):
         self.assertEqual(answer["user_request"], HUGE_REQUEST)
 
     def test_the_preflight_probe_asks_before_any_task_is_active(self) -> None:
-        """Путь, который я сломала, требуя task_id там, где выбора нет.
+        """The path broken by requiring task_id where there is no choice.
 
-        Проба доверия в preflight зовёт `current` без task_id в момент,
-        когда активных задач ноль: своей задачи у пробы нет вовсе. Отказ
-        в этой точке валил запуск на ровном месте - "task_id is required
-        on a task graph: this run has 0 active task(s)". Прежние тесты
-        покрывали одну активную задачу и две, но не ноль.
+        The trust probe in preflight calls `current` without a task_id
+        at a moment when zero tasks are active: the probe has no task
+        of its own at all. A refusal at that point killed the start for
+        no reason - "task_id is required on a task graph: this run has
+        0 active task(s)". The old tests covered one active task and
+        two, but not zero.
         """
 
         answer = self.server._current({})
@@ -213,10 +214,10 @@ class CurrentAddressingTests(unittest.TestCase):
         self.assertEqual(self.server._current({})["milestone"]["id"], "A")
 
     def test_two_active_tasks_refuse_to_be_guessed(self) -> None:
-        """Прежде здесь молча возвращалась веха с индексом ноль.
+        """This used to return the milestone at index zero, in silence.
 
-        В живом прогоне из 23 задач это означало, что каждый воркер,
-        кроме первого, получал чужую задачу под видом своей.
+        In a live run of 23 tasks that meant every worker but the first
+        got someone else's task passed off as its own.
         """
 
         self.set_states({"A": TaskState.RUNNING.value, "B": TaskState.RUNNING.value})
@@ -238,15 +239,16 @@ if __name__ == "__main__":
 
 
 class ApprovalIsNeverRequestedByAWorkerTests(unittest.TestCase):
-    """Воркер обязан знать, что диалог разрешения убивает прогон.
+    """The worker must know that a permission dialog kills the run.
 
-    Трижды за один день прогон умирал с одной сигнатурой: «Worker
-    requested approval. The dispatcher never answers approvals». В
-    последний раз M1 честно выполняла пункт ТЗ о зелёном CI и пошла в
-    `gh run list` — диалог повис в задаче, на которую никто не смотрел.
-    В промпте воркера при этом не было ни слова approval, разрешение,
-    сеть или network: код DANGEROUS_PERMISSION упоминался один раз, в
-    списке кодов, без объяснения, когда его применять.
+    Three times in one day the run died with the same signature:
+    "Worker requested approval. The dispatcher never answers
+    approvals". The last time, M1 was honestly carrying out the spec
+    item about a green CI and reached for `gh run list` - the dialog
+    hung in a task nobody was watching. The worker prompt meanwhile
+    held not one word of approval, permission, network or network
+    access: the code DANGEROUS_PERMISSION was mentioned once, in the
+    list of codes, with no explanation of when to use it.
     """
 
     def setUp(self) -> None:
@@ -297,21 +299,22 @@ class ApprovalIsNeverRequestedByAWorkerTests(unittest.TestCase):
         self.assertIn("network access", text)
 
     def test_the_instruction_names_the_consequence_not_only_the_rule(self) -> None:
-        """Запрет без причины воркер переспорит: у него есть пункт ТЗ."""
+        """A ban without a reason loses: the worker has a spec item."""
 
         text = self.prompt("ru")
         self.assertIn("убивает весь прогон", text)
 
 
 class EveryCeilingHasOneSourceTests(unittest.TestCase):
-    """Один потолок промпта, а не копия числа в каждом модуле.
+    """One prompt ceiling, not a copy of the number in every module.
 
-    Живой прогон умер посреди работы: исполнитель ревизии запросил смену
-    плана, промпт планировщика вложил весь граф из 23 задач и упёрся во
-    ВТОРОЙ экземпляр константы 64_000 - утреннюю правку получил только
-    ai_studio. А вместо внятного отказа релей получил NameError, потому
-    что само исключение в этом модуле не импортировалось с самого
-    разреза lifecycle.py.
+    A live run died in the middle of the work: the revision executor
+    asked for a plan change, the planner prompt embedded the whole
+    graph of 23 tasks and hit the SECOND copy of the constant 64_000 -
+    only ai_studio had received the morning edit. And instead of a
+    clear refusal the relay got a NameError, because the exception
+    itself had not been imported in that module ever since lifecycle.py
+    was split.
     """
 
     SOURCES = ("ai_studio.py", "lifecycle_prompts.py", "lifecycle_reservations.py",
@@ -330,7 +333,7 @@ class EveryCeilingHasOneSourceTests(unittest.TestCase):
             )
             self.assertIsNone(
                 re.search(r"\b64[_ ]?000\b", code),
-                f"{name}: потолок должен браться из ai_studio.MAX_PROMPT_CHARS",
+                f"{name}: the ceiling comes from ai_studio.MAX_PROMPT_CHARS",
             )
 
     def test_the_replanner_uses_the_shared_budget(self) -> None:
@@ -339,7 +342,7 @@ class EveryCeilingHasOneSourceTests(unittest.TestCase):
         self.assertEqual(lifecycle_prompts.MAX_PROMPT_CHARS, MAX_PROMPT_CHARS)
 
     def test_every_module_imports_the_error_it_raises(self) -> None:
-        """NameError вместо отказа стоил прогону часа."""
+        """A NameError instead of a refusal cost the run an hour."""
 
         import builtins, importlib, re
 
@@ -352,19 +355,19 @@ class EveryCeilingHasOneSourceTests(unittest.TestCase):
                 module = importlib.import_module(f"codex_autopilot.{path.stem}")
                 self.assertTrue(
                     hasattr(module, name),
-                    f"{path.name} поднимает {name}, но не импортирует его",
+                    f"{path.name} raises {name} but does not import it",
                 )
 
 
 class SkillPathSurvivesTheNextInstallTests(unittest.TestCase):
-    """Прогон не должен зависеть от номера установленной версии.
+    """A run must not depend on the number of the installed version.
 
-    Установщик кладёт плагин в каталог с версией и меткой времени и
-    удаляет прежний. Прогон хранил путь к SKILL.md целиком - вместе с
-    версией. Первая же установка оставляла ссылку в пустоте, и живой
-    прогон умирал на `could not resolve installed plugin root from
-    skill`; отказ при этом попадал в класс AMBIGUOUS_SIDE_EFFECT, из
-    которого нет автоматического выхода.
+    The installer puts the plugin in a directory with a version and a
+    timestamp and deletes the previous one. The run stored the path to
+    SKILL.md whole - version included. The very next install left the
+    link pointing at nothing, and a live run died on `could not resolve
+    installed plugin root from skill`; that refusal landed in the class
+    AMBIGUOUS_SIDE_EFFECT, which has no automatic way out.
     """
 
     def setUp(self) -> None:
@@ -373,7 +376,7 @@ class SkillPathSurvivesTheNextInstallTests(unittest.TestCase):
         self.root = Path(self.temp.name)
 
     def fake_install(self, version: str) -> Path:
-        """Слепок раскладки установщика: current -> версия с меткой."""
+        """A cast of the installer layout: current -> a timestamped version."""
 
         release = self.root / version
         skill = release / "plugins/codex-autopilot-adaptive/skills/codex-autopilot-adaptive"
@@ -386,7 +389,7 @@ class SkillPathSurvivesTheNextInstallTests(unittest.TestCase):
         return current
 
     def cache_path(self, version: str) -> Path:
-        """Путь, который прежде попадал в конфиг: из кэша, с версией."""
+        """The path that used to land in the config: cached, with a version."""
 
         cache = self.root / "cache/codex-autopilot-adaptive" / version / "skills/codex-autopilot-adaptive"
         cache.mkdir(parents=True, exist_ok=True)
@@ -415,7 +418,7 @@ class SkillPathSurvivesTheNextInstallTests(unittest.TestCase):
         self.assertEqual(config_module.resolve_skill_path(str(alive)), alive.resolve())
 
     def test_the_written_path_carries_no_version(self) -> None:
-        """Иначе следующая установка снова оставит ссылку в пустоте."""
+        """Otherwise the next install leaves the link pointing at nothing."""
 
         from codex_autopilot import config as config_module
 
@@ -429,10 +432,10 @@ class SkillPathSurvivesTheNextInstallTests(unittest.TestCase):
         self.assertIn("current", str(written))
 
     def test_load_config_heals_the_path_not_just_the_helper(self) -> None:
-        """Проводка важнее функции: без неё лечение не вызывается.
+        """Wiring beats the function: without it the healing is never called.
 
-        Мутационная проверка показала, что тесты на сам помощник
-        проходят и с отключённым лечением в load_config.
+        A mutation check showed that the tests for the helper itself
+        pass even with the healing in load_config turned off.
         """
 
         from codex_autopilot import config as config_module
@@ -459,4 +462,4 @@ class SkillPathSurvivesTheNextInstallTests(unittest.TestCase):
             config_module, "__file__", str(current / "runtime/src/codex_autopilot/config.py")
         ):
             cfg = config_module.load_config(project)
-        self.assertTrue(cfg.skill_path.is_file(), "load_config обязан вылечить мёртвый путь")
+        self.assertTrue(cfg.skill_path.is_file(), "load_config must heal the dead path")

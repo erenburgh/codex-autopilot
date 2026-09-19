@@ -134,7 +134,7 @@ class FakeAppServerCreateClient:
 
 
 def activate_via_app_server(cfg, root, descriptor, thread_id, *, owner=None):
-    """Довести резервацию до ACTIVE тем же путём, что и продакшен."""
+    """Drive the reservation to ACTIVE by the same path as production."""
     if owner is None:
         # The owner comes from the reservation itself: tests create it
         # with different identifiers, and it must not be guessed.

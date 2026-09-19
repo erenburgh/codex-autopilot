@@ -169,7 +169,7 @@ class RuntimeRepairTests(unittest.TestCase):
         self.assertNotIn("+ 1", source)
         self.assertTrue(
             (self.tree.tests / "test_total_adds_up.py").is_file(),
-            "тест-воспроизведение остаётся в наборе: это и есть доказательство",
+            "the reproduction test stays in the suite: that is the proof",
         )
         change = record.changes[0]
         self.assertEqual(change.module, "arith.py")
@@ -182,7 +182,7 @@ class RuntimeRepairTests(unittest.TestCase):
         self.assertIn("+ 1", source)
         self.assertFalse(
             (self.tree.tests / "test_total_adds_up.py").exists(),
-            "снятая правка уносит и свой тест, иначе набор остаётся красным",
+            "a reverted patch takes its test with it, or the suite stays red",
         )
 
     def test_a_revert_refuses_to_discard_a_later_change(self) -> None:
@@ -206,10 +206,11 @@ class RuntimeRepairTests(unittest.TestCase):
         self.assertIn("+ 1", (self.tree.package / "arith.py").read_text(encoding="utf-8"))
 
     def test_a_patch_that_breaks_the_rest_is_refused(self) -> None:
-        """Своё доказать мало: соседнее обязано остаться целым.
+        """Proving your own case is not enough: the rest must stay whole.
 
-        Правка ниже чинит ровно то, на что написан тест-воспроизведение,
-        и ломает то, о чём он не знает, - пустой счёт уходит в минус.
+        The edit below fixes exactly what the reproduction test was
+        written for and breaks what that test knows nothing about - an
+        empty bill goes negative.
         """
 
         with self.assertRaises(RuntimeRepairError) as refusal:
@@ -218,7 +219,7 @@ class RuntimeRepairTests(unittest.TestCase):
         self.assertIn("+ 1", (self.tree.package / "arith.py").read_text(encoding="utf-8"))
 
     def test_a_patch_that_touches_a_guard_is_refused(self) -> None:
-        """Зелёные тесты не оправдывают снятого охранника."""
+        """Green tests do not excuse a guard that was removed."""
 
         repro = '''
 import unittest
@@ -251,12 +252,12 @@ class GuardTests(unittest.TestCase):
             self.assertIn("out of reach", str(refusal.exception))
 
     def test_a_repair_may_span_several_modules_at_once(self) -> None:
-        """Настоящая починка бывает набором, и по частям её не применить.
+        """A real repair comes as a set and cannot be applied piecemeal.
 
-        Так выглядело разделение ошибки модели и поломки машины на
-        прогоне v1.0: три модуля, и после любого одного из них набор
-        тестов красный. Шлюз принимает набор целиком или не принимает
-        вовсе.
+        That is how the model error and the machine breakage were told
+        apart on the v1.0 run: three modules, and after any one of them
+        on its own the suite is red. The gateway takes the whole set or
+        takes nothing.
         """
 
         repro = REPRO.replace(
@@ -277,7 +278,7 @@ class GuardTests(unittest.TestCase):
         )
 
     def test_half_of_a_set_is_not_applied(self) -> None:
-        """Если набор не доказан, живая установка не меняется ни в чём."""
+        """If the set is not proven, the live installation is untouched."""
 
         repro = REPRO.replace(
             "from codex_autopilot.arith import total",
@@ -292,10 +293,10 @@ class GuardTests(unittest.TestCase):
         self.assertIn("+ 1", (self.tree.package / "arith.py").read_text(encoding="utf-8"))
 
     def test_a_repair_may_add_a_new_module(self) -> None:
-        """Иногда починка - это вынести код в новый файл.
+        """Sometimes a repair means moving code out into a new file.
 
-        Так снимали формат v0.8: прежний модуль упёрся в потолок
-        размера, и правка потребовала отдельного файла.
+        That is how the v0.8 format was taken out: the old module hit
+        the size ceiling, and the edit needed a file of its own.
         """
 
         edits = (
@@ -308,7 +309,7 @@ class GuardTests(unittest.TestCase):
         )
         record = self.repair(edits=edits)
         created = next(item for item in record.changes if item.module == "helpers.py")
-        self.assertIsNone(created.sha256_before, "новый модуль не имеет прошлого текста")
+        self.assertIsNone(created.sha256_before, "a new module has no previous text")
         self.assertTrue((self.tree.package / "helpers.py").is_file())
 
     def test_a_reverted_set_takes_the_new_module_with_it(self) -> None:
@@ -331,7 +332,7 @@ class GuardTests(unittest.TestCase):
         self.assertIn("already exists", str(refusal.exception))
 
     def test_the_bookkeeping_of_incidents_is_repairable(self) -> None:
-        """Инженер вправе чинить свой же модуль - кроме своих полномочий."""
+        """The engineer may repair their own module - not their authority."""
 
         repro = '''
 import unittest
@@ -376,7 +377,7 @@ class ActionTests(unittest.TestCase):
     # --- the reviewer's findings: duplicate, decorator, case, set ------
 
     def test_a_duplicate_of_a_guard_appended_after_it_is_refused(self) -> None:
-        """Python исполняет последнее определение; первое - лишь текст."""
+        """Python runs the last definition; the first one is only text."""
 
         repro = '''
 import unittest
@@ -403,7 +404,7 @@ class GuardTests(unittest.TestCase):
         )
 
     def test_a_decorator_wrapped_around_a_guard_is_refused(self) -> None:
-        """Обёртка над охранником - та же правка охранника."""
+        """A wrapper around a guard is an edit to that guard."""
 
         repro = '''
 import unittest
@@ -426,7 +427,7 @@ class GuardTests(unittest.TestCase):
         self.assertIn("guarded definitions", str(refusal.exception))
 
     def test_an_unpatchable_module_cannot_be_reached_by_a_case_change(self) -> None:
-        """Файловая система установки не различает регистр."""
+        """The installation file system does not tell case apart."""
 
         for spelling in ("Hook_Trust.py", "HOOK_TRUST.py", "Runtime_Repair.py"):
             with self.assertRaises(RuntimeRepairError) as refusal:
@@ -434,7 +435,7 @@ class GuardTests(unittest.TestCase):
             self.assertIn("lower case", str(refusal.exception), spelling)
 
     def test_a_set_that_passes_its_own_test_but_breaks_a_neighbour_is_refused(self) -> None:
-        """Ровно главный случай: набор, а не одиночная правка."""
+        """Exactly the main case: a set, not a single edit."""
 
         repro = REPRO.replace(
             "from codex_autopilot.arith import total",
@@ -480,10 +481,11 @@ class GuardTests(unittest.TestCase):
 
 class GuardedDefinitionsTests(unittest.TestCase):
     def test_the_guards_named_here_exist_in_the_runtime(self) -> None:
-        """Список охранников не должен тихо устареть.
+        """The list of guards must not go stale in silence.
 
-        Если функцию переименуют, хэш считать будет нечего - и шлюз
-        начнёт пропускать правки в том самом месте, которое стережёт.
+        If a function is renamed there is nothing left to hash - and
+        the gateway starts letting edits through in the very place it
+        guards.
         """
 
         tree = resolve_runtime_tree()
@@ -496,12 +498,13 @@ class GuardedDefinitionsTests(unittest.TestCase):
 
 
 class InstalledLayoutTests(unittest.TestCase):
-    """Установка обязана привезти то, чем починка доказывается.
+    """The installation must bring what a repair is proven with.
 
-    Шлюз ищет тесты рядом с исходниками и без них отказывается чинить.
-    Если установщик перестанет их класть, самопочинка тихо исчезнет на
-    машине пользователя, а здесь всё останется зелёным - поэтому форма
-    установки проверяется отдельно.
+    The gateway looks for the tests next to the sources and without
+    them refuses to repair. If the installer stops laying them down,
+    self-repair disappears quietly on the user's machine while
+    everything here stays green - so the shape of the installation is
+    checked separately.
     """
 
     def test_the_installer_ships_the_suite_next_to_the_sources(self) -> None:
@@ -512,14 +515,15 @@ class InstalledLayoutTests(unittest.TestCase):
         # The runtime is copied as a repository-shaped tree in one loop; it
         # must hold the sources, the tests and everything the tests prove with.
         loop = re.search(r"for item in ([^;\n]+); do\n\s*\[ -e \"\$source_dir/\$item\" \] && cp -R \"\$source_dir/\$item\" \"\$target/runtime/\$item\"", script)
-        self.assertIsNotNone(loop, "установщик не копирует дерево рантайма циклом по элементам")
+        self.assertIsNotNone(loop, "the installer does not copy the runtime tree in a loop")
         items = loop.group(1).split()
         for required in ("src", "tests", "plugins", "scripts", "pyproject.toml"):
             self.assertIn(
                 required,
                 items,
-                f"без {required} в установке набор тестов красный, и devops-repair-runtime "
-                "откажет на первом же обращении: доказывать починку будет нечем",
+                f"without {required} in the installation the suite is red, and "
+                "devops-repair-runtime refuses on the first call: there is "
+                "nothing left to prove a repair with",
             )
 
     def test_the_gateway_looks_for_the_suite_where_the_installer_puts_it(self) -> None:
@@ -530,13 +534,14 @@ class InstalledLayoutTests(unittest.TestCase):
 
 
 class RepairCommandTests(unittest.TestCase):
-    """Команда devops-repair-runtime: порядок и разбор набора.
+    """The devops-repair-runtime command: order and parsing of the set.
 
-    Проверяющая сломала чтение old_file (все правки считались новым
-    модулем) - всё осталось зелёным: путь команды не исполнялся нигде.
-    И порядок был неверным: правка применялась к установке ДО проверки
-    тикета, так что чужой или закрытый тикет оставлял её применённой и
-    нигде не записанной.
+    The reviewer broke the reading of old_file (every edit counted as a
+    new module) - and everything stayed green: the command path was
+    executed nowhere. The order was wrong too: the edit was applied to
+    the installation BEFORE the ticket was checked, so a ticket held by
+    someone else, or a closed one, left it applied and recorded
+    nowhere.
     """
 
     def setUp(self) -> None:
@@ -622,17 +627,17 @@ class RepairCommandTests(unittest.TestCase):
         edits = {edit.module: edit for edit in self.applied[0]["edits"]}
         self.assertEqual(edits["status.py"].old, "OLD FRAGMENT")
         self.assertEqual(edits["status.py"].new, "NEW FRAGMENT")
-        self.assertIsNone(edits["fresh_module.py"].old, "без old_file - новый модуль")
+        self.assertIsNone(edits["fresh_module.py"].old, "without old_file - a new module")
         self.assertEqual(edits["fresh_module.py"].new, "X = 1\n")
         incident = next(item for item in self.store.load()["incidents"] if item["incident_id"] == self.incident_id)
         self.assertEqual(incident["runtime_patches"][0]["patch_id"], "patch-test")
 
     def test_a_ticket_not_held_by_the_engineer_stops_the_repair_before_it_is_applied(self) -> None:
-        """Тикет проверяется до правки: чужой тикет ничего не меняет."""
+        """The ticket is checked first: a foreign ticket changes nothing."""
 
         # main turns a refusal into exit code 2 and a line on stderr, not an exception.
         self.assertEqual(self.run_command(), 2)
-        self.assertEqual(self.applied, [], "правка применилась до проверки тикета")
+        self.assertEqual(self.applied, [], "edit applied before the ticket check")
 
 
 if __name__ == "__main__":

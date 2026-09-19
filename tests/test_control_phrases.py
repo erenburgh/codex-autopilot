@@ -14,7 +14,7 @@ from codex_autopilot.control import (
 
 
 class ProductSpellingTests(unittest.TestCase):
-    """Название продукта произносят и латиницей, и кириллицей."""
+    """The product name is spoken both in Latin and in Cyrillic."""
 
     def resumes(self, text: str) -> bool:
         return _normalized_prompt(text) in RESUME_PROMPTS
@@ -23,7 +23,7 @@ class ProductSpellingTests(unittest.TestCase):
         self.assertTrue(self.resumes("продолжи codex autopilot"))
 
     def test_cyrillic_product_name_resumes(self) -> None:
-        """Голосовой ввод по-русски даёт кириллицу, и это не ошибка."""
+        """Russian dictation gives Cyrillic, and that is not an error."""
 
         self.assertTrue(self.resumes("продолжи кодекс автопайлот"))
         self.assertTrue(self.resumes("продолжи кодекс автопилот"))
@@ -52,7 +52,7 @@ class ProductSpellingTests(unittest.TestCase):
 
 
 class StrictnessTests(unittest.TestCase):
-    """Сопоставление остаётся точным: хук не перехватывает обычные просьбы."""
+    """Matching stays exact: the hook does not catch ordinary requests."""
 
     def test_an_ordinary_request_is_not_a_control_phrase(self) -> None:
         for text in (

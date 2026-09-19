@@ -383,13 +383,13 @@ class PreflightTests(unittest.TestCase):
         PreflightClient.instances.clear()
 
     def test_the_printed_report_runs_end_to_end(self) -> None:
-        """Печать отчёта - тоже код, и он должен исполняться в тестах.
+        """Printing the report is code too, and tests must execute it.
 
-        Все прочие проверки звали preflight с emit=None, и весь блок
-        отчёта не исполнялся ни разу. В нём уехал NameError: строка про
-        ёмкость обращалась к DEFAULT_MAX_PARALLEL_WORKERS, которого в
-        модуле не было. Падение случилось у пользователя, в самом конце
-        успешного preflight, после выданного разрешения.
+        Every other check called preflight with emit=None, and the whole
+        report block never ran once. A NameError rode along in it: the
+        capacity line reached for DEFAULT_MAX_PARALLEL_WORKERS, which
+        was not in the module. The crash happened at the user, at the
+        very end of a successful preflight, after approval was given.
         """
 
         root = project()
@@ -662,12 +662,13 @@ class PreflightTests(unittest.TestCase):
 
 
     def test_desktop_project_preflight_reports_self_created_placement(self):
-        """Заранее созданных слотов больше нет как понятия.
+        """Pre-created slots no longer exist as a concept.
 
-        Они были обходом вокруг мнимой невозможности завести видимую
-        задачу, а требование слота в префлайте противоречило скиллу,
-        который запрещал их создавать, и останавливало прогон целиком.
-        Механизм снят в 0.8.1; ветку заводит сам диспетчер."""
+        They were a workaround for the supposed impossibility of
+        creating a visible task, and requiring a slot in preflight
+        contradicted the skill, which forbade creating them, and stopped
+        the run entirely. The mechanism was removed in 0.8.1; the
+        dispatcher creates the thread itself."""
 
         root = project()
         DesktopSlotPreflightClient.slots = {}
@@ -740,14 +741,14 @@ if __name__ == "__main__":
 
 
 class TargetMustBelongToAProjectTests(unittest.TestCase):
-    """Прогон без проекта Codex отказывает до создания состояния.
+    """A run without a Codex project is refused before state is created.
 
-    Прежде отсутствие проекта всплывало посреди прогона -
-    "desktop_owned requires desktop.desktop_project_id" - уже после
-    планирования, и человека просили добавить проект руками в
-    середине работы. Весь жизненный цикл требует проект: в нём
-    создаётся каждая задача и в нём же проверяется размещение.
-    Значит отказ обязан наступать на входе и называть действие.
+    The missing project used to surface in the middle of a run -
+    "desktop_owned requires desktop.desktop_project_id" - already after
+    planning, and the person was asked to add a project by hand in
+    the middle of the work. The whole lifecycle needs a project: every
+    task is created in it and placement is checked against it.
+    So the refusal must come at the entrance and name the action.
     """
 
     def test_missing_project_fails_before_any_state(self) -> None:
@@ -772,12 +773,12 @@ class TargetMustBelongToAProjectTests(unittest.TestCase):
 
 
 class TrustProbeTests(unittest.TestCase):
-    """Проба доверия — последний шаг preflight и единственный, где он падал.
+    """The trust probe is preflight's last step and the only one it died on.
 
-    На прогоне v1.0 preflight прошёл все десять проверок и дважды умер
-    здесь ровно по 302 секунды, а на третий заход прошёл меньше чем за
-    минуту. Причина — ход, которому нечего обдумывать, шёл на усилии
-    рабочего воркера.
+    On the v1.0 run preflight passed all ten checks and died here twice,
+    each time at exactly 302 seconds, and on the third attempt went
+    through in under a minute. The cause: a turn with nothing to think
+    over ran at the working worker's effort.
     """
 
     def run_preflight(self, client_factory):
@@ -852,10 +853,11 @@ class TrustProbeTests(unittest.TestCase):
         self.assertEqual(len(client.interrupted), PROBE_ATTEMPTS)
 
     def test_the_real_timeout_message_blames_the_turn_not_the_server(self):
-        """Сообщение строится в appserver, а не в подделке теста.
+        """The message is built in appserver, not in a test fake.
 
-        Прежнее «Timed out waiting for App Server» отправляло чинить
-        транспорт и права, хотя App Server всё это время отвечал.
+        The old "Timed out waiting for App Server" sent people off to
+        fix the transport and permissions, while the App Server was
+        answering the whole time.
         """
 
         client = AppServerClient("/bin/true", Path(os.devnull))
@@ -870,13 +872,13 @@ class TrustProbeTests(unittest.TestCase):
 
 
 class ApprovalArrivesAsACommandTests(unittest.TestCase):
-    """Человеку нужна строка, которую можно запустить, а не инструкция.
+    """The person needs a line they can run, not an instruction.
 
-    Всплывающего окна нет и быть не может: запрос инструмента памяти
-    уходит на соединение диспетчера, а тот на approvals не отвечает по
-    правилу. Прежде preflight писал "повторите ту же команду с флагом" -
-    собрать её предлагалось модели, и до человека она не доходила ни
-    разу за весь день.
+    There is no pop-up and there cannot be one: the memory tool request
+    goes to the dispatcher's connection, and by rule the dispatcher does
+    not answer approvals. preflight used to write "repeat the same
+    command with the flag" - assembling it was left to the model, and it
+    never once reached the person in a whole day.
     """
 
     def test_the_message_carries_a_runnable_command(self) -> None:
@@ -891,7 +893,7 @@ class ApprovalArrivesAsACommandTests(unittest.TestCase):
         self.assertIn("/tmp/проект", message)
 
     def test_the_command_quotes_paths_with_spaces(self) -> None:
-        """Каталог проекта у пользователя называется через пробелы."""
+        """The user's project directory has spaces in its name."""
 
         from codex_autopilot.preflight import approval_command
 
@@ -904,7 +906,7 @@ class ApprovalArrivesAsACommandTests(unittest.TestCase):
         self.assertIn('"/Users/x/Autopilot Studio | Test/.codex-autopilot/plan.json"', command)
 
     def test_the_message_says_no_dialog_is_coming(self) -> None:
-        """Иначе человек ждёт окна, которого не будет."""
+        """Otherwise the person waits for a window that will not come."""
 
         from codex_autopilot.preflight import ProjectMemoryApprovalRequired
 
@@ -913,13 +915,14 @@ class ApprovalArrivesAsACommandTests(unittest.TestCase):
 
 
 class TheCommandPointsAtTheRealRuntimeTests(unittest.TestCase):
-    """Команда обязана указывать туда, откуда скилл запускается у ЭТОГО
-    пользователя, а не туда, где он лежит у меня.
+    """The command must point where the skill runs for THIS user, not
+    where it happens to sit for me.
 
-    Запускатель плагина уважает CODEX_AUTOPILOT_RUNTIME. Первая версия
-    генератора прошивала `~/Library/Application Support/...` наглухо:
-    у любого, кто поставил рантайм иначе, выданная строка указывала бы
-    в пустоту - и это ровно тот класс "работает только у автора".
+    The plugin launcher respects CODEX_AUTOPILOT_RUNTIME. The first
+    version of the generator hard-wired `~/Library/Application
+    Support/...`: for anyone who installed the runtime elsewhere the
+    printed line would point at nothing - exactly the class of "works
+    only on the author's machine".
     """
 
     def test_an_override_wins(self) -> None:

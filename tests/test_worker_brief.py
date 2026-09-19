@@ -52,11 +52,11 @@ def _task(task_id: str, title: str, *, role: str, depends: tuple[str, ...] = (),
 
 
 def _plan():
-    """План строится здесь же.
+    """The plan is built right here.
 
-    Тест не читает ничего за пределами репозитория: сборка релиза
-    отдельно запрещает уносить в архив чужие абсолютные пути, и она же
-    этот тест и поймала.
+    The test reads nothing outside the repository: the release build
+    separately forbids carrying foreign absolute paths into the archive,
+    and it is what caught this test.
     """
 
     return validate_plan(
@@ -113,7 +113,7 @@ class BriefTests(unittest.TestCase):
         )
 
     def test_the_first_line_names_role_task_and_title(self) -> None:
-        """Эту строку показывает превью сайдбара, не открывая задачу."""
+        """The sidebar preview shows this line without opening the task."""
 
         first = self._prompt("implementation").splitlines()[0]
         self.assertIn("Runtime Engineer", first)
@@ -133,13 +133,13 @@ class BriefTests(unittest.TestCase):
                 self.assertIn(field, prompt)
 
     def test_the_brief_forbids_invented_estimates(self) -> None:
-        """Срок, названный наугад, - обещание, которого никто не давал."""
+        """A deadline named at random is a promise nobody made."""
 
         prompt = self._prompt("implementation")
         self.assertIn("Сроков в нём нет", prompt)
 
     def test_the_verifier_briefs_too(self) -> None:
-        """У T4 объявлен отдельный проверяющий: заголовок несёт его роль."""
+        """T4 declares a separate verifier: the title carries its role."""
 
         prompt = self._prompt("verification", task_id="T4", verification_round=1)
         self.assertIn("AUTOPILOT_BRIEF", prompt)

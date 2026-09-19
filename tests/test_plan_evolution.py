@@ -599,14 +599,15 @@ class PlanEvolutionTests(unittest.TestCase):
         )
 
     def test_the_replanner_hands_its_successor_to_the_same_dispatcher(self) -> None:
-        """Владение переходом обязано дойти и до реплэннера.
+        """Ownership of the transition has to reach the replanner too.
 
-        Инженеру и воркеру это чинили по отдельности, реплэннера
-        пропустили: сторона вызываемого была готова, а вызывающий флаг не
-        передавал. Весь учёт преемника у реплэннера был недостижим из
-        продакшена, и следующий шаг отвечал "current dispatcher does not
-        own the completed-to-successor transition" - на первой же смене
-        плана, то есть почти сразу.
+        This was fixed separately for the engineer and for the worker,
+        and the replanner was skipped: the callee side was ready, but the
+        caller did not pass the flag. The whole accounting of the
+        replanner's successor was unreachable from production, and the
+        next step answered "current dispatcher does not own the
+        completed-to-successor transition" - on the very first change of
+        plan, that is, almost at once.
         """
 
         import os
@@ -708,12 +709,12 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertIn("plan has unknown fields: ['nonsense_field']", prompt)
 
     def test_user_declared_worker_count_reaches_the_replanner(self) -> None:
-        """Потолок воркеров живёт в плане, а план переписывает реплэннер.
+        """The worker cap lives in the plan, which the replanner rewrites.
 
-        Пользователь меняет число в своём config.toml. Без передачи в
-        задание реплэннер копирует старое число из текущего графа, и
-        правка не доезжает никуда - прогон навсегда остаётся с тем
-        потолком, с каким был создан.
+        The user changes the number in their config.toml. Without passing
+        it into the brief, the replanner copies the old number from the
+        current graph, and the edit arrives nowhere - the run stays
+        forever with the cap it was created with.
         """
 
         cfg, store = self.initialize(graph([task("A")], max_workers=2))
@@ -744,11 +745,11 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertIn("Set max_parallel_workers=7", prompt)
 
     def test_config_without_the_key_never_forces_one_worker(self) -> None:
-        """Умолчание - не выбор человека.
+        """A default is not a human's choice.
 
-        Совместимость с v0.8 держит здесь единицу. Принять её за
-        пожелание значило бы загнать любой прогон со старым конфигом в
-        один поток при первой же смене плана.
+        Compatibility with v0.8 keeps a one here. Taking it for a wish
+        would drive every run with an old config into a single thread at
+        the first change of plan.
         """
 
         cfg, store = self.initialize(graph([task("A")], max_workers=2))
@@ -782,7 +783,9 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertNotIn("max_parallel_workers=1", replanner.prompt)
 
     def test_matching_worker_count_adds_no_instruction(self) -> None:
-        """Совпадающее число - не правка, и говорить о ней нечего."""
+        """A matching number is not an edit, and there is nothing to say
+        about it.
+        """
 
         cfg, store = self.initialize(graph([task("A")], max_workers=2))
         descriptor = reserve_ready_frontier(

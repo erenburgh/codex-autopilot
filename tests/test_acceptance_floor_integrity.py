@@ -180,11 +180,11 @@ def _validate_migration(payload: dict, previous_ids: tuple[str, ...]):
 
 class MigrationProvenanceTests(unittest.TestCase):
     def test_a_submitted_plan_cannot_declare_itself_migrated(self) -> None:
-        """Дыра создания: план объявлял происхождение прямо в теле.
+        """The creation hole: a plan declared its provenance in its body.
 
-        Присланный schema-3 план заявлял ``compatibility.legacy_serial``,
-        получал историческое исключение и выходил из-под независимой
-        приёмки целиком - на свежем проекте, где мигрировать нечего.
+        A submitted schema-3 plan claimed ``compatibility.legacy_serial``,
+        got the historical exemption and left independent verification
+        entirely - on a fresh project, where there is nothing to migrate.
         """
 
         submitted = _legacy_graph([_task("A", verification=_self_accepting())])
@@ -199,11 +199,11 @@ class MigrationProvenanceTests(unittest.TestCase):
         self.assertIn("independent", str(caught.exception))
 
     def test_a_genuinely_migrated_plan_still_loads_from_disk(self) -> None:
-        """Мигрированный прогон обязан продолжать читаться.
+        """A migrated run has to keep loading.
 
-        Его происхождение написал сам рантайм, а не отправитель, поэтому
-        записанный вход его принимает - иначе откат совместимости v0.8
-        не имел бы смысла.
+        Its provenance was written by the runtime itself, not by a
+        sender, so the recorded entry accepts it - otherwise the v0.8
+        compatibility fallback would make no sense.
         """
 
         persisted = _legacy_graph(
@@ -300,11 +300,12 @@ class MigrationProvenanceTests(unittest.TestCase):
         }
 
     def test_a_fresh_project_cannot_use_the_legacy_format_at_all(self) -> None:
-        """Сам формат v0.8 был обходом.
+        """The v0.8 format was itself a bypass.
 
-        Свежий проект подавал план schema-2 - и все его задачи выходили
-        из-под независимой приёмки как «мигрированные», хотя мигрировать
-        было нечего. Происхождение доказывает прогон, а не формат.
+        A fresh project submitted a schema-2 plan - and all of its tasks
+        left independent verification as "migrated", though there was
+        nothing to migrate. Provenance is proved by the run, not by the
+        format.
         """
 
         with self.assertRaises(ValueError) as caught:
@@ -312,12 +313,12 @@ class MigrationProvenanceTests(unittest.TestCase):
         self.assertIn("migrating an existing run", str(caught.exception))
 
     def test_a_migration_cannot_smuggle_in_a_milestone_of_its_own(self) -> None:
-        """Новая веха под видом мигрированной - это новая работа.
+        """A new milestone disguised as a migrated one is new work.
 
-        Формат v0.8 не умеет объявлять независимую приёмку вовсе: поля
-        `verification` в нём нет. Поэтому веха, которой в мигрируемом
-        прогоне не было, отвергается: новая работа добавляется
-        канонической сменой плана.
+        The v0.8 format cannot declare independent verification at all:
+        it has no `verification` field. So a milestone that was not in
+        the run being migrated is rejected: new work is added by a
+        canonical plan change.
         """
 
         with self.assertRaises(ValueError) as caught:
@@ -325,7 +326,7 @@ class MigrationProvenanceTests(unittest.TestCase):
         self.assertIn("not part of the run being migrated", str(caught.exception))
 
     def test_an_actual_v08_payload_is_still_migrated(self) -> None:
-        """Настоящий v0.8 приходит без compatibility и мигрируется."""
+        """A real v0.8 arrives without compatibility and is migrated."""
 
         legacy = {
             "schema_version": 2,
@@ -433,11 +434,11 @@ class MigrationProvenanceTests(unittest.TestCase):
 
 
 def _legacy_verification() -> dict:
-    """Точный контракт, который синтезирует миграция v0.8.
+    """The exact contract the v0.8 migration synthesises.
 
-    Исключение достаётся только ему: задача, добавленная в мигрированный
-    план уже после миграции, рождена под каноническим порогом и остаётся
-    под ним.
+    Only this contract gets the exemption: a task added to a migrated
+    plan after the migration is born under the canonical floor and stays
+    under it.
     """
 
     return {
@@ -449,17 +450,18 @@ def _legacy_verification() -> dict:
 
 
 class LegacyRepurposeTests(unittest.TestCase):
-    """Под старым номером нельзя провести новую работу.
+    """New work cannot be carried out under an old number.
 
-    Исключение из порога приёмки историческое, и держаться обязано на
-    истории. Если сверять только контракт верификации, то у мигрированной
-    задачи можно переписать саму суть - цель и признак готовности, -
-    оставив слабый контракт приёмки нетронутым. Это новая работа, которая
-    принимает саму себя (R8), просто под чужим номером.
+    The exemption from the acceptance floor is historical, and it has to
+    rest on history. If only the verification contract is compared, a
+    migrated task can have its very substance rewritten - the goal and
+    the definition of done - while the weak acceptance contract is left
+    untouched. That is new work accepting itself (R8), just under
+    somebody else's number.
 
-    Чинить состав мигрированной задачи при этом можно: переписывать
-    историю чужого прогона нельзя, но и запрещать ему ремонт - значит
-    ставить его намертво.
+    Repairing the contents of a migrated task is still allowed:
+    rewriting the history of someone else's run is forbidden, but
+    denying that run any repair would stop it dead.
     """
 
     def _migrated(self) -> tuple[dict, Path]:
@@ -510,7 +512,7 @@ class LegacyRepurposeTests(unittest.TestCase):
 
 
 class FullSuiteClaimTests(unittest.TestCase):
-    """Один фильтр в argv - и «полный прогон» перестаёт быть полным."""
+    """One filter in argv and the "full run" stops being full."""
 
     PARTIAL = (
         ("./noop-test-suite",),

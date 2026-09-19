@@ -107,11 +107,12 @@ def verify(state: RunState, plan: Plan, task_id: str) -> None:
 
 
 def deferral_reasons(decision, task_id: str) -> tuple[str, ...]:
-    """Причины отсрочки задачи - прямо из решения планировщика.
+    """Why a task was deferred - straight out of the scheduler decision.
 
-    Раньше это был метод ``SchedulerDecision.reasons_for``. Продакшен не
-    звал его ни разу: решение везде читают по ``deferred``. Метод снят как
-    вторая дорога к тому же полю, тесты смотрят в поле.
+    This used to be the method ``SchedulerDecision.reasons_for``.
+    Production never called it once: everywhere the decision is read
+    through ``deferred``. The method was removed as a second road to the
+    same field, and the tests look at the field.
     """
 
     item = next((item for item in decision.deferred if item.task_id == task_id), None)
@@ -260,19 +261,19 @@ class CapacityAndStrategyTests(unittest.TestCase):
         self.assertIn("worker_capacity", deferral_reasons(decision, "C"))
 
     def test_an_unlimited_account_raises_the_state_cap_instead_of_breaking_it(self):
-        """Безлимит снимает потолок - и состояние обязано это пережить.
+        """No limit removes the cap - and the state has to survive that.
 
-        На аккаунте с автосписанием бюджет возвращает workers=None, и
-        фронтир берёт столько задач, сколько открыл граф. Потолок в
-        состоянии при этом оставался прежним, и следующая же проверка
-        состояния падала: "active tasks exceed run-state
-        max_parallel_workers". Это ValueError, а не DesktopLifecycleError,
-        поэтому хук его не ловит - диспетчер умирал, а поверх настоящей
-        работы открывался тикет о его падении.
+        On an account with auto-billing the budget returns workers=None,
+        and the frontier takes as many tasks as the graph opened. The cap
+        in the state stayed as it was, and the very next state check
+        failed: "active tasks exceed run-state max_parallel_workers".
+        That is a ValueError, not a DesktopLifecycleError, so the hook
+        does not catch it - the dispatcher died, and a ticket about its
+        crash was opened on top of the real work.
 
-        Лечится не урезанием бюджета: у безлимитного аккаунта число
-        воркеров не ограничивается, это решение владелицы. Лечится тем,
-        что потолок в состоянии следует за бюджетом.
+        The cure is not trimming the budget: on an unlimited account the
+        number of workers is not capped, that is the owner's decision.
+        The cure is that the cap in the state follows the budget.
         """
 
         plan = make_plan([raw_task("A"), raw_task("B"), raw_task("C")], max_workers=2)
@@ -285,7 +286,7 @@ class CapacityAndStrategyTests(unittest.TestCase):
         self.assertEqual(
             state.max_parallel_workers,
             len(plan.tasks),
-            "потолок в состоянии не пошёл за бюджетом",
+            "the cap in the state did not follow the budget",
         )
         self.assertEqual(decision.selected_task_ids, ("A", "B", "C"))
 
@@ -296,11 +297,11 @@ class CapacityAndStrategyTests(unittest.TestCase):
         _validate_state(state)
 
     def test_raising_the_cap_is_a_recorded_decision_not_a_silent_repair(self):
-        """R22: гейт не вправе молча привести систему в соответствие.
+        """R22: a gate has no right to bring the system into line silently.
 
-        Поднятый потолок - изменение сохранённого состояния. Без видимой
-        записи о том, что именно изменено и на каком основании, это
-        самозалечивание, которое правило запрещает прямо.
+        A raised cap is a change to the saved state. Without a visible
+        record of what exactly changed and on what grounds, this is
+        self-healing, which the rule forbids outright.
         """
 
         plan = make_plan([raw_task("A"), raw_task("B"), raw_task("C")], max_workers=2)
@@ -314,14 +315,16 @@ class CapacityAndStrategyTests(unittest.TestCase):
             for item in state.resilience_journal
             if item.get("event") == "worker_cap_followed_budget"
         ]
-        self.assertEqual(len(raised), 1, "подъём потолка не записан")
+        self.assertEqual(len(raised), 1, "the cap raise was not recorded")
         detail = raised[0].get("detail") or {}
         self.assertEqual(detail.get("from"), 2)
         self.assertEqual(detail.get("to"), len(plan.tasks))
         self.assertIn("unlimited billing", detail.get("reason", ""))
 
     def test_the_effective_limit_is_one_function_for_every_reader(self):
-        """B6: у предела воркеров был три расчёта; теперь один, и он равен решению."""
+        """B6: the worker limit had three computations; now one, and it
+        equals the decision.
+        """
 
         from codex_autopilot.scheduler import effective_worker_limit
 
@@ -335,19 +338,21 @@ class CapacityAndStrategyTests(unittest.TestCase):
         self.assertEqual(effective_worker_limit(plan, serial), 1)
 
     def test_a_budget_that_keeps_a_cap_never_exceeds_the_state_cap(self):
-        """Инвариант, на котором держится подъём потолка.
+        """The invariant the cap raise rests on.
 
-        Проверка подъёма стоит под двумя условиями: бюджет снял потолок
-        И новый предел больше сохранённого. Второе сегодня выводится из
-        первого: все ветки worker_budget, оставляющие потолок, возвращают
-        не больше ``declared``, а ``declared = min(plan, state)`` не
-        больше сохранённого потолка. То есть условие про None избыточно,
-        и мутация, снимающая его, ничего не меняет - я это замерила.
+        The raise stands on two conditions: the budget removed the cap
+        AND the new limit is greater than the saved one. Today the second
+        follows from the first: every worker_budget branch that keeps a
+        cap returns no more than ``declared``, and
+        ``declared = min(plan, state)`` is no more than the saved cap. So
+        the condition about None is redundant, and a mutation that
+        removes it changes nothing - I measured that.
 
-        Раз так, проверять надо не само условие, а инвариант под ним.
-        Если однажды появится ветка бюджета, выдающая больше заявленного,
-        упадёт этот тест и назовёт причину - а не тот, кто потом будет
-        разбирать, почему потолок поднялся на ограниченном аккаунте.
+        Since that is so, what has to be checked is not the condition
+        itself but the invariant under it. If a budget branch ever
+        appears that hands out more than declared, this test fails and
+        names the reason - instead of whoever would otherwise have to
+        work out why the cap rose on a limited account.
         """
 
         plan = make_plan([raw_task("A"), raw_task("B"), raw_task("C")], max_workers=2)
@@ -368,9 +373,10 @@ class CapacityAndStrategyTests(unittest.TestCase):
                 self.assertLessEqual(
                     decision.worker_limit,
                     state.max_parallel_workers,
-                    "бюджет с потолком выдал больше сохранённого предела",
+                    "a budget that keeps a cap handed out more than the "
+                    "saved limit",
                 )
-                self.assertEqual(state.max_parallel_workers, 2, "потолок поднят зря")
+                self.assertEqual(state.max_parallel_workers, 2, "the cap was raised for nothing")
                 self.assertEqual(
                     [
                         item

@@ -84,11 +84,11 @@ class UserUnblockTests(unittest.TestCase):
         self.assertIn("оператором", state.user_unblocks[-1]["reason"])
 
     def test_a_blank_reason_is_refused(self) -> None:
-        """Пробел вместо причины - это отсутствие причины.
+        """A blank instead of a reason is the absence of a reason.
 
-        Обязательность флага ловит забытый --reason, но не пустую
-        строку: `--reason " "` проходила бы разбор аргументов и
-        записывала решение без единого слова о том, почему.
+        A required flag catches a forgotten --reason, but not an empty
+        string: `--reason " "` would pass argument parsing and record a
+        decision without a single word about why.
         """
 
         self.block()
@@ -120,16 +120,16 @@ if __name__ == "__main__":
 
 
 class R32InterventionIsRecorded(unittest.TestCase):
-    """R32: вмешательство человека — записанное решение, а не реплика.
+    """R32: a human intervention is a recorded decision, not a remark.
 
-    «Я ХОЧУ ЧТОБЫ ОН РАБОТАЛ БЕЗ МЕНЯ НО И ЕСЛИ Я ЗАХОЧУ ВКЛЮЧИТЬСЯ
-    НИЧЕГО НЕ ДОЛЖНО СЛОМАТЬСЯ» - 15 сентября 2026.
+    "I WANT IT TO WORK WITHOUT ME BUT ALSO IF I WANT TO STEP IN NOTHING
+    SHOULD BREAK" - 15 September 2026.
 
-    Проверка на сегодняшнюю реализацию: единственный существующий путь
-    вмешательства - снятие остановки - обязан записывать решение с
-    причиной и отказывать без неё. По мере появления остальных путей
-    (ревизия по просьбе человека, указание работающей задаче, создание
-    задачи руками) проверка расширяется на них же.
+    A check against today's implementation: the only existing path of
+    intervention - lifting a stop - must record the decision with a
+    reason and refuse without one. As the other paths appear (a review
+    at a person's request, an instruction to a running task, creating a
+    task by hand) the check extends to them too.
     """
 
     def test_the_rule_is_registered_with_a_real_check(self) -> None:
@@ -191,4 +191,6 @@ class R32InterventionIsRecorded(unittest.TestCase):
         record = store.load().user_unblocks[-1]
         self.assertEqual(record["task_id"], "A")
         self.assertIn("владельца", record["reason"])
-        self.assertTrue(str(record["at"]).strip(), "решение обязано нести время")
+        self.assertTrue(
+            str(record["at"]).strip(), "the decision must carry a time"
+        )

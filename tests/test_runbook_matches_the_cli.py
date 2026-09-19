@@ -20,10 +20,10 @@ from codex_autopilot.cli import parser
 
 
 def runbook_text() -> str:
-    """Текст инструкции - исходник функции, а не собранный промпт.
+    """The instruction text is the function source, not a built prompt.
 
-    Собирать промпт значило бы поднимать состояние прогона; здесь важна
-    сама инструкция, а она лежит в шаблоне.
+    Building the prompt would mean bringing up run state; what matters
+    here is the instruction itself, and it lies in the template.
     """
 
     return inspect.getsource(AIStudioRuntime.build_pipeline_engineer_prompt)
@@ -38,12 +38,13 @@ def subcommands() -> dict[str, argparse.ArgumentParser]:
 
 
 def invocations(text: str, name: str) -> list[str]:
-    """Сами вызовы команды, а не строки с упоминанием.
+    """The calls of the command themselves, not lines that mention it.
 
-    Строка рантбука состоит из вызова в обратных кавычках и пояснения
-    после тире, и пояснение часто называет тот же флаг прозой. Проверять
-    надо вызов: инженер копирует его, а не объяснение. Имя команды
-    берётся целиком - "arm" входит в "devops-rearm-relay-owner".
+    A runbook line is a call in backticks plus an explanation after a
+    dash, and the explanation often names the same flag in prose. What
+    must be checked is the call: the engineer copies that, not the
+    explanation. The command name is taken whole - "arm" is inside
+    "devops-rearm-relay-owner".
     """
 
     pattern = re.compile(
@@ -78,11 +79,13 @@ class RunbookMatchesTheCliTests(unittest.TestCase):
         self.assertGreaterEqual(
             checked,
             6,
-            "инструкция перестала называть команды восстановления - проверять нечего",
+            "the instruction no longer names the recovery commands -"
+            " there is nothing to check",
         )
 
     def test_the_check_would_catch_the_drift_that_happened(self) -> None:
-        """Мутация наоборот: убираем флаг из строки - проверка обязана упасть."""
+        """The mutation in reverse: drop the flag from the line and the
+        check must fail."""
 
         text = runbook_text().replace("--failure-code <kind> ", "")
         command = subcommands()["relay-fail"]
@@ -91,7 +94,7 @@ class RunbookMatchesTheCliTests(unittest.TestCase):
         self.assertEqual(
             missing,
             ["--failure-code"],
-            "проверка не заметила бы того самого расхождения",
+            "the check would not have noticed that very drift",
         )
 
 

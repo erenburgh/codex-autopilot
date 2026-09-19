@@ -58,7 +58,7 @@ class NoShadowedImportsTests(unittest.TestCase):
         self.assertEqual(offences, [], "\n".join(offences))
 
     def test_the_check_sees_a_shadowing_import(self) -> None:
-        """Проверка обязана ловить дефект, а не молчать на любом коде."""
+        """The check must catch the defect, not stay silent on any code."""
 
         tree = ast.parse(
             "from .run_state import StateStore\n"

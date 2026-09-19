@@ -65,8 +65,8 @@ class RuleRegistryTests(unittest.TestCase):
         for item in RULES:
             with self.subTest(rule=item.id):
                 self.assertIn(item.mode, {ENFORCED, CHECKED})
-                self.assertTrue(item.statement.strip(), "формулировка пуста")
-                self.assertTrue(item.check.strip(), "спецификация проверки пуста")
+                self.assertTrue(item.statement.strip(), "statement is empty")
+                self.assertTrue(item.check.strip(), "check specification is empty")
 
     def test_rule_ids_are_unique_and_contiguous(self) -> None:
         ids = [item.id for item in RULES]
@@ -79,24 +79,26 @@ class RuleRegistryTests(unittest.TestCase):
         self.assertEqual(
             covered,
             {item.id for item in RULES},
-            "каждое правило либо реализовано, либо явно числится нереализованным",
+            "every rule is either implemented or explicitly listed as "
+            "unimplemented",
         )
         self.assertFalse(
             set(IMPLEMENTED) & PENDING,
-            "правило не может быть одновременно реализованным и ожидающим",
+            "a rule cannot be both implemented and pending",
         )
 
     def test_every_implemented_pointer_names_a_test_that_exists(self) -> None:
-        """Указатель на проверку - обещание; висячий указатель его обнуляет.
+        """A pointer to a check is a promise; a dangling one voids it.
 
-        Аудит 15.09 (D4) нашёл карту неверной в обе стороны: R19, R29
-        числились ожидающими при готовых проверках, а указатель R9 вёл
-        в «thread_titles._role_segment + test_workspace_ux» - ни файла,
-        ни теста с таким именем. Замерено 17.09: 13 из 14 указателей
-        разрешались, один - нет. Отныне каждый обязан разрешаться:
-        ``file.py::name`` - в def или class внутри этого файла,
-        ``tests/file.py`` - в файл, голое ``test_...`` - в def в любом
-        тестовом файле.
+        The 15.09 audit (D4) found the map wrong in both directions:
+        R19 and R29 were listed as pending while their checks were
+        ready, and the R9 pointer led to "thread_titles._role_segment
+        + test_workspace_ux" - neither that file nor a test by that
+        name exists. Measured 17.09: 13 of 14 pointers resolved, one
+        did not. From now on every one must resolve:
+        ``file.py::name`` - to a def or class inside that file,
+        ``tests/file.py`` - to a file, a bare ``test_...`` - to a def
+        in any test file.
         """
 
         import re
@@ -115,10 +117,10 @@ class RuleRegistryTests(unittest.TestCase):
                 found = any(re.search(rf"^\s*def {re.escape(pointer)}\b", text, re.M) for text in sources.values())
             if not found:
                 dangling.append(f"{rule_id} -> {pointer}")
-        self.assertEqual(dangling, [], "указатели IMPLEMENTED никуда не ведут: " + "; ".join(dangling))
+        self.assertEqual(dangling, [], "IMPLEMENTED pointers lead nowhere: " + "; ".join(dangling))
 
     def test_no_rule_is_silently_downgraded(self) -> None:
-        """Понижение режима запрещено: ENFORCED не становится CHECKED."""
+        """Downgrading a mode is forbidden: ENFORCED never becomes CHECKED."""
         self.assertEqual(rule("R2").mode, ENFORCED)
         self.assertEqual(rule("R8").mode, ENFORCED)
         self.assertEqual(rule("R29").mode, ENFORCED)
@@ -129,7 +131,7 @@ class RuleRegistryTests(unittest.TestCase):
 
 class EnforcedRuleTests(unittest.TestCase):
     def test_r2_codex_app_task_api_is_absent_from_production(self) -> None:
-        """R2: задачи создаёт только диспетчер через App Server."""
+        """R2: only the dispatcher creates tasks, through the App Server."""
         forbidden = ("create_thread", "send_message_to_thread", "fork_thread", "handoff_thread")
         offenders: list[str] = []
         for path in sorted(SRC.glob("*.py")):
@@ -145,12 +147,13 @@ class EnforcedRuleTests(unittest.TestCase):
         self.assertEqual(
             offenders,
             [],
-            "Codex App task API запрещён правилом R2: создание идёт только "
-            "через детерминированный диспетчер и App Server thread/start",
+            "the Codex App task API is forbidden by R2: creation goes "
+            "only through the deterministic dispatcher and App Server "
+            "thread/start",
         )
 
     def test_r8_self_acceptance_is_rejected_by_plan_validation(self) -> None:
-        """R8: каноническая задача не принимает сама себя."""
+        """R8: a canonical task does not accept itself."""
         data = {
             "schema_version": 3,
             "goal": "g",
@@ -185,7 +188,7 @@ class EnforcedRuleTests(unittest.TestCase):
         self.assertIn("R8", str(caught.exception))
 
     def test_r8_exempts_a_migrated_v08_plan(self) -> None:
-        """Мигрированный v0.8 план предшествует верификации и остаётся serial."""
+        """A migrated v0.8 plan predates verification and stays serial."""
         legacy = {
             "schema_version": 2,
             "goal": "g",
@@ -229,7 +232,7 @@ class EnforcedRuleTests(unittest.TestCase):
 
 class ContextOrderTests(unittest.TestCase):
     def test_r17_rules_come_before_specifications_and_are_not_truncatable(self) -> None:
-        """R17: правила грузятся раньше спецификаций и не усекаются."""
+        """R17: rules load before specifications and are not truncated."""
         block = rules_for_prompt()
         self.assertEqual(len(block), len(RULES))
         # ENFORCED come first.
@@ -254,14 +257,14 @@ class ContextOrderTests(unittest.TestCase):
             item["id"] for item in rules_for_prompt(state_dir) if item["mode"] == CHECKED
         ]
         self.assertEqual(
-            checked_after[0], target, "нарушенное правило поднимается в своём режиме"
+            checked_after[0], target, "a violated rule rises within its own mode"
         )
         # The modes do not mix: ENFORCED stay above.
         modes = [item["mode"] for item in rules_for_prompt(state_dir)]
         self.assertEqual(modes, sorted(modes, key=lambda m: 0 if m == ENFORCED else 1))
 
     def test_r17_rules_block_precedes_task_contract_in_the_worker_prompt(self) -> None:
-        """Порядок проверяется на фактическом конверте, а не на намерении."""
+        """The order is checked on the actual envelope, not on intent."""
         from codex_autopilot.ai_studio import AIStudioRuntime
 
         order = list(AIStudioRuntime.build_prompt.__code__.co_consts)
@@ -271,14 +274,14 @@ class ContextOrderTests(unittest.TestCase):
         self.assertLess(
             envelope.index('"rules"'),
             envelope.index('"task"'),
-            "блок правил обязан стоять раньше спецификации задачи",
+            "the rules block must come before the task specification",
         )
         self.assertIn("not truncatable", source)
 
 
 class EscalationTests(unittest.TestCase):
     def test_r13_escalation_requires_a_reason_from_the_closed_list(self) -> None:
-        """R13: пользователь не привлекается без кода причины."""
+        """R13: the user is not pulled in without a reason code."""
         from codex_autopilot.pipeline_engineer import (
             AuthorizationTopologyError,
             EscalationReason,
@@ -290,7 +293,7 @@ class EscalationTests(unittest.TestCase):
         with self.assertRaises(AuthorizationTopologyError) as caught:
             escalate_to_user(incident, "ПОТОМУ ЧТО", at="t")
         self.assertIn("R13", str(caught.exception))
-        self.assertEqual(incident["phase"], "DEGRADED", "инцидент не тронут при отказе")
+        self.assertEqual(incident["phase"], "DEGRADED", "incident untouched on refusal")
 
         escalate_to_user(
             incident, EscalationReason.RECOVERY_EXHAUSTED, at="t", detail="исчерпано"
@@ -300,19 +303,19 @@ class EscalationTests(unittest.TestCase):
         self.assertEqual(incident["escalation_detail"], "исчерпано")
 
     def test_r13_no_direct_phase_assignment_bypasses_the_reason_code(self) -> None:
-        """Прямое присваивание фазы в обход функции - дефект."""
+        """Assigning the phase directly, around the function, is a defect."""
         source = (SRC / "pipeline_engineer.py").read_text(encoding="utf-8")
         body = source.split("def escalate_to_user", 1)[1]
         after = body.split("\ndef ", 1)[1] if "\ndef " in body else ""
         self.assertNotIn(
             'incident["phase"] = IncidentPhase.ESCALATE_TO_USER.value',
             after,
-            "эскалация выполняется только через escalate_to_user",
+            "escalation happens only through escalate_to_user",
         )
 
 
 class ProjectPlacementTests(unittest.TestCase):
-    """R6 и раздел 4a: рассинхрон директорий обнаруживается до воркера."""
+    """R6 and section 4a: a directory mismatch is found before the worker."""
 
     def _global_state(self, roots: list[str]) -> Path:
         import json
@@ -362,7 +365,7 @@ class ProjectPlacementTests(unittest.TestCase):
         self.assertEqual(roots, (root.resolve(),))
 
     def test_r6_is_reachable_from_the_production_preflight(self) -> None:
-        """R19: существования функции недостаточно, нужен путь вызова."""
+        """R19: the function existing is not enough, a call path is needed."""
         source = (SRC / "preflight.py").read_text(encoding="utf-8")
         self.assertIn("require_desktop_project_root(", source)
         self.assertIn("PreflightError", source)
@@ -370,20 +373,20 @@ class ProjectPlacementTests(unittest.TestCase):
         checked = source.index("require_desktop_project_root(")
         created = source.index("start_thread(")
         self.assertLess(
-            checked, created, "сверка rootPaths обязана предшествовать созданию треда"
+            checked, created, "the rootPaths check must precede thread creation"
         )
 
 
 class CausalCreationTests(unittest.TestCase):
-    """R1 на журнале: создание обязано следовать за завершением владельца."""
+    """R1 on the journal: creation must follow the owner's completion."""
 
     def _state(self, journal: list[dict], *, own_threads: tuple[str, ...] = ()):
-        """Ветки прогона объявляются явно.
+        """The run's own threads are declared explicitly.
 
-        Владелец, не принадлежащий ни одной сессии, - это ветка
-        человека: arm/resume создаёт резервацию из хода, за которым
-        автопилот не следит и завершения которого не записывает. Без
-        этого разделения аудит объявлял разрыв на каждом возобновлении.
+        An owner that belongs to no session is a human thread:
+        arm/resume creates a reservation out of a turn the autopilot
+        does not watch and whose completion it does not record.
+        Without that split the audit declared a break on every resume.
         """
 
         from codex_autopilot.run_state import RunState
@@ -416,10 +419,11 @@ class CausalCreationTests(unittest.TestCase):
         self.assertEqual(self._audit(journal), [])
 
     def test_r1_owner_that_never_completed_is_reported(self) -> None:
-        """Форма настоящего дефекта: владелец назвался, но ничего не выполнил.
+        """The shape of the real defect: the owner named itself, ran nothing.
 
-        Так была создана M9 в живом прогоне - владельцем записан поток,
-        который не встречается в журнале ни одним собственным событием.
+        That is how M9 was created in a live run - the owner recorded
+        was a thread that appears in the journal under no event of its
+        own.
         """
 
         journal = [
@@ -442,10 +446,10 @@ class CausalCreationTests(unittest.TestCase):
         self.assertIn("no relay owner", violations[0])
 
     def test_r1_events_predating_the_field_are_not_assessed(self) -> None:
-        """Записи старого рантайма не несут поля вообще - это не нарушение.
+        """Old runtime records carry no field at all - not a violation.
 
-        _append_event пишет ключ всегда, поэтому его отсутствие означает
-        другую версию схемы, а не отсутствие владельца.
+        _append_event always writes the key, so its absence means a
+        different schema version, not a missing owner.
         """
 
         from codex_autopilot.lifecycle import creation_causality_coverage
@@ -461,11 +465,11 @@ class CausalCreationTests(unittest.TestCase):
         self.assertEqual((assessed, total), (1, 3))
 
     def test_r1_a_user_thread_owner_is_the_documented_path(self) -> None:
-        """arm/resume создаёт резервацию из хода человека.
+        """arm/resume creates a reservation out of a human turn.
 
-        За таким ходом автопилот не следит и turn_completed для него не
-        пишет в принципе. Прежде аудит называл это разрывом, и живой
-        прогон получал ложную отметку на каждом возобновлении.
+        The autopilot does not watch such a turn and never writes
+        turn_completed for it at all. The audit used to call this a
+        break, and a live run picked up a false mark on every resume.
         """
 
         journal = [
@@ -475,12 +479,12 @@ class CausalCreationTests(unittest.TestCase):
         self.assertEqual(self._audit(journal, own_threads=("воркер",)), [])
 
     def test_r1_audit_is_reachable_from_the_production_status(self) -> None:
-        """M11-R1-REACHABILITY: аудит вызывался только отсюда, из тестов.
+        """M11-R1-REACHABILITY: the audit was called only from the tests.
 
-        Он существовал, был экспортирован из lifecycle и нигде в
-        продакшене не вызывался - то есть утверждение "цепочка
-        причинности проверяется" не подкреплялось ничем. Теперь его
-        вызывает отчёт о статусе, и слепая зона названа числом.
+        It existed, it was exported from lifecycle, and nothing in
+        production called it - so the claim "the causality chain is
+        checked" rested on nothing. The status report calls it now,
+        and the blind zone is named as a number.
         """
 
         source = (SRC / "status.py").read_text(encoding="utf-8")
@@ -504,7 +508,7 @@ class CausalCreationTests(unittest.TestCase):
         self.assertIn("#7", broken)
 
     def test_r1_dropping_the_field_after_it_appeared_is_a_violation(self) -> None:
-        """Иначе правило обходится тем, что поле перестают писать."""
+        """Otherwise the rule is bypassed by no longer writing the field."""
 
         journal = [
             {"sequence": 1, "event": "create_requested", "task_id": "A", "relay_owner_thread_id": None},
@@ -518,11 +522,11 @@ class CausalCreationTests(unittest.TestCase):
 
 class PlacementHonestyTests(unittest.TestCase):
     def test_r5_project_id_is_never_reported_as_sidebar_placement(self) -> None:
-        """R5: "projectId проставлен" и "задача видна в проекте" - разное.
+        """R5: "projectId is set" and "visible in the project" differ.
 
-        Выдача первого за второе и была причиной того, что событие
-        app_server_project_scoped_create писалось честно, а задача
-        в сайдбаре не появлялась.
+        Passing the first off as the second is why the
+        app_server_project_scoped_create event was written honestly
+        while the task never appeared in the sidebar.
         """
         source = (SRC / "lifecycle_dispatch.py").read_text(encoding="utf-8")
         self.assertIn("require separate verification", source)

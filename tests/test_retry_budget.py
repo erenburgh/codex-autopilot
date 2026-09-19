@@ -48,18 +48,19 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "codex_autopilot"
 
 
 def production_failure_shapes() -> dict[str, frozenset[bool]]:
-    """С каким ``definitive`` продакшен зовёт каждый код отказа.
+    """Which ``definitive`` production calls each failure code with.
 
-    Берётся разбором ``src``, а не константой здесь. Первая редакция
-    этого файла звала всё с ``definitive=True`` и была зелёной, не
-    поймав, что у ``worker_protocol_rejected`` потолка нет вовсе:
-    продакшен передаёт его с ``definitive=False``, а счёт тогда стоял за
-    ранним возвратом. Тест, назначивший форму сам, проверяет комбинацию,
-    которой в продакшене не бывает, и молчит ровно там, где должен
-    кричать.
+    Taken by parsing ``src``, not from a constant here. The first
+    edition of this file called everything with ``definitive=True`` and
+    was green, missing that ``worker_protocol_rejected`` had no cap at
+    all: production passes it with ``definitive=False``, and back then
+    the count sat behind an early return. A test that picks the shape
+    itself checks a combination that never happens in production, and
+    stays silent exactly where it should shout.
 
-    Где ``definitive`` - выражение, а не константа, берутся оба значения:
-    неизвестное надо проверять в худшем случае, а не в удобном.
+    Where ``definitive`` is an expression, not a constant, both values
+    are taken: the unknown has to be checked in the worst case, not in
+    the convenient one.
     """
 
     shapes: dict[str, set[bool]] = {}
@@ -85,10 +86,11 @@ def production_failure_shapes() -> dict[str, frozenset[bool]]:
 
 
 def production_definitive(code: str) -> bool:
-    """Форма, в которой этот код труднее всего посчитать.
+    """The shape in which this code is hardest to count.
 
-    Если продакшен зовёт код и так и так, проверяем недоопределённый
-    путь: он выходит раньше, и именно на нём счёт однажды потерялся.
+    If production calls the code both ways, we check the
+    underdetermined path: it returns earlier, and that is where the
+    count was once lost.
     """
 
     values = production_failure_shapes().get(code)
@@ -122,7 +124,7 @@ class RetryBudgetTests(unittest.TestCase):
     # --- tools ---------------------------------------------------------
 
     def pending_token(self, task_id: str) -> str | None:
-        """Токен уже открытой резервации задачи, если она есть."""
+        """The token of the task's already open reservation, if any."""
 
         for item in self.store.load().worker_sessions:
             if item.get("task_id") != task_id:
@@ -139,10 +141,10 @@ class RetryBudgetTests(unittest.TestCase):
         rate_limited: bool = False,
         definitive: bool | None = None,
     ) -> None:
-        """Один настоящий отказ задачи: берём её слот и роняем.
+        """One real failure of a task: take its slot and drop it.
 
-        При двух слотах фронтир забирает обе задачи сразу, поэтому
-        резервировать нужно только тогда, когда открытой резервации нет.
+        With two slots the frontier takes both tasks at once, so a
+        reservation is only needed when there is no open one.
         """
 
         token = self.pending_token(task_id)
@@ -151,7 +153,7 @@ class RetryBudgetTests(unittest.TestCase):
             now = max([0, *state.task_retry_at.values()]) or None
             reserve_ready_frontier(self.cfg, now_epoch=now)
             token = self.pending_token(task_id)
-        self.assertIsNotNone(token, f"{task_id} не зарезервирована")
+        self.assertIsNotNone(token, f"{task_id} is not reserved")
         record_desktop_failure(
             self.cfg,
             token,
@@ -173,7 +175,7 @@ class RetryBudgetTests(unittest.TestCase):
 
     def test_the_same_signature_stops_looping_at_the_cap(self) -> None:
         cap = self.cfg.retry.maximum_attempts
-        self.assertEqual(cap, 5, "потолок по умолчанию изменился молча")
+        self.assertEqual(cap, 5, "the default cap changed silently")
 
         for _ in range(cap - 1):
             self.fail_once("A", "worker_protocol_rejected")
@@ -181,25 +183,25 @@ class RetryBudgetTests(unittest.TestCase):
         self.assertEqual(
             self.incidents_for("worker_protocol_rejected"),
             [],
-            "до потолка инженера не зовут",
+            "below the cap the engineer is not called",
         )
 
         self.fail_once("A", "worker_protocol_rejected")
         self.assertEqual(self.attempts("worker_protocol_rejected"), cap)
 
         opened = self.incidents_for("worker_protocol_rejected")
-        self.assertEqual(len(opened), 1, "на потолке заводится ровно один тикет")
+        self.assertEqual(len(opened), 1, "exactly one ticket opens at the cap")
         self.assertIn("A", opened[0]["affected_task_ids"])
 
         paused = PipelineIncidentStore(self.cfg.state_dir).status_snapshot()
         self.assertIn(
             "A",
             paused["paused_task_ids"],
-            "цикл разрывает именно пауза тикета",
+            "it is the ticket's pause that breaks the loop",
         )
 
     def test_a_different_signature_does_not_share_the_cap(self) -> None:
-        """Счёт по сигнатуре: разные поломки не складываются в один потолок."""
+        """Counted per signature: different faults do not share one cap."""
 
         for _ in range(3):
             self.fail_once("A", "worker_protocol_rejected")
@@ -212,10 +214,10 @@ class RetryBudgetTests(unittest.TestCase):
         self.assertEqual(self.incidents_for("app_server_rpc_failed"), [])
 
     def test_the_cap_counts_the_breakage_not_the_task(self) -> None:
-        """Одна поломка у двух задач - одна поломка.
+        """One fault on two tasks is one fault.
 
-        Сигнатура намеренно не включает задачу: то же основание, по
-        которому affected_task_ids не входит в incident_signature.
+        The signature deliberately leaves the task out: the same ground
+        on which affected_task_ids is not part of incident_signature.
         """
 
         self.fail_once("A", "app_server_rpc_failed")
@@ -223,28 +225,29 @@ class RetryBudgetTests(unittest.TestCase):
         self.assertEqual(
             self.attempts("app_server_rpc_failed"),
             2,
-            "счёт по задаче вместо сигнатуры",
+            "counted per task instead of per signature",
         )
 
     def test_every_production_failure_shape_reaches_the_counter(self) -> None:
-        """Каждый код, которым продакшен роняет воркера, обязан считаться.
+        """Every code production drops a worker with must be counted.
 
-        Именно этой проверки не хватало. ``worker_protocol_rejected``
-        передаётся с ``definitive=False``, ранний возврат стоял до
-        счётчика - и у той самой петли, ради которой написано R23,
-        потолка не было вовсе. Пять тестов были зелёными, потому что
-        хелпер звал всё с ``definitive=True``.
+        This is the check that was missing. ``worker_protocol_rejected``
+        is passed with ``definitive=False``, the early return stood
+        before the counter - and the very loop R23 was written for had
+        no cap at all. Five tests were green because the helper called
+        everything with ``definitive=True``.
 
-        Здесь форма не назначается: она берётся из ``src``. Новый код
-        отказа или смена формы у существующего попадут сюда сами.
+        The shape is not picked here: it is taken from ``src``. A new
+        failure code, or a changed shape in an existing one, reaches
+        this test by itself.
         """
 
         shapes = production_failure_shapes()
         self.assertIn(
             False,
             shapes.get("worker_protocol_rejected", frozenset()),
-            "продакшен перестал передавать этот код недоопределённым - "
-            "проверьте, что мотив R23 всё ещё покрыт",
+            "production no longer passes this code underdetermined - "
+            "check that the motive behind R23 is still covered",
         )
         for code, values in sorted(shapes.items()):
             for definitive in sorted(values):
@@ -254,14 +257,14 @@ class RetryBudgetTests(unittest.TestCase):
                     self.assertEqual(
                         self.attempts(code),
                         before + 1,
-                        f"{code} с definitive={definitive} не дошёл до счёта",
+                        f"{code} with definitive={definitive} never got counted",
                     )
 
     def test_waiting_for_a_rate_limit_does_not_spend_the_cap(self) -> None:
-        """У лимита свой барьер и своя причина.
+        """A rate limit has its own barrier and its own reason.
 
-        Тратить на него потолок значит останавливать прогон за чужой
-        счёт: задача не сломана, она ждёт.
+        Spending the cap on it means stopping the run at someone else's
+        expense: the task is not broken, it is waiting.
         """
 
         for _ in range(6):
@@ -271,7 +274,7 @@ class RetryBudgetTests(unittest.TestCase):
         self.assertEqual(self.incidents_for("app_server_rpc_failed"), [])
 
     def test_a_failure_without_a_named_kind_is_refused_with_the_accepted_list(self) -> None:
-        """R31: отказ называет принятое, чтобы не читать исходники."""
+        """R31: the refusal names what is accepted, so no sources are read."""
 
         from codex_autopilot.lifecycle_base import DesktopLifecycleError
 

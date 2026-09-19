@@ -158,11 +158,11 @@ class AppServerTests(unittest.TestCase):
         )
 
     def test_root_drift_fails_closed_without_authorization(self):
-        """R6: рантайм не правит сохранённый проект пользователя молча.
+        """R6: the runtime does not edit the user's saved project silently.
 
-        Прежде этот же вызов дописывал корень при каждом создании задачи.
-        Расхождение корней - состояние, о котором надо сказать, а не
-        починить втихую: сохранённый проект принадлежит пользователю.
+        This same call used to append a root on every task creation. A
+        drift of roots is a state to report, not to fix quietly: the
+        saved project belongs to the user.
         """
 
         from codex_autopilot.appserver import ProjectRootDrift
@@ -185,13 +185,13 @@ class AppServerTests(unittest.TestCase):
         )
 
     def test_a_canonical_root_inside_a_project_root_is_membership(self):
-        """Обычный случай, а не расхождение.
+        """The ordinary case, not a drift.
 
-        preflight выбирает проект по вложенности (``_project_contains``),
-        поэтому канонический каталог сплошь и рядом лежит ВНУТРИ корня
-        проекта, а не равен ему. Проверка на равенство объявила бы это
-        расхождением - и прежний код именно поэтому дописывал ещё один
-        корень при каждом создании задачи.
+        preflight picks the project by containment (``_project_contains``),
+        so the canonical directory routinely lies INSIDE the project root
+        rather than being equal to it. A check for equality would declare
+        that a drift - and that is exactly why the old code appended one
+        more root on every task creation.
         """
 
         client = CaptureClient()
@@ -208,7 +208,9 @@ class AppServerTests(unittest.TestCase):
         )
 
     def test_verify_project_root_cannot_write_at_all(self):
-        """Отдельный read-only вход: у него нет ветки мутации вовсе."""
+        """A separate read-only entry point: it has no mutating branch at
+        all.
+        """
 
         from codex_autopilot.appserver import ProjectRootDrift
 
@@ -316,12 +318,12 @@ if __name__ == "__main__": unittest.main()
 
 
 class ClientVersionTests(unittest.TestCase):
-    """Версия клиента берётся из пакета, а не из прибитой строки.
+    """The client version comes from the package, not a hard-coded string.
 
-    Замерено на живом сервере: userAgent сообщал
-    "codex-autopilot; 0.8.0-beta", когда установлена была 0.8.2. Ровно
-    эта ошибка чинилась в 0.8.1 у MCP-сервера памяти; здесь она жила
-    второй копией и никем не проверялась.
+    Measured on a live server: userAgent reported
+    "codex-autopilot; 0.8.0-beta" while 0.8.2 was installed. Exactly this
+    bug was fixed in 0.8.1 for the memory MCP server; here it lived on as
+    a second copy that nobody checked.
     """
 
     def test_initialize_sends_the_package_version(self) -> None:

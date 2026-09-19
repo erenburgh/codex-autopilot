@@ -52,7 +52,7 @@ class RuleConflictProtocolTests(unittest.TestCase):
 
 
 class ConflictIsNotResolvedByTheWorkerTests(unittest.TestCase):
-    """Заявивший расхождение его не закрывает - иначе правило необязательно."""
+    """Declaring a conflict does not close it, or the rule is optional."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -218,7 +218,8 @@ class EveryPhaseCarriesTheContractTests(unittest.TestCase):
         self.assertLess(prompt.index('"rules"'), prompt.index('"current_plan"'))
 
     def test_the_engineer_receives_the_rules_block_not_just_a_promise(self) -> None:
-        """Обещание «те же правила» без блока правил - обещание без исполнения."""
+        """A promise of "the same rules" without a rules block is a
+        promise with nothing behind it."""
 
         self.assertIn('package["rules"] = rules_for_prompt(self.state_dir)', self.studio)
 

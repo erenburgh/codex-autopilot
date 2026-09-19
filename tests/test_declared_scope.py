@@ -63,7 +63,7 @@ class ObservationTests(unittest.TestCase):
         return baseline
 
     def test_unobservable_project_is_reported_not_passed(self) -> None:
-        """Отсутствие наблюдения - не чистый результат, а отказ проверки."""
+        """No observation is not a clean result, it is a refused check."""
 
         with self.assertRaises(ScopeNotObservable):
             observe_changed_paths(self.root, None)
@@ -79,7 +79,7 @@ class ObservationTests(unittest.TestCase):
         )
 
     def test_runtime_state_is_not_counted_as_worker_work(self) -> None:
-        """.codex-autopilot пишет сам автопилот, а не воркер."""
+        """.codex-autopilot is written by the autopilot, not by a worker."""
 
         baseline = self.init_repo()
         state = self.root / ".codex-autopilot" / "handoff"
@@ -98,10 +98,11 @@ class DeclaredScopeTests(unittest.TestCase):
         )
 
     def test_empty_declaration_forbids_every_change(self) -> None:
-        """В живом прогоне v0.9 resources был пуст у ВСЕХ задач.
+        """In the live v0.9 run, resources was empty for ALL tasks.
 
-        Поэтому выйти за область было невозможно по построению, и воркеры
-        правили что угодно. Пустая заявка обязана давать дефект.
+        So leaving the scope was impossible by construction, and workers
+        edited whatever they liked. An empty declaration has to produce a
+        defect.
         """
 
         violations = self.audit((), [str(self.root / "src/a.py")])
@@ -121,7 +122,7 @@ class DeclaredScopeTests(unittest.TestCase):
         self.assertIn("PLAN_CHANGE_REQUEST", violations[0])
 
     def test_read_access_does_not_authorize_a_change(self) -> None:
-        """Прочитать файл можно, менять его - нет."""
+        """Reading the file is allowed, changing it is not."""
 
         claim = ResourceClaim(id="c1", kind="directory", target="src", access="read")
         violations = self.audit((claim,), [str(self.root / "src/a.py")])
@@ -134,10 +135,10 @@ class DeclaredScopeTests(unittest.TestCase):
 
 
 class ScopeIsCheckedOnCompletionTests(unittest.TestCase):
-    """R19: правило считается реализованным, только если живой путь его зовёт.
+    """R19: a rule counts as implemented only if a live path calls it.
 
-    Поэтому проверка ведётся не на вызове аудита напрямую, а через
-    настоящее завершение задачи в настоящем git-репозитории.
+    So the check does not call the audit directly; it goes through a real
+    task completion in a real git repository.
     """
 
     def setUp(self) -> None:
@@ -259,7 +260,7 @@ class ScopeIsCheckedOnCompletionTests(unittest.TestCase):
         self.assertEqual(violation_counts(self.cfg.state_dir).get("R16"), None)
 
     def test_r16_report_citing_a_rule_that_does_not_exist_is_recorded(self) -> None:
-        """Иначе правило "соблюдается" ссылкой на то, чего нет."""
+        """Otherwise a rule is "followed" by citing what does not exist."""
 
         self.run_task_a(
             self.root / "src" / "a" / "impl.py", rules_line="AUTOPILOT_RULES: R999"

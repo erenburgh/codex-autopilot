@@ -117,7 +117,7 @@ class VerifierProtocolRejectionTests(unittest.TestCase):
             self.store.load().worker_sessions[-1]["kind"], "verifier"
         )
         self.assertIn("rubric", state.verification_rejections["A"][-1]["reason"])
-        self.assertTrue(outcome.descriptors, "обязан подняться свежий верифаер")
+        self.assertTrue(outcome.descriptors, "a fresh verifier must come up")
 
     def test_the_reason_reaches_the_next_verifier(self) -> None:
         self.reach_verification()

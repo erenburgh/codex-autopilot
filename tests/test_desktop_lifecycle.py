@@ -127,11 +127,11 @@ def graph(*, max_workers: int = 2) -> dict[str, object]:
 
 
 def legacy_graph() -> dict[str, object]:
-    """План v0.8: последовательная цепочка M6-M7-M8.
+    """A v0.8 plan: the serial chain M6-M7-M8.
 
-    Эти тесты проверяют именно legacy-поведение повторов, поэтому формат
-    остаётся родным. Впустить его можно только как миграцию настоящего
-    прогона - её подкладывает `seed_migrated_project`.
+    These tests check the legacy retry behaviour itself, so the format
+    stays native. It can be let in only as a migration of a real run -
+    `seed_migrated_project` lays that down.
     """
 
     return {
@@ -154,13 +154,13 @@ def legacy_graph() -> dict[str, object]:
 
 
 def seed_migrated_project(root: Path, milestone_ids: tuple[str, ...]) -> None:
-    """Сделать проект похожим на прогон, который действительно мигрируют.
+    """Make the project look like a run that is really being migrated.
 
-    План v0.8 впускается только как миграция существующего прогона:
-    доказательство - его состояние и его план на диске. Свежий проект
-    формат v0.8 не принимает вовсе, и это не придирка, а закрытая дыра -
-    иначе любой новый план объявлял бы себя мигрированным и выходил
-    из-под независимой приёмки.
+    A v0.8 plan is let in only as a migration of an existing run: the
+    proof is its state and its plan on disk. A fresh project does not
+    take the v0.8 format at all, and that is not nitpicking but a closed
+    hole - otherwise any new plan would declare itself migrated and step
+    out from under independent acceptance.
     """
 
     state_dir = root / ".codex-autopilot"
@@ -558,15 +558,16 @@ class WrongNamePrepClient(FakePrepClient):
 class DesktopLifecycleTests(unittest.TestCase):
 
     def activate(self, descriptor, thread_id: str):
-        """Живой путь: так задачу поднимает продакшен-диспетчер."""
+        """The live path: this is how the production dispatcher raises a
+        task."""
         return activate_via_app_server(self.cfg, self.root, descriptor, thread_id)
 
     def bypass_launch_gate(self):
-        """Эти тесты проверяют резервирование, а не подтверждение запуска.
+        """These tests check the reservation, not the launch confirmation.
 
-        Диспетчер здесь замокан, поэтому сессия никогда не станет ACTIVE и
-        гейт честно ответит "запуск не подтверждён". Сам гейт покрыт
-        отдельно в test_launch_gate.py.
+        The dispatcher is mocked here, so the session never becomes ACTIVE
+        and the gate honestly answers "launch not confirmed". The gate
+        itself is covered separately in test_launch_gate.py.
         """
 
         return mock.patch(
@@ -925,13 +926,14 @@ class DesktopLifecycleTests(unittest.TestCase):
 
 
     def test_creation_carries_the_project_and_adds_no_second_call(self) -> None:
-        """Проект задаётся при создании, и повторно не привязывается.
+        """The project is set at creation and is not bound a second time.
 
-        Прежде после создания уходил thread/metadata/update с тем же
-        projectId. Он ничего не менял: строкой выше создание отклоняется,
-        если ветка не в нужном проекте. v0.7 этого вызова не делает вовсе,
-        и её задачи видны. Замерено: в приёмке 0.8.0 он уходил на каждом из
-        шести воркеров впустую.
+        Before, a thread/metadata/update with the same projectId went out
+        after creation. It changed nothing: a line above, the create is
+        rejected if the thread is not in the right project. v0.7 does not
+        make that call at all, and its tasks are visible. Measured: in the
+        0.8.0 acceptance run it went out on each of the six workers for
+        nothing.
         """
 
         from dataclasses import replace
@@ -1037,11 +1039,11 @@ class DesktopLifecycleTests(unittest.TestCase):
         )
 
     def test_root_drift_stops_the_create_and_writes_nothing(self) -> None:
-        """R6: сохранённый проект пользователя не правится молча.
+        """R6: the user's saved project is not edited silently.
 
-        Прежде ``ensure_project_root`` при каждом создании дописывал
-        канонический корень в проект. Это меняло настройку Codex, а не
-        состояние прогона, и не сообщалось никак.
+        Before, ``ensure_project_root`` appended the canonical root to the
+        project on every create. That changed a Codex setting, not the run
+        state, and it was not reported in any way.
         """
 
         client, events, descriptor, patcher = self._drifted_create(
@@ -1063,7 +1065,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertNotIn("app-server-project-root-added", events)
 
     def test_recorded_user_decision_lets_the_same_create_through(self) -> None:
-        """Разрешение существует и работает: отказ не тупик."""
+        """The permission exists and works: a refusal is not a dead end."""
 
         from codex_autopilot.memory import ProjectMemory
         from codex_autopilot.project_association import (
@@ -1095,7 +1097,8 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertIn("app-server-project-root-added", events)
 
     def test_authorization_for_another_project_does_not_apply(self) -> None:
-        """Разрешение названо проектом и корнем и не переносится."""
+        """The permission names a project and a root, and does not carry
+        over."""
 
         from codex_autopilot.memory import ProjectMemory
         from codex_autopilot.project_association import (
@@ -1126,7 +1129,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertNotIn("app-server-project-root-added", events)
 
     def test_an_agent_written_decision_is_not_authorization(self) -> None:
-        """Авторизацией является решение пользователя, а не запись агента."""
+        """Authorization is the user's decision, not an agent's note."""
 
         from codex_autopilot.memory import ProjectMemory
         from codex_autopilot.project_association import (
@@ -1153,14 +1156,16 @@ class DesktopLifecycleTests(unittest.TestCase):
         )
 
     def test_followups_on_an_unlimited_account_are_not_capped_by_the_declared_number(self) -> None:
-        """B6: три формулы предела - и на безлимите две из них лгут.
+        """B6: three formulas for the limit - and on unlimited two of
+        them lie.
 
-        После A2 планировщик на безлимитном аккаунте берёт столько задач,
-        сколько открыл граф, а потолок в состоянии идёт за бюджетом. Но
-        гейт followups считал предел как min(plan, state): три реализации
-        идут, первая завершилась - а верифаера ей не резервировали, потому
-        что «две активные уже упёрлись в заявленные две». Замерено: на
-        безлимите планировщик даёт 3, min(plan, state) даёт 2.
+        After A2 the scheduler on an unlimited account takes as many tasks
+        as the graph opened, and the ceiling in the state follows the
+        budget. But the followups gate computed the limit as
+        min(plan, state): three implementations are running, the first one
+        finished - and no verifier was reserved for it, because "two
+        active ones have already hit the declared two". Measured: on
+        unlimited the scheduler gives 3, min(plan, state) gives 2.
         """
 
         raw = graph(max_workers=2)
@@ -1178,7 +1183,11 @@ class DesktopLifecycleTests(unittest.TestCase):
         store.save(state)
 
         descriptors = reserve_ready_frontier(cfg)
-        self.assertEqual(sorted(item.task_id for item in descriptors), ["A", "B", "D"], "A2: безлимит открывает весь граф")
+        self.assertEqual(
+            sorted(item.task_id for item in descriptors),
+            ["A", "B", "D"],
+            "A2: unlimited opens the whole graph",
+        )
         for item in descriptors:
             activate_via_app_server(cfg, root, item, f"thread-{item.task_id}")
 
@@ -1194,7 +1203,8 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertEqual(
             [item.kind for item in outcome.descriptors],
             ["verifier"],
-            "две реализации ещё идут, и гейт followups счёл предел заявленной двойкой",
+            "two implementations are still running, and the followups"
+            " gate took the limit to be the declared two",
         )
 
     def test_authorized_dispatcher_survives_modified_hook_without_chat_relay(self) -> None:
@@ -1335,13 +1345,14 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertEqual(len({item["reservation_token"] for item in state.worker_sessions}), 2)
 
     def test_parallel_workers_cannot_satisfy_each_others_checkpoint(self) -> None:
-        """M10-REV-005: чекпойнт задачный, не общий.
+        """M10-REV-005: the checkpoint is per task, not shared.
 
-        Раньше reserve_ready_frontier считал ОДИН хэш общего HANDOFF.md
-        и штамповал его всем зарезервированным задачам. Гейт завершения
-        проверял только "хэш общего файла изменился", поэтому первый
-        записавший воркер закрывал гейт всем остальным, а параллельная
-        запись в один файл теряла правки при непересекающихся ресурсах.
+        Before, reserve_ready_frontier computed ONE hash of the shared
+        HANDOFF.md and stamped it onto every reserved task. The completion
+        gate checked only "the hash of the shared file changed", so the
+        first worker to write closed the gate for all the others, and
+        parallel writes into one file lost edits even when the resources
+        did not overlap.
         """
         descriptors = reserve_ready_frontier(self.cfg)
         self.assertEqual([item.task_id for item in descriptors], ["A", "B"])
@@ -1410,12 +1421,13 @@ class DesktopLifecycleTests(unittest.TestCase):
         self.assertNotIn("Completed: B", task_checkpoint_path(self.cfg.state_dir, "A").read_text(encoding="utf-8"))
 
     def test_superseded_desktop_task_fails_closed_beside_its_replacement(self) -> None:
-        """M10-REV-006: детерминированный повтор наблюдённой последовательности.
+        """M10-REV-006: a deterministic replay of the observed sequence.
 
-        На самом аудите M10 исходная резервация оставалась в RETRY_WAIT,
-        новая становилась ACTIVE, а прерванная Desktop-задача оставалась
-        адресуемой и продолжала менять то же рабочее дерево: у исходников
-        и тестов менялись mtime во время аудита.
+        In the M10 audit itself the original reservation stayed in
+        RETRY_WAIT, the new one became ACTIVE, and the interrupted Desktop
+        task stayed addressable and went on changing the same working
+        tree: the mtime of the sources and of the tests changed during the
+        audit.
         """
         first = reserve_ready_frontier(self.cfg)[0]
         self.assertEqual(first.task_id, "A")

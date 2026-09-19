@@ -84,7 +84,7 @@ class MultiSuccessorFanOutUsesTheSharedPredicateTests(unittest.TestCase):
         self.store.save(state)
 
     def fan_out(self) -> list[dict]:
-        """Настоящий цикл диспетчера; подменён только транспорт и порождение."""
+        """The real dispatcher loop; only transport and spawning are faked."""
 
         spawned: list[dict] = []
         with (
@@ -104,7 +104,8 @@ class MultiSuccessorFanOutUsesTheSharedPredicateTests(unittest.TestCase):
         return spawned
 
     def test_two_successors_of_a_blocked_owner_are_spawned_from_its_finished_turn(self) -> None:
-        """Владелец кончил ход с BLOCKED: статус не COMPLETED, turn_completed записан."""
+        """The owner ended the turn BLOCKED: the status is not COMPLETED,
+        turn_completed is recorded."""
 
         self.save(
             owner_sessions=[
@@ -133,7 +134,8 @@ class MultiSuccessorFanOutUsesTheSharedPredicateTests(unittest.TestCase):
         )
 
     def test_a_missing_predecessor_is_named_not_a_bare_stop_iteration(self) -> None:
-        """R31: отказ называет, чего не хватает, - тем же словом, что Stop-хук."""
+        """R31: the refusal names what is missing - in the same word the
+        Stop hook uses."""
 
         self.save(
             owner_sessions=[

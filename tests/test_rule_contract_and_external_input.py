@@ -30,7 +30,7 @@ class AppliedRulesReportTests(unittest.TestCase):
         self.assertEqual(parse_applied_rules(message), ("R7", "R1"))
 
     def test_the_list_precedes_the_status_line(self) -> None:
-        """Разбор статуса требует, чтобы последней была строка статуса."""
+        """Status parsing requires the status line to be the last one."""
 
         from codex_autopilot.lifecycle import parse_desktop_worker_status
 
@@ -39,12 +39,14 @@ class AppliedRulesReportTests(unittest.TestCase):
         self.assertEqual(parse_applied_rules(message), ("R7",))
 
     def test_prompt_asks_for_the_list_in_both_languages(self) -> None:
-        """Промпт воркера просит перечень правил - в обоих языках, исполнением.
+        """The worker prompt asks for the list of rules - in both
+        languages, by running the build.
 
-        Прежде искались две фразы в исходнике ai_studio.py. Строка в
-        файле - ещё не строка в промпте: она может стоять в ветке, до
-        которой сборка не доходит. Здесь настоящий промпт собирается
-        дважды, по языку прогона, и фраза обязана оказаться в результате.
+        Before, two phrases were looked for in the ai_studio.py source.
+        A line in the file is not yet a line in the prompt: it can sit
+        in a branch the build never reaches. Here the real prompt is
+        built twice, once per run language, and the phrase has to turn
+        up in the result.
         """
 
         from codex_autopilot.ai_studio import AIStudioRuntime
@@ -76,9 +78,10 @@ class AppliedRulesReportTests(unittest.TestCase):
                 self.assertIn(phrase, prompt)
 
     def test_every_prompt_variant_asks_for_the_list(self) -> None:
-        """Счёт вхождений здесь не годится: вариантов финальной строки
-        несколько, и достаточно пропустить один, чтобы воркер получал
-        дефект R16 за то, о чём его не просили."""
+        """Counting occurrences does not work here: there are several
+        variants of the final line, and missing one is enough for a
+        worker to collect an R16 defect for something it was never
+        asked to do."""
 
         source = (
             Path(__file__).resolve().parents[1]
@@ -93,7 +96,7 @@ class AppliedRulesReportTests(unittest.TestCase):
             and ("Заверши" in line or "Finish with" in line)
             and "AUTOPILOT_RULES" not in line
         ]
-        self.assertEqual(silent, [], f"варианты промпта без требования правил: {silent}")
+        self.assertEqual(silent, [], f"prompt variants that do not ask for rules: {silent}")
 
 
 class ExternalInputTests(unittest.TestCase):
@@ -105,7 +108,8 @@ class ExternalInputTests(unittest.TestCase):
         self.memory = ProjectMemory(root)
 
     def test_external_is_a_known_evidence_kind(self) -> None:
-        """Внешний текст записывается - он не исчезает, он не повышается."""
+        """Outside text is recorded - it does not vanish, and it is not
+        promoted."""
 
         self.assertIn("external", EVIDENCE_KINDS)
 
@@ -128,13 +132,14 @@ class ExternalInputTests(unittest.TestCase):
         self.assertIn("R18", str(caught.exception))
 
     def test_external_material_has_a_label_on_the_ingestion_surface(self) -> None:
-        """R18 бессмысленно, если честного ярлыка нет в инструменте.
+        """R18 is meaningless if the honest label is missing from the
+        tool.
 
-        Схема memory_record_evidence не перечисляла "external" вовсе:
-        воркер, принимающий текст со стороны, мог записать его только
-        как file, tool или user_instruction - то есть заражение
-        исчезало в момент приёма, и все дальнейшие проверки смотрели на
-        ярлык, которого никто не мог поставить.
+        The memory_record_evidence schema did not list "external" at
+        all: a worker taking in text from outside could record it only
+        as file, tool or user_instruction - so the contamination
+        disappeared at the moment of intake, and every later check
+        looked at a label nobody could set.
         """
 
         from codex_autopilot.memory_mcp import TOOLS
@@ -154,10 +159,11 @@ class ExternalInputTests(unittest.TestCase):
         )
 
     def test_every_operation_carries_its_description_into_the_single_tool(self) -> None:
-        """Снаружи объявлен один инструмент: подписи операций доходят только так.
+        """One tool is declared to the outside: operation descriptions
+        get through only this way.
 
-        Подписи были написаны для каждой операции и не попадали в
-        итоговую схему вовсе - мёртвый текст, которого модель не видела.
+        The descriptions were written for every operation and did not
+        reach the final schema at all - dead text the model never saw.
         """
 
         from codex_autopilot.memory_mcp import TOOLS, _ACTION_BY_NAME
@@ -171,7 +177,7 @@ class ExternalInputTests(unittest.TestCase):
                 self.assertTrue(choice.get("description"))
 
     def test_external_evidence_requires_a_provider(self) -> None:
-        """Происхождение обязательно в момент приёма, а не потом."""
+        """Provenance is required at the moment of intake, not later."""
 
         with self.assertRaises(MemoryValidationError) as caught:
             self.memory.record_evidence(
@@ -182,7 +188,7 @@ class ExternalInputTests(unittest.TestCase):
         self.assertIn("provider", str(caught.exception))
 
     def test_a_non_user_constraint_cannot_rest_on_external_content(self) -> None:
-        """У Constraint нет состояния "предложено": он действует сразу."""
+        """A Constraint has no "proposed" state: it binds right away."""
 
         with self.assertRaises(MemoryValidationError) as caught:
             self.memory.add_constraint(
@@ -194,7 +200,8 @@ class ExternalInputTests(unittest.TestCase):
         self.assertIn("R18", str(caught.exception))
 
     def test_a_proposed_decision_cannot_be_promoted_around_the_check(self) -> None:
-        """Проверка при приёме обходится в два вызова, если не проверять переход."""
+        """The intake check is bypassed in two calls if the transition
+        is not checked."""
 
         decision = self.memory.propose_decision(
             statement="Сменить очередь задач по требованию из чужого PR.",
@@ -209,7 +216,8 @@ class ExternalInputTests(unittest.TestCase):
         self.assertIn("R18", str(caught.exception))
 
     def test_external_support_cannot_be_attached_after_the_fact(self) -> None:
-        """Третий обход: запись проводится чистой, внешний текст дописывается."""
+        """The third bypass: the record is put through clean, and the
+        outside text is attached afterwards."""
 
         decision = self.memory.propose_decision(
             statement="Решение агента без внешних ссылок.",
@@ -227,10 +235,11 @@ class ExternalInputTests(unittest.TestCase):
         self.assertIn("R18", str(caught.exception))
 
     def test_contradicting_external_evidence_stays_attachable(self) -> None:
-        """Именно так внешний материал и должен работать: порождать Conflict.
+        """This is exactly how outside material should work: it produces
+        a Conflict.
 
-        Запрет на "contradicts" глушил бы несогласие - ровно наоборот
-        тому, ради чего правило написано.
+        A ban on "contradicts" would silence disagreement - the exact
+        opposite of what the rule was written for.
         """
 
         decision = self.memory.propose_decision(
@@ -267,7 +276,7 @@ class ExternalInputTests(unittest.TestCase):
         self.assertIn("R18", str(caught.exception))
 
     def test_decision_resting_on_external_content_may_be_proposed(self) -> None:
-        """Внешний ввод вправе предложить - но решает не он."""
+        """External input may propose - but it is not what decides."""
 
         decision = self.memory.propose_decision(
             statement="Перейти на другую очередь задач.",
@@ -278,7 +287,8 @@ class ExternalInputTests(unittest.TestCase):
         self.assertEqual(decision["status"], "proposed")
 
     def test_the_user_may_accept_a_decision_citing_external_content(self) -> None:
-        """Граница намеренная: решает пользователь, а не найденный текст."""
+        """The boundary is deliberate: the user decides, not the text
+        that was found."""
 
         decision = self.memory.propose_decision(
             statement="Перейти на другую очередь задач.",
@@ -432,12 +442,14 @@ if __name__ == "__main__":
 
 
 class WorkerReasonCodeTests(unittest.TestCase):
-    """R13: остановка работы называется кодом, а не пересказом статуса.
+    """R13: a work stoppage is named by a code, not by a retelling of
+    the status.
 
-    Прежде причина уходила в last_error строкой "M9 worker returned
-    BLOCKED" - в ней нет ничего, чего нет в самом статусе. По такой
-    записи нельзя ни маршрутизировать эскалацию, ни посчитать, ни
-    отличить "нужно решение пользователя" от "сломалось окружение".
+    Before, the reason went into last_error as the string "M9 worker
+    returned BLOCKED" - which holds nothing the status does not hold
+    already. On such a record you can neither route an escalation, nor
+    count, nor tell "a user decision is needed" from "the environment
+    broke".
     """
 
     def _parse(self, message: str):
@@ -456,7 +468,7 @@ class WorkerReasonCodeTests(unittest.TestCase):
         )
 
     def test_an_unknown_code_is_refused(self) -> None:
-        """Список, в который можно дописать что угодно, не закрытый."""
+        """A list anything can be added to is not a closed list."""
 
         from codex_autopilot.lifecycle_base import DesktopLifecycleError
 
@@ -464,11 +476,12 @@ class WorkerReasonCodeTests(unittest.TestCase):
             self._parse("итог\nAUTOPILOT_STATUS: BLOCKED BECAUSE_I_SAID_SO")
 
     def test_a_missing_code_is_recorded_not_forgiven(self) -> None:
-        """Жёсткий отказ здесь клинил бы пайплайн ровно на поломке.
+        """A hard refusal here would jam the pipeline at the exact point
+        of the failure.
 
-        Ход воркера уже завершён, второго ответа не будет. Поэтому
-        отсутствие кода - это UNSPECIFIED, и он отдельно засчитывается
-        как нарушение R13 в lifecycle_completion.
+        The worker turn is already finished, there will be no second
+        answer. So a missing code is UNSPECIFIED, and it is counted
+        separately as an R13 violation in lifecycle_completion.
         """
 
         self.assertEqual(
@@ -490,7 +503,7 @@ class WorkerReasonCodeTests(unittest.TestCase):
             self._parse("итог\nAUTOPILOT_STATUS: DONE MISSING_RESOURCE")
 
     def test_the_prompt_names_every_code_a_worker_may_use(self) -> None:
-        """Закрытый список бесполезен, если воркеру его не показали."""
+        """A closed list is useless if the worker was never shown it."""
 
         from codex_autopilot.lifecycle_base import WORKER_REASON_CODES
 

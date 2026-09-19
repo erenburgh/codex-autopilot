@@ -41,7 +41,7 @@ class AppliedPatchesAreVisibleTests(unittest.TestCase):
 
 class TheCardShowsThemTests(unittest.TestCase):
     def test_the_status_card_names_the_repairs(self) -> None:
-        """Строка обязана быть в карточке, а не только в модуле."""
+        """The line must be in the card, not only in the module."""
 
         import inspect
 

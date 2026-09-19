@@ -44,11 +44,12 @@ class RateLimitCaptureTests(unittest.TestCase):
         self.assertIsNone(StateStore(self.state_dir).load().rate_limits)
 
     def test_snapshot_never_rewrites_the_run_journal(self) -> None:
-        """Событие приходит из читающего потока, параллельно диспетчеру.
+        """The event arrives from the reading thread, in parallel with
+        the dispatcher.
 
-        Запись снимка не должна проходить через run-state.json: загрузка
-        и сохранение целого журнала из чужого потока отменила бы переход
-        сессии, сделанный в ту же миллисекунду.
+        Writing the snapshot must not go through run-state.json: loading
+        and saving the whole journal from a foreign thread would undo
+        the session transition made in the same millisecond.
         """
 
         store = StateStore(self.state_dir)
@@ -63,7 +64,7 @@ class RateLimitCaptureTests(unittest.TestCase):
         self.assertEqual(store.load().rate_limits, SNAPSHOT)
 
     def test_captured_snapshot_narrows_the_worker_budget(self) -> None:
-        """Ради этого всё и делается: ёмкость считается по свежим данным."""
+        """This is what it is all for: capacity is counted on fresh data."""
 
         cli._record_rate_limits(
             self.cfg, "account/rateLimits/updated", {"rateLimits": SNAPSHOT}
@@ -73,9 +74,10 @@ class RateLimitCaptureTests(unittest.TestCase):
         self.assertEqual(worker_budget(10, None).workers, 10)
 
     def test_dispatcher_client_is_built_with_the_capture(self) -> None:
-        """Перехват должен стоять на живом клиенте диспетчера.
+        """The interception must sit on the dispatcher's live client.
 
-        Функция с тестами, но без вызова в продакшене - не реализация.
+        A function with tests but no call in production is not an
+        implementation.
         """
 
         captured: dict[str, object] = {}

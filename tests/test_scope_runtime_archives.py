@@ -35,14 +35,16 @@ class RuntimeArchiveScopeTests(unittest.TestCase):
         self.assertFalse(_is_runtime_state("docs/README.md"))
 
     def test_a_name_that_merely_starts_alike_is_not_runtime(self) -> None:
-        """Совпадение префикса без точки - чужой каталог, не наш архив."""
+        """A prefix match without the dot is a foreign directory, not
+        our archive."""
 
         self.assertFalse(_is_runtime_state(f"{STATE_DIR_NAME}-notes/plan.md"))
 
 
 class SnapshotSiblingsAreRuntimeStateTests(unittest.TestCase):
     def test_replace_and_purge_snapshots_are_runtime_state(self) -> None:
-        """R28-снимки лежат соседями состояния и не должны стать записью вне области (R7)."""
+        """R28 snapshots sit next to the state and must not become a
+        write outside the scope (R7)."""
 
         from codex_autopilot.config import STATE_DIR_NAME
         from codex_autopilot.scope import _is_runtime_state

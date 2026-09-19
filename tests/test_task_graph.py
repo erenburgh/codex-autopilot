@@ -138,11 +138,11 @@ def legacy_plan(count: int = 3) -> dict:
 
 
 def migrate(raw: dict, profile: str = "adaptive"):
-    """Мигрировать план v0.8.
+    """Migrate a v0.8 plan.
 
-    Происхождение доказывает не формат, а прогон, который мигрируют:
-    свежий проект план v0.8 не впускает вовсе. В тестах этот прогон
-    изображают его же вехи.
+    Provenance is proved not by the format but by the run being
+    migrated: a fresh project does not admit a v0.8 plan at all. In the
+    tests that run is played by its own milestones.
     """
 
     with tempfile.TemporaryDirectory(prefix="codex-autopilot-v08-input-") as temp:
@@ -466,10 +466,10 @@ class TaskStateContractTests(unittest.TestCase):
         self.plan = validate_plan(graph(), "adaptive")
 
     def test_the_transition_table_does_not_promise_what_the_gate_refuses(self):
-        """Таблица разрешала IMPLEMENTED -> VERIFIED, а гейт отклонял всегда.
+        """The table allowed IMPLEMENTED -> VERIFIED; the gate refused.
 
-        Две правды об одном ребре: читатель таблицы верил, что переход
-        есть. Теперь таблица говорит то же, что R29.
+        Two truths about one edge: a reader of the table believed the
+        transition existed. Now the table says the same as R29.
         """
 
         from codex_autopilot.task_state import TASK_TRANSITIONS

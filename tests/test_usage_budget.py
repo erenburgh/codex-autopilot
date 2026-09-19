@@ -19,14 +19,15 @@ from codex_autopilot.usage import worker_budget
 
 class TheUserNumberIsTheCeilingTests(unittest.TestCase):
     def test_no_data_never_lowers_anything(self) -> None:
-        """Молчаливое понижение по незнанию - худший вариант."""
+        """Lowering the number silently, out of ignorance, is the worst
+        of the options."""
 
         budget = worker_budget(10, None)
         self.assertEqual(budget.workers, 10)
         self.assertFalse(budget.limited)
 
     def test_unlimited_has_no_ceiling_at_all(self) -> None:
-        """Ограничивать того, кто платит по факту, нам не за что."""
+        """There is nothing to cap for someone who pays as they go."""
 
         budget = worker_budget(
             10, {"credits": {"unlimited": True}, "primary": {"usedPercent": 99}}
@@ -36,7 +37,7 @@ class TheUserNumberIsTheCeilingTests(unittest.TestCase):
         self.assertIn("no ceiling", budget.reason)
 
     def test_a_number_the_user_named_is_kept_even_on_unlimited(self) -> None:
-        """Попросил три - значит три, безлимит этого не отменяет."""
+        """Asked for three means three; unlimited does not cancel that."""
 
         budget = worker_budget(
             3, {"credits": {"unlimited": True}}, declared_by_user=True
@@ -74,7 +75,8 @@ class ItNarrowsOnlyWhenTheLimitIsNearTests(unittest.TestCase):
 
 class AStatedStopIsObeyedTests(unittest.TestCase):
     def test_a_reached_spend_control_drops_to_one(self) -> None:
-        """Предел поставил сам пользователь - спорить не с чем."""
+        """The user set the cap themselves - there is nothing to argue
+        with."""
 
         budget = worker_budget(10, {"spendControlReached": True})
         self.assertEqual(budget.workers, 1)
@@ -85,8 +87,8 @@ class AStatedStopIsObeyedTests(unittest.TestCase):
         self.assertEqual(budget.workers, 1)
 
     def test_the_app_server_envelope_is_accepted_as_is(self) -> None:
-        """Событие приходит завёрнутым в rateLimits - разворачивать его
-        на вызывающей стороне значило бы разложить формат по всему коду."""
+        """The event arrives wrapped in rateLimits - unwrapping it on the
+        calling side would spread the format through the whole code."""
 
         budget = worker_budget(
             10, {"rateLimits": {"primary": {"usedPercent": 95}, "credits": {}}}
@@ -96,13 +98,14 @@ class AStatedStopIsObeyedTests(unittest.TestCase):
 
 class TheSchedulerUsesTheBudgetTests(unittest.TestCase):
     def test_the_scheduler_asks_for_a_budget(self) -> None:
-        """Иначе правило живёт в тестах, а не в прогоне - проверено исполнением.
+        """Otherwise the rule lives in the tests, not in the run - this
+        is checked by execution.
 
-        Прежде здесь искалась подстрока ``worker_budget(`` в исходнике
-        планировщика: она зелена и под ``if False:``. Теперь один и тот же
-        план планируется дважды - без снимка лимитов и с безлимитом - и
-        предел воркеров обязан измениться. Изменился - значит бюджет
-        спрошен на самом деле.
+        This used to look for the substring ``worker_budget(`` in the
+        scheduler source: that stays green under ``if False:`` as well.
+        Now the same plan is scheduled twice - once without a limits
+        snapshot and once with unlimited - and the worker limit has to
+        change. It changed, so the budget really was asked for.
         """
 
         from codex_autopilot.scheduler import schedule
@@ -114,7 +117,11 @@ class TheSchedulerUsesTheBudgetTests(unittest.TestCase):
         unlimited_state.rate_limits = {"credits": {"hasCredits": True}}
         unlimited = schedule(plan, unlimited_state)
         self.assertEqual(without.worker_limit, 2)
-        self.assertEqual(unlimited.worker_limit, len(plan.tasks), "бюджет не спрошен: безлимит не снял потолок")
+        self.assertEqual(
+            unlimited.worker_limit,
+            len(plan.tasks),
+            "budget not asked: unlimited did not lift the ceiling",
+        )
 
 
 if __name__ == "__main__":
@@ -122,10 +129,10 @@ if __name__ == "__main__":
 
 
 class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
-    """Число воркеров спрашивается, а не подставляется молча.
+    """The worker count is asked for, not substituted silently.
 
-    Десятка из шаблона простояла весь прогон на 24 задачи с четырьмя
-    независимыми ветками, и никто её не выбирал.
+    The ten from the template stood through a whole run of 24 tasks with
+    four independent branches, and nobody had chosen it.
     """
 
     def notice(self, limits, declared=None):
@@ -139,14 +146,15 @@ class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
         self.assertIn("name a number", text)
 
     def test_auto_topup_is_told_it_has_no_ceiling(self) -> None:
-        """Автосписание и есть безлимит - это одно положение, не два."""
+        """Auto top-up is unlimited - one situation, not two."""
 
         text = self.notice({"credits": {"hasCredits": True}})
         self.assertIn("ceiling", text)
         self.assertIn("name a number", text)
 
     def test_a_plan_tier_is_named_as_the_user_knows_it(self) -> None:
-        """App Server зовёт его prolite, человек читает свой план как Pro."""
+        """App Server calls it prolite; the person reads their own plan
+        as Pro."""
 
         text = self.notice({"planType": "prolite", "credits": {}})
         self.assertIn("Pro", text)
@@ -183,10 +191,11 @@ class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
 
 
 class AStatedSpendCapOutranksCreditsTests(unittest.TestCase):
-    """Предел, поставленный человеком, сильнее автосписания.
+    """A cap set by a person outranks auto top-up.
 
-    Он его и ставил, чтобы списание остановилось. Проверка стояла ПОСЛЕ
-    кредитов и потому не срабатывала вовсе у тех, ради кого написана.
+    They set it precisely so that the charging would stop. The check came
+    AFTER credits, and so never fired at all for the very people it was
+    written for.
     """
 
     def test_a_reached_cap_stops_even_with_credits(self) -> None:
@@ -207,7 +216,7 @@ class AStatedSpendCapOutranksCreditsTests(unittest.TestCase):
 
 
 class PlusGetsANarrowerDefaultTests(unittest.TestCase):
-    """Окно Plus узкое: десяток воркеров сжёг бы его за один прогон."""
+    """The Plus window is narrow: ten workers would burn it in one run."""
 
     def workers(self, plan_type: str) -> int:
         from codex_autopilot.usage import default_workers

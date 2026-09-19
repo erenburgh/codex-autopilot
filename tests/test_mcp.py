@@ -92,7 +92,7 @@ class McpTests(unittest.TestCase):
         self.assertIn("unknown argument", response["error"]["message"])
 
     def _project_with_two_tasks(self):
-        """Проект с двумя задачами и запущенным сервером памяти."""
+        """A project with two tasks and a running memory server."""
         root = git_project()
         skill = root / "SKILL.md"
         skill.write_text("test skill\n", encoding="utf-8")
@@ -160,16 +160,16 @@ class McpTests(unittest.TestCase):
             server.actions["current"]({"task_id": "missing"})
 
     def test_the_runtime_verifies_the_request_so_the_worker_never_hashes_it(self):
-        """Заверение делает сервер, а не тот, кого проверяют.
+        """The server attests the request, not the one being checked.
 
-        Прежде воркер должен был сам сверить длину и sha256 полученного
-        текста с теми, что в его промпте. Это не работало дважды. Изолят
-        постобработки Codex не имеет ни `crypto`, ни `TextEncoder` -
-        посчитать хэш нечем, - а контракт разрешает ровно один вызов и
-        повторить его нельзя: задача честно вставала с
-        ENVIRONMENT_FAILURE, и так встали M4 и M11 живого прогона. И
-        отдельно: проверку, которую делает сам проверяемый, можно молча
-        не сделать.
+        The worker used to compare the length and the sha256 of the text
+        it received against the ones in its prompt itself. That failed
+        twice. The Codex post-processing isolate has neither `crypto` nor
+        `TextEncoder` - there is nothing to compute the hash with - and
+        the contract allows exactly one call, which cannot be repeated:
+        the task honestly stalled with ENVIRONMENT_FAILURE, and that is
+        how M4 and M11 of the live run stalled. And separately: a check
+        performed by the one being checked can be silently skipped.
         """
 
         root, server = self._project_with_two_tasks()
@@ -187,7 +187,7 @@ class McpTests(unittest.TestCase):
         self.assertTrue(current["user_request_verified"])
 
     def test_a_request_that_changed_underneath_the_task_fails_closed(self):
-        """Расхождение - причина остановиться, а не продолжить."""
+        """A mismatch is a reason to stop, not to continue."""
 
         root, server = self._project_with_two_tasks()
         with self.assertRaisesRegex(MemoryValidationError, "does not match the digest"):
@@ -196,7 +196,9 @@ class McpTests(unittest.TestCase):
             )
 
     def test_the_digest_is_still_reported_without_an_expectation(self):
-        """Без ожидания текст отдаётся, но заверенным не объявляется."""
+        """Without an expectation the text is returned, but is not
+        declared verified.
+        """
 
         root, server = self._project_with_two_tasks()
         current = server.actions["current"]({"task_id": "B"})

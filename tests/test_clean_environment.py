@@ -59,8 +59,8 @@ class CleanEnvironmentTests(unittest.TestCase):
         self.assertEqual(
             offenders,
             [],
-            "тест не должен читать переменную живой Codex-сессии; "
-            "передавай identity явно, как это делает tests/_relay.py",
+            "a test must not read a variable of a live Codex session; "
+            "pass identity explicitly, the way tests/_relay.py does",
         )
 
     def test_frontier_reservation_is_imported_through_the_explicit_helper(self) -> None:
@@ -80,8 +80,8 @@ class CleanEnvironmentTests(unittest.TestCase):
         self.assertEqual(
             sorted(direct),
             [],
-            "reserve_ready_frontier в тестах импортируется из _relay, "
-            "иначе identity владельца снова утечёт в os.environ",
+            "reserve_ready_frontier is imported from _relay in tests, "
+            "otherwise the owner's identity leaks into os.environ again",
         )
 
     def test_production_environment_reads_stay_declared(self) -> None:
@@ -93,8 +93,9 @@ class CleanEnvironmentTests(unittest.TestCase):
         self.assertEqual(
             found,
             DECLARED_PRODUCTION_READS,
-            "изменился набор мест, где продакшен читает identity из окружения; "
-            "если это осознанно, обнови DECLARED_PRODUCTION_READS и объясни рост",
+            "the set of places where production reads identity from the "
+            "environment has changed; if this is deliberate, update "
+            "DECLARED_PRODUCTION_READS and explain the growth",
         )
 
 

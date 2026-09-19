@@ -74,7 +74,7 @@ class RetiredTaskFenceTests(unittest.TestCase):
         self.assertIn("replaced by a fresh attempt", result["reason"])
 
     def test_the_same_refusal_repeats_on_replay(self) -> None:
-        """Повтор - это и есть проверка: заслон не одноразовый."""
+        """The repeat is the check: the fence is not a one-shot."""
 
         root = _project(self.tmp, [_session()])
         first = self._hook(root, thread_id="thread-old")
@@ -99,7 +99,7 @@ class RetiredTaskFenceTests(unittest.TestCase):
         self.assertEqual(self._hook(root, thread_id="thread-old"), {})
 
     def test_a_thread_taken_back_into_work_is_not_fenced(self) -> None:
-        """Ту же ветку могли отставить и снова взять: действующая перевешивает."""
+        """The same thread can be retired and taken back: the live one wins."""
 
         root = _project(
             self.tmp,
@@ -122,10 +122,11 @@ class RetiredTaskFenceTests(unittest.TestCase):
         self.assertEqual(self._hook(root, thread_id="thread-other"), {})
 
     def test_a_control_phrase_is_routed_past_the_fence(self) -> None:
-        """Управляющая фраза про прогон, а не про задачу, и до модели не доходит.
+        """A control phrase is about the run, not about the task.
 
-        Поэтому заслон её не касается: он стоит на ветке "это не
-        управляющая фраза", то есть ровно там, где ввод пошёл бы модели.
+        It never reaches the model, so the fence does not touch it: the
+        fence sits on the branch "this is not a control phrase", that is,
+        exactly where the input would have gone to the model.
         """
 
         from codex_autopilot.control import (
@@ -143,11 +144,11 @@ class RetiredTaskFenceTests(unittest.TestCase):
         self.assertNotIn(_normalized_prompt("продолжай"), control)
 
     def test_the_skill_phrase_is_the_phrase_the_hook_knows(self) -> None:
-        """Скилл обещает одно слово; хук знал только развёрнутые формы.
+        """The skill promises one word; the hook knew only the long forms.
 
-        Обещанный видимый путь не работал ровно так, как написан:
-        пользователь говорит `статус`, хук не узнаёт фразу, ввод уходит
-        модели, и отчёт о прогоне не появляется.
+        The promised visible path did not work exactly as written: the
+        user says `статус`, the hook does not recognise the phrase, the
+        input goes to the model, and no run report appears.
         """
 
         from codex_autopilot.control import STATUS_PROMPTS, _normalized_prompt
@@ -160,7 +161,7 @@ class RetiredTaskFenceTests(unittest.TestCase):
         self.assertIn(_normalized_prompt("статус"), STATUS_PROMPTS)
 
     def test_an_unreadable_state_does_not_gag_the_project(self) -> None:
-        """Заслон знает про конкретную ветку; без знания он молчит."""
+        """The fence knows about one thread; without that it stays quiet."""
 
         root = self.tmp / "broken"
         (root / ".codex-autopilot").mkdir(parents=True)
@@ -176,16 +177,17 @@ if __name__ == "__main__":
 
 
 class EscalationReturnPathTests(unittest.TestCase):
-    """Обращение к пользователю без обратного пути - тупик, а не исключение.
+    """Asking the user with no way back is a dead end, not an escalation.
 
-    Инженер объявлял ESCALATE_TO_USER, прогон уходил в BLOCKED, и
-    возобновление отказывало ровно потому, что прогон в BLOCKED.
-    Человеку, который уже всё починил, сказать об этом было нечем.
+    The engineer declared ESCALATE_TO_USER, the run went to BLOCKED, and
+    resuming was refused for exactly the reason that the run was in
+    BLOCKED. A person who had already fixed everything had no way to say
+    so.
 
-    Отдельно проверяется состояние, созданное прежней версией: прогон
-    помечен эскалированным, а тикет остался в PIPELINE_ENGINEER. Починка,
-    которая лечит только будущие случаи и оставляет запертым уже
-    сломанное, - это половина починки.
+    The state produced by the previous version is checked separately: the
+    run is marked escalated while the ticket stayed in PIPELINE_ENGINEER.
+    A repair that cures only future cases and leaves what is already
+    broken locked is half a repair.
     """
 
     def setUp(self) -> None:
@@ -239,7 +241,7 @@ class EscalationReturnPathTests(unittest.TestCase):
         self.assertEqual(phase.value, "RESOLVED")
 
     def test_an_incident_left_in_the_old_phase_is_closed_too(self) -> None:
-        """Ровно то состояние, в котором застрял живой прогон."""
+        """Exactly the state the live run got stuck in."""
 
         incident_id = self._open("PIPELINE_ENGINEER")
         self.assertIn(incident_id, self._store().incident_ids_awaiting_the_user())
@@ -259,7 +261,7 @@ class EscalationReturnPathTests(unittest.TestCase):
             )
 
     def test_closing_unpauses_the_affected_task(self) -> None:
-        """Закрытие тикета обязано снимать паузу, иначе задача стоит дальше."""
+        """Closing the ticket must lift the pause, or the task stays put."""
 
         incident_id = self._open("PIPELINE_ENGINEER")
         self.assertIn("M4", self._store().status_snapshot()["paused_task_ids"])

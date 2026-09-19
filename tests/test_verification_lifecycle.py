@@ -184,7 +184,7 @@ def graph(first: dict[str, object]) -> dict[str, object]:
 class VerificationLifecycleTests(unittest.TestCase):
 
     def activate(self, descriptor, thread_id: str):
-        """Живой путь: так задачу поднимает продакшен-диспетчер."""
+        """The live path: how the production dispatcher raises a task."""
         return activate_via_app_server(self.cfg, self.root, descriptor, thread_id)
 
     def setUp(self) -> None:
@@ -244,13 +244,13 @@ class VerificationLifecycleTests(unittest.TestCase):
         return str(item["id"])
 
     def test_self_policy_is_rejected_before_any_task_exists(self) -> None:
-        """R8: самопринятие невозможно не потому, что верификатор всё равно
-        запустится, а потому, что такой план не принимается вовсе.
+        """R8: self-acceptance is impossible not because a verifier
+        starts anyway, but because such a plan is not accepted at all.
 
-        Раньше этот тест проверял более слабое: что при policy="self"
-        верификатор всё-таки создаётся. Именно это и не сработало
-        в реальном прогоне - восемь задач из девяти получили VERIFIED
-        в ту же секунду, что и IMPLEMENTED.
+        This test used to check something weaker: that with policy="self"
+        a verifier is created all the same. That is exactly what did not
+        work on the real run - eight tasks out of nine got VERIFIED in
+        the same second as IMPLEMENTED.
         """
         with self.assertRaises(ValueError) as caught:
             self.initialize(task("A", policy="self"))
@@ -666,7 +666,7 @@ class VerificationLifecycleTests(unittest.TestCase):
             self.initialize(task("A", policy="deterministic", checks=checks))
 
     def _reject_once(self, descriptor, round_index: int):
-        """Один круг приёмки: работа -> свежий верификатор -> отказ."""
+        """One acceptance round: work -> fresh verifier -> refusal."""
         self.activate(descriptor, f"work-thread-{round_index}")
         self.evidence("A", f"work {round_index}")
         verifier = complete_desktop_worker(
@@ -690,13 +690,14 @@ class VerificationLifecycleTests(unittest.TestCase):
         )
 
     def test_exhausted_revision_budget_rehires_instead_of_stalling(self) -> None:
-        """Отказ приёмки не имеет права убивать прогон.
+        """An acceptance refusal has no right to kill the run.
 
-        Прежде исчерпание бюджета ревизий ставило задачу в BLOCKED, и на
-        этом всё кончалось: ни replanner, ни Pipeline Engineer не заводились,
-        а команды, снимающей BLOCKED, в CLI не было. Теперь задача получает
-        свежего исполнителя на следующей ступени усилия. План, граф и
-        Definition of Done при этом не трогаются.
+        Before, exhausting the revision budget put the task into BLOCKED
+        and that was the end of it: neither the replanner nor the
+        Pipeline Engineer started, and the CLI had no command that lifted
+        BLOCKED. Now the task gets a fresh worker at the next effort
+        step. The plan, the graph and the Definition of Done are not
+        touched.
         """
 
         self.initialize(
@@ -727,7 +728,7 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertEqual(rehired[-1]["effort_to"], "high")
 
     def test_definition_of_done_survives_every_rehire(self) -> None:
-        """Меняется исполнитель и способ, а не планка."""
+        """The worker and the method change, not the bar."""
 
         self.initialize(
             task("A", policy="independent", verifier_role="reviewer", max_revisions=2)
@@ -741,11 +742,12 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertEqual(self.store.load().graph_version, 1)
 
     def test_hiring_ladder_ends_at_the_owner_without_unlocking_dependency(self) -> None:
-        """Лестница конечна: на её верху задача действительно встаёт.
+        """The ladder is finite: at its top the task really does stop.
 
-        Класс PRODUCTION по таксономии инцидентов принадлежит владельцу
-        продукта, и автоматический ремонт качества здесь запрещён. Но встать
-        она обязана наверху лестницы, а не на первом отказе.
+        By the incident taxonomy the PRODUCTION class belongs to the
+        product owner, and automatic quality repair is forbidden here.
+        But the task has to stop at the top of the ladder, not on the
+        first refusal.
         """
 
         self.initialize(
@@ -796,11 +798,11 @@ class VerificationLifecycleTests(unittest.TestCase):
 
 
     def test_a_task_at_the_top_of_the_ladder_does_not_freeze_its_neighbours(self) -> None:
-        """Встала одна задача - соседние, от неё не зависящие, идут дальше.
+        """One task stops - the neighbours that do not depend on it go on.
 
-        Прежняя дыра была двойной: задача умирала на первом отказе приёмки
-        и вместе с собой останавливала прогон. Перенайм закрывает первую
-        половину, эта проверка закрывает вторую.
+        The old hole had two halves: the task died on the first
+        acceptance refusal and stopped the run along with itself.
+        Rehiring closes the first half, this check closes the second.
         """
 
         payload = graph(task("A", policy="independent", verifier_role="reviewer", max_revisions=2))

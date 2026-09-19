@@ -80,7 +80,7 @@ class EscalationAfterRepairTests(unittest.TestCase):
         self.assertIs(phase, IncidentPhase.ESCALATE_TO_USER)
 
     def test_escalating_an_untouched_incident_is_still_refused(self) -> None:
-        """Разрешение не должно превратиться в всепрощение."""
+        """Permission must not turn into forgiving everything."""
 
         incident_id = self._incident()
         with self.assertRaises(PipelineIncidentError):

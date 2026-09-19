@@ -134,10 +134,11 @@ class V09ContractRegressionTests(unittest.TestCase):
         self.assertEqual(plan.execution_strategy, "auto")
 
     def test_start_skill_defaults_to_the_desktop_owned_v09_runtime(self) -> None:
-        """Поверхность больше не выбирается: она одна.
+        """The surface is no longer chosen: there is only one.
 
-        Флаг --worker-surface снят вместе с headless-путём, который не мог
-        выполниться. Контракт теперь в том, что другой поверхности нет.
+        The --worker-surface flag was removed together with the headless
+        path, which could not run. The contract now is that there is no
+        other surface.
         """
 
         from codex_autopilot.config import DESKTOP_OWNED_SURFACE, WORKER_SURFACES

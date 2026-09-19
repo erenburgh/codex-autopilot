@@ -32,18 +32,18 @@ from codex_autopilot.lifecycle_base import (
 
 
 class ProtocolRetryOutcomeTests(unittest.TestCase):
-    """Ответ протокольной ветки обязан быть собираемым.
+    """The outcome of the protocol branch must be constructible.
 
-    Первая версия этой ветки собирала `CompletionOutcome` без
-    обязательного поля `run_done`. Классификация была верной, тесты
-    зелёными - а при первом же настоящем срабатывании ветка падала
-    `TypeError`, и прогон вставал на ровном месте. Ветку тогда не
-    покрывал ни один тест: её сквозной прогон требует объёмного фейка
-    клиента App Server, и я это знала и всё равно выпустила.
+    The first version of this branch built `CompletionOutcome` without
+    the required `run_done` field. The classification was right, the
+    tests green - and on the first real firing the branch failed with
+    `TypeError`, and the run stopped out of nowhere. No test covered
+    that branch then: running it end to end needs a large fake of the
+    App Server client, and I knew that and shipped it anyway.
 
-    Этот тест дешёвый и закрывает именно тот промах: он собирает тот же
-    ответ, что и ветка, и падает, если у типа появится новое
-    обязательное поле.
+    This test is cheap and closes exactly that miss: it builds the same
+    outcome the branch builds, and fails if the type gains a new
+    required field.
     """
 
     def test_a_protocol_retry_outcome_is_constructible(self) -> None:
@@ -60,7 +60,7 @@ class ProtocolRetryOutcomeTests(unittest.TestCase):
         self.assertFalse(outcome.run_done)
 
     def test_the_dispatch_branch_builds_that_exact_outcome(self) -> None:
-        """Сверяем сборку в ветке с настоящим типом, а не с памятью."""
+        """Compare the build in the branch with the real type, not memory."""
 
         import ast
         import inspect
@@ -80,14 +80,20 @@ class ProtocolRetryOutcomeTests(unittest.TestCase):
                 for kw in node.keywords
             )
         ]
-        self.assertEqual(len(calls), 1, "протокольная ветка должна собирать ровно один ответ")
+        self.assertEqual(
+            len(calls), 1, "the protocol branch must build exactly one outcome"
+        )
         supplied = {kw.arg for kw in calls[0].keywords}
         required = {
             name
             for name, field in lifecycle_base.CompletionOutcome.__dataclass_fields__.items()
             if field.default is field.default_factory is __import__("dataclasses").MISSING
         }
-        self.assertEqual(required - supplied, set(), "ветка не заполняет обязательные поля")
+        self.assertEqual(
+            required - supplied,
+            set(),
+            "the branch does not fill the required fields",
+        )
 
 
 class ProtocolErrorClassTests(unittest.TestCase):
@@ -114,11 +120,11 @@ class ProtocolErrorClassTests(unittest.TestCase):
     def test_the_hook_path_still_blocks_because_the_class_is_a_lifecycle_error(
         self,
     ) -> None:
-        """Хуковый путь ловит DesktopLifecycleError и отвечает `block`.
+        """The hook path catches DesktopLifecycleError and answers `block`.
 
-        Новый класс обязан остаться его наследником: иначе воркер
-        перестал бы получать причину в том же ходе - то есть починка
-        одного пути сломала бы другой.
+        The new class must stay its subclass: otherwise the worker would
+        stop getting the reason in the same turn - that is, repairing
+        one path would break the other.
         """
 
         self.assertTrue(issubclass(WorkerProtocolError, DesktopLifecycleError))

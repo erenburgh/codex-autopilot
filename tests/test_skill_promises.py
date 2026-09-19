@@ -31,7 +31,7 @@ class LaunchReportPromiseTests(unittest.TestCase):
         self.assertIn("not visible", self.text)
 
     def test_the_skill_names_the_way_to_look(self) -> None:
-        """Невидимый отчёт допустим, молчание про него - нет."""
+        """An invisible report is allowed, silence about it is not."""
 
         self.assertIn("статус", self.text)
 
@@ -44,17 +44,18 @@ class PipelineEngineerPromiseTests(unittest.TestCase):
         self.text = SKILL.read_text(encoding="utf-8")
 
     def test_the_skill_says_the_engineer_is_created_as_a_worker(self) -> None:
-        """Прежде скилл честно говорил, что воркера не создаёт никто.
+        """Before, the skill said honestly that nobody creates the
+        worker.
 
-        Теперь создаёт - и обещание снова должно совпадать с рантаймом,
-        только в другую сторону.
+        Now something does - and the promise has to match the runtime
+        again, this time in the other direction.
         """
 
         self.assertIn("creates it as a visible worker task", self.text)
         self.assertNotIn("Nothing creates an engineer worker", self.text)
 
     def test_the_skill_states_the_engineer_repair_authority(self) -> None:
-        """R13: пользователь не участвует в выборе способа фикса."""
+        """R13: the user takes no part in choosing how the fix is made."""
 
         self.assertIn("full authority to repair", self.text)
         self.assertIn("The user does not choose the repair", self.text)
@@ -70,15 +71,15 @@ class PipelineEngineerPromiseTests(unittest.TestCase):
                 self.assertIn(command, self.text)
 
     def test_the_procedure_keeps_ambiguous_outcomes_stopped(self) -> None:
-        """Неизвестный побочный эффект - единственный случай, когда стоять
-        правильно. Замена задачи здесь раздвоила бы работу."""
+        """An unknown side effect is the one case where standing still
+        is right. Replacing the task here would split the work in two."""
 
         self.assertIn("AMBIGUOUS", self.text)
         self.assertIn("never guess", self.text)
 
 
 class CommandsInTheSkillExistTests(unittest.TestCase):
-    """Процедура бесполезна, если называет команду, которой нет."""
+    """A procedure is useless if it names a command that does not exist."""
 
     def test_every_named_helper_command_is_a_real_subcommand(self) -> None:
         import re
@@ -94,7 +95,7 @@ class CommandsInTheSkillExistTests(unittest.TestCase):
             for match in re.findall(r"`(relay-\w+|devops-[\w-]+)", SKILL.read_text(encoding="utf-8"))
         }
         missing = sorted(named - available)
-        self.assertEqual(missing, [], f"скилл называет несуществующие команды: {missing}")
+        self.assertEqual(missing, [], f"the skill names commands that do not exist: {missing}")
 
 
 if __name__ == "__main__":
@@ -102,13 +103,15 @@ if __name__ == "__main__":
 
 
 class EntrypointDefaultsTests(unittest.TestCase):
-    """M11-ENTRYPOINT-DEFAULTS: шаблон скилла - фактический дефолт прогона.
+    """M11-ENTRYPOINT-DEFAULTS: the skill template is the actual default
+    of a run.
 
-    plan.py объявляет schema-3 умолчанием auto и двух воркеров, но план
-    пишет не plan.py, а планировщик по образцу из SKILL.md. Образец нёс
-    execution_strategy="serial" и max_parallel_workers=1, то есть каждый
-    новый прогон входил в serial явно и никогда не достигал дефолта. Это
-    сильнее умолчания: явное значение в файле нельзя переопределить.
+    plan.py declares auto and two workers as the schema-3 default, but
+    the plan is written by the planner, from the sample in SKILL.md, not
+    by plan.py. The sample carried execution_strategy="serial" and
+    max_parallel_workers=1, so every new run entered serial explicitly
+    and never reached the default. That is stronger than a default: an
+    explicit value in the file cannot be overridden.
     """
 
     SKILLS = (
@@ -135,7 +138,7 @@ class EntrypointDefaultsTests(unittest.TestCase):
                 self.assertNotIn('"execution_strategy":"serial"', text)
 
     def test_both_templates_explain_that_siblings_are_the_parallelism(self) -> None:
-        """Дефолт auto ничего не даёт графу, выстроенному в цепочку."""
+        """The auto default gives nothing to a graph built as a chain."""
 
         for skill in self.SKILLS:
             with self.subTest(skill=skill.name):
@@ -153,14 +156,15 @@ class EntrypointDefaultsTests(unittest.TestCase):
 
 
 class RoleNameLanguageTests(unittest.TestCase):
-    """Роль - профессия, а профессии во всей среде названы по-английски.
+    """A role is a profession, and professions across this environment
+    are named in English.
 
-    Правило языка велело писать в языке прогона всё, кроме протокольных
-    идентификаторов, и планировщик послушно переводил имена ролей. А
-    формат заголовка ветки дописывает английские Verifier и Verify -
-    получалось "Инженер основания Verifier | M1 | Verify ...", половина
-    на половину. Это не вкусовщина: смешанный заголовок производит сам
-    код, а не человек.
+    The language rule said to write everything in the run language
+    except protocol identifiers, and the planner dutifully translated
+    role names. But the branch title format appends the English Verifier
+    and Verify - what came out was "Инженер основания Verifier | M1 |
+    Verify ...", half and half. This is not taste: the mixed title is
+    produced by the code itself, not by a person.
     """
 
     SKILLS = (
@@ -178,7 +182,8 @@ class RoleNameLanguageTests(unittest.TestCase):
                 self.assertIn("Resilience Engineer", text)
 
     def test_both_skills_say_why_rather_than_only_what(self) -> None:
-        """Правило без причины планировщик переиначит при первом конфликте."""
+        """A rule without its reason is the one the planner bends at the
+        first conflict."""
 
         for skill in self.SKILLS:
             with self.subTest(skill=skill.name):
@@ -187,7 +192,7 @@ class RoleNameLanguageTests(unittest.TestCase):
                 self.assertIn("half-translated title", text)
 
     def test_the_title_format_really_appends_english_words(self) -> None:
-        """Обоснование правила проверяется, а не принимается на слово."""
+        """The reason behind the rule is checked, not taken on trust."""
 
         from codex_autopilot.thread_titles import verifier_thread_title
 
@@ -197,20 +202,21 @@ class RoleNameLanguageTests(unittest.TestCase):
 
 
 def _flat(path: Path) -> str:
-    """Текст без переносов: правило проверяется по смыслу, а не по вёрстке."""
+    """Text without line breaks: the rule is checked by meaning, not by
+    layout."""
 
     return " ".join(path.read_text(encoding="utf-8").split())
 
 
 class LiveVerificationRuleTests(unittest.TestCase):
-    """DoD обязан требовать хотя бы одной настоящей проверки.
+    """The DoD has to require at least one real check.
 
-    Замерено на codex-thread-tools: 28 зелёных тестов на поддельном
-    транспорте, независимый проверяющий принял работу, а команда
-    projects упала на первом живом вызове -
-    "project/list requires experimentalApi capability". Возможность не
-    объявлялась в рукопожатии. Подделка этого поймать не могла, и
-    проверяющий тоже - контракт этого не требовал.
+    Measured on codex-thread-tools: 28 green tests on a fake transport,
+    an independent verifier accepted the work, and the projects command
+    fell over on the first live call -
+    "project/list requires experimentalApi capability". The capability
+    was not announced in the handshake. The fake could not catch that,
+    and neither could the verifier - the contract did not require it.
     """
 
     SKILLS = (
@@ -228,7 +234,8 @@ class LiveVerificationRuleTests(unittest.TestCase):
                 self.assertIn("not only against a double", text)
 
     def test_both_skills_keep_the_measured_reason(self) -> None:
-        """Правило без случая, который его породил, переиначат первым же."""
+        """A rule without the case that produced it is the first one to
+        be bent."""
 
         for skill in self.SKILLS:
             with self.subTest(skill=skill.name):
@@ -236,7 +243,8 @@ class LiveVerificationRuleTests(unittest.TestCase):
                 self.assertIn("requires experimentalApi capability", text)
 
     def test_both_skills_bound_the_live_item(self) -> None:
-        """«Проверяй вживую» без границ - это разрешение ломать чужое."""
+        """A "check it live" rule without bounds is permission to break
+        other people's systems."""
 
         for skill in self.SKILLS:
             with self.subTest(skill=skill.name):
@@ -245,7 +253,7 @@ class LiveVerificationRuleTests(unittest.TestCase):
                 self.assertIn("never a destructive call", text)
 
     def test_both_skills_name_the_honest_way_out(self) -> None:
-        """Недостижимая система - названный пробел, а не вторая подделка."""
+        """An unreachable system is a named gap, not a second fake."""
 
         for skill in self.SKILLS:
             with self.subTest(skill=skill.name):

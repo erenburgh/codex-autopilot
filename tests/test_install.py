@@ -64,7 +64,7 @@ class InstallerTests(unittest.TestCase):
         import plistlib
 
         plist = home / "Library/LaunchAgents/com.codex-autopilot.wake.plist"
-        self.assertTrue(plist.is_file(), "агент будильника не установлен")
+        self.assertTrue(plist.is_file(), "the wake-up agent is not installed")
         agent = plistlib.loads(plist.read_bytes())
         self.assertEqual(agent["Label"], "com.codex-autopilot.wake")
         self.assertEqual(
@@ -117,7 +117,8 @@ class InstallerTests(unittest.TestCase):
         self.assertLess(
             command_text.index("plugin remove codex-autopilot-adaptive@codex-autopilot-local"),
             command_text.index("plugin add codex-autopilot-adaptive@codex-autopilot-local"),
-            "снятие обязано идти до установки, иначе кэш не обновится",
+            "the removal has to come before the install, otherwise the "
+            "cache is not refreshed",
         )
         self.assertNotIn("config set", command_text)
         self.assertNotIn("danger", command_text)
@@ -134,10 +135,11 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(preserved_v07.exists())
         self.assertFalse(
             stray.parent.exists(),
-            "постороннее в дереве кэша Codex обязано быть убрано: оттуда возвращается чужая копия",
+            "a stray in the Codex cache tree has to be removed: a foreign "
+            "copy comes back from there",
         )
         archives = sorted((install_root / "legacy-backups").glob("previous-installs-*.zip"))
-        self.assertTrue(archives, "прежние установки обязаны сохраниться в архиве")
+        self.assertTrue(archives, "previous installs have to be kept in the archive")
         import zipfile
 
         kept = {}

@@ -62,7 +62,7 @@ class ExitProtocolTests(unittest.TestCase):
                 )
 
     def test_a_bare_escalation_is_refused(self) -> None:
-        """Эскалация без причины - способ обойти R13."""
+        """An escalation without a reason is a way around R13."""
 
         with self.assertRaises(DesktopLifecycleError):
             parse_pipeline_engineer_status(
@@ -90,7 +90,8 @@ class ExitProtocolTests(unittest.TestCase):
 
 
 class AuthorityTests(unittest.TestCase):
-    """Инженеру названы настоящие команды, а не описан несуществующий путь."""
+    """The engineer is named real commands, not described a path that
+    does not exist."""
 
     def test_the_prompt_names_commands_that_exist(self) -> None:
         import re
@@ -107,7 +108,7 @@ class AuthorityTests(unittest.TestCase):
         available: set[str] = set()
         for action in parser()._subparsers._group_actions:
             available.update(action.choices)
-        self.assertTrue(named, "промпт не называет ни одной команды")
+        self.assertTrue(named, "the prompt names no command at all")
         self.assertEqual(sorted(named - available), [])
 
     def test_the_prompt_states_full_repair_authority(self) -> None:
@@ -125,12 +126,13 @@ if __name__ == "__main__":
 
 
 class EngineerIsActuallyReservedTests(unittest.TestCase):
-    """Сквозная проверка: инцидент в фазе PIPELINE_ENGINEER даёт воркера.
+    """End-to-end check: an incident in the PIPELINE_ENGINEER phase
+    gives a worker.
 
-    Этого теста не хватало, и цена была прямой: новый код сослался на имя,
-    чей импорт сняли раньше как неиспользуемый, а набор из проверок по
-    частям - заголовок, разбор статуса, текст промпта - NameError не видел.
-    Поймал его только живой прогон.
+    This test was missing, and the price was direct: new code referred to
+    a name whose import had been dropped earlier as unused, and a set of
+    piecewise checks - the title, the status parsing, the prompt text -
+    did not see the NameError. Only a live run caught it.
     """
 
     def setUp(self) -> None:
@@ -211,13 +213,15 @@ class EngineerIsActuallyReservedTests(unittest.TestCase):
         self.assertEqual(len(self.engineer_sessions()), 1)
 
     def test_the_engineer_holds_no_resource_ownership(self) -> None:
-        """Ресурсы держит сорвавшаяся сессия; чинить придёт незаблокированный."""
+        """The failed session holds the resources; the one who comes to
+        repair is not blocked."""
 
         self.reserve(self.cfg, relay_owner_thread_id="owner-2")
         self.assertIsNone(self.engineer_sessions()[0]["resource_ownership_token"])
 
     def test_the_engineer_outranks_ordinary_work(self) -> None:
-        """Сломанный пайплайн старше задач: пока тикет открыт, работы нет."""
+        """A broken pipeline outranks tasks: while a ticket is open
+        there is no work."""
 
         self.reserve(self.cfg, relay_owner_thread_id="owner-2")
         self.assertEqual(self.reserve(self.cfg, relay_owner_thread_id="owner-3"), ())
@@ -228,12 +232,13 @@ class EngineerIsActuallyReservedTests(unittest.TestCase):
 
 
 class ServerViewTests(unittest.TestCase):
-    """Справку о ветках собирает диспетчер, а не инженер.
+    """The dispatcher gathers the report on threads, not the engineer.
 
-    Инженер, добывая её сам, выходил питоном за пределы рабочего каталога
-    и упирался в запрос доступа, на который автопилот принципиально не
-    отвечает. Замерено: два тикета подряд, каждый - прерванный ход на этом
-    запросе. У диспетчера соединение уже открыто и разрешений не требует.
+    Getting it himself, the engineer stepped outside the working directory
+    with python and ran into an access request, which the autopilot on
+    principle does not answer. Measured: two tickets in a row, each one a
+    turn interrupted on that request. The dispatcher already has the
+    connection open and needs no permissions.
     """
 
     def view(self, client, sessions, affected=("M11",)):
@@ -277,7 +282,7 @@ class ServerViewTests(unittest.TestCase):
         self.assertEqual(view["threads"], [])
 
     def test_turns_are_never_requested(self) -> None:
-        """Стенограммы воркеров инженеру не положены."""
+        """Worker transcripts are not the engineer's to read."""
 
         from unittest import mock
 
@@ -296,16 +301,18 @@ class ServerViewTests(unittest.TestCase):
 
 
 class PlanChangeUserRequestTests(unittest.TestCase):
-    """user_request переносит runtime, а не повторяет реплэннер.
+    """The runtime carries user_request over; the replanner does not
+    repeat it.
 
-    Промпт требовал сохранить его дословно. В живом прогоне M11 это 35 234
-    символа: модель, переписывающая граф, такую строку не воспроизводит, и
-    ЛЮБАЯ законная смена плана отклонялась целиком с "plan changes must not
-    replace the original user request". Ход реплэннера при этом проходил
-    успешно - отвергался результат.
+    The prompt demanded it be preserved verbatim. On the live run M11 that
+    is 35 234 characters: a model rewriting the graph does not reproduce
+    such a string, and ANY lawful plan change was rejected whole with
+    "plan changes must not replace the original user request". The
+    replanner's turn passed successfully - it was the result that was
+    thrown away.
 
-    Перенос строже прежней проверки: эхо можно подделать, а поле, которое
-    не читается из ответа, изменить нельзя вовсе.
+    Carrying it over is stricter than the old check: an echo can be faked,
+    but a field that is not read from the answer cannot be changed at all.
     """
 
     def plan_data(self, **overrides):
@@ -325,7 +332,8 @@ class PlanChangeUserRequestTests(unittest.TestCase):
         self.assertEqual(candidate.user_request, current.user_request)
 
     def test_a_returned_user_request_cannot_replace_the_original(self) -> None:
-        """Поле не читается из ответа, поэтому подмена невозможна."""
+        """The field is not read from the answer, so a substitution is
+        impossible."""
 
         from codex_autopilot.plan import validate_plan, validate_plan_change
 
@@ -338,7 +346,7 @@ class PlanChangeUserRequestTests(unittest.TestCase):
         self.assertEqual(candidate.user_request, "исходный запрос")
 
     def test_goal_stays_strict(self) -> None:
-        """goal — 542 символа, модель повторяет его надёжно."""
+        """goal is 542 characters - the model repeats it reliably."""
 
         from codex_autopilot.plan import validate_plan, validate_plan_change
 
@@ -359,13 +367,14 @@ class PlanChangeUserRequestTests(unittest.TestCase):
 
 
 class ResolvedMustHandOverTests(unittest.TestCase):
-    """Починка без преемника завершением не является.
+    """A repair without a successor is not a completion.
 
-    В живом прогоне инженер закрыл инцидент, его процесс штатно вышел, а
-    запускать задачу стало некому: RESOLVED возвращал пустой список
-    преемников, прогон уходил в READY/PREPARING и молча стоял. Причинный
-    предшественник к этому моменту мёртв - именно его смерть и была
-    инцидентом, - поэтому причинным звеном служит сам ход инженера.
+    On a live run the engineer closed the incident, his process exited
+    normally, and there was no one left to start the task: RESOLVED
+    returned an empty list of successors, the run went to READY/PREPARING
+    and stood there silently. By that moment the causal predecessor is
+    dead - its death was the incident - so the engineer's own turn serves
+    as the causal link.
     """
 
     def setUp(self) -> None:
@@ -521,14 +530,15 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         )
 
     def test_a_retry_due_while_the_engineer_worked_is_picked_up(self) -> None:
-        """Срок повтора истёк, пока инженер чинил - задачу обязаны поднять.
+        """The retry fell due while the engineer worked - the task must
+        be started.
 
-        Замерено на живом прогоне: инженер закрыл инцидент и вышел, у
-        задачи срок повтора истёк двенадцатью минутами раньше, и она
-        осталась в RETRY_WAIT. Резервирование увидело RETRY_WAIT и
-        припарковало прогон в WAITING_RATE_LIMIT - при том что никакого
-        барьера лимитов не было вовсе. Диспетчер вышел, будить стало
-        некому, прогон встал навсегда.
+        Measured on a live run: the engineer closed the incident and
+        exited, the task's retry had fallen due twelve minutes earlier,
+        and it stayed in RETRY_WAIT. Reservation saw RETRY_WAIT and parked
+        the run in WAITING_RATE_LIMIT - while there was no rate-limit
+        barrier at all. The dispatcher exited, there was no one left to
+        wake it, and the run stood forever.
         """
 
         outcome = self.resolve_and_complete(
@@ -558,11 +568,12 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         self.assertNotEqual(state.phase, "PIPELINE_ENGINEER_NO_SUCCESSOR")
 
     def test_the_engineer_turn_is_visible_to_the_causal_barrier(self) -> None:
-        """Барьер читает turn_completed, а не статус сессии.
+        """The barrier reads turn_completed, not the session status.
 
-        Прежде инженер писал только `pipeline_engineer_completed`: его
-        завершённый ход оставался невидимым, и преемника некому было
-        поднять - `automatic relay has no completed causal predecessor`.
+        Before this the engineer wrote only
+        `pipeline_engineer_completed`: his completed turn stayed
+        invisible, and there was no one to start the successor -
+        `automatic relay has no completed causal predecessor`.
         """
 
         self.resolve_and_complete("готово\nPIPELINE_ENGINEER_STATUS: RESOLVED")
@@ -573,16 +584,20 @@ class ResolvedMustHandOverTests(unittest.TestCase):
             if item.get("event") == "turn_completed"
             and item.get("thread_id") == "engineer-thread"
         ]
-        self.assertTrue(completed, "ход инженера не отмечен как завершённый")
+        self.assertTrue(
+            completed, "the engineer's turn is not marked completed"
+        )
 
     def test_the_engineer_marks_the_successor_as_its_own_transition(self) -> None:
-        """Без этого учёта диспетчер отказывается вести цепочку дальше.
+        """Without this record the dispatcher refuses to carry the chain
+        further.
 
-        В живом прогоне инженер закрыл инцидент и назначил преемника, но
-        не отметил его у себя: следующий шаг ответил `current dispatcher
-        does not own the completed-to-successor transition`, резервация
-        повисла в CREATE_REQUESTED, и поверх закрытого инцидента
-        открылся новый - уже о падении самого диспетчера.
+        On a live run the engineer closed the incident and appointed a
+        successor, but did not record it on himself: the next step
+        answered `current dispatcher does not own the
+        completed-to-successor transition`, the reservation hung in
+        CREATE_REQUESTED, and on top of the closed incident a new one
+        opened - this time about the dispatcher's own crash.
         """
 
         outcome = self.resolve_and_complete(
@@ -601,7 +616,8 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         )
 
     def test_the_engineer_thread_is_the_causal_link_for_the_successor(self) -> None:
-        """Релей выполняет ход инженера: другого живого предшественника нет."""
+        """The relay runs on the engineer's turn: there is no other live
+        predecessor."""
 
         self.resolve_and_complete("готово\nPIPELINE_ENGINEER_STATUS: RESOLVED")
         successor = next(
@@ -614,14 +630,15 @@ class ResolvedMustHandOverTests(unittest.TestCase):
 
 
 class FailureBeforeTheRequestIsNotAmbiguousTests(unittest.TestCase):
-    """Отказ до отправки запроса известен, а не неоднозначен.
+    """A failure before the request is sent is known, not ambiguous.
 
-    В живом прогоне `installed_plugin_root` стоял среди аргументов
-    `client.start_thread`: он падал уже после `create_invoked = True`,
-    хотя ни одного `thread/start` в логе диспетчера не было. Отказ
-    записывался как UNKNOWN, порождал тикет AMBIGUOUS_SIDE_EFFECT, а
-    такой класс по устройству запрещает и автопочинку, и дежурного
-    инженера. Прогон вставал без выхода.
+    On a live run `installed_plugin_root` sat among the arguments of
+    `client.start_thread`: it failed after `create_invoked = True` was
+    already set, although there was not a single `thread/start` in the
+    dispatcher's log. The failure was recorded as UNKNOWN, it produced an
+    AMBIGUOUS_SIDE_EFFECT ticket, and that class by design forbids both
+    the automatic repair and the on-call engineer. The run stood with no
+    way out.
     """
 
     def test_the_plugin_root_is_resolved_before_the_flag_is_armed(self) -> None:
@@ -641,11 +658,12 @@ class FailureBeforeTheRequestIsNotAmbiguousTests(unittest.TestCase):
         self.assertLess(
             resolve,
             armed,
-            "корень плагина обязан резолвиться до взведения create_invoked",
+            "the plugin root must be resolved before create_invoked is armed",
         )
 
     def test_the_flag_is_not_armed_from_inside_the_call_arguments(self) -> None:
-        """Вызов не должен считать отправленным то, что ещё собирается."""
+        """The call must not count as sent what is still being
+        assembled."""
 
         import inspect
 
@@ -658,11 +676,12 @@ class FailureBeforeTheRequestIsNotAmbiguousTests(unittest.TestCase):
 
 
 class EscalationAlwaysHasAWayBackTests(unittest.TestCase):
-    """Ответ пользователя на эскалацию не должен зависеть от фазы прогона.
+    """The user's answer to an escalation must not depend on the run
+    phase.
 
-    Фазу `PIPELINE_ENGINEER_ESCALATED` выставляет только завершение
-    инженера. Инцидент, эскалированный маршрутизацией, оставлял прогон в
-    прежней фазе - и возобновление молча ничего не закрывало.
+    The `PIPELINE_ENGINEER_ESCALATED` phase is set only by the engineer's
+    completion. An incident escalated by routing left the run in its
+    previous phase - and the resume silently closed nothing.
     """
 
     # The resume's independence from the run phase is checked by execution:
@@ -670,12 +689,12 @@ class EscalationAlwaysHasAWayBackTests(unittest.TestCase):
 
 
 class ReplaceStartsWithoutInheritedTicketsTests(unittest.TestCase):
-    """Новый прогон не наследует тикеты прежнего.
+    """A new run does not inherit the previous run's tickets.
 
-    В тикетах нет run_id, а дежурный инженер старше любой работы: два
-    открытых тикета прошлого прогона вставали поперёк нового ещё до
-    первой задачи. `--replace` чистил план, состояние и логи - и не
-    трогал хранилище инцидентов.
+    Tickets carry no run_id, and the on-call engineer outranks any work:
+    two open tickets from the previous run stood across the new one before
+    its first task. `--replace` cleaned the plan, the state and the logs -
+    and did not touch the incident store.
     """
 
     def setUp(self) -> None:
@@ -750,7 +769,8 @@ class ReplaceStartsWithoutInheritedTicketsTests(unittest.TestCase):
         self.assertEqual(self.store_cls(self.state_dir).load()["incidents"], [])
 
     def test_the_previous_tickets_are_kept_beside_the_run(self) -> None:
-        """Это запись о поломке: откладывается, а не удаляется."""
+        """This is a record of a breakage: it is set aside, not
+        deleted."""
 
         self.replace_run()
         archived = sorted(self.state_dir.glob("pipeline-incidents.*.json"))
@@ -762,15 +782,14 @@ class ReplaceStartsWithoutInheritedTicketsTests(unittest.TestCase):
 
 
 class HookTimeoutsSurviveCodexLoadTests(unittest.TestCase):
-    """Codex не должен переписывать наши хуки при загрузке.
+    """Codex must not rewrite our hooks while loading them.
 
-    Пользователь весь день жаловался, что доверие хукам слетает перед
-    каждой новой задачей. Причина нашлась на её же экране: Codex писал
-    `clamping Interrupt hook timeout to 3s` и показывал все три хука в
-    состоянии Review. Мы объявляли Interrupt с таймаутом 30, Codex
-    зажимал его до своего предела - определение переставало совпадать с
-    доверенным, и весь файл уходил на повторный разбор при каждой
-    загрузке.
+    The user complained all day that hook trust fell off before every new
+    task. The cause turned up on her own screen: Codex wrote `clamping
+    Interrupt hook timeout to 3s` and showed all three hooks in the Review
+    state. We declared Interrupt with a timeout of 30, Codex clamped it to
+    its own limit - the definition stopped matching the trusted one, and
+    the whole file went back for re-parsing on every load.
     """
 
     MAX_INTERRUPT_TIMEOUT = 3
@@ -780,7 +799,7 @@ class HookTimeoutsSurviveCodexLoadTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parent.parent
         files = sorted(root.glob("plugins/*/hooks/hooks.json"))
-        self.assertTrue(files, "файлы хуков не найдены")
+        self.assertTrue(files, "hook files not found")
         return [(p, _json.loads(p.read_text(encoding="utf-8"))) for p in files]
 
     def test_the_interrupt_timeout_is_never_above_what_codex_accepts(self) -> None:
@@ -790,12 +809,14 @@ class HookTimeoutsSurviveCodexLoadTests(unittest.TestCase):
                     self.assertLessEqual(
                         hook["timeout"],
                         self.MAX_INTERRUPT_TIMEOUT,
-                        f"{path.parts[-3]}: Codex зажмёт этот таймаут и потребует "
-                        "заново доверить все хуки файла",
+                        f"{path.parts[-3]}: Codex will clamp this timeout "
+                        "and will demand that every hook in the file be "
+                        "trusted again",
                     )
 
     def test_both_profiles_declare_the_same_interrupt_timeout(self) -> None:
-        """Профили отличаются составом, а не поведением хуков."""
+        """The profiles differ in what they contain, not in how the
+        hooks behave."""
 
         seen = {
             hook["timeout"]
@@ -803,16 +824,17 @@ class HookTimeoutsSurviveCodexLoadTests(unittest.TestCase):
             for group in payload["hooks"].get("Interrupt", [])
             for hook in group["hooks"]
         }
-        self.assertEqual(len(seen), 1, f"профили разошлись: {seen}")
+        self.assertEqual(len(seen), 1, f"the profiles diverged: {seen}")
 
 
 class RepeatedFailureIsNotACrashTests(unittest.TestCase):
-    """Второй отказ той же задачи не должен убивать диспетчер.
+    """A second failure of the same task must not kill the dispatcher.
 
-    В живом прогоне это открыло тикет поверх тикета: настоящая поломка
-    уже ждала в RETRY_WAIT, пришла вторая запись отказа, машина
-    состояний отвергла переход RETRY_WAIT -> RETRY_WAIT, релей умер, и
-    появился второй инцидент - уже о падении самого диспетчера.
+    On a live run this opened a ticket on top of a ticket: the real fault
+    was already waiting in RETRY_WAIT, a second failure record arrived,
+    the state machine rejected the RETRY_WAIT -> RETRY_WAIT transition,
+    the relay died, and a second incident appeared - this time about the
+    dispatcher's own crash.
     """
 
     def setUp(self) -> None:
@@ -831,12 +853,11 @@ class RepeatedFailureIsNotACrashTests(unittest.TestCase):
         )
 
     def park_in_retry_wait(self) -> None:
-        """Так это делает восстановление: прямым присваиванием.
+        """This is how recovery does it: by direct assignment.
 
-        `resilience.py` ставит RETRY_WAIT в обход машины состояний, когда
-        разбирает мёртвый диспетчер. Следом приходит запись отказа - и
-        встречает задачу уже в том состоянии, в которое собиралась её
-        перевести.
+        `resilience.py` sets RETRY_WAIT around the state machine when it
+        clears up a dead dispatcher. The failure record arrives next - and
+        meets the task already in the state it was about to move it to.
         """
 
         from codex_autopilot.task_state import TaskState
@@ -858,7 +879,7 @@ class RepeatedFailureIsNotACrashTests(unittest.TestCase):
         )
 
     def test_the_failure_is_still_recorded(self) -> None:
-        """Идемпотентность не должна превращаться в молчание."""
+        """Idempotence must not turn into silence."""
 
         self.park_in_retry_wait()
         self.fail_once(self.failed_token)
@@ -872,13 +893,13 @@ class RepeatedFailureIsNotACrashTests(unittest.TestCase):
 
 
 class ResolvedIncidentResumesTheRunItselfTests(unittest.TestCase):
-    """После починки прогон продолжается сам, без оператора.
+    """After a repair the run continues by itself, without an operator.
 
-    Это и есть разница между «пайплайн чинится» и «пайплайн
-    автоматический». Резервация, созданная ДО инцидента, новой не
-    является, и обычный резерватор её не вернёт: она так и висела в
-    CREATE_REQUESTED, пока человек не возобновит прогон руками. Каждая
-    починка требовала оператора.
+    This is the difference between "the pipeline gets repaired" and "the
+    pipeline is automatic". A reservation created BEFORE the incident is
+    not a new one, and the ordinary reserver will not return it: it hung
+    in CREATE_REQUESTED until a human resumed the run by hand. Every
+    repair needed an operator.
     """
 
     def orphan(self, **extra):
@@ -915,7 +936,8 @@ class ResolvedIncidentResumesTheRunItselfTests(unittest.TestCase):
         self.assertEqual([item.task_id for item in found], ["M1"])
 
     def test_a_reservation_that_already_has_a_thread_is_left_alone(self) -> None:
-        """Ветка есть - побочный эффект был, поднимать заново нельзя."""
+        """A thread exists - the side effect happened, it must not be
+        started again."""
 
         from codex_autopilot.lifecycle_completion import _relayable_descriptors_without_a_thread
 
@@ -932,18 +954,19 @@ class ResolvedIncidentResumesTheRunItselfTests(unittest.TestCase):
 
 
 class EveryCompletionPathRecordsOwnershipTests(unittest.TestCase):
-    """Кто резервирует преемника - тот отмечает переход своим.
+    """Whoever reserves the successor records the transition as its own.
 
-    Барьер `adopt_automatic_dispatcher_successor` проверяет два поля у
-    завершившейся сессии: automatic_successor_tokens и ADVANCING. Без
-    них он отказывается вести цепочку словами "current dispatcher does
-    not own the completed-to-successor transition", резервация повисает,
-    и поверх неё открывается тикет о падении диспетчера.
+    The `adopt_automatic_dispatcher_successor` barrier checks two fields
+    on the completed session: automatic_successor_tokens and ADVANCING.
+    Without them it refuses to carry the chain, in the words "current
+    dispatcher does not own the completed-to-successor transition", the
+    reservation hangs, and on top of it a ticket opens about the
+    dispatcher's crash.
 
-    Путей завершения три - воркер, дежурный инженер, планировщик. Я
-    чинила их по одному, каждый раз после того, как прогон вставал.
-    Этот тест закрывает класс: любая новая ветка, резервирующая
-    преемника, обязана вести тот же учёт.
+    There are three completion paths - the worker, the on-call engineer,
+    the scheduler. I fixed them one at a time, each time after the run had
+    stood. This test closes the class: any new branch that reserves a
+    successor must keep the same record.
     """
 
     def test_no_completion_path_reserves_without_recording(self) -> None:
@@ -967,11 +990,13 @@ class EveryCompletionPathRecordsOwnershipTests(unittest.TestCase):
         self.assertEqual(
             offenders,
             [],
-            "эти пути резервируют преемника и не отмечают владение переходом",
+            "these paths reserve a successor and do not record ownership "
+            "of the transition",
         )
 
     def test_the_barrier_still_checks_both_fields(self) -> None:
-        """Иначе тест выше охранял бы уже ненужное правило."""
+        """Otherwise the test above would guard a rule that is no longer
+        needed."""
 
         import inspect
 

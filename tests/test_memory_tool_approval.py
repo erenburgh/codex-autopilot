@@ -28,7 +28,7 @@ ACCEPTED = {"approve", "prompt", "writes"}
 class MemoryToolApprovalTests(unittest.TestCase):
     def manifests(self):
         found = sorted(PLUGINS.glob("*/.mcp.json"))
-        self.assertTrue(found, "манифесты MCP не найдены")
+        self.assertTrue(found, "no MCP manifests were found")
         for path in found:
             yield path, json.loads(path.read_text(encoding="utf-8"))
 
@@ -46,7 +46,7 @@ class MemoryToolApprovalTests(unittest.TestCase):
                         )
 
     def test_the_memory_tool_is_approved_without_asking(self) -> None:
-        """Иначе прогон упирается в человека на каждом свежем воркере."""
+        """Otherwise the run walks into a human on every fresh worker."""
 
         for path, data in self.manifests():
             server = data["mcpServers"]["codex_autopilot_memory"]
@@ -65,14 +65,15 @@ if __name__ == "__main__":
 
 
 class PluginCacheConsistencyTests(unittest.TestCase):
-    """Codex обязан грузить ту же копию плагина, что установлена.
+    """Codex has to load the same copy of the plugin that is installed.
 
-    Он читает плагин из своего кэша, а рантайм - из каталога установки.
-    Пока в кэше оставалась прежняя копия, грузилась она: у пользователя
-    стоял 0.9.7, а работал 0.9.0 - с объявлением Interrupt на 30 секунд.
-    Codex зажимает его до 3, переписывает файл, хэш меняется, и доверие
-    Stop-хука слетает на каждой загрузке. Со стороны это неотличимо от
-    "хуки слетают сами", и повторным доверием не лечится.
+    It reads the plugin from its own cache, and the runtime reads it from
+    the install directory. While the previous copy stayed in the cache, it
+    was the one loaded: the user had 0.9.7 installed and 0.9.0 running -
+    with Interrupt declared at 30 seconds. Codex clamps it to 3, rewrites
+    the file, the hash changes, and Stop-hook trust drops on every load.
+    From the outside this is indistinguishable from "the hooks drop by
+    themselves", and trusting them again does not cure it.
     """
 
     def setUp(self) -> None:
@@ -125,14 +126,16 @@ class PluginCacheConsistencyTests(unittest.TestCase):
         self.assertIn("1.0.0-beta", detail)
 
     def test_two_copies_fail_even_when_the_first_one_matches(self) -> None:
-        """Лишняя копия опасна сама по себе: выбирает не наш код, а Codex."""
+        """A spare copy is dangerous in itself: Codex chooses it, our code
+        does not.
+        """
 
         self._cache("codex-autopilot-adaptive", self.INSTALLED, "9.9.9-beta")
         status, detail = self.state(self.INSTALLED)
         self.assertEqual(status, "FAIL", detail)
 
     def test_a_source_tree_is_not_compared_with_a_machine_cache(self) -> None:
-        """Без метки установщика перед нами исходники, а не установка."""
+        """Without the installer mark this is a source tree, not an install."""
 
         self._cache("codex-autopilot-adaptive", "1.0.0-beta")
         status, _ = self.state("7.7.7-beta")

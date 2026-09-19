@@ -48,8 +48,8 @@ def healthcheck(passed: bool = True) -> HealthcheckResult:
 
 class SignatureTests(unittest.TestCase):
     def test_the_same_failure_under_different_signal_ids_shares_a_signature(self) -> None:
-        """В живом прогоне два инцидента были одной поломкой, разведённой
-        случайной частью signal_id."""
+        """In a live run two incidents were one failure, pulled apart by
+        the random part of signal_id."""
 
         self.assertEqual(
             incident_signature(signal("attempt-one")),
@@ -57,7 +57,8 @@ class SignatureTests(unittest.TestCase):
         )
 
     def test_the_same_failure_on_another_task_shares_a_signature(self) -> None:
-        """Отказ транспорта на M4 и на M9 - одна инфраструктурная поломка."""
+        """A transport failure on M4 and on M9 is one infrastructure
+        failure."""
 
         self.assertEqual(
             incident_signature(signal("a", task="M4")),
@@ -88,9 +89,9 @@ class StoreTestCase(unittest.TestCase):
 
 
 class PersistedReservationTests(StoreTestCase):
-    """Состояние с резервациями не читалось: TransportStatus и AuthorityKind
-    не были определены ни в одном коммите, а ни один тест резерваций не
-    создавал. В живом прогоне они есть."""
+    """State with reservations did not load: TransportStatus and
+    AuthorityKind were not defined in any commit, and no test created a
+    reservation. In a live run they are there."""
 
     def write_state(self, reservation: dict) -> None:
         import json
@@ -149,7 +150,8 @@ class PersistedReservationTests(StoreTestCase):
             self.store.load()
 
     def test_state_from_a_version_without_the_signature_ledger_loads(self) -> None:
-        """Реестр добавлен позже и намеренно не поднимает версию схемы."""
+        """The ledger was added later and deliberately does not raise the
+        schema version."""
 
         self.write_state(
             {
@@ -179,7 +181,8 @@ class RecurrenceTests(StoreTestCase):
         self.assertIn("incident_recurrence_observed", events)
 
     def test_reopening_the_same_signal_is_not_a_recurrence(self) -> None:
-        """Повторная доставка одного сигнала - тот же тикет, не второй случай."""
+        """A redelivery of one signal is the same ticket, not a second
+        occurrence."""
 
         self.store.open_incident(signal("one"), at="t1")
         self.store.open_incident(signal("one"), at="t2")
@@ -202,7 +205,7 @@ class TwoLevelRecoveryTests(StoreTestCase):
         )
 
     def promoted_incident(self) -> dict:
-        """Довести подпись до выученного раннбука через уровень 2."""
+        """Take a signature up to a learned runbook through level 2."""
 
         actions = [READ_ONLY_DIAGNOSTIC_ACTIONS[0], READ_ONLY_DIAGNOSTIC_ACTIONS[1]]
         for index in range(PROMOTION_THRESHOLD):
@@ -283,7 +286,7 @@ class TwoLevelRecoveryTests(StoreTestCase):
 
 
 class KnownRecoveryTests(TwoLevelRecoveryTests):
-    """Уровень 1 одним заходом: слот не удерживается между вызовами."""
+    """Level 1 in one pass: the slot is not held between calls."""
 
     def test_known_failure_is_recovered_without_an_engineer(self) -> None:
         incident = self.promoted_incident()
@@ -312,7 +315,7 @@ class KnownRecoveryTests(TwoLevelRecoveryTests):
         )
 
     def test_the_slot_is_released_on_a_failed_attempt_too(self) -> None:
-        """Инвариант: слот не остаётся занятым ни при каком исходе."""
+        """Invariant: the slot never stays taken, whatever the outcome."""
 
         incident = self.promoted_incident()
         started = self.store.begin_auto_recovery(
@@ -370,12 +373,13 @@ class PromotionSafetyTests(StoreTestCase):
         self.assertEqual(self.promoted(), [])
 
     def test_an_action_outside_the_safe_list_is_never_promoted(self) -> None:
-        """Уровень 1 работает без человека и не вправе делать ничего,
-        кроме диагностики и ограниченной повторной попытки.
+        """Level 1 runs without a human and has no right to do anything
+        beyond diagnostics and a bounded retry.
 
-        Правка кода - действие из словаря, отчитаться им можно. Но
-        повторить его вслепую на другой машине и в другом состоянии
-        нельзя, поэтому процедурой оно не становится ни на какой раз.
+        Repairing code is an action from the vocabulary, so it can be
+        reported. But it cannot be repeated blindly on another machine
+        and in another state, so it never becomes a procedure, on any
+        number of occurrences.
         """
 
         self.resolve_with(["repair_runtime_code"], times=PROMOTION_THRESHOLD + 1)
@@ -384,16 +388,17 @@ class PromotionSafetyTests(StoreTestCase):
         self.assertEqual(
             len(entry["resolutions"]),
             PROMOTION_THRESHOLD + 1,
-            "знание о починке сохраняется, даже когда процедурой не становится",
+            "the fix is remembered even when it never becomes a procedure",
         )
 
     def test_a_forbidden_action_is_refused_at_the_door(self) -> None:
-        """Запрещённое не «не продвигается» - оно не принимается вовсе.
+        """A forbidden action is not "not promoted" - it is not accepted
+        at all.
 
-        Прежде запрет стоял только на продвижении: тикет закрывался,
-        запись о запрещённом действии ложилась в реестр, и дальше её
-        просто не брали в раннбук. Словарь и запреты не пересекаются,
-        поэтому отказ наступает на входе.
+        Before, the ban stood only on promotion: the ticket closed, the
+        record of the forbidden action went into the ledger, and from
+        there it was never taken into a runbook. The vocabulary and the
+        bans do not overlap, so the refusal happens at the door.
         """
 
         from codex_autopilot.pipeline_engineer import FORBIDDEN_ACTIONS
@@ -404,12 +409,13 @@ class PromotionSafetyTests(StoreTestCase):
         self.assertEqual(self.promoted(), [])
 
     def test_prose_is_refused_and_keeps_its_place_in_the_note(self) -> None:
-        """Та самая поломка обучения, снятая замером на прогоне v1.0.
+        """The learning failure itself, measured on the v1.0 run.
 
-        По главной подписи накопилось 15 решений и ни одного раннбука:
-        действия писали прозой, а продвижение сверяет их с
-        перечислением. Теперь проза отклоняется на входе, а объяснение
-        обстоятельств уезжает в note и ни на что не влияет.
+        The main signature had piled up 15 resolutions and not one
+        runbook: the actions were written as prose, while promotion
+        checks them against an enumeration. Now prose is refused at the
+        door, and the explanation of the circumstances goes into note,
+        where it affects nothing.
         """
 
         prose = "attempted incident-scoped relay-owner reactivation; helper refused"
@@ -434,7 +440,7 @@ class PromotionSafetyTests(StoreTestCase):
         )
 
     def test_different_fixes_do_not_add_up(self) -> None:
-        """Два разных способа - не подтверждение одного и того же."""
+        """Two different ways are not a confirmation of the same one."""
 
         self.resolve_with([READ_ONLY_DIAGNOSTIC_ACTIONS[0]], times=1)
         self.resolve_with([READ_ONLY_DIAGNOSTIC_ACTIONS[1]], times=1)

@@ -125,12 +125,12 @@ def clean_suite_check() -> dict[str, Any]:
     """Return the canonical full-suite admission check used by test plans.
 
     Lifecycle tests run against synthetic temporary projects with no on-disk
-    suite.  Их полный набор лежит рядом, в ``_synthetic_suite/tests``, и
-    объявляется настоящей командой обнаружения.  Прежде здесь стоял запуск
-    файла с словом ``suite`` в имени - и это принималось за весь
-    репозиторий: имя не доказательство.  Production plans name their real
-    repository-wide runner (the Autopilot plan uses unittest discovery under
-    ``tests``).
+    suite.  Their own full suite lies next to them, in
+    ``_synthetic_suite/tests``, and is declared by the real discovery command.
+    Before, this was a run of a file with the word ``suite`` in its name - and
+    that was taken for the whole repository: a name is not proof.  Production
+    plans name their real repository-wide runner (the Autopilot plan uses
+    unittest discovery under ``tests``).
     """
 
     return {

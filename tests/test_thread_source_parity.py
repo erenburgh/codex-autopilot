@@ -59,7 +59,7 @@ class ThreadSourceParityTests(unittest.TestCase):
         self.assertNotIn("threadSource", params)
 
     def test_production_never_passes_an_agent_thread_source(self) -> None:
-        """Сторож на возврат параметра в живой путь создания."""
+        """A guard against the parameter returning to the live create path."""
 
         source = (
             Path(__file__).resolve().parents[1]
@@ -75,7 +75,8 @@ class ThreadSourceParityTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_the_contract_still_carries_project_and_workspace(self) -> None:
-        """Убрали только пометку об агенте: остальное создание не трогали."""
+        """Only the agent marker was removed: the rest of the creation
+        was left alone."""
 
         params = self.contract_params()
         self.assertEqual(params["cwd"], str(self.root))

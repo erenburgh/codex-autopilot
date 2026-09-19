@@ -116,7 +116,7 @@ class ResumeChainTests(unittest.TestCase):
     # --- 1. the phrase reaches arming ---------------------------------
 
     def test_the_russian_phrase_arms_the_resume(self) -> None:
-        """Кириллица в названии продукта не должна ломать команду."""
+        """Cyrillic in the product name must not break the command."""
 
         self.resume()
         state = self.store.load()
@@ -127,16 +127,17 @@ class ResumeChainTests(unittest.TestCase):
     def test_stop_hook_reserves_and_spawns_after_arming(self) -> None:
         self.resume()
         result = self.stop()
-        self.assertTrue(self.spawned, "ни одна резервация не поднята")
+        self.assertTrue(self.spawned, "not a single reservation was raised")
         self.assertIn("reason", result)
 
     # --- 3. a taken request does not vanish when the state moved on ---
 
     def test_an_advanced_state_does_not_swallow_the_armed_request(self) -> None:
-        """Дефект, из-за которого возобновление пропадало без следа.
+        """The defect that made a resume vanish without a trace.
 
-        Хук изымает запрос, потом видит, что состояние уже не READY/ARMED,
-        и возвращает пустоту: ни процесса, ни журнала, ни сообщения.
+        The hook takes the request, then sees the state is no longer
+        READY/ARMED, and returns nothing: no process, no journal, no
+        message.
         """
 
         descriptor = reserve_ready_frontier(self.cfg)[0]
@@ -170,7 +171,7 @@ class ResumeChainTests(unittest.TestCase):
     # --- 5. creation, placement and start -----------------------------
 
     def test_dispatcher_creates_places_and_starts_the_task(self) -> None:
-        """Вторая половина цепочки: то, что делает отсоединённый процесс."""
+        """The second half of the chain: what the detached process does."""
 
         descriptor = reserve_ready_frontier(self.cfg)[0]
         self.write_desktop_state({"thread-a": {"projectId": "desktop-project"}})
@@ -195,7 +196,7 @@ class ResumeChainTests(unittest.TestCase):
     # --- 7. a cleared stop reason does not come back from disk --------
 
     def _escalate(self) -> str:
-        """Завести тикет, ждущий пользователя, и остановить прогон по нему."""
+        """Open a ticket waiting on the user and stop the run on it."""
 
         from codex_autopilot.pipeline_engineer import (
             IncidentClass,
@@ -228,14 +229,15 @@ class ResumeChainTests(unittest.TestCase):
         return incident_id
 
     def test_resume_answers_the_escalation_whatever_phase_the_run_is_in(self) -> None:
-        """Ответ на эскалацию не зависит от фазы прогона - исполнением.
+        """The answer to an escalation ignores the run phase - by execution.
 
-        Прежде это проверялось чтением исходника ``_answer_escalation``:
-        что в теле нет сравнения с ``PIPELINE_ENGINEER_ESCALATED`` и есть
-        обращение к ``incident_ids_awaiting_the_user``. Такой тест зелен и
-        тогда, когда нужная строка стоит под ``if False:``. Здесь прогон
-        остановлен эскалацией в фазе, которую выставляет НЕ завершение
-        инженера, - и возобновление обязано закрыть тикет всё равно.
+        This used to be checked by reading the source of
+        ``_answer_escalation``: that its body holds no comparison with
+        ``PIPELINE_ENGINEER_ESCALATED`` and does reach for
+        ``incident_ids_awaiting_the_user``. Such a test stays green even
+        when the line it needs sits under ``if False:``. Here the run is
+        stopped by an escalation in a phase that is NOT set by the
+        engineer finishing - and the resume must close the ticket anyway.
         """
 
         from codex_autopilot.pipeline_engineer import PipelineIncidentStore
@@ -251,17 +253,18 @@ class ResumeChainTests(unittest.TestCase):
         after = self.store.load()
         self.assertEqual((after.status, after.phase), ("READY", "ARMED"))
         phase = PipelineIncidentStore(self.cfg.state_dir).incident_package(incident_id)["incident"]["phase"]
-        self.assertEqual(phase, "RESOLVED", "тикет остался открытым из-за фазы прогона")
+        self.assertEqual(phase, "RESOLVED", "the ticket stayed open because of the run phase")
 
     def test_answering_the_escalation_clears_the_blocked_reason(self) -> None:
-        """Причина остановки снималась в памяти и возвращалась с диска.
+        """The stop reason was cleared in memory and came back from disk.
 
-        Возобновление ставило ``last_error = None`` на объекте, а следом
-        перечитывало состояние (``state = store.load()``) - ради задач,
-        которые вернула реконсиляция. Перечитанное состояние несло
-        прежнюю причину, и она же сохранялась. Замерено: после ответа на
-        эскалацию прогон уходит в READY/ARMED, а подробный статус до сих
-        пор печатает ``last_error`` остановки, которой больше нет.
+        The resume set ``last_error = None`` on the object, and right
+        after re-read the state (``state = store.load()``) - for the sake
+        of the tasks reconciliation returned. The re-read state carried
+        the old reason, and that is what got saved. Measured: after
+        answering an escalation the run goes to READY/ARMED, while the
+        detailed status still prints the ``last_error`` of a stop that no
+        longer exists.
         """
 
         self._escalate()
@@ -276,7 +279,7 @@ class ResumeChainTests(unittest.TestCase):
         self.assertEqual((after.status, after.phase), ("READY", "ARMED"))
         self.assertIsNone(
             after.last_error,
-            "причина остановки пережила ответ на эскалацию",
+            "the stop reason survived the answer to the escalation",
         )
 
 
@@ -285,13 +288,14 @@ if __name__ == "__main__":
 
 
 class DeadRelayWithoutAThreadIsNotADeadEndTests(unittest.TestCase):
-    """Релей, умерший до создания ветки, не должен запирать прогон.
+    """A relay that died before creating the thread must not lock the run.
 
-    В живом прогоне сессия осталась в RELAYING с пустым thread_id: процесс
-    умер между «начал» и «создал». Запуск отвечал
-    `automatic relay cannot spawn from 'RELAYING'`, а разобрать эту сессию
-    не мог никто - наблюдать со стороны App Server тоже нечего, ветки не
-    существует. Прогон становился неоживимым, хотя не было создано ничего.
+    On a live run the session stayed in RELAYING with an empty thread_id:
+    the process died between "started" and "created". The launch answered
+    `automatic relay cannot spawn from 'RELAYING'`, and nobody could take
+    that session apart - there is nothing to observe from the App Server
+    side either, the thread does not exist. The run became unrevivable,
+    although nothing had been created.
     """
 
     def test_a_relaying_session_without_a_thread_can_respawn(self) -> None:
@@ -310,7 +314,7 @@ class DeadRelayWithoutAThreadIsNotADeadEndTests(unittest.TestCase):
         self.assertIsNone(session["automatic_dispatch_pid"])
 
     def test_a_relaying_session_with_a_thread_is_left_alone(self) -> None:
-        """Ветка есть - побочный эффект был, догадываться нельзя."""
+        """The thread exists - the side effect happened; do not guess."""
 
         from codex_autopilot import control
 
@@ -325,13 +329,13 @@ class DeadRelayWithoutAThreadIsNotADeadEndTests(unittest.TestCase):
 
 
 class ACompletedSessionIsAlsoAWitnessTests(unittest.TestCase):
-    """Завершённый ход доказывается не только журнальной записью.
+    """A completed turn is proved by more than a journal entry.
 
-    Дежурный инженер начал писать `turn_completed` только сейчас. Прогоны,
-    созданные до этого, имеют завершённый ход инженера и не имеют
-    события: цепочка вставала на `automatic relay has no completed causal
-    predecessor`, а починить это можно было лишь правкой журнала руками -
-    то есть подделкой записи о том, чего система не наблюдала.
+    The on-call engineer only started writing `turn_completed` now. Runs
+    created before that have a completed engineer turn and no event: the
+    chain stopped at `automatic relay has no completed causal
+    predecessor`, and the only fix was editing the journal by hand - that
+    is, forging a record of something the system never observed.
     """
 
     def state(self, *, journal, sessions):
@@ -368,12 +372,12 @@ class ACompletedSessionIsAlsoAWitnessTests(unittest.TestCase):
 
 
 class PlanChangePredecessorIsAcceptedTests(unittest.TestCase):
-    """Задача, запросившая смену плана, — законный предшественник.
+    """A task that requested a plan change is a lawful predecessor.
 
-    Она завершила свой ход и записала turn_completed, но её сессия
-    остаётся в PLAN_CHANGE_REQUESTED. В control это учтено давно;
-    в lifecycle_dispatch лежала вторая копия проверки по статусу, и
-    зарезервированный такой задачей планировщик поднять было некому:
+    It finished its turn and wrote turn_completed, but its session stays
+    in PLAN_CHANGE_REQUESTED. control has accounted for this for a long
+    time; lifecycle_dispatch held a second copy of the status check, and
+    there was nobody to raise the scheduler such a task had reserved:
     `automatic successor has no completed causal predecessor turn`.
     """
 

@@ -45,7 +45,7 @@ RESET_AT = 1_800_000_000
 
 
 class _Clock:
-    """Часы, которые идут только когда будильник спит."""
+    """A clock that moves only while the alarm sleeps."""
 
     def __init__(self, start: int) -> None:
         self.now = float(start)
@@ -92,7 +92,8 @@ class WakeTests(unittest.TestCase):
         raise AssertionError(f"{task_id} не зарезервирована")
 
     def hit_the_limit(self, *, reset_at: int = RESET_AT) -> int:
-        """Задача упирается в лимит и уходит ждать повтора. Возвращает срок."""
+        """A task hits the limit and goes off to wait for a retry.
+        Returns the due time."""
 
         reserve_ready_frontier(self.cfg, now_epoch=reset_at - 10_000)
         record_desktop_failure(
@@ -131,7 +132,7 @@ class WakeTests(unittest.TestCase):
         )
 
     def record_completed_owner_turn(self) -> None:
-        """Причинный владелец записал завершённый ход - как в живом прогоне."""
+        """The causal owner recorded a completed turn, as in a live run."""
 
         # The record shape is the one _validate_state requires: a session and
         # a journal entry with every mandatory field, otherwise the state
@@ -216,7 +217,7 @@ class WakeTests(unittest.TestCase):
         due = self.hit_the_limit()
         clock = _Clock(due - 700)
         self.wake(at_epoch=due, clock=clock)
-        self.assertGreaterEqual(clock.now, due, "проснулся раньше срока")
+        self.assertGreaterEqual(clock.now, due, "woke up before the due time")
         self.assertEqual(len(self.spawned), 1)
         launch = self.spawned[0]
         self.assertEqual(launch["initiator_thread_id"], TEST_RELAY_OWNER)
@@ -233,16 +234,18 @@ class WakeTests(unittest.TestCase):
         self.assertIsNone(state.wake_at)
 
     def test_naps_are_bounded_so_a_moved_deadline_is_noticed(self) -> None:
-        """Спать одним куском нельзя: за это время срок могли продлить."""
+        """Sleeping in one piece is not allowed: the deadline could have
+        been extended in that time."""
 
         due = self.hit_the_limit()
         clock = _Clock(due - 1_000)
         self.wake(at_epoch=due, clock=clock)
-        self.assertTrue(clock.naps, "будильник не спал вовсе")
+        self.assertTrue(clock.naps, "the alarm did not sleep at all")
         self.assertLessEqual(max(clock.naps), 300)
 
     def test_a_later_rate_limit_delays_the_wake(self) -> None:
-        """Будильник заведён на срок, а лимит продлили: стрелять рано нельзя."""
+        """The alarm was set for a due time and then the limit was
+        extended: it must not fire early."""
 
         due = self.hit_the_limit(reset_at=RESET_AT + 5_000)
         # The alarm thought the time was earlier than the state says.
@@ -295,7 +298,9 @@ class WakeTests(unittest.TestCase):
             self.cfg, owner=TEST_RELAY_OWNER, owner_turn=OWNER_TURN, spawn=fake_spawn
         )
         self.assertEqual(first, os.getpid())
-        self.assertEqual(second, first, "второй будильник рядом с живым не нужен")
+        self.assertEqual(
+            second, first, "a second alarm beside a live one is not needed"
+        )
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["at_epoch"], due)
         state = self.store.load()
@@ -314,11 +319,12 @@ class WakeTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_the_spawned_command_is_one_the_cli_parser_accepts(self) -> None:
-        """Настоящий запуск нигде не исполняется - так его и не проверяли.
+        """The real launch is executed nowhere - so it was never checked.
 
-        Проверяющая сломала имя флага, и всё осталось зелёным. Теперь
-        аргументы, с которыми будильник порождается, прогоняются через
-        настоящий парсер CLI, и каждый обязан доехать до обработчика.
+        The mutation check broke the name of a flag and everything stayed
+        green. Now the arguments the alarm is spawned with are run through
+        the real CLI parser, and every one of them has to reach the
+        handler.
         """
 
         from codex_autopilot.cli import parser
@@ -333,7 +339,8 @@ class WakeTests(unittest.TestCase):
         self.assertEqual(args.owner_turn, OWNER_TURN)
 
     def test_a_wake_that_fails_to_schedule_leaves_a_trace(self) -> None:
-        """Хук не падает, но и не молчит: след в логе, а не тишина."""
+        """The hook does not fall over, and it does not go quiet either:
+        a trace in the log, not silence."""
 
         from unittest import mock
 
@@ -345,11 +352,12 @@ class WakeTests(unittest.TestCase):
     # --- what the reviewer found ---------------------------------------
 
     def test_revoked_hook_trust_stops_the_wake(self) -> None:
-        """Будильник проходит тот же гейт, что и запуск от хука.
+        """The alarm passes the same gate as a launch from the hook.
 
-        Спящий процесс не несёт доказательства доверия с собой. Если
-        человек отозвал доверие хуку, пока прогон спал, повтор не
-        поднимается - и это записано как причина, а не проглочено.
+        A sleeping process does not carry the proof of trust with it. If
+        the person revoked trust in the hook while the run slept, the
+        retry is not raised - and that is written down as a reason, not
+        swallowed.
         """
 
         from unittest import mock
@@ -370,7 +378,8 @@ class WakeTests(unittest.TestCase):
         self.assertIn("hook trust", json.dumps(skipped[-1], ensure_ascii=False))
 
     def test_the_final_record_waits_for_the_lock(self) -> None:
-        """Запись после диспетчеризации идёт под замком координатора."""
+        """The record written after dispatch goes under the
+        coordinator's lock."""
 
         import threading
 
@@ -398,25 +407,33 @@ class WakeTests(unittest.TestCase):
         writer = threading.Thread(target=finish)
         writer.start()
         self.assertFalse(
-            finished.wait(0.5), "запись прошла, пока замок держал другой"
+            finished.wait(0.5),
+            "the record went through while someone else held the lock",
         )
         released.set()
         holder.join(5)
-        self.assertTrue(finished.wait(5), "запись не дождалась освобождения замка")
+        self.assertTrue(
+            finished.wait(5),
+            "the record did not wait for the lock to be released",
+        )
         writer.join(5)
 
 
 class SurvivesARebootTests(WakeTests):
-    """Агент обхода делает то же, что будильник, но после перезагрузки.
+    """The sweep agent does what the alarm does, but after a reboot.
 
-    Спящий процесс умирает вместе с машиной. Агент раз в пять минут
-    обходит известные проекты и заводит будильник там, где повтор по
-    сроку ждёт. Владельца он берёт из журнала - как диспетчер для своих
-    преемников, - а не из аргументов, которых после перезагрузки нет.
+    A sleeping process dies together with the machine. Once every five
+    minutes the agent walks the known projects and arms an alarm wherever
+    a timed retry waits. It takes the owner from the journal - as the
+    dispatcher does for its own successors - and not from arguments,
+    which do not exist after a reboot.
     """
 
     def test_the_owner_is_derived_from_the_journal(self) -> None:
-        self.assertIsNone(derive_owner(self.store.load()), "без завершённого хода владельца нет")
+        self.assertIsNone(
+            derive_owner(self.store.load()),
+            "without a completed turn there is no owner",
+        )
         self.record_completed_owner_turn()
         self.assertEqual(derive_owner(self.store.load()), (TEST_RELAY_OWNER, OWNER_TURN))
 
@@ -479,12 +496,13 @@ class SurvivesARebootTests(WakeTests):
 
 
 class TheLastProcessLeavesAWakeTests(WakeTests):
-    """Кто уходит последним, тот заводит будильник - и это исполняется.
+    """Whoever leaves last arms the alarm - and that is executed.
 
-    Два последних живых процесса прогона - диспетчер и Stop-хук. Первая
-    редакция этих тестов читала исходник и искала подстроку: проверяющая
-    обернула все три вызова в ``if False:`` и всё осталось зелёным.
-    Теперь оба пути исполняются, а будильник подменён и считает вызовы.
+    The last two live processes of a run are the dispatcher and the Stop
+    hook. The first edition of these tests read the source and looked for
+    a substring: the mutation check wrapped all three calls in
+    ``if False:`` and everything stayed green. Now both paths are
+    executed, and the alarm is patched and counts the calls.
     """
 
     def test_the_dispatcher_arms_a_wake_when_it_exits_with_no_successor(self) -> None:
@@ -517,7 +535,8 @@ class TheLastProcessLeavesAWakeTests(WakeTests):
         ensure.assert_called_once_with(self.cfg, owner=TEST_RELAY_OWNER, owner_turn=OWNER_TURN)
 
     def test_the_dispatcher_arms_a_wake_after_fanning_out_successors(self) -> None:
-        """Второй выход цикла - несколько преемников - тоже заводит будильник."""
+        """The second exit from the loop - several successors - arms the
+        alarm too."""
 
         from unittest import mock
 

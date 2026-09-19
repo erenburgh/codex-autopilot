@@ -149,12 +149,12 @@ def completed_turn(status: str, turn_id: str = "turn") -> dict:
 
 @contextlib.contextmanager
 def isolated_launch_registry():
-    """Держать реестр взведённых стартов в стороне от общего.
+    """Keep the registry of armed starts away from the shared one.
 
-    Реестр живёт по фиксированному пути в TMPDIR, один на пользователя.
-    Тест, взводивший старт мимо этой изоляции, оставлял в нём запись про
-    свой временный каталог, и живой Stop-хук потом отказывался запускать
-    что-либо: "multiple Autopilot starts are armed".
+    The registry lives at a fixed path in TMPDIR, one per user. A test
+    that armed a start outside this isolation left a record of its own
+    temporary directory in it, and the live Stop hook then refused to
+    start anything: "multiple Autopilot starts are armed".
     """
 
     directory = Path(tempfile.mkdtemp(prefix="codex-autopilot-launch-registry-")) / "requests"
@@ -372,19 +372,21 @@ class BusyOnceProjectSlotClient(ProjectSlotClient):
 
 
 class PurgeAndReplaceSnapshotTests(unittest.TestCase):
-    """R28: удаление или перезапись состояния без снимка отклоняется.
+    """R28: deleting or overwriting state without a snapshot is refused.
 
-    Замерено 18.09: ``purge_project_state`` - три строки с ``shutil.rmtree``
-    без копии, переименования и записи; ``initialize_project(replace=True)``
-    сносит logs/, перезаписывает run-state, plan, config, ROADMAP.md в
-    корне, откладывая одни только инциденты. Правило ENFORCED, проверки
-    не было, ветку purge не исполнял ни один тест.
+    Measured on 18.09: ``purge_project_state`` was three lines with
+    ``shutil.rmtree``, no copy, no rename and no record;
+    ``initialize_project(replace=True)`` wipes logs/ and overwrites
+    run-state, plan, config and ROADMAP.md in the root, setting aside the
+    incidents alone. The rule is ENFORCED, there was no check, and not a
+    single test executed the purge branch.
 
-    Снимок ложится СОСЕДОМ каталога состояния - вне того, что сносится, -
-    по соглашению ``.codex-autopilot.<причина>-<штамп>``, которое рантайм
-    уже распознаёт как своё (scope.py, staging). Purge - атомарный
-    rename: снимок и есть прежний каталог. Replace - копия: память и
-    handoff/ обязаны остаться жить в состоянии нового прогона.
+    The snapshot lands NEXT TO the state directory - outside what is
+    wiped - under the convention ``.codex-autopilot.<reason>-<stamp>``,
+    which the runtime already recognises as its own (scope.py, staging).
+    Purge is an atomic rename: the snapshot is the former directory.
+    Replace is a copy: memory and handoff/ have to go on living in the
+    state of the new run.
     """
 
     def _replace(self, root: Path) -> None:
@@ -415,7 +417,7 @@ class PurgeAndReplaceSnapshotTests(unittest.TestCase):
         self.assertEqual(self._snapshots(root, "purged"), [snapshot])
         self.assertEqual((snapshot / "marker.txt").read_text(encoding="utf-8"), "keep")
         self.assertTrue((snapshot / "run-state.json").is_file())
-        self.assertTrue((snapshot / "SNAPSHOT.md").is_file(), "снимок без манифеста не восстановим по памяти")
+        self.assertTrue((snapshot / "SNAPSHOT.md").is_file(), "a snapshot without a manifest cannot be restored from memory")
 
     def test_uninstall_with_purge_prints_snapshot_path(self):
         import contextlib
@@ -428,7 +430,7 @@ class PurgeAndReplaceSnapshotTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root)}), mock.patch("codex_autopilot.cli.pid_alive", return_value=False), mock.patch("codex_autopilot.cli.shutil.which", return_value=None), contextlib.redirect_stdout(out):
             self.assertEqual(uninstall(args), 0)
         (snapshot,) = self._snapshots(root, "purged")
-        self.assertIn(str(snapshot), out.getvalue(), "путь снимка не назван человеку")
+        self.assertIn(str(snapshot), out.getvalue(), "the snapshot path was not named to the human")
 
     def test_purge_refuses_while_dispatcher_is_alive(self):
         from codex_autopilot.bootstrap import purge_project_state
@@ -463,30 +465,30 @@ class PurgeAndReplaceSnapshotTests(unittest.TestCase):
         old_plan = (state_dir / "plan.json").read_text(encoding="utf-8")
         self._replace(root)
         (snapshot,) = self._snapshots(root, "replaced")
-        self.assertEqual((snapshot / "logs" / "old.log").read_text(), "old", "логи снесены до снимка")
+        self.assertEqual((snapshot / "logs" / "old.log").read_text(), "old", "the logs were wiped before the snapshot")
         self.assertTrue((snapshot / "BLOCKED.json").is_file())
         self.assertEqual((snapshot / "ROADMAP.md").read_text(encoding="utf-8"), "old roadmap")
         self.assertEqual((snapshot / "plan.json").read_text(encoding="utf-8"), old_plan)
         self.assertTrue((snapshot / "SNAPSHOT.md").is_file())
-        self.assertFalse((state_dir / "logs").exists(), "новый прогон начинается с чистых логов, как и прежде")
+        self.assertFalse((state_dir / "logs").exists(), "a new run starts with clean logs, as it did before")
 
     def test_replace_journals_previous_state_path_in_the_new_run_state(self):
         root = make_project()
         self._replace(root)
         state = StateStore(root / ".codex-autopilot").load()
         events = [e for e in state.resilience_journal if e["event"] == "state_replaced"]
-        self.assertEqual(len(events), 1, "путь снимка не записан в журнал нового состояния")
+        self.assertEqual(len(events), 1, "the snapshot path was not recorded in the new state journal")
         (snapshot,) = self._snapshots(root, "replaced")
         self.assertEqual(Path(events[0]["detail"]["previous_state"]), snapshot.resolve())
 
     def test_replace_keeps_live_memory_and_handoff_in_place(self):
         root = make_project()
         state_dir = root / ".codex-autopilot"
-        self.assertTrue((state_dir / "memory.sqlite3").is_file(), "фикстура: память инициализирована")
+        self.assertTrue((state_dir / "memory.sqlite3").is_file(), "fixture: memory is initialized")
         (state_dir / "handoff").mkdir(exist_ok=True)
         (state_dir / "handoff" / "M1.md").write_text("checkpoint", encoding="utf-8")
         self._replace(root)
-        self.assertTrue((state_dir / "memory.sqlite3").is_file(), "replace унёс живую память")
+        self.assertTrue((state_dir / "memory.sqlite3").is_file(), "replace carried off the live memory")
         self.assertEqual((state_dir / "handoff" / "M1.md").read_text(encoding="utf-8"), "checkpoint")
         (snapshot,) = self._snapshots(root, "replaced")
         self.assertTrue((snapshot / "memory.sqlite3").is_file())
@@ -495,7 +497,7 @@ class PurgeAndReplaceSnapshotTests(unittest.TestCase):
         root = make_project()
         (root / ".codex-autopilot" / "run-state.json").unlink()
         self._replace(root)
-        self.assertEqual(self._snapshots(root, "replaced"), [], "снимок пустого прошлого - мусорный сосед на каждом первом запуске")
+        self.assertEqual(self._snapshots(root, "replaced"), [], "a snapshot of an empty past is a junk neighbour on every first run")
 
 
 class CoreTests(unittest.TestCase):
@@ -661,7 +663,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(rate_limit_reset_at(snapshot), 1788878029)
 
     def test_arm_and_stop_hook_bind_the_initiating_thread_as_owner(self):
-        """Владельцем становится ветка того самого Stop-события."""
+        """The owner becomes the thread of that very Stop event."""
 
         patch_hook_trust_gates(self)
         root = make_project()
@@ -675,10 +677,10 @@ class CoreTests(unittest.TestCase):
                 output = handle_stop_hook(
                     {"cwd": str(root), "session_id": "session", "turn_id": "turn"}
                 )
-        self.assertTrue(spawned, "резервация не поднята")
+        self.assertTrue(spawned, "the reservation was not raised")
         self.assertEqual(spawned[0][1]["initiator_thread_id"], "session")
         self.assertEqual(spawned[0][1]["initiator_turn_id"], "turn")
-        self.assertTrue(output, "хук обязан отчитаться о запуске")
+        self.assertTrue(output, "the hook has to report the start")
         self.assertFalse((root / ".codex-autopilot/launch-request.json").exists())
         state = StateStore(root / ".codex-autopilot").load()
         session = state.worker_sessions[-1]
@@ -702,7 +704,7 @@ class CoreTests(unittest.TestCase):
         self.assertFalse((root / ".codex-autopilot/launch-request.json").exists())
 
     def test_stop_hook_claims_target_outside_initiating_cwd(self):
-        """Инициирующая задача может стоять не в целевой папке."""
+        """The initiating task may stand outside the target folder."""
 
         patch_hook_trust_gates(self)
         root = make_project()
@@ -721,10 +723,10 @@ class CoreTests(unittest.TestCase):
                         "turn_id": "outside-turn",
                     }
                 )
-        self.assertTrue(spawned, "цель вне инициирующей папки не поднята")
+        self.assertTrue(spawned, "a target outside the initiating folder was not raised")
         self.assertEqual(spawned[0][0], root.resolve())
         self.assertEqual(spawned[0][1]["initiator_thread_id"], "outside-session")
-        self.assertTrue(output, "хук обязан отчитаться о запуске")
+        self.assertTrue(output, "the hook has to report the start")
 
 
     def test_exact_control_prompt_does_not_use_model(self):
