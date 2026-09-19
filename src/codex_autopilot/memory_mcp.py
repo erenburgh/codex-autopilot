@@ -615,19 +615,58 @@ class MemoryMcpServer:
         The milestone is not filled in for the worker: a link it did not
         name would be invented. The call is refused with the active
         milestone's name so it can repeat the call itself.
+
+        A NAME is checked too, not only its presence. The gate used to
+        refuse a missing milestone_id and accept any non-empty string -
+        including the very label the measured worker put in created_by. Such
+        a record lands under a milestone nobody will ask about: completion
+        is then refused for "no new evidence" and the turn is lost exactly
+        as it was before this gate existed, which is the one thing it was
+        written to prevent.
+
+        An id that names a real task of the plan is accepted even when that
+        task is not the active one: the on-call engineer works outside
+        active_task_ids by construction, and a gate that cannot pass is
+        worse than no gate. What is refused is a name that belongs to no
+        task at all.
         """
 
-        if str(args.get("milestone_id") or "").strip():
-            return
+        named = str(args.get("milestone_id") or "").strip()
         active = self._active_task_ids()
         if not active:
             return
+        if not named:
+            raise MemoryValidationError(
+                "milestone_id is required while a milestone is active: "
+                + ", ".join(active)
+                + ". Completion evidence must name its milestone; created_by is "
+                "the author, not the milestone."
+            )
+        if named in active or named in self._plan_task_ids():
+            return
         raise MemoryValidationError(
-            "milestone_id is required while a milestone is active: "
-            + ", ".join(active)
-            + ". Completion evidence must name its milestone; created_by is "
-            "the author, not the milestone."
+            f"milestone_id {named!r} names no task of this run. "
+            "Evidence must name the milestone the completion gate will ask "
+            "about, and the milestone in progress is: " + ", ".join(active)
         )
+
+    def _plan_task_ids(self) -> frozenset[str]:
+        """Every task id of the current plan, or nothing when it is unreadable.
+
+        Unreadable means the active list is the only authority left, and the
+        stricter answer is the right one there: a run always has a plan, so
+        an unreadable one is not the ordinary case.
+        """
+
+        try:
+            from .config import load_config
+            from .plan import load_plan
+
+            state_dir = self.root / STATE_DIR_NAME
+            cfg = load_config(self.root)
+            return frozenset(load_plan(state_dir, cfg.profile).task_map)
+        except Exception:  # noqa: BLE001 - any failure to read leaves the strict path
+            return frozenset()
 
     def _active_task_ids(self) -> tuple[str, ...]:
         state_path = self.root / STATE_DIR_NAME / "run-state.json"

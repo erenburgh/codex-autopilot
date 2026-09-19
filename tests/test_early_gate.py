@@ -75,6 +75,29 @@ class EarlyMilestoneLinkTests(unittest.TestCase):
         )
         self.assertEqual(rows, [])
 
+    def test_a_milestone_that_names_no_task_is_refused_too(self) -> None:
+        """R31 refused the wrong half: absence, but not a wrong name.
+
+        The gate exists so the record can reach the completion gate. It
+        refused only a MISSING milestone_id and accepted any non-empty
+        string - including the very label the measured worker used in
+        created_by. Such a record lands under a milestone nobody will ask
+        about, completion is refused for "no new evidence", and the turn is
+        lost exactly as it was before the gate existed.
+        """
+
+        with self.assertRaises(MemoryValidationError) as caught:
+            self.server._record_evidence(
+                self.evidence(milestone_id="M2-FILE-EXISTS")
+            )
+        text = str(caught.exception)
+        self.assertIn("M2-FILE-EXISTS", text)
+        self.assertIn("M2", text)
+        self.assertEqual(
+            list(self.server.memory.milestone_evidence("M2", after_audit_id=0, limit=10)),
+            [],
+        )
+
     def test_linked_evidence_passes(self) -> None:
         result = self.server._record_evidence(self.evidence(milestone_id="M2"))
         self.assertTrue(result)
