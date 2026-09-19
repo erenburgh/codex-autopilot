@@ -48,7 +48,7 @@ from .lifecycle import (
     retired_session_for_thread,
 )
 from .launch_registry import LaunchRegistry
-from .hook_trust import HookPreflightError
+from .hook_trust import HookPreflightError, require_trusted_stop_hook_for_config
 from .pipeline_engineer import HealthcheckResult, IncidentPhase, PipelineIncidentStore
 from .plan import load_plan
 from .resources import ResourceLockCoordinator
@@ -335,6 +335,14 @@ def reactivate_desktop_relay_owner(root: Path, *, incident_id: str | None = None
     cfg = load_config(root)
     if cfg.runtime.worker_surface != DESKTOP_OWNED_SURFACE:
         raise RuntimeError("relay-owner reactivation requires desktop_owned mode")
+    # Hook trust is never bypassed. This is a fresh CLI process that arms a
+    # NEW dispatcher, not a step inside an already-gated operation, and it
+    # reached reserve_ready_frontier with the gate switched off - so the one
+    # boundary the owner says is absolute was open on the repair path. It
+    # is also the honest answer to the engineer: a re-armed relay is
+    # executed by the Stop hook, so arming one while the hook is not
+    # trusted would promise a launch that can never happen.
+    require_trusted_stop_hook_for_config(cfg)
     incident_store = PipelineIncidentStore(cfg.state_dir)
     incidents = [
         item
@@ -661,6 +669,9 @@ def recreate_archived_desktop_retry(
     """Retire one explicitly archived attempt and restart it from its predecessor."""
 
     cfg = load_config(root)
+    # The same boundary as the re-arm above: a fresh CLI process that
+    # reserves production work and spawns a relay of its own.
+    require_trusted_stop_hook_for_config(cfg)
     if cfg.runtime.worker_surface != DESKTOP_OWNED_SURFACE:
         raise RuntimeError("archived retry recreation requires desktop_owned mode")
     store = StateStore(cfg.state_dir)
@@ -1419,6 +1430,14 @@ def _desktop_relay_continuation(
     )
     if not launchable:
         return {}
+    # The ordinary continuation path: a Stop arrives for a thread with no
+    # active worker session while a reservation it owns waits to be created.
+    # complete_desktop_worker returns before its own gate in exactly that
+    # branch, so production relays were spawned here with hook trust checked
+    # by nobody in any process on the path. The cost is the one the normal
+    # completion path already pays, and only when there is something to
+    # launch.
+    require_trusted_stop_hook_for_config(cfg)
     pids = _spawn_automatic_descriptors(
         cfg,
         launchable,

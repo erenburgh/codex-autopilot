@@ -12,6 +12,7 @@ suddenly red suite.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from unittest import mock
 
@@ -20,28 +21,43 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "codex_autopilot"
 
 
 def hook_gate_modules() -> tuple[str, ...]:
-    """Модули продакшена, импортирующие гейт доверия."""
+    """The production modules that import the trust gate.
 
-    modules = [
-        path.stem
-        for path in sorted(SRC.glob("*.py"))
-        if path.stem not in {"hook_trust", "__init__"}
-        and f"import {SYMBOL}" in path.read_text(encoding="utf-8")
-    ]
+    Found by parsing, not by substring. The substring version looked for
+    "import <symbol>" and therefore saw only modules that imported the gate
+    alone: a module importing it beside another name - the ordinary way -
+    was silently left unsubstituted, and its tests went to the developer
+    machine's real App Server. That is exactly the failure this helper was
+    written to prevent, and it was hiding inside the helper itself.
+    """
+
+    modules = []
+    for path in sorted(SRC.glob("*.py")):
+        if path.stem in {"hook_trust", "__init__"}:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imported = any(
+            isinstance(node, ast.ImportFrom)
+            and any(alias.name == SYMBOL for alias in node.names)
+            for node in ast.walk(tree)
+        )
+        if imported:
+            modules.append(path.stem)
     if not modules:
         raise AssertionError(
-            f"ни один модуль не импортирует {SYMBOL}: подстановка стала бы пустой "
-            "и тесты снова пошли бы в настоящий App Server"
+            f"no module imports {SYMBOL}: the substitution would be empty "
+            "and the tests would go to the real App Server again"
         )
     return tuple(modules)
 
 
 def patch_hook_trust_gates(case) -> dict[str, mock.MagicMock]:
-    """Подставить гейт во всех местах, где его зовёт продакшен.
+    """Substitute the gate everywhere production calls it.
 
-    Возвращает моки по имени модуля: тесты, которые проверяют сам гейт,
-    берут нужный отсюда, а не заводят второй патч поверх - иначе активным
-    остаётся последний, и проверка молча уходит в пустоту.
+    Returns the mocks by module name: a test that checks the gate itself
+    takes the one it needs from here instead of starting a second patch on
+    top - otherwise the last one wins and the check quietly measures
+    nothing.
     """
 
     gates: dict[str, mock.MagicMock] = {}
