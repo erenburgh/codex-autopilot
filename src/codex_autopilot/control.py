@@ -531,6 +531,12 @@ def reactivate_desktop_relay_owner(root: Path, *, incident_id: str | None = None
                 success=True,
                 at=healthcheck.observed_at,
                 healthcheck=healthcheck,
+                # The repair names itself. A resolution with no named action is
+                # refused (engineer_authority.REPAIR_ACTIONS), and this call
+                # arrived from a line that never had to pass that gate: the
+                # command closed the ticket wordlessly, so it raised in the one
+                # phase it exists for - the ticket still held by the engineer.
+                actions=("rearm_relay_owner",),
                 reason="Known-failed create was reconciled and the causal retry is safe to re-arm.",
             )
         if was_paused:

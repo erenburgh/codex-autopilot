@@ -130,6 +130,11 @@ def _graph() -> dict[str, object]:
 class RearmRelayOwnerCommandTests(unittest.TestCase):
     """Drive ``devops-rearm-relay-owner`` over a real known-failed create."""
 
+    # Whether the engineer closes the ticket before the command runs. Both
+    # states are live: the command accepts an incident in PIPELINE_ENGINEER
+    # and one already RESOLVED (control.py, the phase filter).
+    RESOLVE_BEFORE_REARM = True
+
     def setUp(self) -> None:
         # The trust gate reads the developer machine's real App Server.
         patch_hook_trust_gates(self)
@@ -154,7 +159,9 @@ class RearmRelayOwnerCommandTests(unittest.TestCase):
         self.incidents = PipelineIncidentStore(self.cfg.state_dir)
         self._finish_task_a()
         self.destination = self._fail_the_create_for_destination()
-        self.incident_id = self._resolve_the_incident()
+        self.incident_id = self._find_the_incident()
+        if self.RESOLVE_BEFORE_REARM:
+            self._resolve_the_incident()
 
     def _evidence(self, task_id: str) -> None:
         bump_task_checkpoint(self.root, task_id, f"Completed: {task_id}")
@@ -227,16 +234,24 @@ class RearmRelayOwnerCommandTests(unittest.TestCase):
         self.assertEqual(state.active_task_ids, [])
         return self.reservation.reservation_token
 
-    def _resolve_the_incident(self) -> str:
-        """The engineer closes the ticket the way the store demands: by name."""
+    def _find_the_incident(self) -> str:
+        """The ticket the failed create opened, still held by the engineer."""
 
         incident = next(
             item
             for item in self.incidents.load()["incidents"]
             if item.get("operation") == "create_thread"
         )
-        incident_id = str(incident["incident_id"])
         self.assertEqual(incident["side_effect_outcome"], "KNOWN_FAILED")
+        self.assertEqual(
+            incident["phase"], IncidentPhase.PIPELINE_ENGINEER.value
+        )
+        return str(incident["incident_id"])
+
+    def _resolve_the_incident(self) -> str:
+        """The engineer closes the ticket the way the store demands: by name."""
+
+        incident_id = self.incident_id
         self.assertEqual(
             self.incidents.complete_pipeline_engineer(
                 incident_id,
@@ -304,3 +319,34 @@ class RearmRelayOwnerCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RearmWhileTheEngineerStillHoldsTheTicketTests(RearmRelayOwnerCommandTests):
+    """The phase the command exists for: the ticket is not closed yet.
+
+    Measured on the merge seam. The re-arm closes the ticket itself when it
+    finds it in PIPELINE_ENGINEER - and it closed it with no named action.
+    On this branch a resolution without one is refused
+    (engineer_authority.REPAIR_ACTIONS, pipeline_engineer._require_named_actions),
+    a gate that main's command never had to pass. So the command raised
+    PipelineIncidentError in exactly the state it was written for, while the
+    already-resolved state - the one the tests above cover - went through.
+    """
+
+    RESOLVE_BEFORE_REARM = False
+
+    def test_the_command_closes_the_ticket_naming_what_it_did(self) -> None:
+        answer = self.rearm(CONFIRMED)
+        self.assertEqual(answer["status"], "REARMED")
+        self.assertEqual(self.phase(), IncidentPhase.RESOLVED.value)
+        # The repair is recorded by name, where a repeated one is counted
+        # towards a runbook - prose would be counted as nothing.
+        signatures = self.incidents.load()["signatures"]
+        resolutions = [
+            item
+            for entry in signatures.values()
+            for item in entry.get("resolutions", [])
+        ]
+        self.assertEqual(
+            [item["actions"] for item in resolutions], [["rearm_relay_owner"]]
+        )
