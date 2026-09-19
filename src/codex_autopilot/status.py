@@ -67,6 +67,7 @@ def project_status_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[st
             item["reason"] = _waiting_reason(plan, state, task.id, task_state, cfg.root)
             waiting.append(item)
 
+    screening = _screening_snapshot(cfg, state, plan)
     verified = sum(
         value == TaskState.VERIFIED.value for value in state.task_states.values()
     )
@@ -126,8 +127,72 @@ def project_status_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[st
         "plan_change": _plan_change_status(state),
         "rate_limit_until": state.rate_limit_until,
         "pipeline_engineer": pipeline,
+        "screening": screening,
         "creation_causality": _creation_causality(state),
     }
+
+
+def _screening_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[str, Any]:
+    """What hiring has cost this run, and what it bought.
+
+    Screening spends one Codex thread per task out of the user's limits.
+    A number she can see before and while it is spent is the difference
+    between a setting and a surprise.
+    """
+
+    from .lifecycle_screening import screening_applies
+
+    mode = getattr(cfg.runtime, "skill_screening", "never")
+    threads = sum(
+        1 for item in state.worker_sessions if item.get("kind") == "screening"
+    )
+    screened = 0
+    unscreened = 0
+    hired = 0
+    unfilled = 0
+    for record in (state.task_hiring or {}).values():
+        if not isinstance(record, dict):
+            continue
+        if record.get("unscreened"):
+            unscreened += 1
+        else:
+            screened += 1
+        for outcome in (record.get("decision") or {}).get("outcomes") or ():
+            if outcome.get("status") == "hired":
+                hired += 1
+            else:
+                unfilled += 1
+    return {
+        "mode": mode,
+        "enabled": screening_applies(cfg, plan),
+        "threads_spent": threads,
+        "tasks_screened": screened,
+        "tasks_unscreened": unscreened,
+        "skills_hired": hired,
+        "needs_unfilled": unfilled,
+    }
+
+
+def _render_screening(screening: dict[str, Any]) -> str:
+    head = (
+        f"Screening: on ({screening['mode']})"
+        if screening["enabled"]
+        else f"Screening: off (runtime.skill_screening={screening['mode']})"
+    )
+    parts = [_count(screening["threads_spent"], "thread", "threads") + " spent"]
+    if screening["tasks_screened"]:
+        parts.append(_count(screening["tasks_screened"], "task", "tasks") + " screened")
+    if screening["tasks_unscreened"]:
+        parts.append(f"{screening['tasks_unscreened']} unscreened")
+    if screening["skills_hired"]:
+        parts.append(_count(screening["skills_hired"], "skill", "skills") + " hired")
+    if screening["needs_unfilled"]:
+        parts.append(_count(screening["needs_unfilled"], "need", "needs") + " unfilled")
+    return f"{head} — " + ", ".join(parts)
+
+
+def _count(value: int, singular: str, plural: str) -> str:
+    return f"{value} {singular if value == 1 else plural}"
 
 
 def _creation_causality(state: RunState) -> dict[str, Any]:
@@ -289,6 +354,7 @@ def render_project_status(
             else "Rate-limit barrier: none"
         ),
         render_pipeline_status(snapshot["pipeline_engineer"]),
+        _render_screening(snapshot["screening"]),
         _render_creation_causality(snapshot["creation_causality"]),
     ]
     for heading, key in (

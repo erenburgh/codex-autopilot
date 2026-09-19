@@ -201,7 +201,14 @@ def complete_screening_session(
             turn_id=turn_id,
             at=timestamp,
         )
-        current["status"] = "FAILED" if failure else "COMPLETED"
+        # BLOCKED, not a status of its own: the session is over either way,
+        # and fence_superseded_sessions treats anything non-terminal with a
+        # thread as still able to produce. A bespoke "FAILED" was retired to
+        # RETIRED_SUPERSEDED the moment the task it screened for got its
+        # worker, and the journal then said the screening was superseded
+        # when in fact it had failed - which is the reason the task runs
+        # unscreened.
+        current["status"] = "BLOCKED" if failure else "COMPLETED"
         current["final_status"] = "BLOCKED" if failure else "ROTATE"
         if failure:
             current["failure_reason"] = failure

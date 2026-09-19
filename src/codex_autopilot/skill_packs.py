@@ -89,6 +89,28 @@ class PromotionEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class ExternalSource:
+    """Where a pack's text was read, when it was not written here.
+
+    ``provider`` is mandatory because the trust ladder demands one for
+    external evidence (trust.classify_evidence refuses `external` without
+    it). A source that could never be recorded as evidence must not be
+    recordable on a pack either.
+    """
+
+    provider: str
+    locator: str = ""
+    digest: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "provider": self.provider,
+            **({"locator": self.locator} if self.locator else {}),
+            **({"digest": self.digest} if self.digest else {}),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SkillEvidenceRequirement:
     role: str
     kind: str
@@ -138,6 +160,17 @@ class SkillPack:
     promotion_evidence: tuple[PromotionEvidence, ...] = ()
     source_verification_ids: tuple[str, ...] = ()
     qualification_verification_ids: tuple[str, ...] = ()
+    external_sources: tuple[ExternalSource, ...] = ()
+
+    @property
+    def is_externally_sourced(self) -> bool:
+        """Whether this pack's text came from outside the project.
+
+        R18: such text may shape how the work is done and must never
+        become the authority for whether the work is accepted.
+        """
+
+        return bool(self.external_sources)
 
     @property
     def reference(self) -> SkillReference:
@@ -176,6 +209,17 @@ class SkillPack:
             "deterministic_checks": [item.to_dict() for item in self.deterministic_checks],
             "evidence_roles": list(self.evidence_roles),
             "conflicts_with": [item.to_dict() for item in self.conflicts_with],
+            # Only when present. Adding the key unconditionally would change
+            # every existing pack's digest and invalidate every qualification
+            # PASS on record in a live project. It IS in the digest when
+            # declared, because it decides whether the pack is withheld from
+            # the verifier - a change in how the pack is treated in
+            # production must invalidate the old verdict.
+            **(
+                {"external_sources": [item.to_dict() for item in self.external_sources]}
+                if self.external_sources
+                else {}
+            ),
         }
         encoded = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -217,6 +261,11 @@ class SkillPack:
                 if self.qualification_verification_ids
                 else {}
             ),
+            **(
+                {"external_sources": [item.to_dict() for item in self.external_sources]}
+                if self.external_sources
+                else {}
+            ),
         }
 
     def to_prompt_dict(self) -> dict[str, Any]:
@@ -234,6 +283,15 @@ class SkillPack:
                 "source_verification_ids": list(self.source_verification_ids),
                 "qualification_verification_ids": list(
                     self.qualification_verification_ids
+                ),
+                **(
+                    {
+                        "external_sources": [
+                            item.to_dict() for item in self.external_sources
+                        ]
+                    }
+                    if self.external_sources
+                    else {}
                 ),
             },
             "procedures": list(self.procedures),
@@ -354,7 +412,7 @@ def skill_pack_from_raw(raw: Any, label: str = "skill pack") -> SkillPack:
         "checklists", "failure_modes", "quality_criteria", "required_tools",
         "required_mcp_servers", "deterministic_checks", "evidence_roles",
         "conflicts_with", "promotion_evidence", "source_verification_ids",
-        "qualification_verification_ids",
+        "qualification_verification_ids", "external_sources",
     }
     _reject_unknown(raw, allowed, label)
     source = _choice(raw.get("source"), SKILL_SOURCES, f"{label}.source")
@@ -378,6 +436,21 @@ def skill_pack_from_raw(raw: Any, label: str = "skill pack") -> SkillPack:
         )
     )
     _unique((item.id for item in promotion), f"{label} promotion evidence id")
+    external_sources = tuple(
+        _external_source_from_raw(item, f"{label}.external_sources[{index}]")
+        for index, item in enumerate(
+            _array(raw.get("external_sources", []), f"{label}.external_sources")
+        )
+    )
+    if external_sources and source in _SOURCE_ATTESTATION_REQUIRED:
+        # `vetted` and `project_generated` both rest on an independent review
+        # of where the pack came from. Reading somebody's published text is
+        # not that review, and letting it claim one would launder an outside
+        # origin into an attested one.
+        raise SkillPackError(
+            f"{label} declares external_sources, so it cannot claim source "
+            f"{source!r}; text read from outside is synthesized or learned"
+        )
     if source == "synthesized" and status == "trusted":
         _validate_synthesized_promotion(promotion, label)
     if source == "learned" and status == "trusted":
@@ -410,6 +483,7 @@ def skill_pack_from_raw(raw: Any, label: str = "skill pack") -> SkillPack:
             raw.get("qualification_verification_ids", []),
             f"{label}.qualification_verification_ids",
         ),
+        external_sources=external_sources,
     )
     if pack.reference in pack.conflicts_with:
         raise SkillPackError(f"{label} cannot conflict with itself")
@@ -1110,6 +1184,25 @@ def _promotion_from_raw(raw: Any, label: str) -> PromotionEvidence:
         id=_required_string(raw.get("id"), f"{label}.id"),
         kind=_choice(raw.get("kind"), PROMOTION_EVIDENCE_KINDS, f"{label}.kind"),
         verified=verified,
+    )
+
+
+def _external_source_from_raw(raw: Any, label: str) -> ExternalSource:
+    if not isinstance(raw, Mapping):
+        raise SkillPackError(f"{label} must be an object")
+    _reject_unknown(raw, {"provider", "locator", "digest"}, label)
+    return ExternalSource(
+        provider=_required_string(raw.get("provider"), f"{label}.provider"),
+        locator=(
+            _required_string(raw.get("locator"), f"{label}.locator")
+            if raw.get("locator") is not None
+            else ""
+        ),
+        digest=(
+            _required_string(raw.get("digest"), f"{label}.digest")
+            if raw.get("digest") is not None
+            else ""
+        ),
     )
 
 

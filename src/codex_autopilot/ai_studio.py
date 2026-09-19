@@ -448,6 +448,21 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             raise ContextBoundaryError(
                 f"task {task.id} skill stack cannot be resolved: {exc}"
             ) from exc
+        # R18: a pack written from text somebody else published may shape
+        # HOW the work is done and must never reach the session deciding
+        # WHETHER it is accepted. build_prompt resolves one stack for every
+        # phase, so without this the worker's market procedure would also be
+        # whispering its quality criteria to its own acceptor. The verifier
+        # is told which capability was withheld, so it knows what the worker
+        # carried without reading the text that shaped the work.
+        withheld_external: tuple[SkillPack, ...] = ()
+        if phase == "verification":
+            withheld_external = tuple(
+                item for item in loaded_skills if item.is_externally_sourced
+            )
+            loaded_skills = tuple(
+                item for item in loaded_skills if not item.is_externally_sourced
+            )
         envelope = {
             # Rule R17: the rules block goes BEFORE the task specifications
             # and is never truncated. If the context budget cannot hold the
@@ -463,6 +478,27 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             "task": self._task_contract(task),
             "role": self._role_contract(role, department_reference),
             "loaded_skills": [item.to_prompt_dict() for item in loaded_skills],
+            **(
+                {
+                    "withheld_external_skills": [
+                        {
+                            "id": item.id,
+                            "version": item.version,
+                            "capability": item.capability,
+                            "providers": [
+                                source.provider for source in item.external_sources
+                            ],
+                            "withheld_because": (
+                                "R18: external content may shape how the work was "
+                                "done and is never the authority for accepting it"
+                            ),
+                        }
+                        for item in withheld_external
+                    ]
+                }
+                if withheld_external
+                else {}
+            ),
             # The honest half of a hire. A capability that was asked for and
             # not filled is told to the worker with the reason, so it knows
             # it is working without a procedure somebody judged it needed -

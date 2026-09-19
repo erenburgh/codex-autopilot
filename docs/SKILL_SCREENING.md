@@ -420,6 +420,15 @@ model-in-the-loop gate, not a deterministic one.
 Three questions, sharpest first.
 
 **1. May a market-sourced draft declare its own `deterministic_checks.argv`?**
+*Answered: no.* The allowlist is not hand-written in the runtime — it is
+derived from what this project already runs, namely the checks its own plan
+declares, which for a canonical task is the suite check the acceptance floor
+demands. A market pack contributes procedures, checklists, failure modes and
+quality criteria, and proves itself against a command the project trusted
+before the pack arrived. A draft whose argv is outside that set is not refused
+silently: it is recorded as a requisition item that could not be qualified, and
+the refusal names what would have been accepted (R31). Not built — it has
+nothing to act on until the obtaining path exists.
 
 * *No (recommended).* The runtime refuses a draft whose argv is not drawn from
   a small allowlist the project already trusts — its own test command, its
@@ -457,10 +466,33 @@ and fails closed at the next prompt assembly.
 
 ## What is not built
 
-* Acquisition of any kind (option B or C). A requisition item that nothing
-  installed satisfies is recorded `unmet` with its `search_intent`, and no
-  network access, download or install happens. That is the seam, and it
-  currently denies.
+* Acquisition of any kind. A requisition item that nothing installed satisfies
+  is recorded `unmet` with its `search_intent`, and no network access, download
+  or install happens. That is the seam, and it currently denies.
+* The argv allowlist of question 1, which has nothing to act on until drafts
+  can arrive.
+* Installing a real Codex skill bundle so a worker can invoke its scripts.
+  That is third-party code on the machine and it collides with the plugin-cache
+  and hook-trust discipline; it stays a named seam with nothing behind it.
+
+## What R18 enforcement is built
+
+A pack may declare `external_sources` — `{provider, locator, digest}`, with
+`provider` mandatory because the trust ladder refuses external evidence without
+one. Declaring it has three consequences, all enforced in code:
+
+* the pack cannot claim `source: "vetted"` or `"project_generated"`; both rest
+  on an independent review of the origin, and reading published text is not
+  that review;
+* `external_sources` is inside `revision_sha256` when present, so changing
+  where a pack came from invalidates its recorded verdicts — and it is omitted
+  from the digest when absent, so packs already qualified in a live project
+  keep the digest their records point at;
+* the pack is **withheld from the verification-phase prompt**
+  (`ai_studio.build_prompt`). The verifier instead receives
+  `withheld_external_skills` naming the capability, the pack and its providers,
+  so it knows what the worker carried without reading the text that shaped the
+  work — informed, not blinded.
 * Attaching a hired skill as a real Codex `{"type":"skill"}` turn input beside
   Autopilot's own. `turn/start` takes a list and today receives exactly one
   such item (`appserver.py`); whether App Server accepts several has not

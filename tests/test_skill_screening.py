@@ -51,7 +51,7 @@ from codex_autopilot.skill_screening import (
     skill_catalog,
 )
 from codex_autopilot.lifecycle_screening import screening_applies
-from test_skill_packs import attestation_plan, pack
+from test_skill_packs import attestation_plan, pack, run_canonical_attestations
 
 
 def screening_message(payload: dict, *, prose: str = "Looked at the task.") -> str:
@@ -1140,4 +1140,356 @@ class ScreeningInFlightTests(AttestedProjectCase):
         self.assertEqual(len(screenings), 1, "the pass must not re-hire the screener")
         self.assertEqual(
             screenings[0]["reservation_token"], pending[0].reservation_token
+        )
+
+
+class ExternalProvenanceTests(unittest.TestCase):
+    """R18 at the pack boundary: a pack that came from outside is marked.
+
+    A pack may be written from text somebody published. That text is
+    external content: it may shape HOW the work is done and must never
+    become the authority for WHETHER the work is accepted.
+    """
+
+    @staticmethod
+    def sourced(**overrides) -> dict:
+        raw = dict(pack("svelte-runes", "svelte", source="synthesized", status="candidate"))
+        raw["external_sources"] = [
+            {
+                "provider": "github.com/example/skills",
+                "locator": "docs/runes.md",
+                "digest": "sha256:" + "0" * 64,
+            }
+        ]
+        raw.update(overrides)
+        return raw
+
+    def test_a_pack_records_where_its_text_came_from(self) -> None:
+        parsed = skill_pack_from_raw(self.sourced())
+
+        self.assertEqual(len(parsed.external_sources), 1)
+        self.assertEqual(
+            parsed.external_sources[0].provider, "github.com/example/skills"
+        )
+        self.assertTrue(parsed.is_externally_sourced)
+
+    def test_a_source_needs_a_provider(self) -> None:
+        """The trust ladder refuses external evidence without one, so a
+        pack may not carry a source that could never be recorded."""
+
+        with self.assertRaisesRegex(SkillPackError, "provider"):
+            skill_pack_from_raw(
+                self.sourced(external_sources=[{"locator": "docs/runes.md"}])
+            )
+
+    def test_vetted_cannot_launder_an_outside_origin(self) -> None:
+        """`vetted` claims an independent review of the origin. Fetching
+        text is not that review."""
+
+        with self.assertRaisesRegex(SkillPackError, "external_sources"):
+            skill_pack_from_raw(self.sourced(source="vetted"))
+
+    def test_declaring_a_source_changes_the_revision_digest(self) -> None:
+        plain = skill_pack_from_raw(
+            pack("svelte-runes", "svelte", source="synthesized", status="candidate")
+        )
+
+        self.assertNotEqual(
+            plain.revision_sha256, skill_pack_from_raw(self.sourced()).revision_sha256
+        )
+
+    def test_a_pack_without_sources_keeps_the_digest_it_already_proved(self) -> None:
+        """Adding the field must not invalidate every qualification on
+        record in a live project."""
+
+        parsed = skill_pack_from_raw(pack("python-testing", "python"))
+
+        self.assertEqual(
+            parsed.revision_sha256,
+            "b80373831f1902f2bf28d445adf9e61e67b56a09bd7c50aa64eace7e8590f124",
+        )
+
+
+class VerifierIsNotToldByTheMarketTests(AttestedProjectCase):
+    """R18: the worker may follow a market procedure; the acceptor may not.
+
+    build_prompt resolves the same stack for every phase, so without this a
+    pack written from somebody's published text would reach the session that
+    decides whether the work passes.
+    """
+
+    def _runtime(self, *, external: bool) -> tuple[Any, dict, Any]:
+        """Promote one pack for real, with or without an outside origin.
+
+        The origin is declared BEFORE the attestations run: external_sources
+        is inside revision_sha256, so a pack that gains one afterwards is a
+        different revision and its records no longer describe it.
+        """
+
+        import subprocess
+
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        raw = pack(
+            "market-runtime",
+            "runtime-capability",
+            source="synthesized",
+            status="candidate",
+        )
+        raw["deterministic_checks"][0]["argv"] = [
+            sys.executable,
+            "-c",
+            "raise SystemExit(0)",
+        ]
+        if external:
+            raw["external_sources"] = [
+                {"provider": "github.com/example/skills", "locator": "docs/runes.md"}
+            ]
+        records, implementation = run_canonical_attestations(
+            self.root, raw, ("promotion", "qualification")
+        )
+        manifest = dict(raw)
+        manifest["status"] = "trusted"
+        manifest["promotion_evidence"] = [
+            {
+                "id": records["promotion"]["id"],
+                "kind": "independent_verification",
+                "verified": True,
+            },
+            {"id": implementation["promotion"], "kind": "real_tool", "verified": True},
+        ]
+        manifest["qualification_verification_ids"] = [records["qualification"]["id"]]
+        library = self.root / ".codex-autopilot" / SKILL_LIBRARY_DIRNAME
+        library.mkdir(parents=True, exist_ok=True)
+        (library / "market-runtime.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        cfg = load_config(self.root)
+        plan = load_plan(cfg.state_dir, cfg.profile)
+        runtime = AIStudioRuntime(
+            plan, cfg.root, language=cfg.language, skill_path=cfg.skill_path
+        )
+        decision = HiringDecision(
+            task_id="A1",
+            outcomes=(
+                HiringOutcome(
+                    capability="runtime-capability",
+                    rationale="A1 runs this procedure.",
+                    necessity="required",
+                    status="hired",
+                    skill=SkillReference("market-runtime", "1.0.0"),
+                ),
+            ),
+        )
+        return runtime, manifest, decision
+
+    def test_a_locally_sourced_pack_reaches_both_phases(self) -> None:
+        """The control: without an outside origin nothing is withheld."""
+
+        runtime, manifest, decision = self._runtime(external=False)
+
+        for phase in ("implementation", "verification"):
+            with self.subTest(phase=phase):
+                prompt = runtime.build_prompt(
+                    "A1",
+                    phase=phase,
+                    task_states={},
+                    reservation_token="token",
+                    hiring=decision,
+                )
+                self.assertIn(manifest["quality_criteria"][0], prompt)
+
+    def test_a_market_sourced_pack_never_reaches_the_verifier(self) -> None:
+        runtime, manifest, decision = self._runtime(external=True)
+
+        worker = runtime.build_prompt(
+            "A1",
+            phase="implementation",
+            task_states={},
+            reservation_token="token",
+            hiring=decision,
+        )
+        verifier = runtime.build_prompt(
+            "A1",
+            phase="verification",
+            task_states={},
+            reservation_token="token",
+            hiring=decision,
+        )
+
+        self.assertIn(manifest["quality_criteria"][0], worker)
+        self.assertIn("github.com/example/skills", worker)
+        self.assertNotIn(manifest["quality_criteria"][0], verifier)
+        self.assertNotIn(manifest["procedures"][0], verifier)
+
+    def test_the_verifier_is_told_what_was_withheld_from_it(self) -> None:
+        """Informed, not blinded: it knows which capability the worker
+        carried, without reading the text that shaped the work."""
+
+        runtime, _manifest, decision = self._runtime(external=True)
+
+        verifier = runtime.build_prompt(
+            "A1",
+            phase="verification",
+            task_states={},
+            reservation_token="token",
+            hiring=decision,
+        )
+
+        self.assertIn("withheld_external_skills", verifier)
+        self.assertIn("runtime-capability", verifier)
+        self.assertIn("market-runtime", verifier)
+
+
+class ScreeningFailureReachesAWorkerTests(AttestedProjectCase):
+    """The fail-open half, driven rather than asserted in isolation.
+
+    Skills fail closed; the task does not fail with them. The predictable
+    part - a task is created, handed over, runs to DONE - is the core, and
+    hiring is superstructure that may not stop it.
+    """
+
+    def _before_last_acceptance(self) -> None:
+        library = self.root / ".codex-autopilot" / SKILL_LIBRARY_DIRNAME
+        library.mkdir(parents=True, exist_ok=True)
+        (library / "vetted-runtime.json").write_text(
+            json.dumps(_candidate_manifest()), encoding="utf-8"
+        )
+        config = self.root / ".codex-autopilot" / "config.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                "[runtime]", '[runtime]\nskill_screening = "always"', 1
+            ),
+            encoding="utf-8",
+        )
+
+    def test_a_screener_that_errors_every_time_still_yields_a_worker(self) -> None:
+        self._qualified_pack(trailing_task=_trailing_task())
+        descriptors = self.last_descriptors
+        cfg = load_config(self.root)
+        # Each turn ends in a way the protocol cannot read: no final line at
+        # all, then a line that is valid JSON for the wrong task.
+        replies = (
+            "I looked at the project and could not decide.",
+            screening_message({"task_id": "A2", "items": []}),
+        )
+        seen_kinds = []
+        for attempt, reply in enumerate(replies, 1):
+            seen_kinds.append(descriptors[0].kind)
+            thread = f"screening-M1-{attempt}"
+            activate_via_app_server(cfg, self.root, descriptors[0], thread)
+            descriptors = complete_desktop_worker(
+                cfg,
+                thread_id=thread,
+                turn_id=f"screening-turn-M1-{attempt}",
+                final_message=reply,
+            ).descriptors
+
+        self.assertEqual(seen_kinds, ["screening", "screening"])
+        worker = descriptors[0]
+        self.assertEqual((worker.kind, worker.task_id), ("implementation", "M1"))
+        self.assertIn('"loaded_skills":[]', worker.prompt)
+
+        state = json.loads(
+            (self.root / ".codex-autopilot" / "run-state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn(
+            "did not produce a readable requisition",
+            state["task_hiring"]["M1"]["unscreened"],
+        )
+        # The two stopped screenings keep their own reason. They must not be
+        # relabelled RETIRED_SUPERSEDED by the worker they failed to hire
+        # for: the journal would then say they were superseded, when their
+        # failure is exactly why that worker has no skills.
+        stopped = [
+            item
+            for item in state["worker_sessions"]
+            if item["kind"] == "screening" and item["status"] == "BLOCKED"
+        ]
+        self.assertEqual(len(stopped), 2)
+        self.assertIn("exactly one", stopped[0]["failure_reason"])
+        self.assertIn("A2", stopped[1]["failure_reason"])
+        self.assertNotIn(
+            "RETIRED_SUPERSEDED",
+            [item["status"] for item in state["worker_sessions"]],
+        )
+        self.assertNotEqual(state["status"], "BLOCKED")
+
+
+class ScreeningCostIsVisibleTests(AttestedProjectCase):
+    """A cost she can see is a cost she can decide about.
+
+    Screening spends one Codex thread per task out of the user's limits.
+    The card says how many it has spent and how many tasks went without.
+    """
+
+    def _card(self) -> str:
+        from codex_autopilot.plan import load_plan as _load_plan
+        from codex_autopilot.run_state import StateStore
+        from codex_autopilot.status import render_project_status
+
+        cfg = load_config(self.root)
+        return render_project_status(
+            cfg,
+            StateStore(cfg.state_dir).load(),
+            _load_plan(cfg.state_dir, cfg.profile),
+            dispatcher_running=False,
+        )
+
+    def test_a_run_that_never_screens_says_so_and_says_it_spent_nothing(self) -> None:
+        self._qualified_pack(trailing_task=_trailing_task())
+
+        card = self._card()
+
+        self.assertIn("Screening:", card)
+        self.assertIn("off", card)
+        self.assertIn("never", card)
+        self.assertIn("0 threads", card)
+
+    def test_the_card_counts_the_threads_spent_and_what_they_bought(self) -> None:
+        self.screening_mode = "always"
+        _trusted, _memory = self._qualified_pack(trailing_task=_trailing_task())
+        cfg = load_config(self.root)
+        activate_via_app_server(cfg, self.root, self.last_descriptors[0], "screening-M1")
+        complete_desktop_worker(
+            cfg,
+            thread_id="screening-M1",
+            turn_id="screening-turn-M1",
+            final_message=screening_message(
+                {
+                    "task_id": "M1",
+                    "items": [
+                        item(
+                            "svelte",
+                            rationale="M1 does not need it, but ask.",
+                            candidates=[],
+                            search_intent="A procedure for Svelte 5 runes.",
+                        )
+                    ],
+                }
+            ),
+        )
+
+        card = self._card()
+
+        self.assertIn("Screening: on (always)", card)
+        self.assertIn("1 thread", card)
+        self.assertIn("1 task screened", card)
+        self.assertIn("1 need unfilled", card)
+
+    def _before_last_acceptance(self) -> None:
+        if getattr(self, "screening_mode", "never") == "never":
+            return
+        library = self.root / ".codex-autopilot" / SKILL_LIBRARY_DIRNAME
+        library.mkdir(parents=True, exist_ok=True)
+        (library / "vetted-runtime.json").write_text(
+            json.dumps(_candidate_manifest()), encoding="utf-8"
+        )
+        config = self.root / ".codex-autopilot" / "config.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                "[runtime]", f'[runtime]\nskill_screening = "{self.screening_mode}"', 1
+            ),
+            encoding="utf-8",
         )
