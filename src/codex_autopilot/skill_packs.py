@@ -1226,7 +1226,17 @@ def _validate_qualifying_evidence(
     if str(record.get("id")) != item.id:
         raise SkillPackError(f"{label} evidence lookup returned a different ID")
     expected_kinds = {
-        "authoritative_documentation": frozenset({"file", "external"}),
+        # "external" stood here and was unreachable: an external record
+        # passed this check and _require_deterministic_trust refused it two
+        # lines below, because external classifies as
+        # external_text/unverified and the gate demands deterministic. The
+        # set advertised a kind the next line always rejected - the exact
+        # defect this repository keeps repairing, a refusal that does not
+        # name what is truly accepted. Documentation promotes a skill only
+        # when it is a file in the project, which is readable and diffable;
+        # text fetched from elsewhere cannot make a skill trusted, and the
+        # refusal now says so by naming the kind that works.
+        "authoritative_documentation": frozenset({"file"}),
         "real_tool": frozenset({"tool"}),
         "deterministic_test": frozenset({"test", "build"}),
         "verified_work_outcome": frozenset({"artifact", "build", "test", "tool"}),

@@ -1075,8 +1075,16 @@ class SkillPackProductionPathTests(unittest.TestCase):
                 ],
                 [reference],
             )
-            with self.assertRaisesRegex(ValueError, "below deterministic trust"):
+            with self.assertRaises(ValueError) as caught:
                 validate_plan(raw, "adaptive", promotion_evidence_store=memory)
+
+            # R31: the refusal names what IS accepted. The old message said
+            # only "below deterministic trust", which is true of every
+            # external record and told the reader nothing about the kind
+            # that would have worked.
+            self.assertIn("authoritative_documentation", str(caught.exception))
+            self.assertIn("'file'", str(caught.exception))
+            self.assertIn("external", str(caught.exception))
 
     def test_canonical_plan_resolves_learned_pack_only_with_verified_outcome(self) -> None:
         reference = {"id": "learned-procedure", "version": "1.0.0"}
