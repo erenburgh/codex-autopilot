@@ -22,6 +22,7 @@ from .hook_trust import require_trusted_stop_hook_for_config
 from .lifecycle_base import parse_applied_rules
 from .memory import ProjectMemory
 from .rules import record_violation
+from .memory_verification import evidence_that_may_support
 from .plan import Plan, load_plan, plan_to_dict, validate_plan_change
 from .skill_packs import record_runtime_skill_attestation
 from .plan_verification import (
@@ -498,6 +499,15 @@ def complete_desktop_worker(
         )
     if verdict is not None:
         verifier_role = plan.role_map[verifier_route(plan, task).role_id].name
+        supporting_evidence = evidence_that_may_support(evidence)
+        if not supporting_evidence:
+            raise WorkerProtocolError(
+                f"{task_id} has no evidence that can support an acceptance: "
+                "every recorded item is below the deterministic threshold. "
+                "Record a command, test, artifact or filesystem observation "
+                "before returning a verdict; external and instruction "
+                "material stays on the record but cannot support it."
+            )
         verification = memory._record_runtime_verification_result(
             task_id=task_id,
             check_id="independent-acceptance",
@@ -508,7 +518,9 @@ def complete_desktop_worker(
                 if verdict.verdict == "PASS"
                 else f"Fresh independent verifier requested revision with {len(verdict.issues)} issue(s)."
             ),
-            evidence_ids=[str(item["id"]) for item in evidence],
+            # R18: an acceptance rests only on what may support it. Outside
+            # material stays on the milestone record and is not cited.
+            evidence_ids=supporting_evidence,
             created_by=verifier_role,
             provider="codex-desktop",
             provider_thread_id=thread_id,

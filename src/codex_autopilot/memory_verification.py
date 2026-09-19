@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from .memory import MAX_FIELD_CHARS, MemoryValidationError, utc_now
 from .trust import TRUST_POLICY
@@ -189,3 +189,28 @@ def record_verification_result(
                 },
             )
     return memory.get_verification_result(verification_id)
+
+
+def evidence_that_may_support(rows: Iterable[Mapping[str, Any]]) -> list[str]:
+    """The ids among these evidence rows that an outcome may rest on (R18).
+
+    The acceptance used to cite the whole milestone evidence list, and
+    ``require_truth_rows`` refuses the WHOLE set when one item is below
+    deterministic. One such item is exactly what an honest worker records:
+    the memory tool refuses evidence without a milestone_id while a task is
+    active, and its own description says outside material must be recorded
+    with kind "external". So a worker that obeyed the tool made its own task
+    impossible to accept - and ``MemoryValidationError`` is neither a
+    WorkerProtocolError nor a DesktopLifecycleError, so it escaped
+    completion after the Stop hook had already fired and the turn was lost.
+
+    Outside material stays on the record; it is simply not cited as support.
+    An empty result is not decided here: the caller owns the refusal, and a
+    refusal the worker can act on belongs to the worker's own protocol.
+    """
+
+    return [
+        str(row["id"])
+        for row in rows
+        if not TRUST_POLICY.row_is_below_truth(row)
+    ]

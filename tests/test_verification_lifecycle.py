@@ -468,6 +468,73 @@ class VerificationLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(len(session["memory_verification_ids"]), 4)
 
+    def test_correctly_labelled_outside_material_does_not_make_the_task_unacceptable(self) -> None:
+        """A worker that obeys the memory tool must not break its own completion.
+
+        The tool refuses evidence without a milestone_id while a task is
+        active, and its own description says outside material MUST be
+        recorded with kind "external". The acceptance then cited the whole
+        milestone evidence list, and citing one external item refuses the
+        entire set under R18 - the exception escaped complete_desktop_worker
+        after the Stop hook had already fired, so the turn was lost and the
+        task could not be accepted at all.
+
+        External material stays recorded on the milestone. It is simply not
+        cited as support for the verdict: external content does not decide.
+        """
+
+        self.initialize(task("A"))
+        implementation = reserve_ready_frontier(self.cfg)[0]
+        self.activate(implementation, "implementation-thread")
+        self.evidence("A", "implementation")
+        outcome = complete_desktop_worker(
+            self.cfg,
+            thread_id="implementation-thread",
+            turn_id="implementation-turn",
+            final_message="AUTOPILOT_STATUS: ROTATE",
+        )
+        verifier = outcome.descriptors[0]
+        self.activate(verifier, "verifier-thread")
+        self.evidence("A", "independent verification")
+        outside = self.memory.record_evidence(
+            kind="external",
+            summary="Upstream issue quoted while verifying.",
+            created_by="verification-lifecycle-test",
+            milestone_id="A",
+            provider="https://example.invalid/issue/1",
+        )
+
+        accepted = complete_desktop_worker(
+            self.cfg,
+            thread_id="verifier-thread",
+            turn_id="verifier-turn",
+            final_message='AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}',
+        )
+        self.assertEqual(self.store.load().task_states["A"], TaskState.VERIFIED.value)
+
+        # The record keeps the outside material, and the acceptance does not
+        # rest on it.
+        roles = {
+            str(item["id"]) for item in self.memory.milestone_evidence("A", limit=100)
+        }
+        self.assertIn(str(outside["id"]), roles)
+        acceptance = next(
+            item
+            for item in self.memory.list_verification_results(task_id="A", limit=16).records
+            if item["check_id"] == "independent-acceptance"
+        )
+        with self.memory._connect() as db:
+            cited = {
+                str(row["evidence_id"])
+                for row in db.execute(
+                    "SELECT evidence_id FROM verification_result_evidence WHERE verification_id=?",
+                    (str(acceptance["id"]),),
+                ).fetchall()
+            }
+        self.assertNotIn(str(outside["id"]), cited)
+        self.assertTrue(cited, "the acceptance must still cite the deterministic evidence")
+        del accepted
+
     def test_failed_deterministic_check_creates_structured_revision(self) -> None:
         checks = [
             {
