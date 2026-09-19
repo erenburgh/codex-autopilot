@@ -64,6 +64,85 @@ place where the run stood still and a human had to step in.
 - A long-standing concatenation bug glued words together inside the rules
   that reach every prompt; fixed.
 
+### The repair path was broken where nobody looked
+
+- `devops-rearm-relay-owner` — the command the on-call engineer uses to
+  restart a stalled run — could not run at all. It reached for a name the
+  lifecycle facade does not re-export and died with `AttributeError` before
+  doing anything. Its tail function had a test; the command itself was
+  imported by the test suite and never called once. It is now executed by a
+  test that drives a real known-failed create, and only the process spawn
+  and the fifteen-second launch observation are substituted.
+- The same command closed its incident without naming the repair, which
+  this line's own gate refuses — so it failed in the one phase it exists
+  for: the ticket still held by the engineer.
+- A reinstall of the same version deleted every accepted runtime repair.
+  The gateway writes its patches and the repaired sources inside the
+  installed version directory, and the installer began by removing it while
+  the archive loop skipped the current version by name. Measured: patches
+  and repaired sources gone, the backup directory empty. A repaired
+  installation is now moved aside as `<version>.repaired-<stamp>` and the
+  path is printed; nothing is deleted (R28).
+
+### External content still does not decide (R18)
+
+- Conflict resolution was the only writer of the `verified` transition for
+  a Truth, and it re-checked nothing. Three calls of the single exposed
+  memory tool — attach a contradiction, attach support while the record is
+  disputed, resolve — turned unverified outside material into binding
+  support for a verified fact. Measured on a live database. The same line
+  also hardcoded `verified` for every outcome but supersession, so a
+  retired Truth came back to life.
+- An acceptance cited every evidence item of its milestone, and the trust
+  gate refuses the whole set when one item is below deterministic. Since
+  the memory tool refuses evidence without a milestone link and its own
+  description requires outside material to be labelled `external`, a worker
+  that obeyed the tool made its own task impossible to accept — and the
+  refusal escaped after the Stop hook had already fired, so the turn was
+  lost. The acceptance now rests only on what may support it; the outside
+  material stays on the record.
+
+### One file is one lock
+
+- Filesystem claims were compared by exact string while named claims were
+  deliberately case-folded. On the filesystem Codex Desktop runs on,
+  `Shared.json` and `shared.json` are one file — and the coordinator handed
+  an exclusive write lock on it to two tasks at once.
+
+### Hook trust is checked on every path that starts work
+
+- Two repair commands and the Stop hook's continuation started production
+  work with the trust gate checked by nobody in any process on their path.
+  A relay is executed by the Stop hook, so arming one while the hook is not
+  trusted promises a launch that cannot happen; all three now refuse.
+- The test substitution for that gate had the same class of defect inside
+  itself: it matched a substring and therefore saw only modules importing
+  the gate alone, leaving others talking to a real App Server. It parses
+  now.
+
+### Smaller, each measured
+
+- The wake-up kept a narrower copy of "the owner's turn is over" and
+  accepted only one of the three proofs the dispatcher accepts. For a run
+  whose owner ended on an interrupt it found no owner at all: after a
+  reboot the sweep skipped the project and the retry waited for a human.
+- The replanner — the one phase that rewrites the whole graph — was asked
+  to report the rule ids it applied while its prompt carried no rules at
+  all.
+- The milestone gate refused a missing link and accepted any non-empty
+  string, including the very label the measured worker used instead of a
+  milestone id. A name that belongs to no task is refused now.
+
+### From the v1.0 line
+
+This release carries the nine fixes made on the main line the same week: a
+run-state ceiling that follows the budget instead of crashing the
+dispatcher past the hook, a DevOps re-arm gate that tells "in progress"
+from "broken" instead of cancelling every repair, one calculation for the
+worker limit instead of three, one predicate for "the turn is over"
+instead of two, state set aside instead of destroyed, and four places
+where the code said something other than what it did.
+
 ### Measured on the previous run
 
 - Every Pipeline Engineer prompt line names every flag its command
