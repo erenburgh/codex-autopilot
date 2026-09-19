@@ -364,11 +364,12 @@ def _initial_handoff(language: str) -> str:
 
 
 def purge_project_state(root: Path) -> Path | None:
-    """Отложить состояние проекта в сторону, а не удалить (R28).
+    """Set the project state aside rather than delete it (R28).
 
-    Прежде - три строки с rmtree: без копии, без записи, ветку не
-    исполнял ни один тест. Снимок - это сам прежний каталог, атомарно
-    переименованный в соседа; удалять его или нет, решает человек.
+    Before: three lines with rmtree - no copy, no record, and no test
+    executed the branch. The snapshot is the previous directory itself,
+    atomically renamed into a sibling; whether to remove it is the
+    human's call.
     """
 
     state_dir = root.resolve() / STATE_DIR_NAME
@@ -387,16 +388,18 @@ def purge_project_state(root: Path) -> Path | None:
 
 
 def archive_state_dir(state_dir: Path, *, reason: str, move: bool) -> Path:
-    """Восстановимый снимок каталога состояния - соседом, вне сносимого.
+    """A restorable snapshot of the state directory - a sibling, outside what is removed.
 
-    Имя ``<state>.<причина>-<штамп>`` - то же соглашение, что у
-    ``.codex-autopilot.stuck-<время>``: рантайм уже считает такие каталоги
-    своими (scope._is_runtime_state, копия в стейджинг), так что снимок не
-    предъявляется воркеру как запись вне области. Штамп - как у миграции:
-    время плюс восемь hex, чтобы два снимка в одну секунду не столкнулись.
+    The name ``<state>.<reason>-<stamp>`` follows the same convention as
+    ``.codex-autopilot.stuck-<time>``: the runtime already counts such
+    directories as its own (scope._is_runtime_state, the staging copy), so
+    the snapshot is not charged to the worker as a write outside its scope.
+    The stamp is the one migration uses: the time plus eight hex, so two
+    snapshots in the same second cannot collide.
 
-    ``move`` - переименование: атомарно, и снимок есть сам прежний каталог
-    (purge). Иначе копия: прежний каталог остаётся жить (replace).
+    ``move`` is a rename: atomic, and the snapshot is the previous directory
+    itself (purge). Otherwise a copy: the previous directory goes on living
+    (replace).
     """
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
@@ -413,16 +416,16 @@ def archive_state_dir(state_dir: Path, *, reason: str, move: bool) -> Path:
     restore = (
         f"mv {snapshot} {state_dir}"
         if move
-        else f"остановить новый прогон, затем rm -rf {state_dir} && mv {snapshot} {state_dir} "
-        f"(и вернуть ROADMAP.md из снимка в {state_dir.parent})"
+        else f"stop the new run, then rm -rf {state_dir} && mv {snapshot} {state_dir} "
+        f"(and put ROADMAP.md back from the snapshot into {state_dir.parent})"
     )
     (snapshot / "SNAPSHOT.md").write_text(
-        "# Снимок состояния Codex Autopilot\n\n"
-        f"- причина: {reason}\n"
-        f"- когда: {stamp[:16]} UTC\n"
-        f"- откуда: {state_dir}\n"
-        f"- как: {'перенос целиком' if move else 'копия; прежний каталог продолжает жить'}\n\n"
-        f"Восстановить: `{restore}`\n",
+        "# Codex Autopilot state snapshot\n\n"
+        f"- reason: {reason}\n"
+        f"- when: {stamp[:16]} UTC\n"
+        f"- from: {state_dir}\n"
+        f"- how: {'moved whole' if move else 'copied; the previous directory goes on living'}\n\n"
+        f"Restore: `{restore}`\n",
         encoding="utf-8",
     )
     return snapshot

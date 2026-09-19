@@ -9,7 +9,6 @@ import sys
 import time
 from typing import Any, Sequence
 
-from . import lifecycle as lifecycle_runtime
 from .appserver import AppServerClient  # sentinel: DevOps recovery must never construct it
 from .config import (
     Config,
@@ -34,6 +33,7 @@ from .launch_gate import (
     render_launch_timeline,
 )
 from .lifecycle import (
+    app_server_creation_contract,
     pending_descriptors,
     LaunchDescriptor,
     DesktopLifecycleError,
@@ -433,10 +433,7 @@ def reactivate_desktop_relay_owner(root: Path, *, incident_id: str | None = None
         "payload_sha256"
     ):
         raise RuntimeError("incident payload hash does not match the failed relay")
-    repaired_contract = lifecycle_runtime.app_server_creation_contract(
-        cfg,
-        failed_descriptor,
-    )
+    repaired_contract = app_server_creation_contract(cfg, failed_descriptor)
     repaired_params = dict(repaired_contract.get("params") or {})
     repaired_root_precondition = repaired_contract.get("project_root_precondition")
     expected_root_precondition = (
