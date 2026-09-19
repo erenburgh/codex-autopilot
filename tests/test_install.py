@@ -153,4 +153,103 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((install_root / "legacy-backups/astra-autopilot-adaptive/SKILL.md").is_file())
 
 
+class RepairedInstallationSurvivesReinstallTests(unittest.TestCase):
+    """R28 for the installation itself: a repaired tree is moved aside.
+
+    The runtime repairs its own code: the gateway writes accepted patches
+    into ``runtime/patches`` and the repaired sources into ``runtime/src``,
+    both inside the installed version directory. ``install.sh`` began with
+    ``rm -rf "$target"``, and the archive loop at its end skips the current
+    version by name - so reinstalling the SAME version deleted every
+    accepted repair and left ``legacy-backups`` empty. Measured before this
+    test existed; the self-repair the product promises did not survive an
+    ordinary reinstall.
+    """
+
+    def _install(self, env, *, check=True):
+        result = subprocess.run(
+            [str(ROOT / "install.sh"), "--profile", "adaptive"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if check:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def test_a_reinstall_moves_an_accepted_repair_aside_instead_of_deleting_it(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="codex-autopilot-repaired-"))
+        home = base / "home"
+        install_root = base / "runtime"
+        fake_codex = base / "codex"
+        fake_codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_codex.chmod(0o755)
+        env = os.environ.copy()
+        env.update({
+            "HOME": str(home),
+            "CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root),
+            "CODEX_AUTOPILOT_CODEX_BIN": str(fake_codex),
+            "CODEX_AUTOPILOT_PYTHON": os.environ.get("PYTHON", "python3"),
+            "CODEX_AUTOPILOT_SKIP_LAUNCHD": "1",
+        })
+        self._install(env)
+        target = install_root / __version__
+
+        # What an accepted repair leaves behind: the catalogue entry with the
+        # original it can be reverted to, and the repaired source in place.
+        patch_dir = target / "runtime/patches/patch-e2e"
+        patch_dir.mkdir(parents=True)
+        (patch_dir / "patch.json").write_text(
+            json.dumps({"patch_id": "patch-e2e", "test_name": "test_repro"}),
+            encoding="utf-8",
+        )
+        (patch_dir / "status.py.orig").write_text("original\n", encoding="utf-8")
+        repaired_source = target / "runtime/src/codex_autopilot/status.py"
+        repaired_source.write_text(
+            repaired_source.read_text(encoding="utf-8") + "\nREPAIRED = True\n",
+            encoding="utf-8",
+        )
+
+        result = self._install(env)
+
+        aside = sorted(install_root.glob(f"{__version__}.repaired-*"))
+        self.assertEqual(len(aside), 1, f"repaired tree was not kept: {list(install_root.iterdir())}")
+        kept = aside[0]
+        self.assertIn(str(kept), result.stdout)
+        self.assertTrue((kept / "runtime/patches/patch-e2e/patch.json").is_file())
+        self.assertTrue((kept / "runtime/patches/patch-e2e/status.py.orig").is_file())
+        self.assertIn(
+            "REPAIRED = True",
+            (kept / "runtime/src/codex_autopilot/status.py").read_text(encoding="utf-8"),
+        )
+        # The fresh installation is the shipped code, not the repaired one.
+        self.assertNotIn(
+            "REPAIRED = True",
+            (target / "runtime/src/codex_autopilot/status.py").read_text(encoding="utf-8"),
+        )
+        self.assertFalse((target / "runtime/patches/patch-e2e").exists())
+
+    def test_an_unrepaired_reinstall_leaves_nothing_aside(self) -> None:
+        """No repairs, nothing irreplaceable: the tree is rebuilt in place."""
+
+        base = Path(tempfile.mkdtemp(prefix="codex-autopilot-plain-"))
+        home = base / "home"
+        install_root = base / "runtime"
+        fake_codex = base / "codex"
+        fake_codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_codex.chmod(0o755)
+        env = os.environ.copy()
+        env.update({
+            "HOME": str(home),
+            "CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root),
+            "CODEX_AUTOPILOT_CODEX_BIN": str(fake_codex),
+            "CODEX_AUTOPILOT_PYTHON": os.environ.get("PYTHON", "python3"),
+            "CODEX_AUTOPILOT_SKIP_LAUNCHD": "1",
+        })
+        self._install(env)
+        self._install(env)
+        self.assertEqual(list(install_root.glob(f"{__version__}.repaired-*")), [])
+
+
 if __name__ == "__main__": unittest.main()

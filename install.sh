@@ -52,6 +52,27 @@ fi
 
 target="$install_root/$version"
 mkdir -p "$install_root"
+# R28: an installation the on-call engineer has already repaired is not
+# destroyed. The repair gateway writes its accepted patches into
+# runtime/patches and the repaired sources into runtime/src - both inside
+# this very directory - and the archive loop at the end of this script skips
+# the current version by name. Measured: reinstalling the same version took
+# the repairs with it and left legacy-backups empty, so the self-repair the
+# product promises did not survive an ordinary reinstall.
+#
+# The tree is renamed aside, not zipped: a rename is atomic, needs no tool,
+# and the snapshot is the previous directory itself - the same convention
+# the runtime uses for project state.
+if [ -d "$target/runtime/patches" ] && [ -n "$(ls -A "$target/runtime/patches" 2>/dev/null)" ]; then
+  repaired="$install_root/$version.repaired-$(date -u +%Y%m%dT%H%M%SZ)"
+  if mv "$target" "$repaired"; then
+    echo "This installation carried accepted runtime repairs; it was moved aside: $repaired"
+    echo "  the patch catalogue is at $repaired/runtime/patches; nothing was deleted."
+  else
+    echo "Could not move the repaired installation aside from $target; nothing was removed." >&2
+    exit 1
+  fi
+fi
 rm -rf "$target"
 mkdir -p "$target/runtime" "$target/bin"
 # The runtime is installed as a tree of the same shape as the repository:
@@ -282,6 +303,11 @@ for previous in "$install_root"/*/; do
   name=$(basename "$previous")
   case "$name" in
     "$version"|current|legacy-backups) continue ;;
+    # A tree moved aside because it carried accepted runtime repairs. It is
+    # not an old version to be packed away: it belongs to the version being
+    # installed right now, and the line above printed its path to the user.
+    # Zipping it here would delete the directory that message names.
+    *.repaired-*) continue ;;
   esac
   case "$name" in
     [0-9]*) ;;
