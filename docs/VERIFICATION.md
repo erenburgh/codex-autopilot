@@ -72,13 +72,14 @@ does not override a contradictory source requirement.
 | Account rate barrier preserves independent active work and exact retry timing | PASS |
 | Crash reconciliation retains unknown locks and retries absent owners idempotently | PASS |
 
-Before the independent contract module was added, the repository suite contained
-260 passing tests and four skipped legacy transport regressions. M10 added three
-passing AI Studio shape tests and five red contract regressions, so the complete
-suite is intentionally not green pending substantive revision. The reproducible
-context benchmark is in [CONTEXT_BENCHMARK.md](CONTEXT_BENCHMARK.md); exact M10
-results are in [TESTING.md](TESTING.md) and
-[RELEASE_VERIFICATION_0.9.0-beta.md](RELEASE_VERIFICATION_0.9.0-beta.md).
+The contract regressions that were red when the table above was written are
+green in this tree: `PYTHONPATH=src python3 -m unittest discover -s tests` runs
+1019 tests and ends `OK`. The single FAIL row was closed by dropping the
+requirement it measured: a canonical task must now declare `independent`
+verification, and a `deterministic` policy is rejected before execution
+(`src/codex_autopilot/plan.py`). How to run the suite and what it does not
+cover is in [TESTING.md](TESTING.md); the reproducible context benchmark is in
+[CONTEXT_BENCHMARK.md](CONTEXT_BENCHMARK.md).
 
 ## Confirmed foundations from v0.7
 

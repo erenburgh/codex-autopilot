@@ -2,7 +2,7 @@
 
 Both profile plugins declare one server named `codex_autopilot_memory` in `.mcp.json`. During installation its command becomes the absolute, version-independent `current/bin/codex-autopilot` launcher. It runs locally over stdio with newline-delimited JSON-RPC and has no listening socket.
 
-During bounded preflight, App Server starts the bundled server and proves its transport, trust, and project binding, then fully exits. Every Desktop-owned worker loads the same installed plugin MCP in its Codex App task with the canonical local project cwd. The server treats process cwd as its project identity, verifies the Git root and database binding, and rejects file or symlink paths that leave that root. Explicit `headless_app_server` compatibility continues to inject the complete transport itself.
+During bounded preflight, App Server starts the bundled server and proves its transport, trust, and project binding, then fully exits. Every Desktop-owned worker loads the same installed plugin MCP in its Codex App task with the canonical local project cwd. The server treats process cwd as its project identity, verifies the Git root and database binding, and rejects file or symlink paths that leave that root.
 
 ## Allowlisted API
 

@@ -204,14 +204,6 @@ workers continue, but no new worker is created before the barrier expires.
 Details and exact protocols are in
 [Plan evolution and recovery](PLAN_EVOLUTION_AND_RECOVERY.md).
 
-## Headless compatibility
-
-`headless_app_server` preserves the serial v0.8 CLI runner and its source API
-alias. It is intentionally named and documented as headless: production turns
-are owned by the external App Server connection, and no Desktop follow-up,
-steering, or immediate ownership-return promise is made. Desktop-owned hooks
-reject attempts to spawn that dispatcher.
-
 ## Notification of readiness
 
 The «unread» state in Desktop is not reachable from outside. Measured on a

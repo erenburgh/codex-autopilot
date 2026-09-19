@@ -59,6 +59,8 @@ cd codex-autopilot
 
 The macOS release ZIP can be extracted instead. `--install-deps` uses an existing Homebrew installation when Python is missing and npm when Codex CLI is missing. The installer never installs Homebrew itself.
 
+The installer also leaves one background agent on the Mac: `~/Library/LaunchAgents/com.codex-autopilot.wake.plist`, loaded with `launchctl`. It runs `codex-autopilot _wake-sweep` at login and every 300 seconds for as long as it stays installed. A sweep arms the wake-up for a task whose rate-limit retry has come due and does nothing else; without it, a run asleep on a rate limit would wait for a human after a reboot, because the sleeping wake-up process does not survive one. `CODEX_AUTOPILOT_SKIP_LAUNCHD=1` at install time writes the agent without loading it, and `codex-autopilot uninstall --yes` boots it out and deletes it. The full footprint is in [Install and uninstall footprint](docs/INSTALL_FOOTPRINT.md).
+
 After installation, start a fresh Codex task so the plugin loads. First use has two explicit Codex trust steps: open `/hooks` and trust the current Autopilot **Stop** hook, then let the dedicated preflight task call the single local `memory` tool with `operation=current` and choose `Always`. Autopilot never answers either approval itself. Installed hook and MCP definitions use the permanent `current/bin/codex-autopilot` entrypoint, so reinstalling or refreshing the plugin does not change their command identity; another hook review is required only when the hook definition itself changes. Preflight verifies that the exact selected-plugin Stop hook is enabled, trusted (or managed), and points to that stable runtime before project initialization or Worker 1; modified or untrusted requires review, while missing, disabled, duplicated, or erroneous inventory fails closed. If Codex blocks the official App Server from its state directory, preflight names the exact `CODEX_HOME` path that needs one-time read/write approval, exits with code 77, and creates no project run-state.
 
 ## Use
@@ -108,7 +110,7 @@ of the model, not that something failed.
 
 Workers use the configured `:workspace` App Server permission profile. App Server preflight and automatic worker processes never answer approval requests; an approval request fails closed. Autopilot does not call Codex App task APIs, change global Codex settings, change Git configuration, grant permissions, or auto-commit by default. The memory server exposes one tool with a strict operation union; Project Memory has no network service, shell tool, raw SQL tool, embedding service, or external database.
 
-The v0.8 beta supports macOS. It is developed against Codex CLI/App Server 0.154.0; App Server remains experimental.
+The v0.10 beta supports macOS. It is developed against Codex CLI/App Server 0.154.0; App Server remains experimental.
 
 Verified live, not only by tests: parallel workers on one dependency frontier, dependency unlock, independent verification, the Pipeline Engineer incident path including a closed-code escalation and the user's answer to it, and canonical project placement for every created task.
 

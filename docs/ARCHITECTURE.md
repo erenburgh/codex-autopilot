@@ -135,10 +135,11 @@ than the implementer response or transcript. A structured `REVISE` verdict
 creates a numbered fresh revision task and then a fresh verifier. See
 [Verification and revision lifecycle](VERIFICATION_LIFECYCLE.md).
 
-The audited candidate does not yet implement that policy split: it reserves a
-fresh verifier after every successful implementation, including passing
-deterministic checks and `self` policies. This is a release blocker, not an
-alternative architecture; see `RELEASE_VERIFICATION_0.9.0-beta.md`.
+This build does not split by policy. Every canonical task must declare
+`independent` verification, so a fresh verifier is reserved after every
+successful implementation and deterministic checks stay admission evidence
+(`plan.py`). The other values stay in the schema for migrated v0.8 runs,
+whose tasks carry `self`.
 
 ## Fresh context with bounded memory
 

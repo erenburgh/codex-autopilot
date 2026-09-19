@@ -16,18 +16,18 @@ declared resource claims. `git.auto_commit=false` remains the default. The
 runtime does not attempt to merge application-owned or binary output; matching
 write/exclusive claims serialize such work.
 
-## Current release blockers
+## Defaults and what is not proven here
 
-- New schema-3 plans and the documented bootstrap example currently default to
-  `serial` with one worker, although the v0.9 product contract says `auto` is the
-  default experience.
-- Every production worker must edit the same advisory `HANDOFF.md`, but that
-  shared write is neither represented by a resource claim nor validated by a
-  task-specific checkpoint. Parallel reservations receive the same pre-run file
-  hash, so one worker's edit can satisfy another worker's checkpoint gate and
-  concurrent edits can overwrite each other.
-- The repository contains deterministic fake coverage, but no v0.9 live
-  multi-worker run was executed during the independent M10 audit.
+- A new schema-3 plan defaults to `execution_strategy="auto"` with up to ten
+  workers and one Computer Use slot (`plan.py`), and both skill templates
+  declare the same. A migrated v0.8 plan keeps `serial` with one worker and
+  never enters parallelism implicitly.
+- The completion checkpoint is per task: each worker writes
+  `.codex-autopilot/handoff/<task-id>.md` and the gate checks that one file
+  (`lifecycle_base.py`). The shared `HANDOFF.md` is a note for the human, not
+  a gate, so parallel workers no longer share one hash or overwrite one file.
+- The repository suite drives fake App Server and Desktop clients. It proves
+  reservation, resource and dependency behaviour; it is not evidence of a live
+  multi-worker run.
 
-See `SCHEDULER.md`, `RESOURCES.md`, and
-`RELEASE_VERIFICATION_0.9.0-beta.md`.
+See `SCHEDULER.md` and `RESOURCES.md`.

@@ -35,9 +35,10 @@ schema-3 plan change with a new graph version and full revalidation.
 
 The new `[runtime]` section carries `execution_strategy`,
 `max_parallel_workers`, `computer_use_slots`, and `worker_surface`. If the
-section is absent, as it is in v0.8, the loader supplies `serial`, `1`, `1`, and
-`headless_app_server`; this preserves the historical runner rather than
-silently changing ownership semantics. User-facing `start-skill` with a saved
+section is absent, as it is in v0.8, the loader supplies `serial`, `1`, and `1`,
+so such a project stays single-lane instead of drifting into parallelism because
+a new run's default changed. `worker_surface` resolves to `desktop_owned`, which
+is the only surface the runtime accepts. User-facing `start-skill` with a saved
 Desktop project explicitly writes `desktop_owned`.
 
 ## Run state

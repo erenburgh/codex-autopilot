@@ -25,12 +25,17 @@ The installer:
 
 1. checks macOS, Python 3.11+, `codex app-server`, and Codex login;
 2. optionally installs missing Python through an existing Homebrew and missing Codex CLI through npm;
-3. creates `~/Library/Application Support/CodexAutopilot/<version>/` with a pip-free venv, runtime, docs, and both profile bundles;
+3. creates `~/Library/Application Support/CodexAutopilot/<version>/` with a pip-free venv, the runtime tree (sources, the test suite, docs, the installer), and both profile bundles;
 4. replaces the memory MCP and lifecycle-hook launcher placeholders with the absolute, stable `current/bin/codex-autopilot` runtime path;
 5. updates the `current` symlink;
-6. registers the local marketplace and exactly one selected profile through `codex plugin`.
+6. registers the local marketplace and exactly one selected profile through `codex plugin`;
+7. writes the wake-up launch agent `~/Library/LaunchAgents/com.codex-autopilot.wake.plist` and loads it with `launchctl`.
 
-It preserves installed `0.6.0-beta` and `0.7.0-beta` directories. It does not modify PATH, shell profiles, Git config, repository history, global Codex model/reasoning/sandbox/network/approval settings, macOS settings, or unrelated plugins.
+That agent is what the installer leaves running on your Mac. It starts `codex-autopilot _wake-sweep` at login and again every 300 seconds, for as long as it stays installed, and writes what it decided to `~/Library/Application Support/CodexAutopilot/wake-sweep.log`. A sweep looks only at the projects Autopilot has already armed: where a task waits for a rate-limit retry whose time has come and no wake-up is waiting for it, the sweep arms one, and otherwise it does nothing. It starts no worker itself and does not wake a run you paused or stopped. Install with `CODEX_AUTOPILOT_SKIP_LAUNCHD=1 ./install.sh --profile adaptive` to write the agent without loading it; `codex-autopilot uninstall --yes` boots it out and deletes it.
+
+Previous installations are no longer kept beside the new one: each older version directory is zipped into `~/Library/Application Support/CodexAutopilot/legacy-backups/previous-installs-<stamp>.zip` and then removed, and the installer prints how many and where. One exception: an installation carrying accepted runtime repairs is renamed to `<version>.repaired-<stamp>` beside itself and kept.
+
+Apart from that launch agent, the installer does not modify PATH, shell profiles, Git config, repository history, global Codex model/reasoning/sandbox/network/approval settings, other macOS settings, or unrelated plugins. The complete list of what installation and uninstallation touch is in [Install and uninstall footprint](docs/INSTALL_FOOTPRINT.md).
 
 Open `/hooks` in Codex and trust the current Autopilot **Stop** hook once. Hook trust is a normal Codex security step and the installer cannot bypass it. The installed hook command points to the permanent `current/bin/codex-autopilot` entrypoint rather than a version or plugin-cache directory, so ordinary upgrades and cachebuster reinstallations preserve its command identity. Codex asks again only after a real hook-definition change.
 
@@ -128,6 +133,14 @@ Up to `max_parallel_workers` independent, resource-compatible READY tasks may ov
   reconcile running ownership and locks, then create fresh work when safe.
 - Send `What is Codex Autopilot doing right now?` for deterministic local status without a model request.
 
+The whole message must be the phrase - a control word inside a sentence is an
+ordinary request. Since 0.10 the bare words work on their own: `stop`, `pause`,
+`останови`, `пауза` pause the run; `resume`, `continue`, `продолжи`, `возобнови`
+resume it; `status`, `статус`, `tasks`, `задачи`, `show tasks`, `покажи задачи`
+answer with the status card. Trailing punctuation and a leading `just`, `please`,
+`просто`, `давай`, `давайте`, or `пожалуйста` are ignored. Uninstall is deliberately
+not in this list: it requires the product name.
+
 The status report groups milestones under `Running`, `Verifying`, `Waiting`,
 and `Ready`; explains each wait; shows verified progress plus worker and
 Computer Use capacity; and lists exact active task titles. It also reports the
@@ -150,7 +163,16 @@ The executable is:
 ~/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot
 ```
 
-It is intentionally not added to PATH. Commands include `preflight`, `doctor`, `status`, `logs`, `stop`, `timeline`, and `uninstall`, plus the Pipeline Engineer recovery set (`relay-status`, `relay-complete`, `relay-fail`, `devops-rearm-relay-owner`). `resume` is hook-owned: send the resume phrase in a Codex task instead.
+It is intentionally not added to PATH. Run it with `--help`: it lists exactly the
+commands meant to be typed by hand - `bootstrap`, `preflight`, `timeline`,
+`unblock`, `authorize-project-root`, `status`, `stop`, `resume`, `logs`, `doctor`,
+and `uninstall`. `resume` is there only as a pointer: it refuses and tells you to
+send the resume phrase in a Codex task, because launching belongs to the trusted
+Stop hook. The Pipeline Engineer recovery set - `relay-status`, `relay-complete`,
+`relay-fail`, `reconcile-thread-identity`, `recreate-archived-retry`, `arm`,
+`devops-rearm-relay-owner`, `devops-repair-runtime`, `devops-revert-runtime-patch`,
+and `devops-resolve-incident` - and the internal entry points are kept out of
+`--help`: the on-call engineer runs them, not you.
 
 ## Watching a run
 
@@ -188,7 +210,7 @@ reading the whole transcript.
 "$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" uninstall --yes
 ```
 
-This removes v0.8 plugin registrations, the v0.8 runtime, a `current` symlink that points to v0.8, and the v0.8 temporary launch registry. It preserves v0.6, v0.7, shared Python/Codex/Homebrew/Git installations, legacy backups, source repositories, and project state.
+This removes the Autopilot plugin and marketplace registrations, the wake-up launch agent, this version's runtime directory, a `current` symlink that points to it, and the temporary launch registry. It preserves shared Python/Codex/Homebrew/Git installations, the `legacy-backups` archives, any installation set aside as `<version>.repaired-<stamp>`, source repositories, and project state.
 
 To set one project's Autopilot state aside too (it is moved to a sibling `.codex-autopilot.purged-<stamp>`, never deleted; the path is printed, and you remove the sibling yourself when you are sure):
 
@@ -200,11 +222,11 @@ To set one project's Autopilot state aside too (it is moved to a sibling `.codex
 
 Autopilot does not lift such a stop by itself: a rule violation is reviewed
 by a human, and «resume» deliberately does not erase it. When you have looked
-into it and decided the work may go on, lift the stop by your own decision —
-the reason is recorded in the run state:
+into it and decided the work may go on, lift the stop by your own decision with
+`codex-autopilot unblock` — the reason is recorded in the run state:
 
 ```bash
-scripts/codex-autopilot unblock --project <path> --task <ID> --reason "<why this is acceptable>"
+"$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" unblock --project /absolute/path/to/project --task <ID> --reason "<why this is acceptable>"
 ```
 
 After that, continue the run with the usual phrase «Resume Codex Autopilot.»

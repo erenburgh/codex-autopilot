@@ -128,10 +128,13 @@ are:
 A required deterministic policy must declare at least one check. Evidence
 produced by any policy is still recorded through Project Memory.
 
-The current candidate parser supports this schema, but the lifecycle still
-forces every policy through an independent verifier and ignores
-`required=false` for dependency satisfaction. That mismatch is tracked as a
-release blocker in `RELEASE_VERIFICATION_0.9.0-beta.md`.
+The parser supports this schema, but a canonical task cannot use most of it:
+`validate_plan()` requires `policy: "independent"`, `required: true`,
+`max_revision_attempts` of at least two, and one deterministic check that runs
+the whole test suite. `required=false` therefore never reaches the dependency
+gate, which unlocks only at `VERIFIED`. A migrated v0.8 task carries `self`;
+the other values cannot be declared for new canonical work. See
+[Testing](TESTING.md) for the check the floor demands.
 
 Runtime semantics, the strict verifier result protocol, fresh-context boundary,
 and revision-attempt behavior are specified in

@@ -20,8 +20,10 @@ writer.
 
 The runtime uses one shared working tree and does not imply automatic merging.
 Planner accuracy still matters: undeclared project writes cannot be inferred by
-the lock layer. The M10 audit additionally found that the required shared
-`HANDOFF.md` write is not represented safely for parallel workers; see
-`RELEASE_VERIFICATION_0.9.0-beta.md`.
+the lock layer. The completion checkpoint is no longer a shared file: every
+task writes `.codex-autopilot/handoff/<task-id>.md` and the gate checks that
+one file, so parallel workers neither close the gate for one another nor
+overwrite each other's text (`lifecycle_base.py`). `HANDOFF.md` remains an
+optional note for the human and is not a gate.
 
 See `RESOURCES.md` for normalization and recovery details.

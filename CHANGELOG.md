@@ -324,8 +324,12 @@ six workers, every task inside the project, zero tickets, DONE.
 
 ### Known and not closed
 
-`docs/M11_COMPLETION.md` lists the items of the independent review that
-remain open, and why each of them is not closed here.
+At that point three items of the independent review were open: per-task
+accounting of the shared tree with time, attempt and token budgets (R7); the
+phase contract for the verifier, the replanner and the engineer (R16/R17);
+and discipline leads with a versioned rubric (R30). Recovery stayed partial: the
+list of allowed actions was still prompt text, and the real boundary was the
+set of guarded commands.
 
 ## 0.9.0-beta
 
@@ -372,9 +376,9 @@ Windows. All of this is named in the README, not hidden.
   pipeline, and mixed code/Computer Use scheduling.
 - Added the required dependency-graph, parallel-execution, roles,
   resource-locks, thread-naming, project-association, and testing documents.
-- Recorded release-blocking candidate gaps in
-  `docs/RELEASE_VERIFICATION_0.9.0-beta.md`; no release, tag, push, or publish
-  was performed.
+- Recorded release-blocking candidate gaps in the author's working notes,
+  which stay in the repository and are not part of the release; no release,
+  tag, push, or publish was performed.
 
 ## 0.8.1-beta
 

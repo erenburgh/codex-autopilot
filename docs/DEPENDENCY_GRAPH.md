@@ -18,13 +18,12 @@ Downstream output context is admitted only after the dependency gate succeeds.
 
 ## Verification gate status
 
-The required invariant is that `IMPLEMENTED` is distinct from `VERIFIED`, and
-only a result satisfying its declared verification policy may unlock a
-dependent. The candidate correctly keeps those states distinct. It does not yet
-honor the different `self`, `deterministic`, `independent`, and `auto` policy
-outcomes: every successful implementation is currently forced through a fresh
-independent verifier. This is a release blocker recorded in
-`RELEASE_VERIFICATION_0.9.0-beta.md`.
+`IMPLEMENTED` is distinct from `VERIFIED`, and only `VERIFIED` unlocks a
+dependent: `dependency_state_satisfies()` in `task_state.py` accepts no other
+state. The graph has no weaker path, because `validate_plan()` refuses a
+canonical task whose verification is not `independent` and required. `self`,
+`deterministic`, and `auto` stay in the schema — a migrated v0.8 task carries
+`self` — and cannot be declared for new canonical work.
 
 See also `TASK_GRAPH.md`, `SCHEDULER.md`, and
 `PLAN_EVOLUTION_AND_RECOVERY.md` for the implementation-level schema and state

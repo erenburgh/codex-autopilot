@@ -13,7 +13,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$profile" in adaptive|host-settings) ;; *) echo "Profile must be adaptive or host-settings" >&2; exit 2 ;; esac
-[ "$(uname -s)" = "Darwin" ] || { echo "Codex Autopilot v0.8 public beta supports macOS only." >&2; exit 1; }
+[ "$(uname -s)" = "Darwin" ] || { echo "Codex Autopilot $version public beta supports macOS only." >&2; exit 1; }
 
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 install_root=${CODEX_AUTOPILOT_INSTALL_ROOT:-"$HOME/Library/Application Support/CodexAutopilot"}

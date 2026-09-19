@@ -9,21 +9,13 @@ The runtime must journal a selected task's transition to `RUNNING` separately.
 ## Readiness and verification gate
 
 A task can enter `READY` only from `WAITING`, and only when every direct
-dependency satisfies the dependency's own verification policy:
-
-- a dependency with required verification must be `VERIFIED`;
-- a dependency whose verification is explicitly not required may be
-  `IMPLEMENTED` or `VERIFIED`.
-
-`IMPLEMENTED` therefore does not unlock required-verification dependents. The
-scheduler reuses the state-machine gate rather than maintaining a second
-interpretation. It also rejects plan/run-state graph-version mismatches and an
-active-task journal that does not exactly match active task states.
-
-The audited candidate currently implements a stricter unconditional rule:
-`dependency_state_satisfies()` accepts only `VERIFIED`, even when verification
-is not required. This does not match the policy-aware rule above and is a
-release blocker recorded in `RELEASE_VERIFICATION_0.9.0-beta.md`.
+dependency is `VERIFIED`. `dependency_state_satisfies()` in `task_state.py`
+accepts no other state, so `IMPLEMENTED` unlocks nothing; a canonical task
+cannot declare a weaker rule for itself, because `validate_plan()` requires
+`independent` and required verification. The scheduler reuses that
+state-machine gate rather than maintaining a second interpretation. It also
+rejects plan/run-state graph-version mismatches and an active-task journal
+that does not exactly match active task states.
 
 For the reference graph
 
