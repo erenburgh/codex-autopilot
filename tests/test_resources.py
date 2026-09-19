@@ -131,6 +131,47 @@ class ResourceMatchingTests(unittest.TestCase):
         )
         self.assertFalse(claims_match(application, browser))
 
+    def test_one_file_under_two_spellings_is_one_resource(self) -> None:
+        """Two tasks must not both hold an exclusive lock on one file.
+
+        Named claims are casefolded on purpose; filesystem claims were
+        compared by exact string. On the filesystem Codex Desktop runs on -
+        macOS, case-insensitive - ``Shared.json`` and ``shared.json`` ARE
+        one file, so the coordinator granted two exclusive writers to it and
+        the whole promise of the lock was gone.
+
+        Folding both sides is the fail-closed direction: on a
+        case-sensitive filesystem it can only serialize two tasks that did
+        not have to be serialized, while the exact comparison silently let
+        two writers into the same bytes.
+        """
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            upper = normalize_claim(
+                ResourceClaim("upper", "path", "src/Shared.json", "exclusive"), root
+            )
+            lower = normalize_claim(
+                ResourceClaim("lower", "path", "src/shared.json", "exclusive"), root
+            )
+            self.assertTrue(claims_match(upper, lower))
+            self.assertTrue(claims_conflict(upper, lower))
+
+            directory = normalize_claim(
+                ResourceClaim("dir", "directory", "SRC", "write"), root
+            )
+            self.assertTrue(claims_match(directory, lower))
+
+            pattern = normalize_claim(
+                ResourceClaim("glob", "glob", "src/**/*.JSON", "write"), root
+            )
+            self.assertTrue(claims_match(pattern, lower))
+
+            unrelated = normalize_claim(
+                ResourceClaim("other", "path", "src/other.json", "exclusive"), root
+            )
+            self.assertFalse(claims_match(upper, unrelated))
+
     def test_path_directory_and_glob_matching_is_deterministic_and_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -1286,110 +1286,10 @@ class ProjectMemory:
             "source": normalized_source,
         }
 
-    def open_conflict(self, *, existing_record_id: str, statement: str, created_by: str, incoming_record_id: str | None = None, incoming_evidence_id: str | None = None) -> dict[str, Any]:
-        self.initialize()
-        with self._connect(write=True) as db:
-            conflict_id = self._open_conflict_in_transaction(
-                db,
-                existing_record_id=existing_record_id,
-                statement=statement,
-                created_by=created_by,
-                incoming_record_id=incoming_record_id,
-                incoming_evidence_id=incoming_evidence_id,
-            )
-        return self.get_conflict(conflict_id)
 
-    def _open_conflict_in_transaction(
-        self,
-        db: sqlite3.Connection,
-        *,
-        existing_record_id: str,
-        statement: str,
-        created_by: str,
-        incoming_record_id: str | None = None,
-        incoming_evidence_id: str | None = None,
-    ) -> str:
-        existing = db.execute(
-            "SELECT category FROM records WHERE id=?", (existing_record_id,)
-        ).fetchone()
-        if not existing or existing["category"] != "truth":
-            raise MemoryValidationError(
-                "conflicts must reference an existing Truth record"
-            )
-        if incoming_record_id and not db.execute(
-            "SELECT 1 FROM records WHERE id=?", (incoming_record_id,)
-        ).fetchone():
-            raise MemoryValidationError(f"unknown incoming record: {incoming_record_id}")
-        if incoming_evidence_id and not db.execute(
-            "SELECT 1 FROM evidence WHERE id=?", (incoming_evidence_id,)
-        ).fetchone():
-            raise MemoryValidationError(
-                f"unknown incoming evidence: {incoming_evidence_id}"
-            )
-        conflict_id = self._next_id(db, "conflict")
-        now = utc_now()
-        normalized_statement = self._required(statement, "statement")
-        actor = self._required(created_by, "created_by", 256)
-        db.execute(
-            """INSERT INTO conflicts(
-                id,existing_record_id,incoming_record_id,incoming_evidence_id,
-                statement,status,created_by,created_at
-            ) VALUES(?,?,?,?,?,'needs_review',?,?)""",
-            (
-                conflict_id,
-                existing_record_id,
-                incoming_record_id,
-                incoming_evidence_id,
-                normalized_statement,
-                actor,
-                now,
-            ),
-        )
-        db.execute(
-            "UPDATE records SET status='disputed',updated_at=? WHERE id=?",
-            (now, existing_record_id),
-        )
-        db.execute(
-            """INSERT INTO conflict_history(
-                conflict_id,action,details,actor,created_at
-            ) VALUES(?,?,?,?,?)""",
-            (conflict_id, "opened", normalized_statement, actor, now),
-        )
-        self._audit(
-            db,
-            "open",
-            "conflict",
-            conflict_id,
-            actor,
-            {"existing_record_id": existing_record_id},
-        )
-        return conflict_id
 
-    def get_conflict(self, conflict_id: str) -> dict[str, Any]:
-        self.initialize()
-        with self._connect() as db:
-            row = db.execute("SELECT * FROM conflicts WHERE id=?", (conflict_id,)).fetchone()
-            if not row:
-                raise MemoryValidationError(f"unknown conflict: {conflict_id}")
-            result = dict(row)
-            result["history"] = [dict(item) for item in db.execute("SELECT * FROM conflict_history WHERE conflict_id=? ORDER BY id", (conflict_id,)).fetchall()]
-            return result
 
-    def resolve_conflict(self, conflict_id: str, *, outcome: str, resolution: str, actor: str) -> dict[str, Any]:
-        if outcome not in {"supersede_existing", "reject_incoming", "reverified_existing"}:
-            raise MemoryValidationError("invalid conflict outcome")
-        self.initialize()
-        with self._connect(write=True) as db:
-            row = db.execute("SELECT * FROM conflicts WHERE id=?", (conflict_id,)).fetchone()
-            if not row or row["status"] != "needs_review":
-                raise MemoryValidationError("conflict is missing or already resolved")
-            now = utc_now()
-            existing_status = "superseded" if outcome == "supersede_existing" else "verified"
-            db.execute("UPDATE records SET status=?,updated_at=? WHERE id=?", (existing_status, now, row["existing_record_id"]))
-            db.execute("UPDATE conflicts SET status='resolved',resolution=?,resolved_at=? WHERE id=?", (self._required(resolution, "resolution"), now, conflict_id))
-            db.execute("INSERT INTO conflict_history(conflict_id,action,details,actor,created_at) VALUES(?,?,?,?,?)", (conflict_id, outcome, resolution, actor, now))
-            self._audit(db, "resolve", "conflict", conflict_id, actor, {"outcome": outcome})
-        return self.get_conflict(conflict_id)
+
 
     def apply_user_correction(self, *, statement: str, related_ids: Sequence[str], actor: str = "user") -> dict[str, Any]:
         decision = self.propose_decision(statement=statement, origin="user", created_by=actor, status="accepted", reason="Explicit user correction")
@@ -1419,6 +1319,22 @@ class ProjectMemory:
         return [{"id": item["id"], "category": item["category"], "status": item["status"]} for item in page.records]
 
     # --- delegates to the extracted modules ----------------------------
+    def open_conflict(self, *args, **kwargs):
+        from .memory_conflicts import open_conflict
+        return open_conflict(self, *args, **kwargs)
+
+    def _open_conflict_in_transaction(self, *args, **kwargs):
+        from .memory_conflicts import open_conflict_in_transaction
+        return open_conflict_in_transaction(self, *args, **kwargs)
+
+    def get_conflict(self, *args, **kwargs):
+        from .memory_conflicts import get_conflict
+        return get_conflict(self, *args, **kwargs)
+
+    def resolve_conflict(self, *args, **kwargs):
+        from .memory_conflicts import resolve_conflict
+        return resolve_conflict(self, *args, **kwargs)
+
     def render_views(self) -> None:
         from .memory_views import render_views
         return render_views(self)

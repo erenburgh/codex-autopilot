@@ -650,30 +650,49 @@ def _thread_lock_for(path: Path) -> threading.RLock:
         return _THREAD_LOCKS.setdefault(key, threading.RLock())
 
 
+def _folded(target: str) -> str:
+    """One file has one identity, however the two claims spell it.
+
+    Named claims are casefolded on purpose (normalize_claim); filesystem
+    claims were compared by exact string. On the filesystem Codex Desktop
+    runs on - macOS, case-insensitive - ``Shared.json`` and ``shared.json``
+    are ONE file, and the coordinator handed an exclusive write lock on it
+    to two tasks at once: the whole promise of the lock, gone silently.
+
+    Folding is the fail-closed direction. On a case-sensitive filesystem it
+    can only serialize two tasks that did not have to be serialized; the
+    exact comparison let two writers into the same bytes.
+    """
+
+    return target.casefold()
+
+
 def _filesystem_targets_overlap(
     left: NormalizedResourceClaim,
     right: NormalizedResourceClaim,
 ) -> bool:
+    left_target = _folded(left.target)
+    right_target = _folded(right.target)
     if left.kind == "path" and right.kind == "path":
-        return left.target == right.target
+        return left_target == right_target
     if left.kind == "directory" and right.kind == "directory":
-        return _paths_nested(left.target, right.target)
+        return _paths_nested(left_target, right_target)
     if left.kind == "directory" and right.kind == "path":
-        return _is_within(right.target, left.target)
+        return _is_within(right_target, left_target)
     if left.kind == "path" and right.kind == "directory":
-        return _is_within(left.target, right.target)
+        return _is_within(left_target, right_target)
     if left.kind == "glob" and right.kind == "path":
-        return _glob_matches(left.target, right.target)
+        return _glob_matches(left_target, right_target)
     if left.kind == "path" and right.kind == "glob":
-        return _glob_matches(right.target, left.target)
+        return _glob_matches(right_target, left_target)
     if left.kind == "glob" and right.kind == "glob":
         # Exact intersection of two arbitrary glob languages is unnecessary
         # for admission. Overlapping literal roots fail closed.
-        return _paths_nested(_glob_static_root(left.target), _glob_static_root(right.target))
+        return _paths_nested(_glob_static_root(left_target), _glob_static_root(right_target))
     if left.kind == "glob" and right.kind == "directory":
-        return _paths_nested(_glob_static_root(left.target), right.target)
+        return _paths_nested(_glob_static_root(left_target), right_target)
     if left.kind == "directory" and right.kind == "glob":
-        return _paths_nested(left.target, _glob_static_root(right.target))
+        return _paths_nested(left_target, _glob_static_root(right_target))
     raise AssertionError(f"unsupported filesystem resource pair: {left.kind}, {right.kind}")
 
 

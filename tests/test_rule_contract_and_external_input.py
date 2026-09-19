@@ -290,6 +290,136 @@ class ExternalInputTests(unittest.TestCase):
         self.assertEqual(decision["status"], "accepted")
 
 
+class ConflictResolutionIsNotALaunderingPathTests(unittest.TestCase):
+    """R18 at the one writer nobody had checked: conflict resolution.
+
+    Measured on a live database. ``attach_evidence`` refuses external
+    support while a Truth is verified - but ``disputed`` is not a binding
+    status, so the same call succeeds once a conflict is open, and
+    resolution then returned the record to ``verified`` with a raw UPDATE
+    and no trust check. Three calls of the single exposed memory tool -
+    attach contradicts, attach supports, resolve - and unverified outside
+    material was binding support for a verified fact.
+
+    The same line hardcoded ``verified`` for every outcome but
+    ``supersede_existing``, so a retired Truth came back to life.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name).resolve()
+        (root / ".git").mkdir()
+        self.memory = ProjectMemory(root)
+
+    def _deterministic(self, summary: str) -> str:
+        return str(
+            self.memory.record_evidence(
+                kind="test",
+                summary=summary,
+                created_by="mcp-test",
+                command="pytest -q",
+                result="PASS",
+                exit_code=0,
+            )["id"]
+        )
+
+    def _verified_fact(self, statement: str) -> dict:
+        return self.memory.record_verified_fact(
+            statement=statement,
+            evidence_ids=[self._deterministic(f"suite proves: {statement}")],
+            verification_method="ran the suite",
+            created_by="mcp-test",
+        )
+
+    def _open_conflict_id(self) -> str:
+        with self.memory._connect() as db:
+            return str(
+                db.execute(
+                    "SELECT id FROM conflicts WHERE status='needs_review'"
+                ).fetchone()["id"]
+            )
+
+    def test_external_support_cannot_be_laundered_through_the_disputed_window(self) -> None:
+        fact = self._verified_fact("The flag is --yes.")
+        outside = self.memory.record_evidence(
+            kind="external",
+            summary="An upstream comment says the flag was renamed.",
+            created_by="mcp-test",
+            provider="github.com/other/repo#12",
+            result="INFO",
+        )
+        with self.assertRaises(MemoryValidationError):
+            self.memory.attach_evidence(
+                fact["id"], outside["id"], relation="supports", actor="worker"
+            )
+        # A contradiction is always attachable, and it opens the dispute.
+        self.memory.attach_evidence(
+            fact["id"], outside["id"], relation="contradicts", actor="worker"
+        )
+        self.assertEqual(self.memory.get_record(fact["id"])["status"], "disputed")
+        self.memory.attach_evidence(
+            fact["id"], outside["id"], relation="supports", actor="worker"
+        )
+
+        with self.assertRaises(MemoryValidationError) as caught:
+            self.memory.resolve_conflict(
+                self._open_conflict_id(),
+                outcome="reverified_existing",
+                resolution="Looked again.",
+                actor="worker",
+            )
+        self.assertIn("R18", str(caught.exception))
+        # The refusal names the way out, and the record does not come back
+        # binding on its own.
+        self.assertIn("external content does not decide", str(caught.exception))
+        self.assertEqual(self.memory.get_record(fact["id"])["status"], "disputed")
+
+    def test_a_retired_truth_is_not_resurrected_by_resolving_a_conflict(self) -> None:
+        fact = self._verified_fact("The flag is --force.")
+        # A Truth is retired by the runtime, not by a public call: there is
+        # no API for it, and the point here is the status the resolution
+        # finds, however it got there.
+        with self.memory._connect(write=True) as db:
+            db.execute(
+                "UPDATE records SET status='superseded' WHERE id=?", (fact["id"],)
+            )
+        self.assertEqual(self.memory.get_record(fact["id"])["status"], "superseded")
+
+        conflict = self.memory.open_conflict(
+            existing_record_id=fact["id"],
+            statement="Does the retired statement hold after all?",
+            created_by="mcp-test",
+            incoming_evidence_id=self._deterministic("a later run"),
+        )
+        self.memory.resolve_conflict(
+            conflict["id"],
+            outcome="reject_incoming",
+            resolution="The incoming claim was wrong.",
+            actor="worker",
+        )
+        self.assertEqual(self.memory.get_record(fact["id"])["status"], "superseded")
+
+    def test_a_clean_dispute_still_resolves_back_to_verified(self) -> None:
+        """The gate must not become a wall: a clean conflict still closes."""
+
+        fact = self._verified_fact("The suite is green.")
+        self.memory.attach_evidence(
+            fact["id"],
+            self._deterministic("a run that disagreed"),
+            relation="contradicts",
+            actor="worker",
+        )
+        self.assertEqual(self.memory.get_record(fact["id"])["status"], "disputed")
+        self.memory.resolve_conflict(
+            self._open_conflict_id(),
+            outcome="reverified_existing",
+            resolution="Re-ran it; the original holds.",
+            actor="worker",
+        )
+        self.assertEqual(self.memory.get_record(fact["id"])["status"], "verified")
+
+
 class RegistryCoverageTests(unittest.TestCase):
     def test_r16_and_r18_exist_in_the_registry(self) -> None:
         ids = {item.id for item in RULES}
