@@ -2,7 +2,7 @@
 
 ## Default installation
 
-`install.sh` creates or replaces the directory of the version it installs (`0.11.3-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
+`install.sh` creates or replaces the directory of the version it installs (`0.11.4-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
 
 ```text
 ~/Library/Application Support/CodexAutopilot/
@@ -90,8 +90,9 @@ ROADMAP.md
 └── migrations/               # only when migrating old state
 ```
 
-`staged-artifacts/` is the largest thing Autopilot puts in a project, and it is
-the one worth knowing about before a long run. A task that declares a
+`staged-artifacts/` is the second-largest thing Autopilot puts in a project -
+`logs/` below is the first, by a wide margin - and it is worth knowing about
+before a long run. A task that declares a
 filesystem deliverable and can write through a filesystem resource
 (`task_requires_staging`) does not touch the project directly: the runtime
 copies the whole project tree into
@@ -107,6 +108,22 @@ them all stay until you delete them. On a graph with several isolated tasks the
 project directory grows by several times the size of the repository, and
 `--purge-project-state` moves that weight aside rather than freeing it. Deleting
 a finished run's `staged-artifacts/` is safe and is your own `rm -rf`.
+
+`logs/` is the one that actually fills a disk, and nothing in the runtime
+rotates, truncates or removes it. Every dispatcher writes the whole App Server
+wire conversation, both directions, to its own
+`logs/app-server-dispatcher-<token>.jsonl`, plus one `automatic-relay-<token>.log`
+per relay. Measured on the author's own run: 167 files, 2.3 GB, individual
+traces between 70 and 108 MB - against 28 MB of staged workspaces and 6.3 MB of
+run journal in the same project. The whole project directory was 2.4 GB, and
+2.3 of them were these traces.
+
+They are debugging traces, not the run's memory. The state the runtime needs is
+`run-state.json`, `plan.json`, `memory.sqlite3`, `memory-backups/` and
+`handoff/`, and all of those together are a few megabytes. Deleting old
+`app-server-dispatcher-*.jsonl` between runs is safe; keep the newest few if an
+incident is open, because that is where the on-call engineer reads what the
+server actually said.
 
 `skills/` is read, never written, by Autopilot: one JSON manifest per exact Skill Pack revision, put there by you. It is the second half of the skill catalog, beside the packs a plan declares. Initialization does not create it.
 

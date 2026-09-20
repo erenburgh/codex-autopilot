@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.11.4-beta
+
+`logs/` is what fills the disk, and 0.11.3 said it was `staged-artifacts/`.
+
+0.11.3 disclosed the staged workspaces and called them "the largest thing
+Autopilot puts in a project". That was written from the code without measuring,
+and it is wrong by two orders of magnitude. Measured on the author's own run:
+
+```text
+2.3G  logs
+ 28M  staged-artifacts
+6.3M  run-state.json
+```
+
+The project directory was 2.4 GB and 2.3 of them were App Server wire traces -
+167 files, one per dispatcher, each holding the whole conversation in both
+directions, individually between 70 and 108 MB. Nothing in the runtime rotates,
+truncates or deletes them; there is no cleanup path for `logs/` anywhere.
+
+Both the footprint document and the README now say this, with the numbers, and
+say the thing a reader needs next: these are debugging traces, not the run's
+memory. `run-state.json`, `plan.json`, `memory.sqlite3`, `memory-backups/` and
+`handoff/` together are a few megabytes, and deleting old
+`app-server-dispatcher-*.jsonl` between runs is safe - keeping the newest few
+while an incident is open, because that is where the on-call engineer reads what
+the server actually said.
+
+Rotation itself is not in this release: it changes behaviour rather than a
+sentence, and the disclosure was the part that was owed immediately.
+
 ## 0.11.3-beta
 
 Six more places where a document said something the code does not do. Found by

@@ -160,6 +160,11 @@ See [skill screening](docs/SKILL_SCREENING.md).
 - `.codex-autopilot/memory-backups/latest.sqlite3`: last verified milestone backup.
 - `ROADMAP.md` in the project root, and `.codex-autopilot/PROJECT_STATE.md` and `.codex-autopilot/DECISIONS.md`: human-readable views.
 - `.codex-autopilot/MILESTONE.md`: current worker cache.
+- `.codex-autopilot/logs/`: the full App Server wire conversation, one file per
+  dispatcher. Nothing rotates or deletes it: on one real run this reached 2.3 GB
+  across 167 files, against 28 MB of staged workspaces. They are debugging
+  traces, not the run's memory - deleting old ones between runs is safe. See
+  [Install and uninstall footprint](docs/INSTALL_FOOTPRINT.md).
 - `.codex-autopilot/HANDOFF.md`: short advisory note; never treated as evidence.
 
 ## Safety and current limits
