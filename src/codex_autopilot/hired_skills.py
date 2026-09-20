@@ -59,6 +59,12 @@ _REGISTRATION_ENTRIES = frozenset(
 MAX_BUNDLE_FILES = 200
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_SKILL_FILE_BYTES = 512 * 1024
+# How much of a skill's own description the screening brief carries. Read as
+# the screener: her list gave a directory name and a file count while the
+# pack list gave capability, trust and the first lines of the procedure, so
+# the one list the brief says to PREFER was the one with no basis to judge.
+# Same width as a pack's inventory line, for the same reason.
+MACHINE_SKILL_DESCRIPTION_CHARS = 240
 
 
 # Codex's own preinstalled skills, excluded by the dotted-entry rule in
@@ -164,9 +170,43 @@ def installed_skill_bundles(
                 "path": str(path),
                 "digest": digest,
                 "files": len(files),
+                "description": _skill_description(skill_file),
             }
         )
     return tuple(bundles), tuple(refused)
+
+
+def _skill_description(skill_file: Path) -> str:
+    """One bounded line saying what a skill is for, or "" if it says nothing.
+
+    Front matter first, because that is where Codex's own skills put it;
+    otherwise the first line of prose that is not a heading.
+    """
+
+    try:
+        text = skill_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            if line.lower().startswith("description:"):
+                return _bounded_line(line.split(":", 1)[1])
+        lines = lines[lines.index("---", 1) + 1 :] if "---" in lines[1:] else []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return _bounded_line(stripped)
+    return ""
+
+
+def _bounded_line(value: str) -> str:
+    text = " ".join(value.split())
+    if len(text) <= MACHINE_SKILL_DESCRIPTION_CHARS:
+        return text
+    return text[: MACHINE_SKILL_DESCRIPTION_CHARS - 1] + "…"
 
 
 def admit_skill_bundle(

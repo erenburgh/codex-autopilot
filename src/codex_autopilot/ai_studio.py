@@ -84,7 +84,15 @@ MAX_HIRED_SKILL_CHARS = int(MAX_PROMPT_CHARS * 0.25)
 # unlike every other one. Everything else in the brief measured about ten
 # kilobytes, so two fifths leaves generous headroom for the rules block, the
 # task contract and the machine's own skills.
-MAX_SCREENING_INVENTORY_CHARS = int(MAX_PROMPT_CHARS * 0.4)
+# Each list gets its own share, so neither can crowd the other out and the
+# two together cannot overflow: measured, everything else in the brief is
+# about ten kilobytes, so a quarter each leaves generous headroom. Bounding
+# only the packs was not enough - with her list unbounded, 300 installed
+# skills took the brief to 83.8% of budget on its own, and adding each
+# skill's description (which the screener needs to choose at all) made that
+# list larger, not smaller.
+MAX_SCREENING_INVENTORY_CHARS = int(MAX_PROMPT_CHARS * 0.25)
+MAX_SCREENING_INSTALLED_CHARS = int(MAX_PROMPT_CHARS * 0.25)
 # How many characters of the original request may still be embedded in the prompt.
 MAX_INLINE_USER_REQUEST_CHARS = 16_000
 
@@ -190,6 +198,23 @@ class AIStudioRuntime:
                 break
             inventory.append(entry)
         omitted = len(catalog) - len(inventory)
+        shown: list[dict[str, Any]] = []
+        spent = 0
+        for skill in machine_skills:
+            entry = {
+                "name": skill["name"],
+                "files": skill["files"],
+                # Without this, the one list the brief says to PREFER was
+                # the only one with no basis to judge: a directory name and
+                # a file count, against packs carrying capability, trust and
+                # the first lines of their procedure.
+                **({"description": skill["description"]} if skill["description"] else {}),
+            }
+            spent += len(json.dumps(entry, ensure_ascii=False))
+            if spent > MAX_SCREENING_INSTALLED_CHARS:
+                break
+            shown.append(entry)
+        installed_omitted = len(machine_skills) - len(shown)
         envelope = {
             # R17: the rules stand before the specification they judge.
             "rules": rules_for_prompt(self.state_dir),
@@ -213,25 +238,25 @@ class AIStudioRuntime:
                     item.to_dict() for item in role.skill_requirements
                 ],
             },
-            "installed_skills": inventory,
+            # Named for what they hold. These were "installed_skills" and
+            # "skills_on_this_machine", and the first did NOT hold what was
+            # installed on this machine - the second did. A screener reading
+            # once, under a task, gets that backwards.
+            "declared_skill_packs": inventory,
             # A screener told nothing would believe the list is the whole
             # library and record an unmet need for something that is there.
-            **({"installed_skills_omitted": omitted} if omitted else {}),
+            **({"declared_skill_packs_omitted": omitted} if omitted else {}),
             # What she already installed and uses. Hiring one of these costs
             # nothing, nothing is fetched, and it is hers rather than
             # outside material - so it is preferred over the market.
+            **({"installed_skills": shown} if shown else {}),
             **(
-                {
-                    "skills_on_this_machine": [
-                        {"name": item["name"], "files": item["files"]}
-                        for item in machine_skills
-                    ]
-                }
-                if machine_skills
+                {"installed_skills_omitted": installed_omitted}
+                if installed_omitted
                 else {}
             ),
             **(
-                {"skills_on_this_machine_unreadable": list(unreadable)}
+                {"installed_skills_unreadable": list(unreadable)}
                 if unreadable
                 else {}
             ),
@@ -239,9 +264,16 @@ class AIStudioRuntime:
         }
         payload = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
         example = (
-            '{"task_id":"' + task.id + '","items":[{"capability":"<capability>",'
-            '"rationale":"<why THIS task needs it>","necessity":"required",'
-            '"candidates":[{"id":"<installed id>","version":"<exact version>"}]}]}'
+            # Both mechanisms, the preferred one first. With only the
+            # `candidates` form shown, a screener following the brief
+            # faithfully would hire packs and never name one of her skills:
+            # a model copies the example, the most concrete thing here.
+            '{"task_id":"' + task.id + '","items":['
+            '{"capability":"<capability>","rationale":"<why THIS task needs it>",'
+            '"necessity":"required","installed":"<name from installed_skills>"},'
+            '{"capability":"<another capability>","rationale":"<why THIS task '
+            'needs it>","necessity":"helpful","candidates":[{"id":"<pack id>",'
+            '"version":"<exact version>"}]}]}'
         )
         russian = is_russian(self.language)
         duty = (
@@ -252,12 +284,12 @@ class AIStudioRuntime:
             "help this particular worker reach the goal, and name them."
         )
         honesty = (
-            "Autopilot ничего не скачивает и не устанавливает. Если в installed_skills "
-            "нет ничего подходящего, оставь candidates пустым и напиши в search_intent, "
+            "Autopilot ничего не скачивает и не устанавливает. Если ни в одном "
+            "из списков нет ничего подходящего, оставь candidates пустым и напиши в search_intent, "
             "что именно понадобилось бы: это будет записано как незакрытая потребность."
             if russian
-            else "Autopilot downloads and installs nothing. If installed_skills holds "
-            "nothing suitable, leave candidates empty and say in search_intent what "
+            else "Autopilot downloads and installs nothing. If neither list holds "
+            "anything suitable, leave candidates empty and say in search_intent what "
             "would have been needed: it is recorded as an unmet need."
         )
         brief = f"""Codex Autopilot AI Studio Runtime - Screening · Hiring.
@@ -266,14 +298,18 @@ class AIStudioRuntime:
 
 AUTOPILOT_BRIEF: {payload}
 
-Read {self.skill_path} completely first, then read enough of this project to judge
-what the task above actually requires. You do no production work in this turn: you
+Read {self.skill_path} completely first, then read only what the task
+above names - its objective, its definition of done, its declared resources and
+the files those point at - enough to judge what it requires. This prompt is
+bounded and your reading is not: walking the whole repository spends a turn on
+a task that has not started. You do no production work in this turn: you
 change no file the task is about, record no evidence, and start no other task.
 
-Pick from `installed_skills` by exact id and version, or name one of
-`skills_on_this_machine` with `installed: "<name>"` - a name only, never a path.
-Prefer what is already on this machine: it costs nothing to use, nothing is
-fetched, and it is the user's own choice of tool rather than outside material.
+Name one of `installed_skills` with `installed: "<name>"` - a name only, never a
+path - or pick from `declared_skill_packs` by exact id and version. Prefer
+`installed_skills`: those are already on this machine, cost nothing to use,
+fetch nothing, and are the user's own choice of tool rather than outside
+material.
 Every item needs a `rationale` written in terms of THIS task - not a general
 endorsement of the skill. Ask for at most {MAX_REQUISITION_ITEMS} capabilities,
 each capability once, and exactly one way of filling each. Asking for nothing is

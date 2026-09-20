@@ -539,7 +539,7 @@ Autopilot does writes into her Codex home, and reading hers must not become
 the exception that reopens that. Codex's own preinstalled `.system` skills are
 skipped: they are available to every session already.
 
-The screener sees them as `skills_on_this_machine` and is told to prefer them:
+The screener sees them as `installed_skills` — with each one's own description, so it has a basis to choose — while the plan's and the project library's packs are `declared_skill_packs`. It is told to prefer the installed ones:
 using one costs nothing, fetches nothing, and it is her own choice of tool
 rather than outside material. When a capability is filled that way, the record
 says so — `the market was not consulted for this capability` — so the reason is

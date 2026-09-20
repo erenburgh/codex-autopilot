@@ -2218,7 +2218,7 @@ class HerOwnSkillsAreUsedTests(AttestedProjectCase):
             self._qualified_pack(trailing_task=_trailing_task())
             cfg = load_config(self.root)
             brief = self.last_descriptors[0].prompt
-            self.assertIn("skills_on_this_machine", brief)
+            self.assertIn("installed_skills", brief)
             self.assertIn("taste", brief)
             activate_via_app_server(
                 cfg, self.root, self.last_descriptors[0], "screening-M1"
@@ -2570,8 +2570,14 @@ class TheProtocolLimitsAreHeldTests(unittest.TestCase):
         is; changing one should mean changing this test and saying why.
         """
 
-        from codex_autopilot.ai_studio import MAX_HIRED_SKILL_CHARS, MAX_PROMPT_CHARS
+        from codex_autopilot.ai_studio import (
+            MAX_HIRED_SKILL_CHARS,
+            MAX_PROMPT_CHARS,
+            MAX_SCREENING_INSTALLED_CHARS,
+            MAX_SCREENING_INVENTORY_CHARS,
+        )
         from codex_autopilot.hired_skills import (
+            MACHINE_SKILL_DESCRIPTION_CHARS,
             MAX_BUNDLE_BYTES,
             MAX_BUNDLE_FILES,
             MAX_SKILL_FILE_BYTES,
@@ -2591,6 +2597,12 @@ class TheProtocolLimitsAreHeldTests(unittest.TestCase):
                 # The brief carries these per installed pack.
                 "INVENTORY_LINES_PER_PACK": INVENTORY_LINES_PER_PACK,
                 "INVENTORY_LINE_CHARS": INVENTORY_LINE_CHARS,
+                # One line of her own skill's description, same width.
+                "MACHINE_SKILL_DESCRIPTION_CHARS": MACHINE_SKILL_DESCRIPTION_CHARS,
+                # A quarter of the prompt budget each, so the two lists
+                # together cannot overflow the brief.
+                "MAX_SCREENING_INVENTORY_CHARS": MAX_SCREENING_INVENTORY_CHARS,
+                "MAX_SCREENING_INSTALLED_CHARS": MAX_SCREENING_INSTALLED_CHARS,
                 # The only quantitative guards on the path that reaches the
                 # internet: what a fetched bundle may put on her disk.
                 "MAX_BUNDLE_FILES": MAX_BUNDLE_FILES,
@@ -2608,6 +2620,9 @@ class TheProtocolLimitsAreHeldTests(unittest.TestCase):
                 "MAX_REASON_CHARS": 2_000,
                 "INVENTORY_LINES_PER_PACK": 3,
                 "INVENTORY_LINE_CHARS": 240,
+                "MACHINE_SKILL_DESCRIPTION_CHARS": 240,
+                "MAX_SCREENING_INVENTORY_CHARS": int(MAX_PROMPT_CHARS * 0.25),
+                "MAX_SCREENING_INSTALLED_CHARS": int(MAX_PROMPT_CHARS * 0.25),
                 "MAX_BUNDLE_FILES": 200,
                 "MAX_BUNDLE_BYTES": 8 * 1024 * 1024,
                 "MAX_SKILL_FILE_BYTES": 512 * 1024,
@@ -2653,7 +2668,7 @@ class TheBriefAlwaysFitsTests(AttestedProjectCase):
 
         self.assertEqual(self.last_descriptors[0].kind, "screening")
         self.assertLessEqual(len(brief), MAX_PROMPT_CHARS)
-        self.assertIn("installed_skills_omitted", brief)
+        self.assertIn("declared_skill_packs_omitted", brief)
 
     def test_a_small_library_is_shown_whole(self) -> None:
         self.library_size = 3
@@ -2661,7 +2676,7 @@ class TheBriefAlwaysFitsTests(AttestedProjectCase):
         brief = self.last_descriptors[0].prompt
 
         self.assertIn("skill-002", brief)
-        self.assertNotIn("installed_skills_omitted", brief)
+        self.assertNotIn("declared_skill_packs_omitted", brief)
 
     def test_a_brief_that_cannot_be_built_skips_screening_not_the_task(self) -> None:
         """The asymmetry again, at the last place it could be lost."""
@@ -2684,3 +2699,100 @@ class TheBriefAlwaysFitsTests(AttestedProjectCase):
         )["task_hiring"]["M1"]
         self.assertIn("brief cannot be assembled", record["unscreened"])
         self.assertEqual(record["decision"]["outcomes"], [])
+
+
+class TheBriefReadsAsTheScreenerSeesItTests(AttestedProjectCase):
+    """Three defects found by reading the brief as the screener receiving
+    it, which no mutation would have reached.
+
+    They compounded: the one list the brief says to PREFER was the one with
+    no basis to judge, the worked example taught only the other mechanism,
+    and the two list names were inverted in the obvious reading. A screener
+    following the brief faithfully would have hired packs and never named
+    one of her skills - under-using exactly what the owner asked for last.
+    """
+
+    def _before_last_acceptance(self) -> None:
+        set_screening_mode(self.root, "always")
+        library = self.root / ".codex-autopilot" / SKILL_LIBRARY_DIRNAME
+        library.mkdir(parents=True, exist_ok=True)
+        (library / "declared.json").write_text(
+            json.dumps(pack("declared-pack", "declared-capability")), encoding="utf-8"
+        )
+
+    def _brief(self) -> str:
+        from unittest import mock
+
+        home = self.root / "fake-codex-home"
+        taste = home / "skills" / "taste"
+        taste.mkdir(parents=True)
+        (taste / "SKILL.md").write_text(
+            "---\nname: taste\ndescription: Opinionated front-end design discipline.\n"
+            "---\n\n# Taste\n",
+            encoding="utf-8",
+        )
+        with mock.patch.dict("os.environ", {"CODEX_HOME": str(home)}):
+            self._qualified_pack(trailing_task=_trailing_task())
+        return self.last_descriptors[0].prompt
+
+    def test_her_skills_are_described_well_enough_to_choose_between(self) -> None:
+        brief = self._brief()
+
+        self.assertIn("Opinionated front-end design discipline.", brief)
+
+    def test_the_two_lists_are_named_for_what_they_hold(self) -> None:
+        """`installed_skills` did not hold the skills installed on this
+        machine; the other list did. A screener reading once, under a task,
+        gets that backwards."""
+
+        brief = self._brief()
+
+        self.assertIn('"declared_skill_packs"', brief)
+        self.assertIn('"installed_skills"', brief)
+        self.assertNotIn('"skills_on_this_machine"', brief)
+
+    def test_the_example_shows_the_preferred_mechanism_too(self) -> None:
+        """A model copies the example - it is the most concrete thing in
+        the message. Showing only `candidates` taught the opposite of the
+        instruction beside it."""
+
+        brief = self._brief()
+        example = brief.split(SCREENING_PREFIX)[-1]
+
+        self.assertIn('"installed"', example)
+        self.assertIn('"candidates"', example)
+
+    def test_the_reading_of_the_project_is_bounded(self) -> None:
+        """The prompt is bounded and the reading was not: one screening
+        could spend a large turn walking the repository."""
+
+        brief = self._brief()
+
+        self.assertIn("walking the whole repository", brief)
+        self.assertIn("read only what the task", brief)
+        self.assertNotIn("read enough of this project", brief)
+
+    def test_her_list_is_bounded_too_and_says_when_it_is_partial(self) -> None:
+        """Bounding only the packs was not enough: with her list unbounded,
+        300 installed skills took the brief to 83.8% of budget on their own,
+        and giving each one a description made that list larger."""
+
+        from unittest import mock
+        from codex_autopilot.ai_studio import MAX_PROMPT_CHARS
+
+        home = self.root / "fake-codex-home"
+        for index in range(400):
+            bundle = home / "skills" / f"her-skill-{index:03d}"
+            bundle.mkdir(parents=True)
+            (bundle / "SKILL.md").write_text(
+                f"---\nname: her-skill-{index:03d}\ndescription: "
+                + "d" * 200
+                + "\n---\n\n# S\n",
+                encoding="utf-8",
+            )
+        with mock.patch.dict("os.environ", {"CODEX_HOME": str(home)}):
+            self._qualified_pack(trailing_task=_trailing_task())
+        brief = self.last_descriptors[0].prompt
+
+        self.assertLessEqual(len(brief), MAX_PROMPT_CHARS)
+        self.assertIn("installed_skills_omitted", brief)

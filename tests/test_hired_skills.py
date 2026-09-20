@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from codex_autopilot.hired_skills import (
     HIRED_SKILLS_DIRNAME,
+    MACHINE_SKILL_DESCRIPTION_CHARS,
     MAX_BUNDLE_BYTES,
     MAX_BUNDLE_FILES,
     MAX_SKILL_FILE_BYTES,
@@ -617,3 +618,72 @@ class TheSizeLimitsAreHeldTests(AdmissionCase):
         self.assertEqual(bundles, ())
         self.assertIn("enormous", refused[0])
         self.assertIn(str(MAX_BUNDLE_FILES), refused[0])
+
+
+class HerSkillsAreDescribedTests(unittest.TestCase):
+    """The brief tells a screener to prefer her skills, so it has to give
+    it a basis to judge them.
+
+    Read as the screener: her list carried a directory name and a file
+    count, while the pack list carried capability, trust and the first
+    lines of what it makes a worker do. The honest move for a screener
+    given only a name is to ignore that list and pick something readable -
+    which is the opposite of what the brief asks, and under-uses exactly
+    the thing the owner asked for last.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        self.skills = self.home / "skills"
+        self.skills.mkdir(parents=True)
+
+    def install(self, name: str, body: str) -> None:
+        bundle = self.skills / name
+        bundle.mkdir(parents=True, exist_ok=True)
+        (bundle / "SKILL.md").write_text(body, encoding="utf-8")
+
+    def test_the_front_matter_description_is_carried(self) -> None:
+        self.install(
+            "taste",
+            "---\nname: taste\ndescription: Opinionated front-end design discipline.\n"
+            "---\n\n# Taste\n\nWrite less code.\n",
+        )
+
+        bundles, _refused = installed_skill_bundles(self.home)
+
+        self.assertEqual(
+            bundles[0]["description"], "Opinionated front-end design discipline."
+        )
+
+    def test_without_front_matter_the_first_prose_line_is_carried(self) -> None:
+        self.install(
+            "tidy", "# Tidy\n\nRemoves dead code and unused imports.\n\nMore text.\n"
+        )
+
+        bundles, _refused = installed_skill_bundles(self.home)
+
+        self.assertEqual(
+            bundles[0]["description"], "Removes dead code and unused imports."
+        )
+
+    def test_a_description_is_bounded_like_a_pack_line(self) -> None:
+        self.install(
+            "wordy",
+            "---\nname: wordy\ndescription: " + "d" * 5_000 + "\n---\n\n# Wordy\n",
+        )
+
+        bundles, _refused = installed_skill_bundles(self.home)
+
+        self.assertLessEqual(
+            len(bundles[0]["description"]), MACHINE_SKILL_DESCRIPTION_CHARS
+        )
+
+    def test_a_skill_that_describes_itself_nowhere_still_lists(self) -> None:
+        self.install("bare", "---\nname: bare\n---\n")
+
+        bundles, _refused = installed_skill_bundles(self.home)
+
+        self.assertEqual(bundles[0]["name"], "bare")
+        self.assertEqual(bundles[0]["description"], "")
