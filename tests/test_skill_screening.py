@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import json
+import re
 import shlex
 import sys
 import tempfile
@@ -52,6 +53,23 @@ from codex_autopilot.skill_screening import (
 )
 from codex_autopilot.lifecycle_screening import screening_applies
 from test_skill_packs import attestation_plan, pack, run_canonical_attestations
+
+
+def set_screening_mode(root: Path, mode: str) -> None:
+    """Rewrite the mode in an initialized project's config.
+
+    The line is always present now - bootstrap writes it - so this replaces
+    it rather than inserting a second one, which would make the file invalid
+    TOML.
+    """
+
+    config = root / ".codex-autopilot" / "config.toml"
+    text = config.read_text(encoding="utf-8")
+    replaced, count = re.subn(
+        r'skill_screening = "[a-z]+"', f'skill_screening = "{mode}"', text, count=1
+    )
+    assert count == 1, "initialized config must declare skill_screening"
+    config.write_text(replaced, encoding="utf-8")
 
 
 def screening_message(payload: dict, *, prose: str = "Looked at the task.") -> str:
@@ -793,13 +811,7 @@ class ScreeningLifecycleTests(AttestedProjectCase):
     """
 
     def _enable_screening(self, mode: str) -> None:
-        config = self.root / ".codex-autopilot" / "config.toml"
-        text = config.read_text(encoding="utf-8")
-        self.assertIn("[runtime]", text)
-        config.write_text(
-            text.replace("[runtime]", f'[runtime]\nskill_screening = "{mode}"', 1),
-            encoding="utf-8",
-        )
+        set_screening_mode(self.root, mode)
 
     def _install(self, manifest: dict) -> None:
         library = self.root / ".codex-autopilot" / SKILL_LIBRARY_DIRNAME
@@ -915,9 +927,8 @@ class ScreeningLifecycleTests(AttestedProjectCase):
         self.assertIn("did not produce a readable requisition", record["unscreened"])
         self.assertEqual(record["decision"]["outcomes"], [])
 
-    def test_the_default_run_is_not_screened_at_all(self) -> None:
-        """Screening is off until the project asks: it costs one Codex
-        thread per task out of the user's limits."""
+    def test_a_run_switched_off_is_not_screened_at_all(self) -> None:
+        """The switch survives the default being on."""
 
         self.screening_mode = "never"
         trusted, _memory = self._qualified_pack(trailing_task=_trailing_task())
@@ -1003,10 +1014,17 @@ class ScreeningModeTests(unittest.TestCase):
             json.dumps(pack("a-skill", "alpha")), encoding="utf-8"
         )
 
-    def test_never_is_the_default_and_never_screens(self) -> None:
-        from codex_autopilot.config import RuntimeConfig
+    def test_hiring_ships_enabled(self) -> None:
+        """The owner chose it on, knowing the cost: one extra Codex thread
+        per task, and +25 on her own 25-task run with no role reuse."""
 
-        self.assertEqual(RuntimeConfig().skill_screening, "never")
+        from codex_autopilot.config import DEFAULT_SKILL_SCREENING, RuntimeConfig
+
+        self.assertEqual(DEFAULT_SKILL_SCREENING, "always")
+        self.assertEqual(RuntimeConfig().skill_screening, "always")
+        self.assertTrue(screening_applies(self.cfg(DEFAULT_SKILL_SCREENING), self.plan()))
+
+    def test_never_switches_it_off_even_with_a_library_installed(self) -> None:
         self.install()
 
         self.assertFalse(screening_applies(self.cfg("never"), self.plan()))
@@ -1114,13 +1132,7 @@ class ScreeningInFlightTests(AttestedProjectCase):
         (library / "vetted-runtime.json").write_text(
             json.dumps(_candidate_manifest()), encoding="utf-8"
         )
-        config = self.root / ".codex-autopilot" / "config.toml"
-        config.write_text(
-            config.read_text(encoding="utf-8").replace(
-                "[runtime]", '[runtime]\nskill_screening = "always"', 1
-            ),
-            encoding="utf-8",
-        )
+        set_screening_mode(self.root, "always")
 
     def test_the_frontier_waits_instead_of_refusing_the_whole_pass(self) -> None:
         self._qualified_pack(trailing_task=_trailing_task())
@@ -1354,13 +1366,7 @@ class ScreeningFailureReachesAWorkerTests(AttestedProjectCase):
         (library / "vetted-runtime.json").write_text(
             json.dumps(_candidate_manifest()), encoding="utf-8"
         )
-        config = self.root / ".codex-autopilot" / "config.toml"
-        config.write_text(
-            config.read_text(encoding="utf-8").replace(
-                "[runtime]", '[runtime]\nskill_screening = "always"', 1
-            ),
-            encoding="utf-8",
-        )
+        set_screening_mode(self.root, "always")
 
     def test_a_screener_that_errors_every_time_still_yields_a_worker(self) -> None:
         self._qualified_pack(trailing_task=_trailing_task())
@@ -1438,6 +1444,7 @@ class ScreeningCostIsVisibleTests(AttestedProjectCase):
         )
 
     def test_a_run_that_never_screens_says_so_and_says_it_spent_nothing(self) -> None:
+        self.screening_mode = "never"
         self._qualified_pack(trailing_task=_trailing_task())
 
         card = self._card()
@@ -1486,10 +1493,4 @@ class ScreeningCostIsVisibleTests(AttestedProjectCase):
         (library / "vetted-runtime.json").write_text(
             json.dumps(_candidate_manifest()), encoding="utf-8"
         )
-        config = self.root / ".codex-autopilot" / "config.toml"
-        config.write_text(
-            config.read_text(encoding="utf-8").replace(
-                "[runtime]", f'[runtime]\nskill_screening = "{self.screening_mode}"', 1
-            ),
-            encoding="utf-8",
-        )
+        set_screening_mode(self.root, self.screening_mode)

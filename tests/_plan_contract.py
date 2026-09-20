@@ -113,6 +113,13 @@ def initialize_verified_project(
             state_payload=existing,
         )
         receipt = canonical_plan_verification(plan, recorded=False)
+    # Hiring is ON in the product. It is pinned OFF here because these
+    # fixtures build projects for tests about something else - wake-ups,
+    # rate limits, resource locks, verification - and a screening session
+    # before every task would make each of them depend on a default they
+    # are not testing. Tests that are about hiring pass the mode they mean;
+    # the shipped default is asserted directly in test_skill_screening.
+    kwargs.setdefault("skill_screening", "never")
     return initialize_project(
         root,
         plan_file,

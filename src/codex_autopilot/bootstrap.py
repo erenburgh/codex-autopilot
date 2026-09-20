@@ -7,7 +7,12 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 
-from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, durable_skill_path
+from .config import (
+    DEFAULT_SKILL_SCREENING,
+    DESKTOP_OWNED_SURFACE,
+    STATE_DIR_NAME,
+    durable_skill_path,
+)
 from .language import DEFAULT_LANGUAGE, is_russian, normalize_language
 from .memory import ProjectMemory
 from .migration import detect_v07, migrate_v07
@@ -35,6 +40,7 @@ def initialize_project(
     project_id: str | None = None,
     desktop_project_id: str | None = None,
     plan_verification: PlanVerificationReceipt | dict[str, object] | None = None,
+    skill_screening: str = DEFAULT_SKILL_SCREENING,
 ) -> Plan:
     root = root.expanduser().resolve()
     if not root.is_dir():
@@ -103,6 +109,7 @@ def initialize_project(
         skill_path,
         plan=plan,
         language=language,
+        skill_screening=skill_screening,
         project_id=project_id,
         desktop_project_id=desktop_project_id,
     )
@@ -218,6 +225,7 @@ def _write_config(
     *,
     plan: Plan,
     language: str,
+    skill_screening: str,
     project_id: str | None = None,
     desktop_project_id: str | None = None,
 ) -> None:
@@ -261,6 +269,13 @@ def _write_config(
         f"max_parallel_workers = {plan.max_parallel_workers}",
         f"computer_use_slots = {plan.computer_use_slots}",
         f"full_plan_revalidation_patches = {DEFAULT_FULL_REVALIDATION_PATCHES}",
+        # Hiring. Written explicitly so the file reads without knowing the
+        # defaults, and so a project can be initialized with it off without
+        # editing the file afterwards. "always" screens every task before it
+        # gets a worker; "auto" only when there is already something to hire
+        # from; "never" is off. Each screening is one more Codex thread per
+        # task, and the status card reports what was spent.
+        f"skill_screening = {_toml_string(skill_screening)}",
         # There is one surface. The field is written explicitly so the
         # config reads without knowing the defaults, and the read-time
         # check rejects a stale file naming the removed surface.

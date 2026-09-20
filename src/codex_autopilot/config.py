@@ -24,6 +24,12 @@ PROFILES = {"adaptive", "host-settings"}
 DESKTOP_OWNED_SURFACE = "desktop_owned"
 WORKER_SURFACES = {DESKTOP_OWNED_SURFACE}
 SKILL_SCREENING_MODES = {"auto", "always", "never"}
+# Hiring ships enabled: the owner chose it over off and over a per-run
+# ceiling, knowing the cost - one extra Codex thread per task, and on her
+# own stalled run of 25 tasks with 25 distinct roles that is +25 threads
+# with no reuse to offset it. A feature that is on by default has to be
+# able to say what it spent, so the status card reports it.
+DEFAULT_SKILL_SCREENING = "always"
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +87,7 @@ class RuntimeConfig:
     # least one pack - with nothing to hire from, a screening turn can only
     # answer "nothing available". "always" screens every task, which is what
     # records unmet needs in a project that has no skills yet.
-    skill_screening: str = "never"
+    skill_screening: str = DEFAULT_SKILL_SCREENING
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,7 +244,7 @@ def load_config(root_or_path: Path) -> Config:
                 "runtime.desktop_notifications",
             ),
             skill_screening=_skill_screening(
-                runtime.get("skill_screening", "never")
+                runtime.get("skill_screening", DEFAULT_SKILL_SCREENING)
             ),
             full_plan_revalidation_patches=_positive_int(
                 runtime.get(

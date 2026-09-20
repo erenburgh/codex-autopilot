@@ -87,18 +87,24 @@ from `lifecycle_completion.complete_desktop_worker` by session kind.
 
 | mode | when a task is screened |
 | --- | --- |
-| `never` | never — **the default** |
-| `auto` | when the plan or the installed library holds at least one pack |
-| `always` | every task, including with an empty library |
+| `always` | every task — **the default** |
+| `auto` | only when the plan or the installed library already holds a pack |
+| `never` | never |
 
-The default is off for the same reason `desktop_notifications` is off: one
-screening is one more Codex thread per task out of the user's limits, and
-spending them is the user's decision, not a default. `auto` is the setting
-most projects want — with nothing to hire from, a screening turn can only
-answer "nothing available", so `auto` costs nothing until a pack exists and
-starts working the moment one does. `always` is for a project that wants its
-unmet needs on record from the first run, which is the intake for qualifying
-new skills.
+Hiring ships enabled. The owner chose that over off and over a per-run
+ceiling, with the number in front of her: one extra Codex thread per task, and
+on her own stalled run — 25 tasks, 25 distinct roles, so no reuse to offset it
+— that is 25 extra threads. The condition she attached is that a feature which
+is on by default must be able to say what it spent, which is what the status
+card line and the hiring record are for.
+
+`auto` is the conservative middle: it screens only once there is something
+local to hire from. It made more sense before the market could be screened;
+with research at hiring time a screener always has something to do, even if
+that is only recording an unmet need.
+
+`initialize_project` writes the mode into `config.toml`, so the file reads
+without knowing the defaults and a project can start with hiring off.
 
 ### What the screener may see at that moment
 
