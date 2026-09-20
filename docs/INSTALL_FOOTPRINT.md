@@ -2,7 +2,7 @@
 
 ## Default installation
 
-`install.sh` creates or replaces the directory of the version it installs (`0.11.2-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
+`install.sh` creates or replaces the directory of the version it installs (`0.11.3-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
 
 ```text
 ~/Library/Application Support/CodexAutopilot/
@@ -85,8 +85,28 @@ ROADMAP.md
 ├── bootstrap-plan.json
 ├── logs/
 ├── skills/                   # installed Skill Pack manifests, if any
+├── hired-skills/             # bundles a screening hired, if any
+├── staged-artifacts/         # one copy of the project per isolated task - see below
 └── migrations/               # only when migrating old state
 ```
+
+`staged-artifacts/` is the largest thing Autopilot puts in a project, and it is
+the one worth knowing about before a long run. A task that declares a
+filesystem deliverable and can write through a filesystem resource
+(`task_requires_staging`) does not touch the project directly: the runtime
+copies the whole project tree into
+`staged-artifacts/<task-id>/workspace` and runs the worker there, then promotes
+the result. The copy skips `.git`, the state directory, and the usual caches
+(`.venv`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`) - and
+nothing else, so it is roughly the size of your working tree, once per such
+task.
+
+Nothing removes those copies. There is no `rmtree` in `artifact_staging.py`:
+a promoted workspace, an abandoned one and the `promotion-snapshots/` beside
+them all stay until you delete them. On a graph with several isolated tasks the
+project directory grows by several times the size of the repository, and
+`--purge-project-state` moves that weight aside rather than freeing it. Deleting
+a finished run's `staged-artifacts/` is safe and is your own `rm -rf`.
 
 `skills/` is read, never written, by Autopilot: one JSON manifest per exact Skill Pack revision, put there by you. It is the second half of the skill catalog, beside the packs a plan declares. Initialization does not create it.
 

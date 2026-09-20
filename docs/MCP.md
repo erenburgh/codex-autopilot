@@ -6,7 +6,7 @@ During bounded preflight, App Server starts the bundled server and proves its tr
 
 ## Allowlisted API
 
-The server exposes one MCP tool named `memory`. Its `operation` field is a strict 16-branch JSON Schema union: `current`, `search`, `get`, `record_evidence`, `record_verified_fact`, `record_verification_result`, `list_verification_results`, `add_observation`, `propose_decision`, `set_decision_status`, `add_constraint`, `question`, `attach_evidence`, `conflict`, `user_correction`, and `milestone_evidence`.
+The server exposes one MCP tool named `memory`. Its `operation` field is a strict 17-branch JSON Schema union: `current`, `search`, `get`, `record_evidence`, `record_verified_fact`, `store_department_rubric`, `record_verification_result`, `list_verification_results`, `add_observation`, `propose_decision`, `set_decision_status`, `add_constraint`, `question`, `attach_evidence`, `conflict`, `user_correction`, and `milestone_evidence`.
 
 `record_verification_result` writes an audit outcome, not Truth. It requires an existing non-migration Evidence ID plus task, check, verifier thread, and verifier turn identity. Replaying the same causal identity is idempotent only for an identical payload; a changed replay fails closed. `list_verification_results` is task-scoped and uses the same maximum page size of 20 as record retrieval.
 

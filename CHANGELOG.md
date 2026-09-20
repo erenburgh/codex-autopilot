@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.11.3-beta
+
+Six more places where a document said something the code does not do. Found by
+reading README, Getting Started, every config key and command, and the two
+safety documents against the source - not by using the product.
+
+### What a first run actually asks of you
+
+- The README described the memory permission as a Codex dialog where you "choose
+  `Always`", one line under a promise that nothing needs a terminal. There is no
+  dialog: the request goes to the dispatcher's own connection, which never
+  answers approvals, so nothing pops up. Preflight stops before any worker and
+  prints one terminal command ending in `--approve-project-memory-always`, and
+  running it yourself is the consent. Getting Started and both skills described
+  this correctly; the README did not.
+- `Resume Codex Autopilot.` is the one control that is deliberately **not**
+  answered by the hook. Blocking it would leave the turn interrupted and start
+  nothing - that turn's own Stop event is what launches the dispatcher. The
+  README stated the "every control is a blocked message" rule with no exception,
+  so the one reply that proves resume worked looked like the one that proves it
+  did not.
+
+### What is on your disk
+
+- `staged-artifacts/` was in no document. A task that declares a filesystem
+  deliverable is run against a **full copy of the project tree**, once per such
+  task, skipping only `.git`, the state directory and the usual caches. Nothing
+  ever deletes those copies - there is no `rmtree` in `artifact_staging.py` - so
+  a graph with several isolated tasks grows the project directory by several
+  times the size of the repository, and `--purge-project-state` moves that
+  weight aside rather than freeing it. Now in the footprint, with the fact that
+  deleting a finished run's copies is safe and yours to do.
+- `PROJECT_STATE.md` and `DECISIONS.md` were listed beside `ROADMAP.md` with no
+  path, among entries that all carried one. Only `ROADMAP.md` is in the project
+  root; the other two are written into `.codex-autopilot/`.
+
+### Two counts that were simply wrong
+
+- The memory MCP tool's operation union is 17 branches, not 16:
+  `store_department_rubric` - a write operation - was missing from the only
+  document that enumerates the API a reader inspects before granting `Always`.
+- `desktop_notifications` raises a banner on four events, not three. The fourth,
+  `_notify_start`, fires on every launch, so on a twenty-five-task run the key
+  costs twenty-five start banners the document never mentioned. Getting Started
+  had it right and the runtime document disagreed with it.
+
 ## 0.11.2-beta
 
 The capacity line stops asking a question it cannot ask, and starts naming the

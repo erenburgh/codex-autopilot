@@ -230,12 +230,11 @@ and the system banner is available to it without anyone's API:
 desktop_notifications = true
 ```
 
-Off by default. The banner arrives on three events: a task verified, a task
-stopped, the run finished — one per transition, not one per event. The
-implementation in `notify.py` automates nothing: the text goes as arguments
-to `osascript`, not as string concatenation, and the ban on controlling
-applications through `osascript` is held by a separate test: `notify.py`
-contains neither `tell application`, nor `System Events`, nor clicks.
+Off by default. The banner arrives on four events: a task taken up, a task
+verified, a task stopped, and the run finished - one per transition, not one
+per event. The first of them (`_notify_start`, `lifecycle_dispatch.py`) fires on
+every launch, so on a twenty-five-task run turning this key on is twenty-five
+start banners plus the rest.
 
 ### When a thread becomes visible
 

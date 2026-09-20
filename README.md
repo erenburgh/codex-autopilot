@@ -42,9 +42,10 @@ Download and install this skill, then start working on this project with it:
 https://github.com/erenburgh/codex-autopilot
 ```
 
-Codex clones the repository and runs the installer itself. Nothing here needs a
-terminal, and nothing needs a directory to be chosen: the project you are in is
-the project Autopilot works on, because every task it creates is placed there.
+Codex clones the repository and runs the installer itself. Nothing needs a
+directory to be chosen: the project you are in is the project Autopilot works on,
+because every task it creates is placed there. One terminal command may be needed
+once, at first run, to grant the memory tool — see below.
 
 Codex will ask for its own two trust decisions once - see below. They are Codex
 security steps and Autopilot never answers them for you.
@@ -61,7 +62,7 @@ The macOS release ZIP can be extracted instead. `--install-deps` uses an existin
 
 The installer also leaves one background agent on the Mac: `~/Library/LaunchAgents/com.codex-autopilot.wake.plist`, loaded with `launchctl`. It runs `codex-autopilot _wake-sweep` at login and every 300 seconds for as long as it stays installed. A sweep arms the wake-up for a task whose rate-limit retry has come due and does nothing else; without it, a run asleep on a rate limit would wait for a human after a reboot, because the sleeping wake-up process does not survive one. `CODEX_AUTOPILOT_SKIP_LAUNCHD=1` at install time writes the agent without loading it, and `"$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" uninstall --yes` boots it out and deletes it. The full footprint is in [Install and uninstall footprint](docs/INSTALL_FOOTPRINT.md).
 
-After installation, start a fresh Codex task so the plugin loads. First use has two explicit Codex trust steps: open `/hooks` and trust the current Autopilot **Stop** hook, then let the dedicated preflight task call the single local `memory` tool with `operation=current` and choose `Always`. Autopilot never answers either approval itself. Installed hook and MCP definitions use the permanent `current/bin/codex-autopilot` entrypoint, so reinstalling or refreshing the plugin does not change their command identity; another hook review is required only when the hook definition itself changes. Preflight verifies that the exact selected-plugin Stop hook is enabled, trusted (or managed), and points to that stable runtime before project initialization or Worker 1; modified or untrusted requires review, while missing, disabled, duplicated, or erroneous inventory fails closed. If Codex blocks the official App Server from its state directory, preflight names the exact `CODEX_HOME` path that needs one-time read/write approval, exits with code 77, and creates no project run-state.
+After installation, start a fresh Codex task so the plugin loads. First use needs two permissions, and they are granted differently. The first is a real Codex dialog: open `/hooks` and trust the current Autopilot **Stop** hook. The second has no dialog at all. A dedicated preflight task calls the single local `memory` tool with `operation=current`; the request goes to the dispatcher's own connection, which never answers approvals, so nothing pops up. Preflight stops before any worker, names the diagnostic task, and prints one terminal command ending in `--approve-project-memory-always`. Running that command yourself is the consent — Autopilot neither grants, derives nor bypasses the permission, and it asks you in the conversation before it re-runs anything. Installed hook and MCP definitions use the permanent `current/bin/codex-autopilot` entrypoint, so reinstalling or refreshing the plugin does not change their command identity; another hook review is required only when the hook definition itself changes. Preflight verifies that the exact selected-plugin Stop hook is enabled, trusted (or managed), and points to that stable runtime before project initialization or Worker 1; modified or untrusted requires review, while missing, disabled, duplicated, or erroneous inventory fails closed. If Codex blocks the official App Server from its state directory, preflight names the exact `CODEX_HOME` path that needs one-time read/write approval, exits with code 77, and creates no project run-state.
 
 ## Use
 
@@ -96,9 +97,15 @@ The no-model controls are:
   like a bare `status`; the exact vocabulary is in
   `src/codex_autopilot/control_phrases.py`.
 
-Each control is answered by the hook itself, without a model turn. Codex marks
-such an answer as a blocked message: that label means the hook replied instead
-of the model, not that something failed.
+Every control except resume is answered by the hook itself, without a model turn.
+Codex marks such an answer as a blocked message: that label means the hook
+replied instead of the model, not that something failed.
+
+`Resume Codex Autopilot.` is deliberately not blocked. That turn's own Stop
+event is what binds the causal owner and launches the dispatcher, so blocking it
+would leave the turn interrupted and start nothing. You get an ordinary model
+reply carrying `Codex Autopilot resume is armed for this turn's Stop hook.` —
+that, not the blocked-message label, is the sign that resume registered.
 
 ## Hiring
 
@@ -151,7 +158,7 @@ See [skill screening](docs/SKILL_SCREENING.md).
 - `.codex-autopilot/run-state.json`: canonical orchestration journal.
 - `.codex-autopilot/memory.sqlite3`: canonical project knowledge and evidence.
 - `.codex-autopilot/memory-backups/latest.sqlite3`: last verified milestone backup.
-- `ROADMAP.md`, `PROJECT_STATE.md`, and `DECISIONS.md`: human-readable views.
+- `ROADMAP.md` in the project root, and `.codex-autopilot/PROJECT_STATE.md` and `.codex-autopilot/DECISIONS.md`: human-readable views.
 - `.codex-autopilot/MILESTONE.md`: current worker cache.
 - `.codex-autopilot/HANDOFF.md`: short advisory note; never treated as evidence.
 
@@ -161,9 +168,15 @@ Workers use the configured `:workspace` App Server permission profile. App Serve
 
 The v0.11 beta supports macOS. It is developed against Codex CLI/App Server 0.154.0; App Server remains experimental.
 
-Verified live, not only by tests: parallel workers on one dependency frontier, dependency unlock, independent verification, the Pipeline Engineer incident path including a closed-code escalation and the user's answer to it, and canonical project placement for every created task.
+Verified live, not only by tests: parallel workers on one dependency frontier, dependency unlock, independent verification, the Pipeline Engineer incident path including a closed-code escalation and the user's answer to it, canonical project placement for every created task, and - on this build - a screening session reserved inside a real run, reaching COMPLETED and recording its decision, with the run resumed under the installed 0.11.2 runtime and `doctor` passing after that install.
 
-Not verified live and openly outstanding: a real multi-hour rate-limit wake-up, Host Settings inheritance across all Desktop configurations, an external clean-Mac install (the release ZIP itself installs and passes `doctor` on a machine that already has Codex; a machine with neither Python nor Codex CLI is untested), and Computer Use scheduling alongside code work.
+Not verified live and openly outstanding, in the order that matters for anyone trying this build:
+
+- **A screening that actually hires.** Hiring has run live, and the decision it recorded hired nothing - a verdict, not an omission. A screening that attaches a skill to a worker, and a fetch of a bundle from a public repository, have happened in tests only. That is the half of the feature with the network in it, and it is the part worth trying to break.
+- A real multi-hour rate-limit wake-up.
+- Host Settings inheritance across all Desktop configurations.
+- A clean-Mac install. This build's `install.sh` was run from the repository tree and `doctor` passed afterwards; installing from the release ZIP was last exercised on 0.10.0-beta, and the installer has not changed since apart from its version string. A machine with neither Python nor Codex CLI is untested.
+- Computer Use scheduling alongside code work.
 
 Desktop cannot be told that a task started. Its App Server is a separate process from the one Autopilot drives, and the two share only the filesystem, so the sidebar refreshes on the app's own schedule. A created task becomes listable about a second after its turn starts; until the app re-reads, `runtime.desktop_notifications = true` is the only way to learn that work began or finished.
 
