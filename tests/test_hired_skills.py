@@ -27,6 +27,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from codex_autopilot.hired_skills import (
     HIRED_SKILLS_DIRNAME,
+    MAX_BUNDLE_BYTES,
+    MAX_BUNDLE_FILES,
+    MAX_SKILL_FILE_BYTES,
     STAGED_SKILLS_DIRNAME,
     HiredSkillError,
     admit_skill_bundle,
@@ -424,10 +427,7 @@ class InstalledSkillsAreReadNeverWrittenTests(unittest.TestCase):
                 destination_root=self.skills,
             )
 
-    def test_a_symlinked_entry_is_refused_by_name_not_followed(self) -> None:
-        """Her directory is hers, and a link in it could point anywhere.
-        The read names it and moves on rather than walking out of the tree."""
-
+    def test_a_link_inside_a_bundle_is_refused(self) -> None:
         self.install("taste")
         linked = self.skills / "linked"
         linked.mkdir()
@@ -440,6 +440,52 @@ class InstalledSkillsAreReadNeverWrittenTests(unittest.TestCase):
         self.assertEqual(len(refused), 1)
         self.assertIn("linked", refused[0])
         self.assertIn("symbolic link", refused[0])
+
+    def test_an_entry_that_is_itself_a_link_is_not_read_as_hers(self) -> None:
+        """Measured: this was followed and offered as hers, with a path
+        inside her skills directory while the content lived wherever the
+        link pointed.
+
+        It is the bypass the local/external split exists to prevent,
+        arriving by another door: a local skill is NOT withheld from the
+        verifier, so anything read as local is read as hers. A link needs no
+        bundle at all and can point at anything already on disk, including a
+        market bundle sitting in the project. Admission already refuses
+        links inside a bundle; this path followed them, which was two
+        opposite rules for one shape.
+        """
+
+        self.install("taste")
+        outside = self.home / "elsewhere" / "smuggled"
+        outside.mkdir(parents=True)
+        (outside / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
+        (self.skills / "linked").symlink_to(outside)
+
+        bundles, refused = installed_skill_bundles(self.home)
+
+        self.assertEqual([item["name"] for item in bundles], ["taste"])
+        self.assertEqual(len(refused), 1)
+        self.assertIn("linked", refused[0])
+        self.assertIn("symbolic link", refused[0])
+
+    def test_an_unreadable_directory_is_named_for_the_real_reason(self) -> None:
+        """Measured: it came back as "carries no SKILL.md" while carrying
+        one, which sends her looking for a file that is right there."""
+
+        import os
+
+        self.install("taste")
+        locked = self.install("locked")
+        os.chmod(locked, 0o000)
+        self.addCleanup(os.chmod, locked, 0o700)
+
+        bundles, refused = installed_skill_bundles(self.home)
+
+        self.assertEqual([item["name"] for item in bundles], ["taste"])
+        self.assertIn("locked", refused[0])
+        self.assertIn("cannot be read", refused[0])
+        self.assertIn("13", refused[0], "the errno, so the cause is actionable")
+        self.assertNotIn("carries no", refused[0])
 
     def test_an_unreadable_entry_is_refused_by_name_and_the_rest_still_read(self) -> None:
         import os
@@ -469,3 +515,88 @@ class InstalledSkillsAreReadNeverWrittenTests(unittest.TestCase):
 
         self.assertEqual([item["name"] for item in bundles], ["taste"])
         self.assertIn("hooks", refused[0])
+
+
+class TheSizeLimitsAreHeldTests(AdmissionCase):
+    """The only quantitative guards on the path that reaches the internet.
+
+    They stop a fetched bundle from filling her disk and her prompt, and a
+    sweep of every magnitude in this feature found both held by nothing: a
+    bundle of any size and any file count passed, and deleting either check
+    would have reddened no test.
+
+    Each is pinned from both sides - one bundle just under the limit and one
+    just over - so raising OR lowering the constant breaks something.
+    """
+
+    def test_a_bundle_at_the_byte_limit_is_admitted(self) -> None:
+        staged = self.stage()
+        room = MAX_BUNDLE_BYTES - (staged / "SKILL.md").stat().st_size
+        (staged / "big.bin").write_bytes(b"\0" * room)
+
+        record = self.admit(staged)
+
+        self.assertTrue(Path(record["path"]).is_dir())
+
+    def test_one_byte_over_the_limit_is_refused(self) -> None:
+        staged = self.stage()
+        room = MAX_BUNDLE_BYTES - (staged / "SKILL.md").stat().st_size
+        (staged / "big.bin").write_bytes(b"\0" * (room + 1))
+
+        with self.assertRaises(HiredSkillError) as caught:
+            self.admit(staged)
+
+        self.assertIn(str(MAX_BUNDLE_BYTES), str(caught.exception))
+        self.assertEqual(hired_skill_records(self.state_dir), ())
+
+    def test_a_bundle_at_the_file_limit_is_admitted(self) -> None:
+        staged = self.stage()
+        for index in range(MAX_BUNDLE_FILES - 1):
+            (staged / f"reference-{index}.md").write_text("x", encoding="utf-8")
+
+        record = self.admit(staged)
+
+        self.assertEqual(record["files"], MAX_BUNDLE_FILES)
+
+    def test_one_file_over_the_limit_is_refused(self) -> None:
+        staged = self.stage()
+        for index in range(MAX_BUNDLE_FILES):
+            (staged / f"reference-{index}.md").write_text("x", encoding="utf-8")
+
+        with self.assertRaises(HiredSkillError) as caught:
+            self.admit(staged)
+
+        self.assertIn(str(MAX_BUNDLE_FILES), str(caught.exception))
+        self.assertEqual(hired_skill_records(self.state_dir), ())
+
+    def test_a_skill_file_at_its_own_limit_is_admitted(self) -> None:
+        staged = self.stage(body="#" * MAX_SKILL_FILE_BYTES)
+
+        record = self.admit(staged)
+
+        self.assertTrue(Path(record["path"]).is_dir())
+
+    def test_a_skill_file_one_byte_over_is_refused(self) -> None:
+        staged = self.stage(body="#" * (MAX_SKILL_FILE_BYTES + 1))
+
+        with self.assertRaises(HiredSkillError) as caught:
+            self.admit(staged)
+
+        self.assertIn(str(MAX_SKILL_FILE_BYTES), str(caught.exception))
+
+    def test_her_own_oversized_bundle_is_named_not_offered(self) -> None:
+        """The same limits apply to what the runtime reads from her Codex
+        home: a listing is not a licence to put anything in a prompt."""
+
+        home = self.root / "fake-codex-home"
+        bundle = home / "skills" / "enormous"
+        bundle.mkdir(parents=True)
+        (bundle / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
+        for index in range(MAX_BUNDLE_FILES):
+            (bundle / f"reference-{index}.md").write_text("x", encoding="utf-8")
+
+        bundles, refused = installed_skill_bundles(home)
+
+        self.assertEqual(bundles, ())
+        self.assertIn("enormous", refused[0])
+        self.assertIn(str(MAX_BUNDLE_FILES), refused[0])

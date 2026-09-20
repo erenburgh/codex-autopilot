@@ -110,7 +110,36 @@ def installed_skill_bundles(
         # preinstalled skills: they live in `.system`. A separate check for
         # the name was written here and a mutation proved it dead - this
         # line already covered it - so the reason lives where the rule is.
-        if not path.is_dir() or path.name.startswith("."):
+        if path.name.startswith("."):
+            continue
+        # A linked entry was followed and offered as hers, with a path
+        # inside her skills directory while the content lived wherever the
+        # link pointed. A skill read as local is not withheld from the
+        # verifier, so that was the local/external bypass by another door -
+        # and a link needs no bundle at all: it can point at anything on
+        # disk, including a market bundle in the project. Admission already
+        # refuses links inside a bundle, so following them here was two
+        # opposite rules for one shape. `is_dir()` follows links, so this
+        # check comes first or it never runs.
+        if path.is_symlink():
+            refused.append(
+                f"{path.name} is a symbolic link and is not read as an installed "
+                "skill; an installed skill is a directory holding "
+                f"{SKILL_FILE}, not a link to one elsewhere"
+            )
+            continue
+        if not path.is_dir():
+            continue
+        try:
+            # Not `is_file()` on the skill: an unreadable directory answers
+            # False to that too, and the refusal then said "carries no
+            # SKILL.md" about a directory that carries one - sending her to
+            # look for a file that is right there.
+            list(path.iterdir())
+        except OSError as exc:
+            refused.append(
+                f"{path.name} cannot be read: {exc.strerror} (errno {exc.errno})"
+            )
             continue
         skill_file = path / SKILL_FILE
         if not skill_file.is_file():

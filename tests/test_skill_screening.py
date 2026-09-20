@@ -37,6 +37,13 @@ from codex_autopilot.plan import load_plan
 from codex_autopilot.run_state import StateStore
 from codex_autopilot.skill_packs import SkillPackError, SkillReference, skill_pack_from_raw
 from codex_autopilot.skill_screening import (
+    INVENTORY_LINES_PER_PACK,
+    INVENTORY_LINE_CHARS,
+    MAX_CANDIDATES_PER_ITEM,
+    MAX_RATIONALE_CHARS,
+    MAX_REASON_CHARS,
+    MAX_REQUISITION_ITEMS,
+    MAX_SEARCH_INTENT_CHARS,
     SCREENING_PREFIX,
     SKILL_LIBRARY_DIRNAME,
     ScreeningProtocolError,
@@ -46,6 +53,7 @@ from codex_autopilot.skill_screening import (
     SkillRequisition,
     hiring_decision_from_raw,
     load_skill_library,
+    inventory_entry,
     parse_screening_result,
     record_hiring,
     recorded_hiring,
@@ -2373,3 +2381,168 @@ class BundleOriginIsCheckedOnReadTests(unittest.TestCase):
 
         self.assertFalse(local.outcomes[0].is_external_bundle)
         self.assertTrue(market.outcomes[0].is_external_bundle)
+
+
+class TheProtocolLimitsAreHeldTests(unittest.TestCase):
+    """Every bound on the hiring path, enforced and pinned to its value.
+
+    A sweep moved each magnitude far past anything a fixture reaches and
+    found most of them held by nothing: deleting the check would have
+    reddened no test. Two properties are needed and they are different -
+    that the bound is ENFORCED, and that it is THIS NUMBER. A fixture
+    computed from the constant proves only the first, because raising the
+    constant raises the fixture with it.
+    """
+
+    @staticmethod
+    def requisition(items: list[dict]) -> str:
+        return screening_message({"task_id": "M1", "items": items})
+
+    def test_a_requisition_over_the_item_ceiling_is_refused(self) -> None:
+        items = [
+            item(f"cap-{index}", candidates=[{"id": f"s-{index}", "version": "1.0.0"}])
+            for index in range(MAX_REQUISITION_ITEMS + 1)
+        ]
+
+        with self.assertRaisesRegex(ScreeningProtocolError, "at most"):
+            parse_screening_result(self.requisition(items), task_id="M1")
+
+        parse_screening_result(self.requisition(items[:-1]), task_id="M1")
+
+    def test_an_item_over_the_candidate_ceiling_is_refused(self) -> None:
+        candidates = [
+            {"id": f"skill-{index}", "version": "1.0.0"}
+            for index in range(MAX_CANDIDATES_PER_ITEM + 1)
+        ]
+
+        with self.assertRaisesRegex(ScreeningProtocolError, "alternatives"):
+            parse_screening_result(
+                self.requisition([item("python", candidates=candidates)]), task_id="M1"
+            )
+
+        parse_screening_result(
+            self.requisition([item("python", candidates=candidates[:-1])]), task_id="M1"
+        )
+
+    def test_a_rationale_over_the_limit_is_refused(self) -> None:
+        for length, refused in ((MAX_RATIONALE_CHARS, False), (MAX_RATIONALE_CHARS + 1, True)):
+            with self.subTest(length=length):
+                body = self.requisition(
+                    [
+                        item(
+                            "python",
+                            rationale="r" * length,
+                            candidates=[{"id": "s", "version": "1.0.0"}],
+                        )
+                    ]
+                )
+                if refused:
+                    with self.assertRaisesRegex(ScreeningProtocolError, "characters"):
+                        parse_screening_result(body, task_id="M1")
+                else:
+                    parse_screening_result(body, task_id="M1")
+
+    def test_a_search_intent_over_the_limit_is_refused(self) -> None:
+        with self.assertRaisesRegex(ScreeningProtocolError, "characters"):
+            parse_screening_result(
+                self.requisition(
+                    [
+                        item(
+                            "python",
+                            candidates=[],
+                            search_intent="s" * (MAX_SEARCH_INTENT_CHARS + 1),
+                        )
+                    ]
+                ),
+                task_id="M1",
+            )
+
+    def test_a_recorded_reason_over_the_limit_is_refused_on_read(self) -> None:
+        def decision(length: int) -> dict:
+            return {
+                "task_id": "M1",
+                "outcomes": [
+                    {
+                        "capability": "python",
+                        "rationale": "M1 needs it.",
+                        "necessity": "required",
+                        "status": "unmet",
+                        "reason": "x" * length,
+                    }
+                ],
+            }
+
+        hiring_decision_from_raw(decision(MAX_REASON_CHARS))
+        with self.assertRaisesRegex(ScreeningProtocolError, "characters"):
+            hiring_decision_from_raw(decision(MAX_REASON_CHARS + 1))
+
+    def test_the_inventory_entry_is_bounded_in_lines_and_in_width(self) -> None:
+        """The brief describes every installed pack, so this multiplies by
+        the size of the library."""
+
+        raw = pack("wordy", "wordy-capability")
+        raw["procedures"] = [
+            f"{index} " + "p" * (INVENTORY_LINE_CHARS + 50)
+            for index in range(INVENTORY_LINES_PER_PACK + 3)
+        ]
+        raw["quality_criteria"] = ["q" * (INVENTORY_LINE_CHARS + 50)]
+
+        entry = inventory_entry(skill_pack_from_raw(raw))
+
+        self.assertEqual(len(entry["procedures"]), INVENTORY_LINES_PER_PACK)
+        for line in entry["procedures"] + entry["quality_criteria"]:
+            self.assertLessEqual(len(line), INVENTORY_LINE_CHARS)
+
+    def test_the_numbers_are_these_numbers(self) -> None:
+        """Pinning the values, not only the relationships.
+
+        A fixture sized from the constant cannot notice the constant
+        changing. These are the numbers, with the reason each one is what it
+        is; changing one should mean changing this test and saying why.
+        """
+
+        from codex_autopilot.ai_studio import MAX_HIRED_SKILL_CHARS, MAX_PROMPT_CHARS
+        from codex_autopilot.hired_skills import (
+            MAX_BUNDLE_BYTES,
+            MAX_BUNDLE_FILES,
+            MAX_SKILL_FILE_BYTES,
+        )
+        from codex_autopilot.lifecycle_screening import MAX_SCREENING_ATTEMPTS
+
+        self.assertEqual(
+            {
+                # One capability per item, and a hired pack enters the
+                # worker prompt whole.
+                "MAX_REQUISITION_ITEMS": MAX_REQUISITION_ITEMS,
+                "MAX_CANDIDATES_PER_ITEM": MAX_CANDIDATES_PER_ITEM,
+                # Prose the screener writes, which ends up in a prompt.
+                "MAX_RATIONALE_CHARS": MAX_RATIONALE_CHARS,
+                "MAX_SEARCH_INTENT_CHARS": MAX_SEARCH_INTENT_CHARS,
+                "MAX_REASON_CHARS": MAX_REASON_CHARS,
+                # The brief carries these per installed pack.
+                "INVENTORY_LINES_PER_PACK": INVENTORY_LINES_PER_PACK,
+                "INVENTORY_LINE_CHARS": INVENTORY_LINE_CHARS,
+                # The only quantitative guards on the path that reaches the
+                # internet: what a fetched bundle may put on her disk.
+                "MAX_BUNDLE_FILES": MAX_BUNDLE_FILES,
+                "MAX_BUNDLE_BYTES": MAX_BUNDLE_BYTES,
+                "MAX_SKILL_FILE_BYTES": MAX_SKILL_FILE_BYTES,
+                # A quarter of the prompt budget, and two turns of screening.
+                "MAX_HIRED_SKILL_CHARS": MAX_HIRED_SKILL_CHARS,
+                "MAX_SCREENING_ATTEMPTS": MAX_SCREENING_ATTEMPTS,
+            },
+            {
+                "MAX_REQUISITION_ITEMS": 8,
+                "MAX_CANDIDATES_PER_ITEM": 4,
+                "MAX_RATIONALE_CHARS": 1_000,
+                "MAX_SEARCH_INTENT_CHARS": 1_000,
+                "MAX_REASON_CHARS": 2_000,
+                "INVENTORY_LINES_PER_PACK": 3,
+                "INVENTORY_LINE_CHARS": 240,
+                "MAX_BUNDLE_FILES": 200,
+                "MAX_BUNDLE_BYTES": 8 * 1024 * 1024,
+                "MAX_SKILL_FILE_BYTES": 512 * 1024,
+                "MAX_HIRED_SKILL_CHARS": int(MAX_PROMPT_CHARS * 0.25),
+                "MAX_SCREENING_ATTEMPTS": 2,
+            },
+        )

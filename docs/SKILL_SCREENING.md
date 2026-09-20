@@ -578,14 +578,31 @@ make a Skill Pack trusted and the qualification gate is untouched, but it is
 her standing instruction, and her instruction legitimately shapes both the
 worker and the acceptor.
 
-**The residual risk, named rather than hidden.** A worker could run Codex's own
-`skill-installer` during a run and cause a skill to appear in her Codex home;
-Autopilot would then read it as local. Autopilot cannot prevent that, because
-it is her Codex running under her permission profile, and it never sees that
-install happen. If this needs closing, the shape is an inventory snapshot taken
-at run start and pinned by digest, so anything appearing mid-run is external by
-construction. It is not built, and it is the owner's call whether it is worth
-the cost of a skill she installs mid-run being unusable until the next one.
+An entry that is itself a **symbolic link is refused**, not followed. This was
+found by driving it: a link was followed and offered as hers, carrying a path
+inside her skills directory while its content lived wherever the link pointed
+— the same bypass by another door, and a cheaper one, because a link needs no
+bundle at all and can point at anything already on disk, including a market
+bundle sitting in the project. Admission already refuses links inside a bundle,
+so following them here was two opposite rules for one shape. A skill that lives
+elsewhere has to be copied in, and the refusal says so.
+
+**The residual risk, named rather than hidden — and a decision for the owner.**
+A worker could run Codex's own `skill-installer` during a run and cause a skill
+to appear in her Codex home; Autopilot would then read it as local. Autopilot
+cannot prevent or even observe that: it is her Codex, running under her own
+permission profile.
+
+The shape that would close it: take an inventory of `$CODEX_HOME/skills` at run
+start, pinned by content digest, and treat anything that appears — or whose
+digest changes — after that point as external rather than local, so it carries
+the market ladder and is withheld from the verifier.
+
+Its cost, stated plainly because it is the reason this is a decision and not a
+default: **a skill she installs in the middle of a run stays unusable until the
+next run.** If she installs skills while work is in flight, that will feel like
+Autopilot ignoring her. If she does not, it costs nothing and closes the hole.
+Not built; hers to choose.
 
 ### Two directories, not one
 
