@@ -64,6 +64,18 @@ PROMPT_BUDGET_SHARE = 0.25
 # than in English.
 CHARS_PER_TOKEN = 3.0
 MAX_PROMPT_CHARS = int(OBSERVED_CONTEXT_WINDOW_TOKENS * PROMPT_BUDGET_SHARE * CHARS_PER_TOKEN)
+# How much of that budget hired skills may take. A Skill Pack's procedures,
+# checklists, failure modes and quality criteria have no length bound, and a
+# hire is chosen at runtime by a model rather than written into the plan by a
+# human. Measured: one pack carrying 40 000 characters in each of those four
+# fields renders as 160 565 characters of prompt, so two of them are over the
+# whole budget on their own, and build_prompt then raises out of the
+# reservation transaction - a task made unreservable by its own hire, which is
+# the one thing hiring may never do. A quarter of the budget holds a dozen
+# realistic packs (a few kilobytes each) and cannot overflow the prompt alone.
+# Plan-declared skills are deliberately not trimmed here: they are the plan's
+# authority, and an oversized one is a plan defect the existing refusal names.
+MAX_HIRED_SKILL_CHARS = int(MAX_PROMPT_CHARS * 0.25)
 # How many characters of the original request may still be embedded in the prompt.
 MAX_INLINE_USER_REQUEST_CHARS = 16_000
 
@@ -236,6 +248,49 @@ End your turn with exactly one final line:
 
 {SCREENING_PREFIX}{example}
 """
+
+    @staticmethod
+    def _fit_hired_skills(
+        loaded_skills: tuple[SkillPack, ...], hiring: HiringDecision | None
+    ) -> tuple[tuple[SkillPack, ...], tuple[SkillPack, ...]]:
+        """Drop hired skills that do not fit, never the task.
+
+        Skills fail closed and the task does not fail with them. Required
+        hires are considered before helpful ones, so what survives a tight
+        budget is what the screener said the task could not do without.
+        """
+
+        hired = {item.key for item in (hiring.hired if hiring is not None else ())}
+        if not hired:
+            return loaded_skills, ()
+        necessity = {
+            item.skill.key: item.necessity
+            for item in (hiring.outcomes if hiring is not None else ())
+            if item.skill is not None
+        }
+        candidates = [
+            item for item in loaded_skills if item.reference.key in hired
+        ]
+        candidates.sort(key=lambda item: necessity.get(item.reference.key) != "required")
+        admitted: set[tuple[str, str]] = set()
+        spent = 0
+        for pack in candidates:
+            size = len(json.dumps(pack.to_prompt_dict(), ensure_ascii=False))
+            if spent + size > MAX_HIRED_SKILL_CHARS:
+                continue
+            spent += size
+            admitted.add(pack.reference.key)
+        kept = tuple(
+            item
+            for item in loaded_skills
+            if item.reference.key not in hired or item.reference.key in admitted
+        )
+        withheld = tuple(
+            item
+            for item in loaded_skills
+            if item.reference.key in hired and item.reference.key not in admitted
+        )
+        return kept, withheld
 
     def _skill_catalog(self) -> tuple[SkillPack, ...]:
         """The plan's catalog plus the packs installed on this machine.
@@ -428,26 +483,50 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             task,
             department_reference,
         )
+        implementation_role = self.plan.role_map[task.role]
+        hired = hiring.hired if hiring is not None else ()
         try:
-            implementation_role = self.plan.role_map[task.role]
-            # A hire is the second authority for loading a skill, beside the
-            # role's plan-declared requirements. No plan can name the skills
-            # a task needs - it is written before anyone has seen the code -
-            # so without this the requirement gate refuses every hire and the
-            # worker keeps the empty stack the plan gave it.
-            hired = hiring.hired if hiring is not None else ()
-            declared = {item.id for item in task.loaded_skills}
+            catalog = self._skill_catalog()
+            # The plan's own skills stay fail-closed: they are the plan's
+            # authority, and a malformed catalog is a configuration defect
+            # that should stop loudly rather than be worked around.
             loaded_skills = resolve_skill_stack(
-                self._skill_catalog(),
-                task.loaded_skills
-                + tuple(item for item in hired if item.id not in declared),
-                requirements=implementation_role.skill_requirements + hired,
+                catalog,
+                task.loaded_skills,
+                requirements=implementation_role.skill_requirements,
                 qualification_evidence_store=self.memory,
             )
         except (SkillLibraryError, SkillPackError) as exc:
             raise ContextBoundaryError(
                 f"task {task.id} skill stack cannot be resolved: {exc}"
             ) from exc
+        # A hire is the second authority for loading a skill, beside the
+        # role's plan-declared requirements: no plan can name the skills a
+        # task needs, because it is written before anyone has seen the code.
+        #
+        # Each hire is resolved on its own and never fatally. The catalog can
+        # move between the screening that chose a skill and the reservation
+        # that builds this prompt - a manifest replaced, a pack demoted - and
+        # build_prompt runs inside the lock-held reservation transaction, so
+        # a raise here does not spoil one prompt, it takes down the frontier
+        # pass and leaves the task unreservable. Skills fail closed; the task
+        # does not fail with them.
+        unresolved: list[tuple[str, str]] = []
+        declared = {item.id for item in task.loaded_skills}
+        for reference in hired:
+            if reference.id in declared or any(
+                item.id == reference.id for item in loaded_skills
+            ):
+                continue
+            try:
+                loaded_skills = resolve_skill_stack(
+                    catalog,
+                    tuple(item.reference for item in loaded_skills) + (reference,),
+                    requirements=implementation_role.skill_requirements + hired,
+                    qualification_evidence_store=self.memory,
+                )
+            except SkillPackError as exc:
+                unresolved.append((f"{reference.id}@{reference.version}", str(exc)))
         # R18: a pack written from text somebody else published may shape
         # HOW the work is done and must never reach the session deciding
         # WHETHER it is accepted. build_prompt resolves one stack for every
@@ -469,6 +548,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
                 item for item in loaded_skills if not item.is_externally_sourced
             )
             withheld_bundles, bundles = bundles, ()
+        loaded_skills, budget_withheld = self._fit_hired_skills(loaded_skills, hiring)
         envelope = {
             # Rule R17: the rules block goes BEFORE the task specifications
             # and is never truncated. If the context budget cannot hold the
@@ -484,6 +564,33 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             "task": self._task_contract(task),
             "role": self._role_contract(role, department_reference),
             "loaded_skills": [item.to_prompt_dict() for item in loaded_skills],
+            **(
+                {
+                    "hired_skills_that_no_longer_resolve": [
+                        {"skill": name, "reason": reason} for name, reason in unresolved
+                    ]
+                }
+                if unresolved
+                else {}
+            ),
+            **(
+                {
+                    "withheld_for_context_budget": [
+                        {
+                            "id": item.id,
+                            "version": item.version,
+                            "capability": item.capability,
+                            "chars": len(
+                                json.dumps(item.to_prompt_dict(), ensure_ascii=False)
+                            ),
+                        }
+                        for item in budget_withheld
+                    ],
+                    "context_budget_chars": MAX_HIRED_SKILL_CHARS,
+                }
+                if budget_withheld
+                else {}
+            ),
             **(
                 {
                     "hired_skill_bundles": [

@@ -143,6 +143,34 @@ failure policy is asymmetric:
   unscreened, with an empty stack, and the run records that it ran unscreened
   and why.
 
+The same asymmetry has to hold at prompt assembly, which is where it was
+nearly lost. `build_prompt` runs *inside* the lock-held reservation
+transaction, so an exception there does not spoil one prompt — it fails the
+whole frontier pass and leaves the task unreservable. Two ways a hire could do
+that, both measured and both now closed:
+
+* **A hire that stops resolving.** The catalog can move between the screening
+  that chose a skill and the reservation that builds the prompt — a manifest
+  replaced, a pack demoted to candidate. Each hired reference is now resolved
+  on its own; one that fails is dropped and reported to the worker in
+  `hired_skills_that_no_longer_resolve`, with the resolver's exact reason.
+* **A hire too large for the context budget.** A pack's procedures,
+  checklists, failure modes and quality criteria have no length bound, and a
+  hire is chosen at runtime by a model rather than written into the plan by a
+  human. Measured: one pack with 40 000 characters in each of those four
+  fields renders as 160 565 characters against a 193 800 budget, so two are
+  over on their own — and at 80 000 the refusal was observed directly:
+  `implementation prompt for A1 is 334897 characters against a 193800
+  budget ... loaded_skills=320764`. Hired skills now get a bounded share of
+  the budget (`MAX_HIRED_SKILL_CHARS`), required before helpful, and what does
+  not fit is reported in `withheld_for_context_budget`.
+
+Plan-declared skills are deliberately *not* treated this way. They are the
+plan's authority, and an oversized or unresolvable one is a plan defect that
+should stop loudly. The same goes for a malformed manifest in the installed
+library: that is a static configuration error, loud and fixable, not a
+model's runtime choice.
+
 `MAX_SCREENING_ATTEMPTS` (two: the first try, and one more after a refusal
 whose reason the screener can read) enforces the second half. Without it, a
 screener that always fails would hold the frontier forever — which is exactly

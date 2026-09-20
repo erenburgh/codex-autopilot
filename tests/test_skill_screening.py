@@ -34,6 +34,7 @@ from codex_autopilot.config import load_config
 from codex_autopilot.lifecycle import complete_desktop_worker
 from codex_autopilot.memory import ProjectMemory
 from codex_autopilot.plan import load_plan
+from codex_autopilot.run_state import StateStore
 from codex_autopilot.skill_packs import SkillPackError, SkillReference, skill_pack_from_raw
 from codex_autopilot.skill_screening import (
     SCREENING_PREFIX,
@@ -775,9 +776,14 @@ class PromptBindingTests(AttestedProjectCase):
         self.assertIn('"loaded_skills":[]', prompt)
         self.assertNotIn(trusted["procedures"][0], prompt)
 
-    def test_an_unhired_skill_is_still_refused_at_the_prompt_boundary(self) -> None:
+    def test_a_hire_the_catalog_cannot_satisfy_is_dropped_and_named(self) -> None:
         """Widening the requirement set for a hire does not open it for
-        anything else: an undeclared, unhired reference is still refused."""
+        anything else: a reference the catalog does not hold never loads.
+
+        It is dropped rather than fatal, because build_prompt runs inside the
+        reservation transaction and a raise there leaves the task
+        unreservable - a skill may fail, the task may not fail with it.
+        """
 
         runtime, _decision, _trusted = self._runtime_and_decision()
         forged = HiringDecision(
@@ -793,14 +799,18 @@ class PromptBindingTests(AttestedProjectCase):
             ),
         )
 
-        with self.assertRaisesRegex(ContextBoundaryError, "9.9.9"):
-            runtime.build_prompt(
-                "A1",
-                phase="implementation",
-                task_states={},
-                reservation_token="token",
-                hiring=forged,
-            )
+        prompt = runtime.build_prompt(
+            "A1",
+            phase="implementation",
+            task_states={},
+            reservation_token="token",
+            hiring=forged,
+        )
+
+        self.assertIn('"loaded_skills":[]', prompt)
+        self.assertIn("hired_skills_that_no_longer_resolve", prompt)
+        self.assertIn("vetted-runtime@9.9.9", prompt)
+        self.assertIn("not present in the catalog", prompt)
 
 
 class ScreeningLifecycleTests(AttestedProjectCase):
@@ -1703,3 +1713,234 @@ class InstalledBundleReachesTheWorkerTests(AttestedProjectCase):
         worker = completed.descriptors[0]
         self.assertEqual((worker.kind, worker.task_id), ("implementation", "M1"))
         self.assertNotIn("hired_skill_bundles", worker.prompt)
+
+
+class AHireMustNotStopTheTaskTests(AttestedProjectCase):
+    """The asymmetry has to hold at the prompt budget too.
+
+    Skills fail closed; the task does not fail with them. A Skill Pack's
+    procedures, checklists, failure modes and quality criteria have no
+    length bound, and the whole stack goes into the worker prompt. Measured:
+    one pack with 40 000 characters in each of those four fields renders as
+    160 565 characters of prompt, and MAX_PROMPT_CHARS is 193 800 - so two
+    hired packs of that size are over the budget on their own.
+
+    Before, build_prompt raised ContextBoundaryError and that exception
+    travelled out of _reserve_in_state, so a model's choice of skills could
+    make a task unreservable. That is the one thing hiring may never do.
+    """
+
+    def _hire_an_enormous_pack(self) -> tuple[Any, Any, dict]:
+        import subprocess
+
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        raw = pack("enormous", "runtime-capability", source="synthesized", status="candidate")
+        raw["deterministic_checks"][0]["argv"] = [
+            sys.executable,
+            "-c",
+            "raise SystemExit(0)",
+        ]
+        for field in ("procedures", "checklists", "failure_modes", "quality_criteria"):
+            raw[field] = [f"{field[0].upper()}" * 80_000]
+        records, implementation = run_canonical_attestations(
+            self.root, raw, ("promotion", "qualification")
+        )
+        manifest = dict(raw)
+        manifest["status"] = "trusted"
+        manifest["promotion_evidence"] = [
+            {"id": records["promotion"]["id"], "kind": "independent_verification", "verified": True},
+            {"id": implementation["promotion"], "kind": "real_tool", "verified": True},
+        ]
+        manifest["qualification_verification_ids"] = [records["qualification"]["id"]]
+        library = self.root / ".codex-autopilot" / SKILL_LIBRARY_DIRNAME
+        library.mkdir(parents=True, exist_ok=True)
+        (library / "enormous.json").write_text(json.dumps(manifest), encoding="utf-8")
+        cfg = load_config(self.root)
+        runtime = AIStudioRuntime(
+            load_plan(cfg.state_dir, cfg.profile),
+            cfg.root,
+            language=cfg.language,
+            skill_path=cfg.skill_path,
+        )
+        decision = HiringDecision(
+            task_id="A1",
+            outcomes=(
+                HiringOutcome(
+                    capability="runtime-capability",
+                    rationale="A1 needs this enormous procedure.",
+                    necessity="required",
+                    status="hired",
+                    skill=SkillReference("enormous", "1.0.0"),
+                ),
+            ),
+        )
+        return runtime, decision, manifest
+
+    def test_an_oversized_hire_is_dropped_and_the_task_still_launches(self) -> None:
+        from codex_autopilot.ai_studio import MAX_PROMPT_CHARS
+
+        runtime, decision, manifest = self._hire_an_enormous_pack()
+
+        prompt = runtime.build_prompt(
+            "A1",
+            phase="implementation",
+            task_states={},
+            reservation_token="token",
+            hiring=decision,
+        )
+
+        self.assertLessEqual(len(prompt), MAX_PROMPT_CHARS)
+        self.assertNotIn(manifest["procedures"][0], prompt)
+        self.assertIn("withheld_for_context_budget", prompt)
+        self.assertIn("enormous", prompt)
+
+    def test_the_same_hire_does_not_break_the_verifier_either(self) -> None:
+        from codex_autopilot.ai_studio import MAX_PROMPT_CHARS
+
+        runtime, decision, _manifest = self._hire_an_enormous_pack()
+
+        prompt = runtime.build_prompt(
+            "A1",
+            phase="verification",
+            task_states={},
+            reservation_token="token",
+            hiring=decision,
+        )
+
+        self.assertLessEqual(len(prompt), MAX_PROMPT_CHARS)
+
+
+class TheReservationSurvivesABrokenHireTests(AttestedProjectCase):
+    """A hire that stops resolving must not take the frontier down with it.
+
+    build_prompt runs inside the lock-held reservation transaction, so a
+    raise there does not spoil one prompt - it fails the whole pass and
+    leaves the task unreservable. The catalog really can move between the
+    screening that chose a skill and the reservation that builds the prompt,
+    and this fixture is that case without contriving it: the manifest
+    installed before the last acceptance is still the CANDIDATE, because the
+    qualification record it needs is written by that very completion.
+    """
+
+    def _before_last_acceptance(self) -> None:
+        library = self.root / ".codex-autopilot" / SKILL_LIBRARY_DIRNAME
+        library.mkdir(parents=True, exist_ok=True)
+        (library / "vetted-runtime.json").write_text(
+            json.dumps(_candidate_manifest()), encoding="utf-8"
+        )
+        store = StateStore(self.root / ".codex-autopilot")
+        state = store.load()
+        record_hiring(
+            state.task_hiring,
+            task_id="M1",
+            graph_version=state.graph_version,
+            decision=HiringDecision(
+                task_id="M1",
+                outcomes=(
+                    HiringOutcome(
+                        capability="runtime-capability",
+                        rationale="M1 needs the attested procedure.",
+                        necessity="required",
+                        status="hired",
+                        skill=SkillReference("vetted-runtime", "1.0.0"),
+                    ),
+                ),
+            ),
+            requisition=None,
+            screened_by={"thread_id": "screening-M1"},
+            at="2026-09-20T00:00:00+00:00",
+        )
+        store.save(state)
+
+    def test_the_frontier_still_reserves_the_task(self) -> None:
+        trusted, _memory = self._qualified_pack(trailing_task=_trailing_task())
+        descriptors = self.last_descriptors
+
+        self.assertEqual([item.task_id for item in descriptors], ["M1"])
+        self.assertIn("hired_skills_that_no_longer_resolve", descriptors[0].prompt)
+        self.assertIn("CANDIDATE", descriptors[0].prompt)
+        self.assertNotIn(trusted["procedures"][0], descriptors[0].prompt)
+
+
+class BudgetTrimmingTests(unittest.TestCase):
+    """Which skills the budget drops, and which it may never touch."""
+
+    @staticmethod
+    def sized(skill_id: str, capability: str, chars: int):
+        raw = pack(skill_id, capability)
+        raw["procedures"] = ["P" * chars]
+        return skill_pack_from_raw(raw)
+
+    @staticmethod
+    def hiring(*items: tuple[str, str]) -> HiringDecision:
+        return HiringDecision(
+            task_id="M1",
+            outcomes=tuple(
+                HiringOutcome(
+                    capability=f"{skill_id}-capability",
+                    rationale=f"M1 needs {skill_id}.",
+                    necessity=necessity,
+                    status="hired",
+                    skill=SkillReference(skill_id, "1.0.0"),
+                )
+                for skill_id, necessity in items
+            ),
+        )
+
+    def fit(self, loaded, decision, budget):
+        from unittest import mock
+
+        with mock.patch("codex_autopilot.ai_studio.MAX_HIRED_SKILL_CHARS", budget):
+            return AIStudioRuntime._fit_hired_skills(loaded, decision)
+
+    def test_a_plan_declared_skill_is_never_trimmed(self) -> None:
+        """The plan is an authority. Dropping its skill to make room for a
+        runtime hire would let a model quietly overrule the graph."""
+
+        planned = self.sized("planned", "planning", 5_000)
+        hired = self.sized("hired", "hired-capability", 5_000)
+
+        kept, withheld = self.fit(
+            (planned, hired), self.hiring(("hired", "required")), 10
+        )
+
+        self.assertEqual([item.id for item in kept], ["planned"])
+        self.assertEqual([item.id for item in withheld], ["hired"])
+
+    def test_required_is_admitted_before_helpful(self) -> None:
+        """The two must be the same size and the budget must hold exactly
+        one. If the helpful one simply did not fit, the order would make no
+        difference and the test would pass without exercising it - the
+        helpful pack is listed first so that ignoring necessity admits the
+        wrong one.
+        """
+
+        helpful = self.sized("helpful-one", "helpful-one-capability", 1_000)
+        required = self.sized("required-one", "required-one-capability", 1_000)
+        one = len(json.dumps(helpful.to_prompt_dict(), ensure_ascii=False))
+        decision = self.hiring(("helpful-one", "helpful"), ("required-one", "required"))
+
+        kept, withheld = self.fit(
+            (helpful, required), decision, int(one * 1.5)
+        )
+
+        self.assertEqual([item.id for item in kept], ["required-one"])
+        self.assertEqual([item.id for item in withheld], ["helpful-one"])
+
+    def test_a_budget_that_fits_everything_drops_nothing(self) -> None:
+        first = self.sized("one", "one-capability", 100)
+        second = self.sized("two", "two-capability", 100)
+        decision = self.hiring(("one", "required"), ("two", "helpful"))
+
+        kept, withheld = self.fit((first, second), decision, 1_000_000)
+
+        self.assertEqual([item.id for item in kept], ["one", "two"])
+        self.assertEqual(withheld, ())
+
+    def test_without_a_hire_nothing_is_examined_at_all(self) -> None:
+        planned = self.sized("planned", "planning", 500_000)
+
+        kept, withheld = self.fit((planned,), None, 10)
+
+        self.assertEqual([item.id for item in kept], ["planned"])
+        self.assertEqual(withheld, ())
