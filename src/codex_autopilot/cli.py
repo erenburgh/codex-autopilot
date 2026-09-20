@@ -915,11 +915,21 @@ def doctor(project: Path) -> int:
             allowed = {item.get("id") for item in profiles if item.get("allowed") is not False}
             checks.append(("App Server :workspace", ":workspace" in allowed, str(sorted(allowed))))
             catalog = {str(item.get("model") or item.get("id")): item for item in models}
-            for key, model_id in MODEL_IDS.items():
-                model = catalog.get(model_id)
+            # The catalog was listed and never compared. The runtime asks
+            # App Server for one exact id and refuses everything else, so
+            # the day that id is retired every installed copy stops at
+            # once - and doctor, the command whose whole job is to say
+            # what is missing, said PASS right up to it.
+            from .models import catalog_verdicts
+
+            for verdict in catalog_verdicts(list(models)):
+                model = catalog.get(verdict.pinned)
                 efforts = {str(item.get("reasoningEffort")) for item in (model or {}).get("supportedReasoningEfforts") or []}
-                checks.append((f"Model {key}", model is not None, model_id if model else "unavailable"))
-                checks.append((f"Model {key} Adaptive efforts", set(PUBLIC_REASONING).issubset(efforts), str(sorted(efforts))))
+                checks.append(
+                    (f"Model {verdict.key}", verdict.state != "missing", verdict.message)
+                )
+                if model is not None:
+                    checks.append((f"Model {verdict.key} Adaptive efforts", set(PUBLIC_REASONING).issubset(efforts), str(sorted(efforts))))
         except Exception as exc:
             checks.append(("App Server", False, str(exc)))
     for name, ok, details in checks:

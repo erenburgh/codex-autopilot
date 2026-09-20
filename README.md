@@ -85,6 +85,8 @@ The Adaptive profile uses `auto` by default:
 
 Explicit strategies are `Sol only` and `Astra only`. The Host Settings profile sends neither a model nor an effort field; App Server applies its current defaults to every fresh task.
 
+Adaptive asks for those model ids exactly and never substitutes another, so `doctor` and preflight compare them against what your account is actually served: they say when a newer model of the same family has appeared, and if a pinned one is retired they name what is served instead rather than guessing. Moving to a new model stays a decision, not a surprise. See [model routing](docs/MODEL_ROUTING.md).
+
 The no-model controls are:
 
 - `status` - a few lines: progress, what is running, what blocks it.

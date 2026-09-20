@@ -8,7 +8,7 @@ backend-path = ["build_backend"]
 
 [project]
 name = "codex-autopilot"
-version = "0.11.7b0"
+version = "0.11.8b0"
 description = "Serial visible Codex workers with evidence-backed project memory"
 requires-python = ">=3.11"
 license = {text = "MIT"}

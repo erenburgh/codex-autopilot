@@ -18,6 +18,29 @@ Public reasoning values are `medium`, `high`, `xhigh`, and `max`. If the request
 
 The dispatcher never changes model to evade quota. Sol and Astra share account allowance.
 
+## When a newer model appears
+
+The Adaptive profile asks App Server for an exact id - `gpt-5.6-sol`,
+`gpt-6-astra` - and accepts nothing else. That strictness is deliberate: a
+silent substitution would swap the declared capability rather than the
+diligence, which is the one thing the hiring ladder is built not to do.
+
+It has a consequence. A new model of the same family does not get used, and on
+the day the pinned id stops being served, every installed copy refuses at the
+same moment, wherever it is running.
+
+So the catalog is compared rather than listed. `doctor` and preflight both read
+what the account is actually served and answer one of three things per model:
+it is served; it is served and something newer exists (named, with runs
+continuing unchanged); or it is gone, and here is what is served instead. The
+runtime never moves a pin by itself - naming an alternative is not taking it.
+
+Moving to a newer model is an edit to `MODEL_IDS` in
+`src/codex_autopilot/models.py` and a release. Host Settings is the standing
+alternative for anyone who wants whatever the host currently applies: it sends
+no model at all, and therefore no reasoning either, so the hiring ladder does
+not apply to it.
+
 ## Host Settings
 
 Host Settings plans omit reasoning. The dispatcher does not call `model/list` for routing and passes neither a `model` field to `thread/start` nor an `effort` field to `turn/start`. Each durable fresh task therefore receives whatever defaults the current App Server applies.

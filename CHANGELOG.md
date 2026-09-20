@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.11.8-beta
+
+The runtime notices when the model it pins stops being the current one.
+
+Adaptive asks App Server for an exact id - `gpt-5.6-sol`, `gpt-6-astra` - and
+accepts nothing else. The strictness is deliberate and stays: a silent
+substitution swaps the declared capability rather than the diligence, which is
+the one thing the hiring ladder exists not to do.
+
+The consequence was uncovered. A newer model of the same family simply goes
+unused, and on the day a pinned id stops being served every installed copy
+refuses at the same moment, everywhere - while `doctor`, whose whole job is to
+say what is missing, listed the catalog without ever comparing it and answered
+PASS right up to that day.
+
+- `doctor` and preflight now compare. Per model they answer one of three
+  things: it is served; it is served and something newer exists, named, with
+  runs continuing unchanged; or it is gone, and here is what is served instead.
+- The routing refusal obeys R31 and names the alternative it will not take. It
+  used to say only that the model was "unavailable", leaving the reader to
+  guess between renamed, retired and never-theirs.
+- Nothing moves a pin by itself. Naming an alternative is not taking it, and
+  `MODEL_IDS` is asserted untouched by the check.
+- Families do not bleed: a newer Astra is never offered as a newer Sol, and an
+  id shaped in a way nobody expected sorts lowest instead of raising - this
+  feeds messages, never decisions.
+
+Moving to a new model remains an edit and a release. Host Settings stays the
+standing alternative for anyone who wants whatever the host currently applies:
+it sends no model, and therefore no reasoning, so the ladder does not apply.
+
 ## 0.11.7-beta
 
 A bare `git init` is enough. The commit 0.11.5 demanded was never the user's

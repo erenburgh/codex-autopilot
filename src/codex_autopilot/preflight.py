@@ -23,7 +23,7 @@ from .hook_trust import (
     require_trusted_stop_hook,
 )
 from .memory import MemoryError, probe_sqlite_fts5
-from .models import resolve_selection
+from .models import catalog_verdicts, resolve_selection
 from .plan import DEFAULT_MAX_PARALLEL_WORKERS, Plan
 from .plan_verification import (
     INITIAL_PLAN_VERIFICATION,
@@ -434,6 +434,14 @@ def run_preflight(
         if profile == "adaptive":
             first = plan.milestones[0]
             models = client.list_models()
+            # A pinned model that is still served but no longer the newest
+            # is not an error and changes nothing about this run. It is
+            # said out loud once, here, because the alternative is finding
+            # out on the day the pinned one is retired - when every
+            # installed copy refuses at the same moment.
+            for verdict in catalog_verdicts(list(models)):
+                if verdict.state == "superseded":
+                    report(f"Model {verdict.key}", "WARN", verdict.message)
             selection = resolve_selection(
                 models,
                 strategy=plan.model_strategy,

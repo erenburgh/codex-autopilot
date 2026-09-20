@@ -16,6 +16,96 @@ class ModelRoutingError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogVerdict:
+    """What the live catalog says about one pinned model.
+
+    ``state`` is "present", "missing" or "superseded". The last one is not
+    a problem and never changes a run: a newer model of the same family
+    exists and the owner has not moved to it. Saying so is the whole point
+    - the runtime asks App Server for an exact id and refuses everything
+    else, so the day that id is retired every installed copy stops at
+    once. That day should not be the first time anyone hears about it.
+    """
+
+    key: str
+    pinned: str
+    state: str
+    newer: str | None = None
+    available: tuple[str, ...] = ()
+
+    @property
+    def message(self) -> str:
+        if self.state == "missing":
+            offer = ", ".join(self.available) or "nothing"
+            return (
+                f"{self.pinned} is no longer served to this account. "
+                f"Available instead: {offer}. Nothing is substituted "
+                f"automatically - choose one and say so."
+            )
+        if self.state == "superseded":
+            return (
+                f"{self.pinned} still works, and {self.newer} is newer. "
+                f"Runs stay on {self.pinned} until you say otherwise."
+            )
+        return f"{self.pinned} is served."
+
+
+def _family(model_id: str) -> str:
+    """The trailing name a family keeps across versions: sol, astra."""
+
+    return model_id.rsplit("-", 1)[-1].strip().lower()
+
+
+def _version(model_id: str) -> tuple[int, ...]:
+    """The numeric part of an id, for ordering within one family.
+
+    Anything unparseable sorts lowest rather than raising: this feeds a
+    message, never a decision, and an id shaped in a way nobody expected
+    must not be able to stop a run.
+    """
+
+    import re
+
+    found = re.findall(r"\d+(?:\.\d+)*", model_id)
+    if not found:
+        return (-1,)
+    return tuple(int(part) for part in found[-1].split("."))
+
+
+def catalog_verdicts(
+    catalog: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    pinned: dict[str, str] | None = None,
+) -> tuple[CatalogVerdict, ...]:
+    """Compare what this account is served against what the runtime pins."""
+
+    pinned = dict(pinned or MODEL_IDS)
+    served = []
+    for item in catalog or ():
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("model") or item.get("id") or "").strip()
+        if name:
+            served.append(name)
+
+    verdicts = []
+    for key, model_id in pinned.items():
+        family = _family(model_id)
+        siblings = [name for name in served if _family(name) == family]
+        if model_id not in served:
+            verdicts.append(
+                CatalogVerdict(key, model_id, "missing", available=tuple(siblings))
+            )
+            continue
+        newer = [name for name in siblings if _version(name) > _version(model_id)]
+        if newer:
+            best = max(newer, key=_version)
+            verdicts.append(CatalogVerdict(key, model_id, "superseded", newer=best))
+            continue
+        verdicts.append(CatalogVerdict(key, model_id, "present"))
+    return tuple(verdicts)
+
+
+@dataclass(frozen=True, slots=True)
 class ModelSelection:
     key: str
     model_id: str
@@ -70,7 +160,18 @@ def resolve_selection(
     expected = MODEL_IDS[key]
     model = next((item for item in catalog if item.get("id") == expected or item.get("model") == expected), None)
     if model is None:
-        raise ModelRoutingError(f"Required model {expected} is unavailable for this account; no fallback was used.")
+        # R31: a refusal names what IS accepted. "Unavailable" alone left
+        # the reader to guess whether the model was renamed, retired, or
+        # never theirs.
+        verdict = next(
+            (item for item in catalog_verdicts(list(catalog), {key: expected})),
+            None,
+        )
+        detail = verdict.message if verdict else f"{expected} is not served."
+        raise ModelRoutingError(
+            f"Required model {expected} is unavailable for this account; "
+            f"no fallback was used. {detail}"
+        )
     actual = str(model.get("model") or model.get("id") or "")
     if actual != expected:
         raise ModelRoutingError(f"Model registry expected {expected}, but App Server advertised {actual or 'an empty id'}.")
