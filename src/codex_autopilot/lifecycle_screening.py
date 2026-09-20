@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config
+from .ai_studio import ContextBoundaryError
 from .lifecycle_base import (
     PENDING_SESSION_STATUSES,
     LaunchDescriptor,
@@ -117,18 +118,14 @@ def screening_gate(
         return ScreeningGate("wait")
     sessions = _screening_sessions(state, task_id)
     if len(sessions) >= MAX_SCREENING_ATTEMPTS:
-        record_hiring(
-            state.task_hiring,
+        _record_unscreened(
+            state,
             task_id=task_id,
-            graph_version=state.graph_version,
-            decision=HiringDecision(task_id=task_id),
-            requisition=None,
-            screened_by={"attempts": len(sessions)},
-            at=utc_now(),
-            unscreened=(
+            reason=(
                 f"screening did not produce a readable requisition in "
                 f"{len(sessions)} attempts; the task runs with no skills"
             ),
+            screened_by={"attempts": len(sessions)},
         )
         _append_event(
             state,
@@ -138,9 +135,8 @@ def screening_gate(
             detail=f"{task_id}: {len(sessions)} attempts",
         )
         return ScreeningGate("proceed")
-    return ScreeningGate(
-        "reserve",
-        _reserve_screening_in_state(
+    try:
+        descriptor = _reserve_screening_in_state(
             cfg,
             plan,
             state,
@@ -148,7 +144,39 @@ def screening_gate(
             memory_audit_before=memory_audit_before,
             relay_owner_thread_id=relay_owner_thread_id,
             build_descriptor=build_descriptor,
-        ),
+        )
+    except ContextBoundaryError as exc:
+        # The brief could not be assembled. This runs inside the lock-held
+        # reservation, so raising would leave the task unreservable - and a
+        # task must never be stopped by the hiring step that was meant to
+        # help it. Skip the screening, record why, let the task run.
+        _record_unscreened(
+            state,
+            task_id=task_id,
+            reason=f"the screening brief could not be built: {exc}",
+        )
+        return ScreeningGate("proceed")
+    return ScreeningGate("reserve", descriptor)
+
+
+def _record_unscreened(
+    state: RunState,
+    *,
+    task_id: str,
+    reason: str,
+    screened_by: dict[str, Any] | None = None,
+) -> None:
+    """Record that this task runs without skills, and why."""
+
+    record_hiring(
+        state.task_hiring,
+        task_id=task_id,
+        graph_version=state.graph_version,
+        decision=HiringDecision(task_id=task_id),
+        requisition=None,
+        screened_by=screened_by or {},
+        at=utc_now(),
+        unscreened=reason,
     )
 
 

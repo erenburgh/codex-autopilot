@@ -2615,3 +2615,72 @@ class TheProtocolLimitsAreHeldTests(unittest.TestCase):
                 "MAX_SCREENING_ATTEMPTS": 2,
             },
         )
+
+
+class TheBriefAlwaysFitsTests(AttestedProjectCase):
+    """The screening brief had no budget check at all.
+
+    Every other prompt builder has one. Measured against a growing library:
+    0 packs -> 10 005 chars, 20 -> 41 824, 60 -> 105 464, which is 54% of
+    the 193 800 budget. Somewhere past a hundred installed packs the brief
+    simply exceeded it and was sent anyway.
+
+    Adding a plain check would have been the defect this feature already
+    made once: build_screening_prompt is called inside the lock-held
+    reservation, so raising there leaves the task unreservable. The
+    inventory is bounded instead, and a brief that still cannot be built
+    skips the screening rather than the task.
+    """
+
+    def _before_last_acceptance(self) -> None:
+        set_screening_mode(self.root, "always")
+        library = self.root / ".codex-autopilot" / SKILL_LIBRARY_DIRNAME
+        library.mkdir(parents=True, exist_ok=True)
+        for index in range(getattr(self, "library_size", 0)):
+            body = pack(f"skill-{index:03d}", f"cap-{index:03d}")
+            body["procedures"] = [f"Procedure {line}. " + "x" * 300 for line in range(6)]
+            body["quality_criteria"] = [f"Quality {line}. " + "y" * 300 for line in range(4)]
+            (library / f"skill-{index:03d}.json").write_text(
+                json.dumps(body), encoding="utf-8"
+            )
+
+    def test_a_library_too_large_for_the_brief_is_bounded_and_says_so(self) -> None:
+        from codex_autopilot.ai_studio import MAX_PROMPT_CHARS
+
+        self.library_size = 400
+        self._qualified_pack(trailing_task=_trailing_task())
+        brief = self.last_descriptors[0].prompt
+
+        self.assertEqual(self.last_descriptors[0].kind, "screening")
+        self.assertLessEqual(len(brief), MAX_PROMPT_CHARS)
+        self.assertIn("installed_skills_omitted", brief)
+
+    def test_a_small_library_is_shown_whole(self) -> None:
+        self.library_size = 3
+        self._qualified_pack(trailing_task=_trailing_task())
+        brief = self.last_descriptors[0].prompt
+
+        self.assertIn("skill-002", brief)
+        self.assertNotIn("installed_skills_omitted", brief)
+
+    def test_a_brief_that_cannot_be_built_skips_screening_not_the_task(self) -> None:
+        """The asymmetry again, at the last place it could be lost."""
+
+        from unittest import mock
+
+        def refuse(*_args, **_kwargs):
+            raise ContextBoundaryError("the brief cannot be assembled")
+
+        self.library_size = 0
+        with mock.patch.object(AIStudioRuntime, "build_screening_prompt", refuse):
+            self._qualified_pack(trailing_task=_trailing_task())
+
+        worker = self.last_descriptors[0]
+        self.assertEqual((worker.kind, worker.task_id), ("implementation", "M1"))
+        record = json.loads(
+            (self.root / ".codex-autopilot" / "run-state.json").read_text(
+                encoding="utf-8"
+            )
+        )["task_hiring"]["M1"]
+        self.assertIn("brief cannot be assembled", record["unscreened"])
+        self.assertEqual(record["decision"]["outcomes"], [])

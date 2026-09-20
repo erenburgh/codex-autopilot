@@ -77,6 +77,14 @@ MAX_PROMPT_CHARS = int(OBSERVED_CONTEXT_WINDOW_TOKENS * PROMPT_BUDGET_SHARE * CH
 # Plan-declared skills are deliberately not trimmed here: they are the plan's
 # authority, and an oversized one is a plan defect the existing refusal names.
 MAX_HIRED_SKILL_CHARS = int(MAX_PROMPT_CHARS * 0.25)
+# How much of the budget the screening brief's inventory may take. Measured
+# against a growing library: the brief is 10 005 characters with nothing
+# installed and 105 464 with sixty packs, so past roughly a hundred it simply
+# exceeded the budget and was sent anyway - this builder had no check at all,
+# unlike every other one. Everything else in the brief measured about ten
+# kilobytes, so two fifths leaves generous headroom for the rules block, the
+# task contract and the machine's own skills.
+MAX_SCREENING_INVENTORY_CHARS = int(MAX_PROMPT_CHARS * 0.4)
 # How many characters of the original request may still be embedded in the prompt.
 MAX_INLINE_USER_REQUEST_CHARS = 16_000
 
@@ -168,11 +176,20 @@ class AIStudioRuntime:
         role = self.plan.role_map[task.role]
         machine_skills, unreadable = installed_skill_bundles()
         try:
-            inventory = [inventory_entry(pack) for pack in self._skill_catalog()]
+            catalog = self._skill_catalog()
         except SkillLibraryError as exc:
             raise ContextBoundaryError(
                 f"task {task.id} cannot be screened: {exc}"
             ) from exc
+        inventory: list[dict[str, Any]] = []
+        spent = 0
+        for pack in catalog:
+            entry = inventory_entry(pack)
+            spent += len(json.dumps(entry, ensure_ascii=False))
+            if spent > MAX_SCREENING_INVENTORY_CHARS:
+                break
+            inventory.append(entry)
+        omitted = len(catalog) - len(inventory)
         envelope = {
             # R17: the rules stand before the specification they judge.
             "rules": rules_for_prompt(self.state_dir),
@@ -197,6 +214,9 @@ class AIStudioRuntime:
                 ],
             },
             "installed_skills": inventory,
+            # A screener told nothing would believe the list is the whole
+            # library and record an unmet need for something that is there.
+            **({"installed_skills_omitted": omitted} if omitted else {}),
             # What she already installed and uses. Hiring one of these costs
             # nothing, nothing is fetched, and it is hers rather than
             # outside material - so it is preferred over the market.
@@ -240,7 +260,7 @@ class AIStudioRuntime:
             "nothing suitable, leave candidates empty and say in search_intent what "
             "would have been needed: it is recorded as an unmet need."
         )
-        return f"""Codex Autopilot AI Studio Runtime - Screening · Hiring.
+        brief = f"""Codex Autopilot AI Studio Runtime - Screening · Hiring.
 
 {duty}
 
@@ -272,6 +292,15 @@ End your turn with exactly one final line:
 
 {SCREENING_PREFIX}{example}
 """
+        if len(brief) > MAX_PROMPT_CHARS:
+            # Bounded above, so reaching here means the task contract or the
+            # rules block alone overflow. The caller turns this into an
+            # unscreened task rather than a failed reservation.
+            raise ContextBoundaryError(
+                f"screening brief for {task.id} is {len(brief)} characters against "
+                f"a {MAX_PROMPT_CHARS} budget"
+            )
+        return brief
 
     @staticmethod
     def _fit_hired_skills(
