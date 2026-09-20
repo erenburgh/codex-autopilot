@@ -2087,3 +2087,222 @@ class ScreeningAcrossAGraphChangeTests(AttestedProjectCase):
 
         self.assertEqual(gate.action, "reserve")
         self.assertNotIn("M1", state.task_hiring)
+
+
+class ProvenanceCannotBeClaimedTests(unittest.TestCase):
+    """Local provenance comes from where the runtime read it, never from
+    anything the screener says.
+
+    If a field could say "I am local", a market bundle would say it too, and
+    the R18 withholding would evaporate. So the protocol has no such field:
+    an installed skill is named, and the runtime resolves that name against
+    its own read of the user's Codex home.
+    """
+
+    @staticmethod
+    def message(item_body: dict) -> str:
+        return screening_message({"task_id": "M1", "items": [item_body]})
+
+    def test_an_installed_skill_is_named_and_nothing_more(self) -> None:
+        requisition = parse_screening_result(
+            self.message(
+                {
+                    "capability": "frontend-taste",
+                    "rationale": "M1 builds a page and she already uses this.",
+                    "necessity": "required",
+                    "installed": "taste",
+                }
+            ),
+            task_id="M1",
+        )
+
+        self.assertEqual(requisition.items[0].installed, "taste")
+        self.assertIsNone(requisition.items[0].bundle)
+
+    def test_a_requisition_cannot_declare_its_own_provenance(self) -> None:
+        for field in ("origin", "provenance", "local", "source"):
+            with self.subTest(field=field):
+                with self.assertRaises(ScreeningProtocolError) as caught:
+                    parse_screening_result(
+                        self.message(
+                            {
+                                "capability": "frontend-taste",
+                                "rationale": "M1 builds a page.",
+                                "necessity": "required",
+                                "installed": "taste",
+                                field: "local",
+                            }
+                        ),
+                        task_id="M1",
+                    )
+                self.assertIn(field, str(caught.exception))
+
+    def test_a_fetched_bundle_cannot_pose_as_an_installed_one(self) -> None:
+        """One capability, one way to fill it. Offering both is the shape a
+        bypass would take, so it is refused rather than resolved."""
+
+        with self.assertRaisesRegex(ScreeningProtocolError, "installed"):
+            parse_screening_result(
+                self.message(
+                    {
+                        "capability": "frontend-taste",
+                        "rationale": "M1 builds a page.",
+                        "necessity": "required",
+                        "installed": "taste",
+                        "bundle": {
+                            "name": "taste",
+                            "staged_path": "staged-skills/taste",
+                            "provider": "github.com/example/skills",
+                        },
+                    }
+                ),
+                task_id="M1",
+            )
+
+    def test_an_installed_name_cannot_be_a_path(self) -> None:
+        for name in ("../../.codex/plugins", "/etc/passwd", "a/b"):
+            with self.subTest(name=name):
+                with self.assertRaises(ScreeningProtocolError):
+                    parse_screening_result(
+                        self.message(
+                            {
+                                "capability": "frontend-taste",
+                                "rationale": "M1 builds a page.",
+                                "necessity": "required",
+                                "installed": name,
+                            }
+                        ),
+                        task_id="M1",
+                    )
+
+
+class HerOwnSkillsAreUsedTests(AttestedProjectCase):
+    """A skill she installed herself is hers: used, not re-fetched, and not
+    withheld from the acceptor."""
+
+    def _before_last_acceptance(self) -> None:
+        set_screening_mode(self.root, "always")
+
+    def _codex_home(self) -> Path:
+        home = self.root / "fake-codex-home"
+        bundle = home / "skills" / "taste"
+        bundle.mkdir(parents=True)
+        (bundle / "SKILL.md").write_text(
+            "---\nname: taste\n---\n\n# Taste\n\nWrite less code.\n", encoding="utf-8"
+        )
+        return home
+
+    def _screen_with_her_skill(self) -> tuple[Any, dict]:
+        from unittest import mock
+
+        home = self._codex_home()
+        with mock.patch.dict("os.environ", {"CODEX_HOME": str(home)}):
+            self._qualified_pack(trailing_task=_trailing_task())
+            cfg = load_config(self.root)
+            brief = self.last_descriptors[0].prompt
+            self.assertIn("skills_on_this_machine", brief)
+            self.assertIn("taste", brief)
+            activate_via_app_server(
+                cfg, self.root, self.last_descriptors[0], "screening-M1"
+            )
+            completed = complete_desktop_worker(
+                cfg,
+                thread_id="screening-M1",
+                turn_id="screening-turn-M1",
+                final_message=screening_message(
+                    {
+                        "task_id": "M1",
+                        "items": [
+                            {
+                                "capability": "frontend-taste",
+                                "rationale": "M1 builds a page and she already uses this.",
+                                "necessity": "required",
+                                "installed": "taste",
+                            }
+                        ],
+                    }
+                ),
+            )
+        record = json.loads(
+            (cfg.state_dir / "run-state.json").read_text(encoding="utf-8")
+        )["task_hiring"]["M1"]
+        return completed.descriptors[0], record
+
+    def test_her_skill_is_used_where_it_is_and_never_copied(self) -> None:
+        from codex_autopilot.hired_skills import hired_skill_records
+
+        worker, record = self._screen_with_her_skill()
+        cfg = load_config(self.root)
+
+        outcome = record["decision"]["outcomes"][0]
+        self.assertEqual(outcome["status"], "installed")
+        self.assertEqual(outcome["bundle"]["origin"], "local")
+        self.assertNotIn("provider", outcome["bundle"])
+        self.assertIn("market was not consulted", outcome["bundle"]["note"])
+        self.assertTrue(outcome["bundle"]["path"].endswith("/skills/taste"))
+        self.assertEqual(
+            hired_skill_records(cfg.state_dir),
+            (),
+            "nothing was copied into the project: hers is used where it is",
+        )
+        self.assertIn(outcome["bundle"]["path"], worker.prompt)
+
+    def test_her_skill_is_not_withheld_from_the_verifier(self) -> None:
+        """R18 governs outside material. She installed this one."""
+
+        _worker, record = self._screen_with_her_skill()
+        cfg = load_config(self.root)
+        runtime = AIStudioRuntime(
+            load_plan(cfg.state_dir, cfg.profile),
+            cfg.root,
+            language=cfg.language,
+            skill_path=cfg.skill_path,
+        )
+
+        verifier = runtime.build_prompt(
+            "M1",
+            phase="verification",
+            task_states={},
+            reservation_token="token",
+            hiring=hiring_decision_from_raw(record["decision"]),
+        )
+
+        self.assertIn("hired_skill_bundles", verifier)
+        self.assertNotIn("withheld_external_skills", verifier)
+
+    def test_naming_a_skill_she_does_not_have_says_what_she_does(self) -> None:
+        from unittest import mock
+
+        home = self._codex_home()
+        with mock.patch.dict("os.environ", {"CODEX_HOME": str(home)}):
+            self._qualified_pack(trailing_task=_trailing_task())
+            cfg = load_config(self.root)
+            activate_via_app_server(
+                cfg, self.root, self.last_descriptors[0], "screening-M1"
+            )
+            completed = complete_desktop_worker(
+                cfg,
+                thread_id="screening-M1",
+                turn_id="screening-turn-M1",
+                final_message=screening_message(
+                    {
+                        "task_id": "M1",
+                        "items": [
+                            {
+                                "capability": "frontend-taste",
+                                "rationale": "M1 builds a page.",
+                                "necessity": "required",
+                                "installed": "not-there",
+                            }
+                        ],
+                    }
+                ),
+            )
+
+        outcome = json.loads(
+            (cfg.state_dir / "run-state.json").read_text(encoding="utf-8")
+        )["task_hiring"]["M1"]["decision"]["outcomes"][0]
+        self.assertEqual(outcome["status"], "unmet")
+        self.assertIn("not installed", outcome["reason"])
+        self.assertIn("taste", outcome["reason"])
+        self.assertEqual(completed.descriptors[0].kind, "implementation")

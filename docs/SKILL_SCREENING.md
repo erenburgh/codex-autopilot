@@ -510,6 +510,12 @@ exact path.** Not `$CODEX_HOME/skills`, for four reasons:
   bundle is undone by deleting one directory, which
   `--purge-project-state` already covers.
 
+`hired` is a derived property over the outcomes, not a stored field — it is
+`status == "hired" and skill is not None` — which is why the necessity map used
+by the context-budget trim cannot go out of step with it: both are built from
+the same outcomes, keyed identically, and an outcome carrying no skill is
+excluded from `hired` by construction.
+
 One thing is honestly not measured: the schema permits several skill items on
 one turn, but whether App Server loads all of them has not been proven by a
 live turn. Nothing here depends on it. The worker receives the bundle the way
@@ -518,6 +524,69 @@ exact path — which is a mechanism this runtime exercises on every turn. If a
 live measurement later shows multiple skill inputs work, attaching them is an
 improvement, not a rewrite.
 
+### The skills she already has
+
+A hiring layer that cannot see the skills the user installed herself will
+report a capability she already has as unmet, or fetch a second copy of
+something on her own disk. Autopilot therefore reads
+`$CODEX_HOME/skills/<name>/SKILL.md` — **read-only, always**, because nothing
+Autopilot does writes into her Codex home, and reading hers must not become
+the exception that reopens that. Codex's own preinstalled `.system` skills are
+skipped: they are available to every session already.
+
+The screener sees them as `skills_on_this_machine` and is told to prefer them:
+using one costs nothing, fetches nothing, and it is her own choice of tool
+rather than outside material. When a capability is filled that way, the record
+says so — `the market was not consulted for this capability` — so the reason is
+on file rather than inferred later. Her skill is used **where it is**; nothing
+is copied into the project.
+
+An entry in that directory that is not a skill is named and skipped, not fatal.
+Her skills directory is a general-purpose directory this runtime merely
+observes; one unusable folder in it is not a reason to stop her run. That is
+deliberately the opposite of the rule for `.codex-autopilot/skills`, which is
+configuration somebody wrote *for* Autopilot, where a broken file stops loudly.
+
+### Why "local" is not a loophole
+
+An installed skill is not withheld from the verifier the way a market pack is.
+That is the one place a hostile reader should push, because "call it local and
+the withholding goes away" is exactly the shape a bypass would take. It cannot
+be taken:
+
+* **Provenance comes from where the runtime read it, never from anything
+  claimed.** A bundle is local because *this code* found it in her Codex home.
+  The requisition has no field that can assert provenance; `origin`,
+  `provenance`, `local`, `source` and `trusted` are refused outright as unknown
+  fields, and a test drives each one.
+* **An installed item is a name, not a path.** `installed: "taste"` is one
+  directory component, checked against a regex before it is joined to anything,
+  and resolved against the runtime's own listing. A screener cannot point it at
+  a bundle it staged.
+* **The two cannot be combined.** An item offering both `installed` and
+  `bundle` is refused: one capability yields one outcome, and "an installed
+  skill that is also a fetched bundle" is the bypass written out.
+* **The record must agree with itself.** A `local` bundle carries no provider
+  and a `market` one must have one, because the trust ladder refuses external
+  evidence without a provider. A record that disagrees is refused on read.
+
+The substantive reason, not the mechanical one: R18 governs content that
+arrives through a channel a model can influence. A skill in her Codex home
+arrived because she put it there. It is closer to `user_instruction` on the
+trust ladder than to `external_text` — still unverified, so it still cannot
+make a Skill Pack trusted and the qualification gate is untouched, but it is
+her standing instruction, and her instruction legitimately shapes both the
+worker and the acceptor.
+
+**The residual risk, named rather than hidden.** A worker could run Codex's own
+`skill-installer` during a run and cause a skill to appear in her Codex home;
+Autopilot would then read it as local. Autopilot cannot prevent that, because
+it is her Codex running under her permission profile, and it never sees that
+install happen. If this needs closing, the shape is an inventory snapshot taken
+at run start and pinned by digest, so anything appearing mid-run is external by
+construction. It is not built, and it is the owner's call whether it is worth
+the cost of a skill she installs mid-run being unusable until the next one.
+
 ### Two directories, not one
 
 They are easy to merge by accident, so plainly:
@@ -525,7 +594,8 @@ They are easy to merge by accident, so plainly:
 | path | what it holds | who writes it |
 | --- | --- | --- |
 | `.codex-autopilot/skills/` | Skill **Pack manifests** — one JSON file per revision, the procedures/checks/evidence-roles record the resolver reads | the user; Autopilot only reads |
-| `.codex-autopilot/hired-skills/` | Skill **bundles** — `SKILL.md` and the files beside it, the thing a worker reads | Autopilot, on admission; revoked by a named command |
+| `.codex-autopilot/hired-skills/` | Skill **bundles** fetched from a repository | Autopilot, on admission; revoked by a named command |
+| `$CODEX_HOME/skills/` | Skill bundles the **user installed herself** | the user; Autopilot only reads, never writes |
 
 A pack manifest describes and governs. A bundle is the skill itself.
 

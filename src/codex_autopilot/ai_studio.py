@@ -27,6 +27,7 @@ from .pipeline_engineer import (
 from .rules import rules_for_prompt
 from .plan import Plan, RoleProfile, Task
 from .skill_packs import SkillPack, SkillPackError, resolve_skill_stack
+from .hired_skills import installed_skill_bundles
 from .skill_screening import (
     MAX_REQUISITION_ITEMS,
     SCREENING_PREFIX,
@@ -165,6 +166,7 @@ class AIStudioRuntime:
 
         task = self._task(task_id)
         role = self.plan.role_map[task.role]
+        machine_skills, unreadable = installed_skill_bundles()
         try:
             inventory = [inventory_entry(pack) for pack in self._skill_catalog()]
         except SkillLibraryError as exc:
@@ -195,6 +197,24 @@ class AIStudioRuntime:
                 ],
             },
             "installed_skills": inventory,
+            # What she already installed and uses. Hiring one of these costs
+            # nothing, nothing is fetched, and it is hers rather than
+            # outside material - so it is preferred over the market.
+            **(
+                {
+                    "skills_on_this_machine": [
+                        {"name": item["name"], "files": item["files"]}
+                        for item in machine_skills
+                    ]
+                }
+                if machine_skills
+                else {}
+            ),
+            **(
+                {"skills_on_this_machine_unreadable": list(unreadable)}
+                if unreadable
+                else {}
+            ),
             "limits": {"max_capabilities": MAX_REQUISITION_ITEMS},
         }
         payload = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
@@ -230,10 +250,14 @@ Read {self.skill_path} completely first, then read enough of this project to jud
 what the task above actually requires. You do no production work in this turn: you
 change no file the task is about, record no evidence, and start no other task.
 
-Pick only from `installed_skills`, by exact id and version. Every item needs a
-`rationale` written in terms of THIS task - not a general endorsement of the skill.
-Ask for at most {MAX_REQUISITION_ITEMS} capabilities, each capability once. Asking
-for nothing is a valid answer when the task needs nothing.
+Pick from `installed_skills` by exact id and version, or name one of
+`skills_on_this_machine` with `installed: "<name>"` - a name only, never a path.
+Prefer what is already on this machine: it costs nothing to use, nothing is
+fetched, and it is the user's own choice of tool rather than outside material.
+Every item needs a `rationale` written in terms of THIS task - not a general
+endorsement of the skill. Ask for at most {MAX_REQUISITION_ITEMS} capabilities,
+each capability once, and exactly one way of filling each. Asking for nothing is
+a valid answer when the task needs nothing.
 
 {honesty}
 
@@ -547,7 +571,13 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             loaded_skills = tuple(
                 item for item in loaded_skills if not item.is_externally_sourced
             )
-            withheld_bundles, bundles = bundles, ()
+            # Hers is not external content: she installed it and uses it,
+            # so the acceptor may see it. Only what came from a repository
+            # is withheld.
+            withheld_bundles = tuple(
+                item for item in bundles if item.is_external_bundle
+            )
+            bundles = tuple(item for item in bundles if not item.is_external_bundle)
         loaded_skills, budget_withheld = self._fit_hired_skills(loaded_skills, hiring)
         envelope = {
             # Rule R17: the rules block goes BEFORE the task specifications

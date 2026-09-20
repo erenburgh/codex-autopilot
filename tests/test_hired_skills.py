@@ -31,6 +31,7 @@ from codex_autopilot.hired_skills import (
     HiredSkillError,
     admit_skill_bundle,
     hired_skill_records,
+    installed_skill_bundles,
     revoke_hired_skill,
 )
 
@@ -317,3 +318,105 @@ class InterruptedAndRepeatedAdmissionTests(AdmissionCase):
             (),
             "a half-copied bundle must not be listed as installed",
         )
+
+
+class InstalledSkillsAreReadNeverWrittenTests(unittest.TestCase):
+    """The skills she installed herself are part of what is available.
+
+    Measured on this machine: nothing in src reads her Codex skills
+    directory except preflight, for unrelated reasons, so a screener looking
+    for a capability she already has would record it unmet or go to the
+    market for a second copy of something on her disk.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        self.skills = self.home / "skills"
+        self.skills.mkdir(parents=True)
+
+    def install(self, name: str, *, body: str = SKILL_MD) -> Path:
+        bundle = self.skills / name
+        bundle.mkdir(parents=True, exist_ok=True)
+        (bundle / "SKILL.md").write_text(body, encoding="utf-8")
+        return bundle
+
+    def test_a_missing_codex_home_is_simply_an_empty_library(self) -> None:
+        bundles, refused = installed_skill_bundles(self.home / "nowhere")
+
+        self.assertEqual(bundles, ())
+        self.assertEqual(refused, ())
+
+    def test_it_lists_what_she_installed(self) -> None:
+        self.install("taste")
+        self.install("another-skill")
+
+        bundles, refused = installed_skill_bundles(self.home)
+
+        self.assertEqual([item["name"] for item in bundles], ["another-skill", "taste"])
+        self.assertEqual(refused, ())
+        self.assertTrue(bundles[1]["path"].endswith("/skills/taste"))
+        self.assertTrue(bundles[1]["digest"])
+
+    def test_codex_own_system_skills_are_not_offered(self) -> None:
+        """They are preinstalled for every session by Codex itself, so
+        hiring one adds nothing and only crowds the brief."""
+
+        self.install("taste")
+        system = self.skills / ".system" / "skill-creator"
+        system.mkdir(parents=True)
+        (system / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
+
+        bundles, _refused = installed_skill_bundles(self.home)
+
+        self.assertEqual([item["name"] for item in bundles], ["taste"])
+
+    def test_a_directory_that_is_not_a_skill_is_refused_by_name(self) -> None:
+        """Her directory is not Autopilot's configuration, so one unusable
+        entry is named and skipped rather than stopping the run."""
+
+        self.install("taste")
+        (self.skills / "leftovers").mkdir()
+
+        bundles, refused = installed_skill_bundles(self.home)
+
+        self.assertEqual([item["name"] for item in bundles], ["taste"])
+        self.assertEqual(len(refused), 1)
+        self.assertIn("leftovers", refused[0])
+        self.assertIn("SKILL.md", refused[0])
+
+    def test_reading_never_writes_to_her_codex_home(self) -> None:
+        """Driven, not promised: the whole tree is made unwritable and the
+        read still succeeds. Autopilot owns nothing in her Codex home."""
+
+        import os
+
+        self.install("taste")
+        os.chmod(self.skills / "taste", 0o500)
+        os.chmod(self.skills, 0o500)
+        self.addCleanup(os.chmod, self.skills, 0o700)
+        self.addCleanup(os.chmod, self.skills / "taste", 0o700)
+
+        bundles, refused = installed_skill_bundles(self.home)
+
+        self.assertEqual([item["name"] for item in bundles], ["taste"])
+        self.assertEqual(refused, ())
+
+    def test_an_installed_bundle_is_never_an_admission_destination(self) -> None:
+        """Reading hers must not become the exception that lets the
+        installer write there."""
+
+        staged_root = self.home / ".codex-autopilot"
+        staged = staged_root / STAGED_SKILLS_DIRNAME / "taste"
+        staged.mkdir(parents=True)
+        (staged / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
+
+        with self.assertRaisesRegex(HiredSkillError, "hired-skills"):
+            admit_skill_bundle(
+                staged_root,
+                staged_path=staged,
+                name="taste",
+                provider="github.com/example/skills",
+                destination_root=self.skills,
+            )

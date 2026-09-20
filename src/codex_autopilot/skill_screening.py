@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -33,6 +34,8 @@ from .skill_packs import (
 
 
 SCREENING_PREFIX = "AUTOPILOT_SCREENING: "
+# One directory component of the user's skills directory, never a path.
+_INSTALLED_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # Installed pack manifests, one JSON file per exact revision, inside the
 # project's state directory beside logs/ and migrations/.
 SKILL_LIBRARY_DIRNAME = "skills"
@@ -40,6 +43,12 @@ NECESSITIES = ("required", "helpful")
 # "installed" is a bundle the runtime admitted into the project: the skill
 # itself, which a worker reads, as distinct from a pack, which governs.
 HIRING_STATUSES = ("hired", "installed", "withheld", "unmet")
+# Set by the runtime from where IT read the bundle, never from the
+# requisition. "local" is the user's own Codex home; "market" is content
+# fetched from a repository and admitted into the project.
+BUNDLE_ORIGIN_LOCAL = "local"
+BUNDLE_ORIGIN_MARKET = "market"
+BUNDLE_ORIGINS = (BUNDLE_ORIGIN_LOCAL, BUNDLE_ORIGIN_MARKET)
 REQUISITION_ITEM_FIELDS = (
     "capability",
     "rationale",
@@ -47,7 +56,13 @@ REQUISITION_ITEM_FIELDS = (
     "candidates",
     "search_intent",
     "bundle",
+    "installed",
 )
+# Provenance is never one of these. A pack or bundle is local because the
+# runtime itself read it out of the user's own Codex home, and there is no
+# field a screener can set to say so - if there were, a fetched bundle would
+# set it too and the R18 withholding would evaporate.
+FORBIDDEN_PROVENANCE_FIELDS = ("origin", "provenance", "local", "source", "trusted")
 BUNDLE_FIELDS = ("name", "staged_path", "provider", "locator")
 MAX_RATIONALE_CHARS = 1_000
 MAX_SEARCH_INTENT_CHARS = 1_000
@@ -177,6 +192,9 @@ class RequisitionItem:
     candidates: tuple[SkillReference, ...] = ()
     search_intent: str = ""
     bundle: SkillBundleRequest | None = None
+    # The name of a skill the user installed herself. Only a name: the
+    # runtime resolves it against its own read of her Codex home.
+    installed: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -190,6 +208,7 @@ class RequisitionItem:
             ),
             **({"search_intent": self.search_intent} if self.search_intent else {}),
             **({"bundle": self.bundle.to_dict()} if self.bundle is not None else {}),
+            **({"installed": self.installed} if self.installed else {}),
         }
 
 
@@ -221,6 +240,17 @@ class HiringOutcome:
     @property
     def bundle_record(self) -> dict[str, str]:
         return dict(self.bundle)
+
+    @property
+    def is_external_bundle(self) -> bool:
+        """Whether this bundle came from outside the user's own machine.
+
+        A bundle the runtime read from her Codex home is hers: she installed
+        it and uses it, so it is not external content and is not withheld
+        from the verifier. A bundle fetched from a repository is, and is.
+        """
+
+        return self.bundle_record.get("origin") == BUNDLE_ORIGIN_MARKET
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -514,11 +544,37 @@ def _item_from_raw(raw: Any, label: str) -> RequisitionItem:
         if raw.get("bundle") is not None
         else None
     )
-    if not candidates and not search_intent and bundle is None:
+    installed = ""
+    if raw.get("installed") is not None:
+        installed = _required_text(raw.get("installed"), f"{label}.installed", 128)
+        if _INSTALLED_NAME.fullmatch(installed) is None:
+            raise ScreeningProtocolError(
+                f"{label}.installed must be the name of one installed skill, not a "
+                f"path: got {installed!r}"
+            )
+    offered = [
+        name
+        for name, given in (
+            ("candidates", bool(candidates)),
+            ("bundle", bundle is not None),
+            ("installed", bool(installed)),
+        )
+        if given
+    ]
+    if len(offered) > 1:
+        # One capability yields one outcome, so two ways to fill it cannot
+        # both be honoured - and "an installed skill that is also a fetched
+        # bundle" is the shape a provenance bypass would take.
         raise ScreeningProtocolError(
-            f"{label} names no candidate, no search_intent and no bundle, so nothing "
-            "can act on it: give exact {id, version} candidates, hand over a bundle, "
-            "or say in search_intent what to look for"
+            f"{label} offers {', '.join(offered)} for one capability; give exactly "
+            "one of candidates, bundle or installed"
+        )
+    if not offered and not search_intent:
+        raise ScreeningProtocolError(
+            f"{label} names no candidate, no bundle, no installed skill and no "
+            "search_intent, so nothing can act on it: give exact {id, version} "
+            "candidates, hand over a bundle, name an installed skill, or say in "
+            "search_intent what to look for"
         )
     return RequisitionItem(
         capability=capability,
@@ -527,6 +583,7 @@ def _item_from_raw(raw: Any, label: str) -> RequisitionItem:
         candidates=candidates,
         search_intent=search_intent,
         bundle=bundle,
+        installed=installed,
     )
 
 
@@ -579,6 +636,20 @@ def _outcome_from_raw(raw: Any, label: str) -> HiringOutcome:
     if bundle_raw is not None and not isinstance(bundle_raw, Mapping):
         raise ScreeningProtocolError(f"{label}.bundle must be an object")
     bundle = tuple(sorted((str(k), str(v)) for k, v in (bundle_raw or {}).items()))
+    if bundle:
+        origin = dict(bundle).get("origin")
+        if origin not in BUNDLE_ORIGINS:
+            raise ScreeningProtocolError(
+                f"{label}.bundle must record where the runtime read it: "
+                f"origin is one of {list(BUNDLE_ORIGINS)}"
+            )
+        # A local bundle has no provider because nobody published it to the
+        # runtime; a market one must name where it came from, because the
+        # trust ladder refuses external evidence without a provider.
+        if (origin == BUNDLE_ORIGIN_MARKET) != bool(dict(bundle).get("provider")):
+            raise ScreeningProtocolError(
+                f"{label}.bundle origin {origin!r} disagrees with its provider"
+            )
     if (status == "installed") != bool(bundle):
         raise ScreeningProtocolError(
             f"{label} must carry the bundle it installed, and none when it installed nothing"

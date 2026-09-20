@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -60,8 +61,75 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_SKILL_FILE_BYTES = 512 * 1024
 
 
+# Codex's own preinstalled skills. They are available to every session
+# already, so offering them to a screener adds nothing and crowds the brief.
+CODEX_SYSTEM_SKILLS_DIRNAME = ".system"
+
+
 class HiredSkillError(ValueError):
     """The staged bundle is not a skill, or is not where it must be."""
+
+
+def codex_skills_root(codex_home: Path | None = None) -> Path:
+    """The user's own skills directory, honouring CODEX_HOME."""
+
+    home = codex_home or Path(
+        os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
+    )
+    return Path(home).expanduser() / "skills"
+
+
+def installed_skill_bundles(
+    codex_home: Path | None = None,
+) -> tuple[tuple[dict[str, Any], ...], tuple[str, ...]]:
+    """List the skills the user installed in her own Codex home. Read-only.
+
+    This function only reads. Autopilot writes nothing into ``$CODEX_HOME``
+    - that is why a hired bundle lives in the project - and reading hers must
+    not become the exception that reopens it.
+
+    An entry that is not a skill is named and skipped rather than refusing
+    the whole read. Her skills directory is not Autopilot's configuration: it
+    is a general-purpose directory this runtime merely observes, and one
+    unusable folder in it is not a reason to stop her run. That is the
+    opposite of the rule for the project's own manifest library, where a
+    broken file IS configuration somebody wrote for Autopilot and stops it.
+
+    Returns the bundles and, separately, the refusals - so the screener can
+    be told that something is there which could not be offered, and why.
+    """
+
+    root = codex_skills_root(codex_home)
+    if not root.is_dir():
+        return (), ()
+    bundles: list[dict[str, Any]] = []
+    refused: list[str] = []
+    for path in sorted(root.iterdir()):
+        if not path.is_dir() or path.name.startswith("."):
+            continue
+        if path.name == CODEX_SYSTEM_SKILLS_DIRNAME:
+            continue
+        skill_file = path / SKILL_FILE
+        if not skill_file.is_file():
+            refused.append(
+                f"{path.name} carries no {SKILL_FILE}, so it is not a skill bundle; "
+                f"an installed skill is a directory holding {SKILL_FILE}"
+            )
+            continue
+        try:
+            files = _bundle_files(path)
+        except (HiredSkillError, OSError) as exc:
+            refused.append(f"{path.name}: {exc}")
+            continue
+        bundles.append(
+            {
+                "name": path.name,
+                "path": str(path),
+                "digest": _bundle_digest(files),
+                "files": len(files),
+            }
+        )
+    return tuple(bundles), tuple(refused)
 
 
 def admit_skill_bundle(

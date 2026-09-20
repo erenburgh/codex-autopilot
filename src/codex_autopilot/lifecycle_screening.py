@@ -42,8 +42,14 @@ from .resources import ResourceLockCoordinator
 from .run_state import RunState, StateStore, utc_now
 from .scope import scope_baseline
 from .skill_packs import SkillPackError
-from .hired_skills import HiredSkillError, admit_skill_bundle
+from .hired_skills import (
+    HiredSkillError,
+    admit_skill_bundle,
+    installed_skill_bundles,
+)
 from .skill_screening import (
+    BUNDLE_ORIGIN_LOCAL,
+    BUNDLE_ORIGIN_MARKET,
     SKILL_LIBRARY_DIRNAME,
     HiringDecision,
     SkillRequisition,
@@ -332,7 +338,32 @@ def _admit_bundles(
 
     admitted: dict[str, dict[str, Any]] = {}
     refused: dict[str, str] = {}
+    installed, unreadable = installed_skill_bundles()
+    by_name = {entry["name"]: entry for entry in installed}
     for item in requisition.items:
+        if item.installed:
+            entry = by_name.get(item.installed)
+            if entry is None:
+                present = ", ".join(sorted(by_name)) or "nothing is installed"
+                refused[item.capability] = (
+                    f"{item.installed}: not installed in this machine's Codex "
+                    f"skills directory; present: {present}"
+                    + (f". unreadable: {'; '.join(unreadable)}" if unreadable else "")
+                )
+                continue
+            # Provenance comes from the read, not from the requisition: this
+            # record is local because THIS code found it in her Codex home.
+            admitted[item.capability] = {
+                "origin": BUNDLE_ORIGIN_LOCAL,
+                "name": entry["name"],
+                "path": entry["path"],
+                "digest": entry["digest"],
+                "note": (
+                    "already installed on this machine; the market was not "
+                    "consulted for this capability"
+                ),
+            }
+            continue
         if item.bundle is None:
             continue
         try:
@@ -347,6 +378,7 @@ def _admit_bundles(
             refused[item.capability] = f"{item.bundle.name}: {exc}"
             continue
         admitted[item.capability] = {
+            "origin": BUNDLE_ORIGIN_MARKET,
             "id": record["id"],
             "name": record["name"],
             "provider": record["provider"],
