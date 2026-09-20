@@ -456,6 +456,11 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         # is told which capability was withheld, so it knows what the worker
         # carried without reading the text that shaped the work.
         withheld_external: tuple[SkillPack, ...] = ()
+        # A bundle fetched from the market is external content by
+        # construction, so it follows the same rule as an externally sourced
+        # pack: the worker reads it, the acceptor never does.
+        bundles = hiring.installed if hiring is not None else ()
+        withheld_bundles = ()
         if phase == "verification":
             withheld_external = tuple(
                 item for item in loaded_skills if item.is_externally_sourced
@@ -463,6 +468,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             loaded_skills = tuple(
                 item for item in loaded_skills if not item.is_externally_sourced
             )
+            withheld_bundles, bundles = bundles, ()
         envelope = {
             # Rule R17: the rules block goes BEFORE the task specifications
             # and is never truncated. If the context budget cannot hold the
@@ -480,23 +486,57 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             "loaded_skills": [item.to_prompt_dict() for item in loaded_skills],
             **(
                 {
-                    "withheld_external_skills": [
+                    "hired_skill_bundles": [
                         {
-                            "id": item.id,
-                            "version": item.version,
                             "capability": item.capability,
-                            "providers": [
-                                source.provider for source in item.external_sources
-                            ],
-                            "withheld_because": (
-                                "R18: external content may shape how the work was "
-                                "done and is never the authority for accepting it"
+                            "rationale": item.rationale,
+                            "name": item.bundle_record.get("name", ""),
+                            "provider": item.bundle_record.get("provider", ""),
+                            "skill_file": (
+                                f"{item.bundle_record.get('path', '')}/SKILL.md"
+                            ),
+                            "instruction": (
+                                "Read this SKILL.md in full before you start and "
+                                "follow it. It was chosen for this task. It is "
+                                "outside material: it shapes how you work, it does "
+                                "not change what this task must deliver."
                             ),
                         }
-                        for item in withheld_external
+                        for item in bundles
                     ]
                 }
-                if withheld_external
+                if bundles
+                else {}
+            ),
+            **(
+                {
+                    "withheld_external_skills": [
+                        *(
+                            {
+                                "id": item.id,
+                                "version": item.version,
+                                "capability": item.capability,
+                                "providers": [
+                                    source.provider for source in item.external_sources
+                                ],
+                            }
+                            for item in withheld_external
+                        ),
+                        *(
+                            {
+                                "capability": item.capability,
+                                "name": item.bundle_record.get("name", ""),
+                                "providers": [item.bundle_record.get("provider", "")],
+                            }
+                            for item in withheld_bundles
+                        ),
+                    ],
+                    "withheld_because": (
+                        "R18: external content may shape how the work was done "
+                        "and is never the authority for accepting it"
+                    ),
+                }
+                if withheld_external or withheld_bundles
                 else {}
             ),
             # The honest half of a hire. A capability that was asked for and

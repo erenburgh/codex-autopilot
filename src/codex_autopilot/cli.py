@@ -135,6 +135,18 @@ def parser() -> argparse.ArgumentParser:
     devops_revert = sub.add_parser("devops-revert-runtime-patch")
     devops_revert.add_argument("--project", type=Path, default=Path.cwd())
     devops_revert.add_argument("--patch-id", required=True)
+    # A hired skill bundle is a side effect on the project, so it has a named
+    # reversal. Listing is separate from removing: nobody should have to guess
+    # an id to find out what is installed.
+    skills_list = sub.add_parser(
+        "skills", help="list the skill bundles this project has hired"
+    )
+    skills_list.add_argument("--project", type=Path, default=Path.cwd())
+    revoke_skill = sub.add_parser(
+        "revoke-skill", help="remove one hired skill bundle from this project"
+    )
+    revoke_skill.add_argument("--project", type=Path, default=Path.cwd())
+    revoke_skill.add_argument("--skill-id", required=True)
     devops_resolve = sub.add_parser("devops-resolve-incident")
     devops_resolve.add_argument("--project", type=Path, default=Path.cwd())
     devops_resolve.add_argument("--incident-id", required=True)
@@ -631,6 +643,27 @@ def main(argv: list[str] | None = None) -> int:
             )
             incidents.record_runtime_patch(args.incident_id, patch=record.to_dict(), at=timestamp)
             print(json.dumps(record.to_dict(), ensure_ascii=False))
+            return 0
+        if args.command == "skills":
+            from .hired_skills import hired_skill_records
+
+            records = hired_skill_records(
+                Path(args.project).expanduser().resolve() / STATE_DIR_NAME
+            )
+            print(json.dumps([dict(item) for item in records], ensure_ascii=False))
+            return 0
+        if args.command == "revoke-skill":
+            from .hired_skills import HiredSkillError, revoke_hired_skill
+
+            try:
+                removed = revoke_hired_skill(
+                    Path(args.project).expanduser().resolve() / STATE_DIR_NAME,
+                    args.skill_id,
+                )
+            except HiredSkillError as exc:
+                print(str(exc))
+                return 2
+            print(json.dumps(dict(removed), ensure_ascii=False))
             return 0
         if args.command == "devops-revert-runtime-patch":
             from .runtime_repair import revert_runtime_patch

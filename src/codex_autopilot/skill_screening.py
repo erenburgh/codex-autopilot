@@ -37,14 +37,18 @@ SCREENING_PREFIX = "AUTOPILOT_SCREENING: "
 # project's state directory beside logs/ and migrations/.
 SKILL_LIBRARY_DIRNAME = "skills"
 NECESSITIES = ("required", "helpful")
-HIRING_STATUSES = ("hired", "withheld", "unmet")
+# "installed" is a bundle the runtime admitted into the project: the skill
+# itself, which a worker reads, as distinct from a pack, which governs.
+HIRING_STATUSES = ("hired", "installed", "withheld", "unmet")
 REQUISITION_ITEM_FIELDS = (
     "capability",
     "rationale",
     "necessity",
     "candidates",
     "search_intent",
+    "bundle",
 )
+BUNDLE_FIELDS = ("name", "staged_path", "provider", "locator")
 MAX_RATIONALE_CHARS = 1_000
 MAX_SEARCH_INTENT_CHARS = 1_000
 MAX_REASON_CHARS = 2_000
@@ -140,6 +144,30 @@ def skill_catalog(
 
 
 @dataclass(frozen=True, slots=True)
+class SkillBundleRequest:
+    """A skill bundle the screener fetched and left inside the project.
+
+    ``staged_path`` is relative to the project's .codex-autopilot directory
+    and never absolute: the admission step resolves it there and refuses
+    anything outside, and refusing the shape here as well means a screener
+    is told what is wrong instead of having a path quietly rejected later.
+    """
+
+    name: str
+    staged_path: str
+    provider: str
+    locator: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "name": self.name,
+            "staged_path": self.staged_path,
+            "provider": self.provider,
+            **({"locator": self.locator} if self.locator else {}),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RequisitionItem:
     """One capability the screener asks for, and why this task needs it."""
 
@@ -148,6 +176,7 @@ class RequisitionItem:
     necessity: str
     candidates: tuple[SkillReference, ...] = ()
     search_intent: str = ""
+    bundle: SkillBundleRequest | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -160,6 +189,7 @@ class RequisitionItem:
                 else {}
             ),
             **({"search_intent": self.search_intent} if self.search_intent else {}),
+            **({"bundle": self.bundle.to_dict()} if self.bundle is not None else {}),
         }
 
 
@@ -186,6 +216,11 @@ class HiringOutcome:
     skill: SkillReference | None = None
     reason: str = ""
     search_intent: str = ""
+    bundle: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def bundle_record(self) -> dict[str, str]:
+        return dict(self.bundle)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -194,6 +229,7 @@ class HiringOutcome:
             "necessity": self.necessity,
             "status": self.status,
             **({"skill": self.skill.to_dict()} if self.skill is not None else {}),
+            **({"bundle": dict(self.bundle)} if self.bundle else {}),
             **({"reason": self.reason} if self.reason else {}),
             **({"search_intent": self.search_intent} if self.search_intent else {}),
         }
@@ -215,10 +251,22 @@ class HiringDecision:
         )
 
     @property
-    def unfilled(self) -> tuple[HiringOutcome, ...]:
-        """Every capability the worker asked for and did not get."""
+    def installed(self) -> tuple[HiringOutcome, ...]:
+        """Bundles admitted into the project: the skills themselves."""
 
-        return tuple(item for item in self.outcomes if item.status != "hired")
+        return tuple(item for item in self.outcomes if item.status == "installed")
+
+    @property
+    def unfilled(self) -> tuple[HiringOutcome, ...]:
+        """Every capability the worker asked for and did not get.
+
+        An installed bundle is not one of them: the worker did get it, as a
+        skill to read rather than as a governed pack.
+        """
+
+        return tuple(
+            item for item in self.outcomes if item.status not in {"hired", "installed"}
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -366,6 +414,50 @@ def resolve_requisition(
     return HiringDecision(task_id=requisition.task_id, outcomes=tuple(outcomes))
 
 
+def apply_admitted_bundles(
+    decision: HiringDecision,
+    admitted: Mapping[str, Mapping[str, Any]],
+    refused: Mapping[str, str] = {},
+) -> HiringDecision:
+    """Upgrade the outcomes whose bundle the runtime actually admitted.
+
+    Resolution runs first and knows only packs, so a bundle item comes out of
+    it unmet. Admission touches the filesystem and belongs to the runtime, so
+    it happens after, and an item whose bundle was refused keeps the unmet
+    outcome with the refusal as its reason - never a claim that a skill is
+    there when it is not.
+    """
+
+    upgraded: list[HiringOutcome] = []
+    for outcome in decision.outcomes:
+        record = admitted.get(outcome.capability)
+        if record is None:
+            reason = refused.get(outcome.capability)
+            upgraded.append(
+                outcome
+                if reason is None
+                else HiringOutcome(
+                    capability=outcome.capability,
+                    rationale=outcome.rationale,
+                    necessity=outcome.necessity,
+                    status="unmet",
+                    reason=_bounded(reason, MAX_REASON_CHARS),
+                    search_intent=outcome.search_intent,
+                )
+            )
+            continue
+        upgraded.append(
+            HiringOutcome(
+                capability=outcome.capability,
+                rationale=outcome.rationale,
+                necessity=outcome.necessity,
+                status="installed",
+                bundle=tuple(sorted((str(k), str(v)) for k, v in record.items())),
+            )
+        )
+    return HiringDecision(task_id=decision.task_id, outcomes=tuple(upgraded))
+
+
 def hiring_decision_from_raw(raw: Any) -> HiringDecision:
     """Read a recorded decision back fail-closed, the way state is read."""
 
@@ -417,10 +509,16 @@ def _item_from_raw(raw: Any, label: str) -> RequisitionItem:
         search_intent = _required_text(
             raw.get("search_intent"), f"{label}.search_intent", MAX_SEARCH_INTENT_CHARS
         )
-    if not candidates and not search_intent:
+    bundle = (
+        _bundle_from_raw(raw.get("bundle"), f"{label}.bundle")
+        if raw.get("bundle") is not None
+        else None
+    )
+    if not candidates and not search_intent and bundle is None:
         raise ScreeningProtocolError(
-            f"{label} names no candidate and no search_intent, so nothing can act on it: "
-            "give exact {id, version} candidates, or say in search_intent what to look for"
+            f"{label} names no candidate, no search_intent and no bundle, so nothing "
+            "can act on it: give exact {id, version} candidates, hand over a bundle, "
+            "or say in search_intent what to look for"
         )
     return RequisitionItem(
         capability=capability,
@@ -428,6 +526,34 @@ def _item_from_raw(raw: Any, label: str) -> RequisitionItem:
         necessity=necessity,
         candidates=candidates,
         search_intent=search_intent,
+        bundle=bundle,
+    )
+
+
+def _bundle_from_raw(raw: Any, label: str) -> SkillBundleRequest:
+    if not isinstance(raw, Mapping):
+        raise ScreeningProtocolError(f"{label} must be an object")
+    _reject_unknown(raw, set(BUNDLE_FIELDS), label)
+    staged = _required_text(raw.get("staged_path"), f"{label}.staged_path", 512)
+    if staged.startswith(("/", "~")) or ".." in Path(staged).parts:
+        # It is joined to the project state directory. A path that could
+        # climb out of it is refused where the screener can read why, not
+        # silently at the admission step.
+        raise ScreeningProtocolError(
+            f"{label}.staged_path must be relative to the project's "
+            f".codex-autopilot directory and must not climb out of it; got {staged!r}"
+        )
+    return SkillBundleRequest(
+        name=_required_text(raw.get("name"), f"{label}.name", 128),
+        staged_path=staged,
+        # External content: the trust ladder refuses an external record with
+        # no provider, so a bundle with no origin could never be recorded.
+        provider=_required_text(raw.get("provider"), f"{label}.provider", 512),
+        locator=(
+            _required_text(raw.get("locator"), f"{label}.locator", 512)
+            if raw.get("locator") is not None
+            else ""
+        ),
     )
 
 
@@ -436,7 +562,10 @@ def _outcome_from_raw(raw: Any, label: str) -> HiringOutcome:
         raise ScreeningProtocolError(f"{label} must be an object")
     _reject_unknown(
         raw,
-        {"capability", "rationale", "necessity", "status", "skill", "reason", "search_intent"},
+        {
+            "capability", "rationale", "necessity", "status", "skill", "reason",
+            "search_intent", "bundle",
+        },
         label,
     )
     status = _choice(raw.get("status"), HIRING_STATUSES, f"{label}.status")
@@ -446,6 +575,14 @@ def _outcome_from_raw(raw: Any, label: str) -> HiringOutcome:
             skill = skill_reference_from_raw(raw.get("skill"), f"{label}.skill")
         except SkillPackError as exc:
             raise ScreeningProtocolError(str(exc)) from exc
+    bundle_raw = raw.get("bundle")
+    if bundle_raw is not None and not isinstance(bundle_raw, Mapping):
+        raise ScreeningProtocolError(f"{label}.bundle must be an object")
+    bundle = tuple(sorted((str(k), str(v)) for k, v in (bundle_raw or {}).items()))
+    if (status == "installed") != bool(bundle):
+        raise ScreeningProtocolError(
+            f"{label} must carry the bundle it installed, and none when it installed nothing"
+        )
     if (status == "hired") != (skill is not None):
         raise ScreeningProtocolError(
             f"{label} must name exactly the skill it hired, and none when it hired nobody"
@@ -460,6 +597,7 @@ def _outcome_from_raw(raw: Any, label: str) -> HiringOutcome:
         search_intent=_optional_text(
             raw.get("search_intent"), f"{label}.search_intent", MAX_SEARCH_INTENT_CHARS
         ),
+        bundle=bundle,
     )
 
 

@@ -421,54 +421,103 @@ model-in-the-loop gate, not a deterministic one.
 
 **This, and not the provenance of the prose, is the supply-chain question.**
 
-## The owner's decision
+## Where a skill may come from — answered
 
-Three questions, sharpest first.
+The owner rejected text-only, with an example worth keeping: if building a
+site needs `Taste`, which is downloaded from GitHub, a user does not get by
+with "just text" — the worker needs the skill itself, not a paraphrase of it.
+Her boundary: *exactly those things that are Skills, and not plugins or
+anything else.*
 
-**1. May a market-sourced draft declare its own `deterministic_checks.argv`?**
-*Answered: no.* The allowlist is not hand-written in the runtime — it is
-derived from what this project already runs, namely the checks its own plan
-declares, which for a canonical task is the suite check the acceptance floor
-demands. A market pack contributes procedures, checklists, failure modes and
-quality criteria, and proves itself against a command the project trusted
-before the pack arrived. A draft whose argv is outside that set is not refused
-silently: it is recorded as a requisition item that could not be qualified, and
-the refusal names what would have been accepted (R31). Not built — it has
-nothing to act on until the obtaining path exists.
+**A skill may be installed. A plugin may never be.** That line is not
+arbitrary — it is what protects the rule that hook trust is never touched. A
+plugin registers hooks, MCP servers and commands and lives in the Codex plugin
+cache, so installing one changes the host's trust surface. A skill is a
+`SKILL.md` bundle: instructions and whatever files ship beside them. Installing
+one registers nothing.
 
-* *No (recommended).* The runtime refuses a draft whose argv is not drawn from
-  a small allowlist the project already trusts — its own test command, its
-  linter, its build. A market pack then contributes procedures and quality
-  criteria, and proves itself against checks the project already runs. This
-  keeps everything the owner asked for and gives up nothing she described.
-* *Yes, with approval.* The argv is shown to the user once per exact pack
-  revision and runs only after they approve. Honest, but it puts the user in
-  the loop of something Autopilot was hired to decide, once per skill.
-* *Yes.* The plan verifier is treated as sufficient. I do not recommend it: it
-  is a model judging whether a fetched command is safe to run.
+### How Codex actually discovers a skill — measured on this machine
 
-**2. May the screening thread reach the network at all?**
+Not inferred from how any other tool does it. Two first-party mechanisms,
+both measured against codex-cli 0.154.0:
 
-Autopilot does not grant network access and must not try to; the screener runs
-under the project's `:workspace` permission profile and whatever the user's
-Codex settings already allow. The question is whether the screener is *told* to
-go and look. Recommended: yes, for reading — that is what screening the market
-means, and with question 1 answered "no" the fetched text cannot make itself
-trusted or run anything.
+**1. `$CODEX_HOME/skills/<name>`.** Codex ships a system skill,
+`~/.codex/skills/.system/skill-installer`, whose own description is: *install
+Codex skills into `$CODEX_HOME/skills` from a curated list or a GitHub repo
+path*. Its documented behaviour: downloads from `--repo <owner>/<repo> --path
+<path>`, installs into `$CODEX_HOME/skills/<skill-name>`, aborts if the
+destination exists, and the skill is available on the next turn. It touches no
+plugin, no hook, no MCP registration and nothing in the plugin cache.
 
-**3. Open web, or an allow-list of origins?**
+**2. An explicit path on the turn.** From Codex's own generated protocol
+schema (`codex app-server generate-json-schema`), `TurnStartParams.input` is an
+array of `UserInput`, one variant of which is:
 
-Recommended: **open web for reading.** Once a fetched pack cannot promote
-itself and cannot propose a command, an origin allow-list adds friction without
-much safety, and it is exactly the "use only the known ones" weakness the owner
-objected to. The residual risk it would reduce is prompt injection reaching the
-qualification task's context — real, but bounded by that task running only
-project-trusted commands and by an independent verifier that never sees the
-fetched text.
+```json
+{"title": "SkillUserInput", "required": ["name", "path", "type"],
+ "properties": {"name": {"type": "string"}, "path": {"type": "string"},
+                "type": {"enum": ["skill"]}}}
+```
 
-If she wants an allow-list anyway, the shape is per-origin approval recorded
-once, not per-skill, and every pack from a revoked origin demotes to candidate
-and fails closed at the next prompt assembly.
+The path is arbitrary and the array carries no `maxItems`. Autopilot already
+relies on the arbitrary part: it passes its own skill by a path in the install
+root, nowhere near `$CODEX_HOME`.
+
+So the boundary and the mechanism agree, and there was no need to stop and
+report: neither path goes anywhere near a plugin.
+
+### Which one this runtime uses, and why
+
+**A hired skill bundle lives in the project, at
+`.codex-autopilot/hired-skills/<name>@<digest>/`, and the worker is given its
+exact path.** Not `$CODEX_HOME/skills`, for four reasons:
+
+* installing into `$CODEX_HOME` is a side effect on the whole machine, for a
+  decision made by one task in one project;
+* it collides with skills the user installed herself, and the first-party
+  installer *aborts if the destination exists* — so a project could not hire a
+  skill she already has at a different revision;
+* two projects cannot hold different revisions of the same skill;
+* reversing it means reaching into her Codex home, while a project-local
+  bundle is undone by deleting one directory, which
+  `--purge-project-state` already covers.
+
+One thing is honestly not measured: the schema permits several skill items on
+one turn, but whether App Server loads all of them has not been proven by a
+live turn. Nothing here depends on it. The worker receives the bundle the way
+it already receives Autopilot's own skill — told to read the `SKILL.md` at an
+exact path — which is a mechanism this runtime exercises on every turn. If a
+live measurement later shows multiple skill inputs work, attaching them is an
+improvement, not a rewrite.
+
+### Two directories, not one
+
+They are easy to merge by accident, so plainly:
+
+| path | what it holds | who writes it |
+| --- | --- | --- |
+| `.codex-autopilot/skills/` | Skill **Pack manifests** — one JSON file per revision, the procedures/checks/evidence-roles record the resolver reads | the user; Autopilot only reads |
+| `.codex-autopilot/hired-skills/` | Skill **bundles** — `SKILL.md` and the files beside it, the thing a worker reads | Autopilot, on admission; revoked by a named command |
+
+A pack manifest describes and governs. A bundle is the skill itself.
+
+### What the installer may not reach, structurally
+
+The admission path resolves every destination under
+`<project>/.codex-autopilot/hired-skills` and refuses anything else. It cannot
+write to the Codex plugin cache, `$CODEX_HOME/skills`, hooks or MCP
+configuration, because it cannot name a path outside the project at all — and
+a test drives it at each of those paths and requires a refusal. That is the
+structural form of the rule, not a sentence in prose asking for good
+behaviour.
+
+### The argv rule is unchanged by the source
+
+A skill arriving from GitHub does not widen what may be executed. It brings
+procedures, checklists, failure modes and quality criteria, and proves itself
+against checks the project already ran. R18 is unchanged too: it shapes HOW
+the work is done and never decides WHETHER it is accepted, which is why such a
+pack is still withheld from the verification-phase prompt.
 
 ## What is not built
 

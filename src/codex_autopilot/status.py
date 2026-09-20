@@ -162,9 +162,12 @@ def _screening_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[str, A
                 hired += 1
             else:
                 unfilled += 1
+    from .hired_skills import hired_skill_records
+
     return {
         "mode": mode,
         "enabled": screening_applies(cfg, plan),
+        "installed_bundles": len(hired_skill_records(cfg.state_dir)),
         "threads_spent": threads,
         "tasks_screened": screened,
         "tasks_unscreened": unscreened,
@@ -188,6 +191,11 @@ def _render_screening(screening: dict[str, Any]) -> str:
         parts.append(_count(screening["skills_hired"], "skill", "skills") + " hired")
     if screening["needs_unfilled"]:
         parts.append(_count(screening["needs_unfilled"], "need", "needs") + " unfilled")
+    if screening["installed_bundles"]:
+        parts.append(
+            _count(screening["installed_bundles"], "bundle", "bundles")
+            + " installed (codex-autopilot skills)"
+        )
     return f"{head} — " + ", ".join(parts)
 
 

@@ -271,6 +271,15 @@ The status phrase runs on `UserPromptSubmit`, which is outside the causal chain
 and may block safely - that is why its output is visible when the Stop hook's is
 not.
 
+Hiring leaves one more thing the user can ask about. When screening is on, a
+task may be given a skill bundle fetched from a public repository; the bundle
+is copied into `<target-root>/.codex-autopilot/hired-skills/` and nothing is
+written to the Codex plugin cache, `~/.codex/skills`, hooks or MCP
+configuration. `scripts/codex-autopilot skills --project <target-root>` prints
+what this project has hired, and `scripts/codex-autopilot revoke-skill
+--project <target-root> --skill-id <id>` removes one. Print what those commands
+return; never claim a skill is installed without having looked.
+
 `scripts/codex-autopilot timeline --project <target-root>` stays available for a
 *later* turn, when the user asks what happened. Resolve it relative to this
 `SKILL.md` exactly as the start command does; never search the filesystem for it

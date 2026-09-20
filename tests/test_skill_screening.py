@@ -1494,3 +1494,162 @@ class ScreeningCostIsVisibleTests(AttestedProjectCase):
             json.dumps(_candidate_manifest()), encoding="utf-8"
         )
         set_screening_mode(self.root, self.screening_mode)
+
+
+class BundleRequisitionTests(unittest.TestCase):
+    """A screener may hand over the skill itself, not a paraphrase of it."""
+
+    @staticmethod
+    def message(**bundle) -> str:
+        body = {
+            "name": "taste",
+            "staged_path": "staged-skills/taste",
+            "provider": "github.com/example/skills",
+            "locator": "skills/taste",
+        }
+        body.update(bundle)
+        return screening_message(
+            {
+                "task_id": "M1",
+                "items": [
+                    {
+                        "capability": "frontend-taste",
+                        "rationale": "M1 builds the landing page and this is the house procedure.",
+                        "necessity": "required",
+                        "bundle": body,
+                    }
+                ],
+            }
+        )
+
+    def test_a_bundle_item_needs_no_candidate_and_no_search_intent(self) -> None:
+        requisition = parse_screening_result(self.message(), task_id="M1")
+
+        bundle = requisition.items[0].bundle
+        self.assertIsNotNone(bundle)
+        self.assertEqual(bundle.name, "taste")
+        self.assertEqual(bundle.provider, "github.com/example/skills")
+        self.assertEqual(bundle.staged_path, "staged-skills/taste")
+
+    def test_a_bundle_must_name_where_it_came_from(self) -> None:
+        """It is external content; the trust ladder needs the provider."""
+
+        with self.assertRaisesRegex(ScreeningProtocolError, "provider"):
+            parse_screening_result(self.message(provider=""), task_id="M1")
+
+    def test_a_staged_path_cannot_be_absolute_or_climb_out(self) -> None:
+        for path in ("/etc", "../../.codex/plugins", "~/.codex/skills"):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(ScreeningProtocolError, "staged_path"):
+                    parse_screening_result(self.message(staged_path=path), task_id="M1")
+
+    def test_a_bundle_item_resolves_to_unmet_until_it_is_admitted(self) -> None:
+        """resolve_requisition knows packs, not the filesystem. Admission is
+        the runtime's own step, and until it happens nothing is claimed."""
+
+        decision = resolve_requisition(
+            parse_screening_result(self.message(), task_id="M1"),
+            (),
+            require_qualification=False,
+        )
+
+        self.assertEqual(decision.outcomes[0].status, "unmet")
+        self.assertEqual(decision.hired, ())
+
+
+class InstalledBundleReachesTheWorkerTests(AttestedProjectCase):
+    """The worker gets the skill itself, by path, and the verifier does not."""
+
+    def _before_last_acceptance(self) -> None:
+        set_screening_mode(self.root, "always")
+
+    def _hire_with_a_bundle(self) -> tuple[Any, dict]:
+        self._qualified_pack(trailing_task=_trailing_task())
+        cfg = load_config(self.root)
+        staged = cfg.state_dir / "staged-skills" / "taste"
+        staged.mkdir(parents=True)
+        (staged / "SKILL.md").write_text(
+            "---\nname: taste\n---\n\n# Taste\n\nWrite less code.\n",
+            encoding="utf-8",
+        )
+        activate_via_app_server(cfg, self.root, self.last_descriptors[0], "screening-M1")
+        completed = complete_desktop_worker(
+            cfg,
+            thread_id="screening-M1",
+            turn_id="screening-turn-M1",
+            final_message=screening_message(
+                {
+                    "task_id": "M1",
+                    "items": [
+                        {
+                            "capability": "frontend-taste",
+                            "rationale": "M1 builds a page and this is the house procedure.",
+                            "necessity": "required",
+                            "bundle": {
+                                "name": "taste",
+                                "staged_path": "staged-skills/taste",
+                                "provider": "github.com/example/skills",
+                                "locator": "skills/taste",
+                            },
+                        }
+                    ],
+                }
+            ),
+        )
+        record = json.loads(
+            (cfg.state_dir / "run-state.json").read_text(encoding="utf-8")
+        )["task_hiring"]["M1"]
+        return completed.descriptors[0], record
+
+    def test_the_bundle_is_admitted_into_the_project_and_recorded(self) -> None:
+        from codex_autopilot.hired_skills import hired_skill_records
+
+        _worker, record = self._hire_with_a_bundle()
+        cfg = load_config(self.root)
+
+        outcome = record["decision"]["outcomes"][0]
+        self.assertEqual(outcome["status"], "installed")
+        self.assertEqual(outcome["bundle"]["provider"], "github.com/example/skills")
+        installed = hired_skill_records(cfg.state_dir)
+        self.assertEqual(len(installed), 1)
+        self.assertEqual(installed[0]["name"], "taste")
+        self.assertTrue(
+            Path(installed[0]["path"]).is_relative_to(cfg.state_dir),
+            "a bundle lives in the project, never in the user's Codex home",
+        )
+
+    def test_the_worker_is_told_the_exact_path_to_read(self) -> None:
+        worker, record = self._hire_with_a_bundle()
+
+        self.assertEqual(worker.kind, "implementation")
+        self.assertIn("hired_skill_bundles", worker.prompt)
+        self.assertIn(record["decision"]["outcomes"][0]["bundle"]["path"], worker.prompt)
+        self.assertIn("frontend-taste", worker.prompt)
+
+    def test_the_verifier_is_not_given_the_bundle(self) -> None:
+        """R18 again: a bundle is external content by construction."""
+
+        _worker, record = self._hire_with_a_bundle()
+        cfg = load_config(self.root)
+        runtime = AIStudioRuntime(
+            load_plan(cfg.state_dir, cfg.profile),
+            cfg.root,
+            language=cfg.language,
+            skill_path=cfg.skill_path,
+        )
+        decision = hiring_decision_from_raw(record["decision"])
+
+        verifier = runtime.build_prompt(
+            "M1",
+            phase="verification",
+            task_states={},
+            reservation_token="token",
+            hiring=decision,
+        )
+
+        self.assertNotIn("hired_skill_bundles", verifier)
+        self.assertNotIn(
+            record["decision"]["outcomes"][0]["bundle"]["path"], verifier
+        )
+        self.assertIn("withheld_external_skills", verifier)
+        self.assertIn("frontend-taste", verifier)

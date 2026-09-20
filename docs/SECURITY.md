@@ -93,6 +93,12 @@ SQLite writes, migration, generated views, backups, and recovery share a bounded
 
 App Server logs redact prompt text, MCP arguments, structured content, user instructions, and environment probe bodies into hashes and lengths. Operational metadata and IDs remain for recovery and verification. Project memory and logs stay local unless the user shares the repository or files.
 
+## Hired skills
+
+With screening on, a task may be given a skill fetched from a public repository. A skill is a `SKILL.md` bundle — instructions and the files beside them — and a plugin is not: a plugin registers hooks, MCP servers and commands and lives in the Codex plugin cache, which would change this host's trust surface. **Autopilot installs skills and never plugins**, and that is enforced by construction rather than by rule: `hired_skills.admit_skill_bundle` resolves every destination under `<project>/.codex-autopilot/hired-skills` and refuses any other path, so it cannot name the plugin cache, `$CODEX_HOME/skills`, hooks or MCP configuration; a bundle carrying `.codex-plugin`, `hooks`, `.mcp.json`, `mcp.json`, `plugin.json` or `commands` is refused; symbolic links and files outside the project are refused; and bundle size and file count are bounded. Tests drive the admission path at each of those destinations and require a refusal. Hook trust is untouched by this path, as by every other.
+
+A bundle is external content under R18. It shapes how a worker does the work and never decides whether the work is accepted: it is given to the implementation phase and withheld from the verifier, which is told only which capability was withheld and from which provider. A skill from a repository does not widen what may be executed either — a Skill Pack's deterministic checks may only carry commands the project already runs. What was installed, from where, for which task and on what grounds is recorded in the run's hiring record, counted in the status card, and removed by `codex-autopilot revoke-skill`.
+
 ## First-run permissions
 
 The official `codex app-server` child process may need one-time read/write access to the exact `CODEX_HOME` directory because it owns state databases, WAL/SHM files, locks, plugin cache, and temporary command wrappers there. Preflight asks only after an actual permission-shaped failure, reports the path, and exits 77. No state is created before approval.

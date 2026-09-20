@@ -75,6 +75,8 @@ ROADMAP.md
 
 `skills/` is read, never written, by Autopilot: one JSON manifest per exact Skill Pack revision, put there by you. It is the second half of the skill catalog, beside the packs a plan declares. Initialization does not create it.
 
+`hired-skills/` is different and is written by Autopilot. When screening is on (`runtime.skill_screening`, on by default), a task may be given a skill bundle — a `SKILL.md` and the files beside it — fetched from a public repository. The bundle is copied into `hired-skills/<name>@<digest>/` inside the project and nowhere else: `hired_skills.admit_skill_bundle` resolves every destination under that one directory and refuses any other path, so the Codex plugin cache, `~/.codex/skills`, hooks and MCP configuration are not reachable from it, and a bundle that ships `.codex-plugin`, `hooks`, `.mcp.json` or `commands` is refused outright. `codex-autopilot skills --project <path>` lists what a project holds; `codex-autopilot revoke-skill --project <path> --skill-id <id>` removes one. Nothing is installed into your Codex.
+
 Preflight creates no project run-state when it fails. Its disposable SQLite/FTS5 probe is removed.
 
 ## What is unchanged

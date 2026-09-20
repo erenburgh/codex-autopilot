@@ -42,9 +42,12 @@ from .resources import ResourceLockCoordinator
 from .run_state import RunState, StateStore, utc_now
 from .scope import scope_baseline
 from .skill_packs import SkillPackError
+from .hired_skills import HiredSkillError, admit_skill_bundle
 from .skill_screening import (
     SKILL_LIBRARY_DIRNAME,
     HiringDecision,
+    SkillRequisition,
+    apply_admitted_bundles,
     ScreeningProtocolError,
     SkillLibraryError,
     parse_screening_result,
@@ -284,6 +287,8 @@ def _record_requisition(
         # The catalog itself is broken, which is not the screener's fault and
         # not something a second screening turn could fix.
         return f"the skill catalog cannot be read: {exc}"
+    admitted, refused = _admit_bundles(cfg, requisition, task_id=task_id)
+    decision = apply_admitted_bundles(decision, admitted, refused)
     record_hiring(
         state.task_hiring,
         task_id=task_id,
@@ -298,6 +303,47 @@ def _record_requisition(
         at=at,
     )
     return ""
+
+
+def _admit_bundles(
+    cfg: Config, requisition: SkillRequisition, *, task_id: str
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Admit every bundle the screener staged, refusing loudly, not silently.
+
+    Returns what was admitted and, separately, why anything was not: a
+    refused bundle must leave its requisition item unmet with the refusal on
+    record, never a claim that a skill is there when it is not.
+
+    Nothing here can write outside the project. ``admit_skill_bundle``
+    resolves every destination under ``.codex-autopilot/hired-skills`` and
+    can name no other path, so the Codex plugin cache, the Codex skills
+    directory, hooks and MCP configuration are unreachable from this call.
+    """
+
+    admitted: dict[str, dict[str, Any]] = {}
+    refused: dict[str, str] = {}
+    for item in requisition.items:
+        if item.bundle is None:
+            continue
+        try:
+            record = admit_skill_bundle(
+                cfg.state_dir,
+                staged_path=cfg.state_dir / item.bundle.staged_path,
+                name=item.bundle.name,
+                provider=item.bundle.provider,
+                locator=item.bundle.locator,
+            )
+        except HiredSkillError as exc:
+            refused[item.capability] = f"{item.bundle.name}: {exc}"
+            continue
+        admitted[item.capability] = {
+            "id": record["id"],
+            "name": record["name"],
+            "provider": record["provider"],
+            "path": record["path"],
+            "digest": record["digest"],
+        }
+    return admitted, refused
 
 
 def _reserve_screening_in_state(
