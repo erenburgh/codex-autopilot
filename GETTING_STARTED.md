@@ -29,13 +29,14 @@ The installer:
 4. replaces the memory MCP and lifecycle-hook launcher placeholders with the absolute, stable `current/bin/codex-autopilot` runtime path;
 5. updates the `current` symlink;
 6. registers the local marketplace and exactly one selected profile through `codex plugin`;
-7. writes the wake-up launch agent `~/Library/LaunchAgents/com.codex-autopilot.wake.plist` and loads it with `launchctl`.
+7. writes the wake-up launch agent `~/Library/LaunchAgents/com.codex-autopilot.wake.plist` and loads it with `launchctl`;
+8. adds a marked block to the Codex execpolicy (`$CODEX_HOME/rules/default.rules`, normally `~/.codex/rules/default.rules`) allowing its own installed script to be launched with `start-skill` and `timeline`. Without it Codex raises an approval dialog on launch, the dispatcher never answers approvals by rule, and the run hangs in a task nobody is looking at. Nothing else is allowed by that block, rules you or Codex wrote are left untouched, and `uninstall --yes` removes it.
 
 That agent is what the installer leaves running on your Mac. It starts `codex-autopilot _wake-sweep` at login and again every 300 seconds, for as long as it stays installed, and writes what it decided to `~/Library/Application Support/CodexAutopilot/wake-sweep.log`. A sweep looks only at the projects Autopilot has already armed: where a task waits for a rate-limit retry whose time has come and no wake-up is waiting for it, the sweep arms one, and otherwise it does nothing. It starts no worker itself and does not wake a run you paused or stopped. Install with `CODEX_AUTOPILOT_SKIP_LAUNCHD=1 ./install.sh --profile adaptive` to write the agent without loading it; `codex-autopilot uninstall --yes` boots it out and deletes it.
 
 Previous installations are no longer kept beside the new one: each older version directory is zipped into `~/Library/Application Support/CodexAutopilot/legacy-backups/previous-installs-<stamp>.zip` and then removed, and the installer prints how many and where. One exception: an installation carrying accepted runtime repairs is renamed to `<version>.repaired-<stamp>` beside itself and kept.
 
-Apart from that launch agent, the installer does not modify PATH, shell profiles, Git config, repository history, global Codex model/reasoning/sandbox/network/approval settings, other macOS settings, or unrelated plugins. The complete list of what installation and uninstallation touch is in [Install and uninstall footprint](docs/INSTALL_FOOTPRINT.md).
+Apart from that launch agent and that execpolicy block, the installer does not modify PATH, shell profiles, Git config, repository history, global Codex model/reasoning/sandbox/network settings, other macOS settings, or unrelated plugins. The complete list of what installation and uninstallation touch is in [Install and uninstall footprint](docs/INSTALL_FOOTPRINT.md).
 
 Open `/hooks` in Codex and trust the current Autopilot **Stop** hook once. Hook trust is a normal Codex security step and the installer cannot bypass it. The installed hook command points to the permanent `current/bin/codex-autopilot` entrypoint rather than a version or plugin-cache directory, so ordinary upgrades and cachebuster reinstallations preserve its command identity. Codex asks again only after a real hook-definition change.
 
@@ -127,8 +128,10 @@ Up to `max_parallel_workers` independent, resource-compatible READY tasks may ov
 ## Skills per task
 
 Before a task is given a worker, a short screening session decides which skills
-that worker should carry. It reads the task, the skills already installed on
-this machine, and the bundles this project hired earlier. It may also name a
+that worker should carry. It reads the task, the skills already installed in
+your Codex home, and the governed packs this project declares. A bundle hired
+on an earlier run is not offered back to it yet, so the same capability can be
+asked for twice. It may also name a
 skill it does not have yet, as a public repository plus a path inside it; the
 runtime fetches that bundle itself - the screening session never reaches the
 network - and copies it into `.codex-autopilot/hired-skills/` inside the
@@ -142,8 +145,10 @@ limits. `status` shows what it spent and what it bought. To change it:
 ```toml
 # .codex-autopilot/config.toml
 [runtime]
-skill_screening = "always"          # default; "auto" screens only when something
-                                    # is available to hire, "never" switches it off
+skill_screening = "always"          # default; "auto" screens only when the plan
+                                    # or this project's pack library declares a
+                                    # pack - it does not look at your installed
+                                    # skills; "never" switches it off
 skill_fetch_hosts = ["github.com", "raw.githubusercontent.com"]
 ```
 
@@ -199,7 +204,7 @@ The executable is:
 It is intentionally not added to PATH. Run it with `--help`: it lists exactly the
 commands meant to be typed by hand - `bootstrap`, `preflight`, `timeline`,
 `unblock`, `authorize-project-root`, `status`, `stop`, `resume`, `logs`, `doctor`,
-and `uninstall`. `resume` is there only as a pointer: it refuses and tells you to
+`skills`, `revoke-skill`, and `uninstall`. `resume` is there only as a pointer: it refuses and tells you to
 send the resume phrase in a Codex task, because launching belongs to the trusted
 Stop hook. The Pipeline Engineer recovery set - `relay-status`, `relay-complete`,
 `relay-fail`, `reconcile-thread-identity`, `recreate-archived-retry`, `arm`,

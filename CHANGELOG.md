@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.11.1-beta
+
+What a stranger receives, audited as a stranger receives it: the published
+0.11.0-beta archive was downloaded from the release, unpacked, and read against
+its own documents. Everything below is a place where the build would have
+misled someone who had never seen it before.
+
+### The one grant, disclosed and taken back
+
+- `install.sh` writes a marked block into the Codex execpolicy
+  (`$CODEX_HOME/rules/default.rules`) allowing its own installed script to be
+  launched with `start-skill` and `timeline` - without it Codex raises an
+  approval dialog, the dispatcher answers no approval by rule, and the run
+  hangs in a task nobody is looking at. That block is written outside
+  Autopilot's own directory, and three shipped documents said installation adds
+  nothing there but the launch agent and changes no Codex approval settings. It
+  is now named in README, in Getting Started's list of what the installer does,
+  and in the footprint document, with what it allows and what it does not.
+- `uninstall --yes` now removes it. It used to leave two standing
+  `decision="allow"` rules pointing at a script it had just deleted. A rules
+  file you or Codex also wrote into is kept without the block; one that held
+  nothing else is removed.
+- The marker and the rule text moved to `src/codex_autopilot/execpolicy.py`, so
+  the writer and the remover cannot drift apart.
+
+### Numbers that said the opposite of the code
+
+- The screening line counted an installed bundle as an unfilled need.
+  `HiringDecision.unfilled` excludes `installed` deliberately - the worker did
+  get that skill - but the status card compared against the single string
+  `hired`, so a successful hire rendered as "0 skills hired, 1 need unfilled".
+- The task-graph table and the scheduler document gave `serial` and `1` as the
+  schema defaults. They are the fallback for a project with no `[runtime]`
+  section; a fresh run is `auto` with ten worker slots.
+- Two documents said the suite is 1019 tests. It is 1194.
+
+### What 0.11.0's own documents got wrong about hiring
+
+These were written a day earlier, in this repository, and read against the code
+for the first time here.
+
+- The `status` card in chat did not carry the screening line at all - only the
+  detailed report and the CLI did, while three documents said `status` reports
+  what hiring spent. The card now carries it whenever screening is on, which is
+  the case where it costs something.
+- The docs said the screener sees the bundles this project hired earlier. It
+  does not: the brief holds the skills installed in your Codex home and the
+  packs the plan and the project's pack library declare. A bundle hired on an
+  earlier run is handed to the worker that hired it and is never offered back,
+  so a later task can ask for the same capability again. The documents now say
+  so, and closing that loop is named as open work.
+- `auto` was described as screening "only when something is available to hire".
+  It looks at the plan and the project's pack library, and not at your
+  installed skills.
+- The 512 KiB fetch ceiling was listed among the configurable bounds. Only the
+  hosts and the timeout have settings.
+- `docs/SKILL_SCREENING.md` documented a requisition item with `draft` and
+  `sources` fields that the parser refuses outright. That design was considered
+  and set aside; the section now says so and names what shipped instead.
+- `docs/RATE_LIMITS.md` promised a retry budget of 96 attempts. It is 5 per
+  failure signature, after which a ticket is opened for the on-call engineer.
+- Getting Started said `--help` lists exactly eleven hand-typed commands.
+  `skills` and `revoke-skill` made it thirteen.
+- `docs/TESTING.md` gave the suite command with a bare `python3`. The runtime
+  imports `tomllib` and needs 3.11+; the `python3` on a stock macOS is 3.9.
+
+### Commands a reader could not run
+
+- README's shell blocks called a bare `codex-autopilot`, which the installer
+  deliberately never puts on PATH, so every copy-paste answered
+  `command not found`. They now use the same full launcher path Getting Started
+  uses, and say why.
+- Both profile skills carried a sentence that had lost its beginning: an edit
+  replaced the clause in front of "execution or the plan was migrated from
+  v0.8" and left the tail behind. The planner read a fragment.
+
 ## 0.11.0-beta
 
 Hiring. A task is screened for the skills its worker needs at the moment that
@@ -24,10 +100,11 @@ worker is hired, not when the plan is written.
 - A screening may name a skill it does not have, as a provider
   (`github.com/<owner>/<repo>`) and a path inside it. The runtime performs the
   fetch; the screening session is told it must not reach the network itself.
-- Only `github.com` and `raw.githubusercontent.com` are allowed by default, one
-  `SKILL.md` up to 512 KiB, 20-second timeout, all configurable through
-  `runtime.skill_fetch_hosts` and `runtime.skill_fetch_timeout_seconds`. An
-  empty host list means nothing is fetched at all.
+- Only `github.com` and `raw.githubusercontent.com` are allowed by default,
+  through `runtime.skill_fetch_hosts`, and the timeout through
+  `runtime.skill_fetch_timeout_seconds` (20 seconds). The size ceiling - one
+  `SKILL.md` up to 512 KiB - is fixed and has no setting. An empty host list
+  means nothing is fetched at all.
 - A fetch that fails is an unmet need on the record, not a task that stops.
 - Only Skills are ever installed. Plugins, hooks and MCP servers are not, and a
   fetched bundle is copied into the project's own

@@ -939,6 +939,21 @@ def uninstall(args) -> int:
         if snapshot is not None:
             print(f"Project state moved aside: {snapshot}")
     _remove_wake_agent()
+    # The installer writes a managed allow-block into the Codex execpolicy,
+    # outside Autopilot's own directory. Leaving it behind would leave a
+    # standing grant for the very script this command is about to delete.
+    from .execpolicy import remove as _remove_execpolicy, rules_path as _execpolicy_path
+
+    policy = _execpolicy_path()
+    try:
+        if _remove_execpolicy(policy):
+            print(f"Execpolicy: the managed Autopilot block was removed from {policy}")
+    except OSError as exc:
+        print(
+            f"Execpolicy: the managed block could not be removed from {policy}: {exc}; "
+            "remove it by hand.",
+            file=sys.stderr,
+        )
     install_root = os.environ.get("CODEX_AUTOPILOT_INSTALL_ROOT")
     if install_root:
         root = Path(install_root).expanduser().resolve()

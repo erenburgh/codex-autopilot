@@ -74,7 +74,7 @@ does not override a contradictory source requirement.
 
 The contract regressions that were red when the table above was written are
 green in this tree: `PYTHONPATH=src python3 -m unittest discover -s tests` runs
-1019 tests and ends `OK`. The single FAIL row was closed by dropping the
+1194 tests and ends `OK`. The single FAIL row was closed by dropping the
 requirement it measured: a canonical task must now declare `independent`
 verification, and a `deterministic` policy is rejected before execution
 (`src/codex_autopilot/plan.py`). How to run the suite and what it does not

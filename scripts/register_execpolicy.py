@@ -22,19 +22,26 @@ Only the initiating turn's commands are allowed. Everything else -
 The script path is versioned, so the block is rewritten on every install:
 old Autopilot lines are removed, new ones added. Rules written by the user
 or by Codex itself are not touched.
+
+The marker and the rule text live in ``codex_autopilot.execpolicy``, not
+here: ``uninstall`` has to remove exactly what this writes, and a copy of
+the marker in each place would drift the first time the wording changed.
 """
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
-MARKER = "# codex-autopilot (managed): the plugin's own script, direct argv"
-# The marker written by installs before the harness switched to English. It
-# is still recognized so an upgrade removes that block instead of stacking
-# a second one under it.
-LEGACY_MARKERS = ("# codex-autopilot (managed): собственный скрипт плагина, прямой argv",)
-ALLOWED_COMMANDS = ("start-skill", "timeline")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from codex_autopilot.execpolicy import (  # noqa: E402,F401
+    ALLOWED_COMMANDS,
+    LEGACY_MARKERS,
+    MARKER,
+    strip_managed,
+)
 
 
 def build_block(script: str, commands: tuple[str, ...] = ALLOWED_COMMANDS) -> str:
@@ -42,22 +49,6 @@ def build_block(script: str, commands: tuple[str, ...] = ALLOWED_COMMANDS) -> st
     for command in commands:
         lines.append(f'prefix_rule(pattern=[{script!r}, {command!r}], decision="allow")')
     return "\n".join(lines)
-
-
-def strip_managed(existing: str) -> str:
-    """Remove the previous managed block without touching foreign rules."""
-    kept: list[str] = []
-    inside = False
-    for line in existing.splitlines():
-        if line.strip() == MARKER or line.strip() in LEGACY_MARKERS:
-            inside = True
-            continue
-        if inside:
-            if line.startswith("prefix_rule(") and "codex-autopilot" in line:
-                continue
-            inside = False
-        kept.append(line)
-    return "\n".join(kept).rstrip("\n")
 
 
 def register(script: str, rules_path: Path, commands: tuple[str, ...] = ALLOWED_COMMANDS) -> str:
@@ -79,6 +70,10 @@ def main() -> int:
     print(
         f"Execpolicy: allowed {args.script} "
         f"{{{', '.join(ALLOWED_COMMANDS)}}} in {args.rules}"
+    )
+    print(
+        "Execpolicy: 'codex-autopilot uninstall --yes' takes this block back out "
+        f"of {args.rules}"
     )
     return 0
 

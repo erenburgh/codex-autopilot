@@ -372,9 +372,25 @@ plus a deterministic test, a real tool, or a verified work outcome.
 
 ### The requisition item that names the market
 
+**Not built. What shipped instead is below this box; the parser refuses both
+`draft` and `sources` as unknown fields** (`REQUISITION_ITEM_FIELDS` in
+`skill_screening.py`). This section is the design that was considered and set
+aside, kept because the qualification intake it describes is still the shape
+the learning loop wants.
+
+What 0.11 actually does with the market: an item names a `bundle` with a
+`provider` and a `locator`, the runtime fetches one `SKILL.md` from an allowed
+host, and `admit_skill_bundle` copies it into the project's
+`.codex-autopilot/hired-skills/`. It reaches the worker that asked for it, as a
+skill to read rather than as a governed pack, and the outcome is recorded as
+`installed`. No pack manifest is drafted, nothing is written into the project's
+pack library, and no qualification task is opened.
+
+The design below, for the record:
+
 Today an item names candidates from the inventory, or a `search_intent` when
-nothing fits. The market extension adds a third form: the screener returns a
-**draft pack** together with where it read.
+nothing fits. The market extension would add a third form: the screener returns
+a **draft pack** together with where it read.
 
 ```json
 {"capability":"svelte",

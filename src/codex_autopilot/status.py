@@ -132,6 +132,10 @@ def project_status_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[st
     }
 
 
+# The statuses under which the worker actually received the capability.
+_FILLED_STATUSES = frozenset({"hired", "installed"})
+
+
 def _screening_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[str, Any]:
     """What hiring has cost this run, and what it bought.
 
@@ -158,7 +162,11 @@ def _screening_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[str, A
         else:
             screened += 1
         for outcome in (record.get("decision") or {}).get("outcomes") or ():
-            if outcome.get("status") == "hired":
+            # HiringDecision.unfilled excludes "installed" for a reason: the
+            # worker did get that bundle, as a skill to read rather than as a
+            # governed pack. Counting it as an unfilled need reported a
+            # successful hire as a capability the run failed to find.
+            if outcome.get("status") in _FILLED_STATUSES:
                 hired += 1
             else:
                 unfilled += 1
@@ -232,6 +240,9 @@ _CARD_WORDS = {
         "paused": "Pause requested: no new tasks are launched.",
         "idle": "Nobody is working: the dispatcher is not running.",
         "causality": "Creation causality breaks",
+        "screening": "Screening",
+        "screening_threads": "threads spent",
+        "screening_hired": "hired",
         "more": "Details: say «detailed status».",
     },
     "ru": {
@@ -242,6 +253,9 @@ _CARD_WORDS = {
         "paused": "Пауза запрошена: новых задач не запускается.",
         "idle": "Никто не работает: диспетчер не запущен.",
         "causality": "Разрывов причинности создания",
+        "screening": "Скрининг",
+        "screening_threads": "веток потрачено",
+        "screening_hired": "нанято",
         "more": "Подробно: скажи «подробный статус».",
     },
 }
@@ -297,6 +311,20 @@ def render_short_status(
         )
     if snapshot["pause"]["requested"]:
         lines.append(words["paused"])
+    # Hiring is on by default and spends a Codex thread per task out of the
+    # user's limits. The detailed report carried that number and this card
+    # did not - and this card is the one a user actually types «status» for,
+    # so the cost lived where nobody looked. Only while it is on: a line
+    # reading "0" on every run is noise, not disclosure.
+    screening = snapshot["screening"]
+    if screening["enabled"]:
+        spent = (
+            f"{words['screening']}: {screening['threads_spent']} "
+            f"{words['screening_threads']}"
+        )
+        if screening["skills_hired"]:
+            spent += f", {screening['skills_hired']} {words['screening_hired']}"
+        lines.append(spent)
     # The dispatcher is a short-lived process: it rises on the transition
     # between tasks and goes away while a worker or verifier holds the turn.
     # The condition once looked only at "running" and forgot "verifying", so

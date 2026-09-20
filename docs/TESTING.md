@@ -6,7 +6,9 @@ Run the deterministic unit suite from the repository root:
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-Add `-v` to print test names. On this tree the suite is 1019 tests and ends
+`python3` here must be 3.11 or newer: the runtime imports `tomllib`, and the `python3` on a stock macOS is 3.9. If `python3 --version` says otherwise, name the interpreter explicitly.
+
+Add `-v` to print test names. On this tree the suite is 1194 tests and ends
 `OK`.
 
 ## The acceptance floor

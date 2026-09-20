@@ -40,10 +40,17 @@ Optional plan fields and safe defaults:
 | Field | Default | Contract |
 | --- | --- | --- |
 | `graph_version` | `1` | Positive integer. A plan change must increment exactly once. |
-| `execution_strategy` | `serial` | `serial`, `parallel`, or `auto`. |
-| `max_parallel_workers` | `1` | Positive integer; scheduler ceiling. |
+| `execution_strategy` | `auto` | `serial`, `parallel`, or `auto`. |
+| `max_parallel_workers` | `10` | Positive integer; scheduler ceiling. |
 | `computer_use_slots` | `1` | Positive integer; independent Computer Use ceiling. |
 | `compatibility` | absent | Migration provenance only. A `legacy_serial` plan must remain `serial` with one worker. |
+
+`serial` with one worker is not the default: it is what a project *without* a
+`[runtime]` section falls back to (`COMPAT_EXECUTION_STRATEGY`,
+`COMPAT_MAX_PARALLEL_WORKERS` in `src/codex_autopilot/plan.py`), so a project
+created before v0.9 does not drift into parallelism because a later default
+changed. A fresh run is `auto` with ten worker slots unless the user says
+otherwise.
 
 For backward readability, pre-existing schema-3 files that lack `user_request`
 load with `goal` as their acceptance source. New plan creation never relies on

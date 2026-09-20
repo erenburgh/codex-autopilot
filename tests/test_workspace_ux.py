@@ -341,6 +341,36 @@ class SemanticStatusTests(unittest.TestCase):
         self.assertIn("strategy=", runtime)
 
 
+    def test_an_installed_bundle_is_a_hire_and_not_an_unfilled_need(self) -> None:
+        """The screening line counted a success as a failure.
+
+        ``HiringDecision.unfilled`` excludes "installed" deliberately: the
+        worker did get that bundle, as a skill to read rather than as a
+        governed pack. The status card compared against the single string
+        "hired", so a task whose worker actually received a fetched skill
+        rendered as "0 skills hired, 1 need unfilled" - the one number a
+        user would read to decide whether hiring works at all.
+        """
+
+        self.state.task_hiring = {
+            "T44": {
+                "task_id": "T44",
+                "decision": {
+                    "task_id": "T44",
+                    "outcomes": [
+                        {"capability": "a", "status": "installed"},
+                        {"capability": "b", "status": "hired"},
+                        {"capability": "c", "status": "unmet"},
+                        {"capability": "d", "status": "withheld"},
+                    ],
+                },
+            }
+        }
+        screening = project_status_snapshot(self.cfg, self.state, self.plan)["screening"]
+        self.assertEqual(screening["skills_hired"], 2)
+        self.assertEqual(screening["needs_unfilled"], 2)
+
+
 class WaitingReasonTests(unittest.TestCase):
     """Section 33: the status has to name the reason for waiting."""
 

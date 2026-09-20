@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from codex_autopilot import appserver, preflight  # noqa: E402
+from codex_autopilot import appserver, execpolicy, preflight  # noqa: E402
 import register_execpolicy  # noqa: E402
 
 SKILLS = (
@@ -162,6 +162,66 @@ class ExecpolicyRegistrationTests(unittest.TestCase):
         self.rules.write_text('prefix_rule(pattern=["cp"], decision="allow")\n', encoding="utf-8")
         text = register_execpolicy.register("/x/scripts/codex-autopilot", self.rules)
         self.assertIn('prefix_rule(pattern=["cp"], decision="allow")', text)
+
+
+class ExecpolicyIsTakenBackOutTests(unittest.TestCase):
+    """Uninstall removes the grant it wrote.
+
+    The block is the one thing the installer writes into a file that
+    belongs to Codex. ``uninstall --yes`` removed the plugins, the launch
+    agent and the runtime and left two standing ``decision="allow"`` rules
+    behind, pointing at a script it had just deleted - a permission
+    outliving the thing it was granted to, and the shipped footprint
+    document said uninstall left nothing.
+    """
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.rules = Path(self.tmp.name) / "rules" / "default.rules"
+
+    def test_the_block_is_gone_and_the_file_with_it(self) -> None:
+        register_execpolicy.register("/x/scripts/codex-autopilot", self.rules)
+        self.assertTrue(execpolicy.remove(self.rules))
+        self.assertFalse(self.rules.exists())
+
+    def test_a_file_the_user_also_wrote_is_kept_without_our_block(self) -> None:
+        self.rules.parent.mkdir(parents=True)
+        self.rules.write_text('prefix_rule(pattern=["cp"], decision="allow")\n', encoding="utf-8")
+        register_execpolicy.register("/x/scripts/codex-autopilot", self.rules)
+        self.assertTrue(execpolicy.remove(self.rules))
+        kept = self.rules.read_text(encoding="utf-8")
+        self.assertIn('prefix_rule(pattern=["cp"], decision="allow")', kept)
+        self.assertNotIn("codex-autopilot", kept)
+
+    def test_a_block_written_under_the_legacy_marker_is_removed_too(self) -> None:
+        self.rules.parent.mkdir(parents=True)
+        self.rules.write_text(
+            execpolicy.LEGACY_MARKERS[0]
+            + '\nprefix_rule(pattern=["/old/scripts/codex-autopilot", "start-skill"], decision="allow")\n',
+            encoding="utf-8",
+        )
+        self.assertTrue(execpolicy.remove(self.rules))
+        self.assertFalse(self.rules.exists())
+
+    def test_removing_nothing_is_not_an_error_and_touches_no_foreign_file(self) -> None:
+        self.assertFalse(execpolicy.remove(self.rules))
+        self.rules.parent.mkdir(parents=True)
+        self.rules.write_text('prefix_rule(pattern=["cp"], decision="allow")\n', encoding="utf-8")
+        self.assertFalse(execpolicy.remove(self.rules))
+        self.assertEqual(
+            self.rules.read_text(encoding="utf-8"),
+            'prefix_rule(pattern=["cp"], decision="allow")\n',
+        )
+
+    def test_uninstall_calls_it(self) -> None:
+        """The path, not only the helper: uninstall must actually reach it."""
+
+        source = (ROOT / "src/codex_autopilot/cli.py").read_text(encoding="utf-8")
+        body = source[source.index("def uninstall(") :]
+        self.assertIn("execpolicy", body)
 
 
 if __name__ == "__main__":

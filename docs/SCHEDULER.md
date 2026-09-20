@@ -79,6 +79,7 @@ an explicit limit of zero disables admission for that capability.
 
 The effective worker limit is the lower of the plan and durable run-state
 limits. Either layer can tighten execution to `serial`; neither can make the
-other more permissive. `max_parallel_workers` defaults to `1`, as does
-`computer_use_slots`, so omitted v0.9 settings and every migrated v0.8 project
-remain one-at-a-time.
+other more permissive. `max_parallel_workers` defaults to `10` and `computer_use_slots` to `1`, so a
+fresh run is genuinely parallel while two Computer Use workers never overlap. A
+config without a `[runtime]` section, and every migrated v0.8 project, stay at
+one worker instead.

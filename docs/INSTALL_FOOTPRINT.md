@@ -2,7 +2,7 @@
 
 ## Default installation
 
-`install.sh` creates or replaces the directory of the version it installs (`0.11.0-beta` in this release), and writes one launch agent outside it:
+`install.sh` creates or replaces the directory of the version it installs (`0.11.1-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
 
 ```text
 ~/Library/Application Support/CodexAutopilot/
@@ -23,7 +23,22 @@
 
 ~/Library/LaunchAgents/
 └── com.codex-autopilot.wake.plist   # wake-up agent: RunAtLoad plus StartInterval 300
+
+$CODEX_HOME/rules/            # normally ~/.codex/rules/
+└── default.rules             # one marked block: the installed script may be
+                              # launched with start-skill and timeline
 ```
+
+That second file belongs to Codex, not to Autopilot. The block is delimited by
+the marker `# codex-autopilot (managed)` and contains exactly two
+`decision="allow"` rules, for `start-skill` and `timeline` on the installed
+script path and nothing else - `devops-*`, `uninstall`, `hook` and `relay-*`
+still ask. It exists because Codex raises a native approval dialog for a
+command that matches no rule, the dispatcher answers no approval by rule, and
+the dialog would wait in a task nobody is looking at while the run stands
+still. Rules written by you or by Codex are read and rewritten back
+unchanged; only the marked block is replaced on reinstall and removed on
+uninstall.
 
 `runtime/` is the repository tree, not `src` alone: `tests/` is copied next to it because the on-call engineer proves a repair by running that suite against the installed copy.
 
@@ -83,10 +98,10 @@ Preflight creates no project run-state when it fails. Its disposable SQLite/FTS5
 
 ## What is unchanged
 
-Installation does not add PATH entries, edit shell profiles, edit Git config, initialize or commit a repository, alter account defaults, change Codex model/reasoning/speed/sandbox/network/approval settings, grant macOS permissions, or modify unrelated plugins. The one thing it adds to the system outside its own directory is the wake-up launch agent described above. Adaptive sends only per-worker model and effort fields. Host Settings sends neither.
+Installation does not add PATH entries, edit shell profiles, edit Git config, initialize or commit a repository, alter account defaults, change Codex model/reasoning/speed/sandbox/network settings, grant macOS permissions, or modify unrelated plugins. The two things it adds to the system outside its own directory are the wake-up launch agent and the marked execpolicy block described above, and uninstall removes both. Adaptive sends only per-worker model and effort fields. Host Settings sends neither.
 
 ## Uninstall
 
-`codex-autopilot uninstall --yes` pauses an identifiable dispatcher of its own version, removes the two plugin registrations and the marketplace registration, boots out and deletes the wake-up launch agent, removes its own version directory, removes `current` only when it points there, and clears the temporary launch registry (that directory is still named `codex-autopilot-<uid>-v0.8`, and the name is the only thing about it that is still v0.8). It preserves the rest of the install root - `legacy-backups`, any `<version>.repaired-<stamp>` tree, `projects.json`, `wake-sweep.log`, and any older installation still present - along with shared tools, source repositories, and every project's state.
+`codex-autopilot uninstall --yes` pauses an identifiable dispatcher of its own version, removes the two plugin registrations and the marketplace registration, boots out and deletes the wake-up launch agent, removes the marked block from `$CODEX_HOME/rules/default.rules` (deleting that file only when it held nothing else), removes its own version directory, removes `current` only when it points there, and clears the temporary launch registry (that directory is still named `codex-autopilot-<uid>-v0.8`, and the name is the only thing about it that is still v0.8). It preserves the rest of the install root - `legacy-backups`, any `<version>.repaired-<stamp>` tree, `projects.json`, `wake-sweep.log`, and any older installation still present - along with shared tools, source repositories, and every project's state.
 
 Project state is set aside only with `--purge-project-state --project <absolute-path>`. This moves that project's `.codex-autopilot` directory to a sibling `.codex-autopilot.purged-<stamp>` (the path is printed) and never deletes it: removing state without a restorable snapshot is refused by rule R28, so freeing the space is your explicit `rm -rf` of that sibling. It does not touch `ROADMAP.md`, project source, Git metadata, or commits. Likewise `start-skill --replace` copies the previous state to `.codex-autopilot.replaced-<stamp>` before overwriting it, and records that path in the new run's journal.
