@@ -2306,3 +2306,70 @@ class HerOwnSkillsAreUsedTests(AttestedProjectCase):
         self.assertIn("not installed", outcome["reason"])
         self.assertIn("taste", outcome["reason"])
         self.assertEqual(completed.descriptors[0].kind, "implementation")
+
+
+class BundleOriginIsCheckedOnReadTests(unittest.TestCase):
+    """Run state is runtime-written, and it is still read fail-closed.
+
+    A record whose origin disagrees with its provider is the shape a market
+    bundle would take if it were trying to pass as local, and the read is
+    the last place to notice.
+    """
+
+    @staticmethod
+    def outcome(bundle: dict) -> dict:
+        return {
+            "task_id": "M1",
+            "outcomes": [
+                {
+                    "capability": "frontend-taste",
+                    "rationale": "M1 builds a page.",
+                    "necessity": "required",
+                    "status": "installed",
+                    "bundle": bundle,
+                }
+            ],
+        }
+
+    def test_an_origin_outside_the_two_is_refused(self) -> None:
+        for origin in ("trusted", "vendor", "", "LOCAL"):
+            with self.subTest(origin=origin):
+                with self.assertRaisesRegex(ScreeningProtocolError, "origin"):
+                    hiring_decision_from_raw(
+                        self.outcome({"origin": origin, "name": "taste"})
+                    )
+
+    def test_a_local_record_carrying_a_provider_is_refused(self) -> None:
+        with self.assertRaisesRegex(ScreeningProtocolError, "disagrees"):
+            hiring_decision_from_raw(
+                self.outcome(
+                    {
+                        "origin": "local",
+                        "name": "taste",
+                        "provider": "github.com/example/skills",
+                    }
+                )
+            )
+
+    def test_a_market_record_without_a_provider_is_refused(self) -> None:
+        with self.assertRaisesRegex(ScreeningProtocolError, "disagrees"):
+            hiring_decision_from_raw(
+                self.outcome({"origin": "market", "name": "taste"})
+            )
+
+    def test_both_consistent_records_read_back(self) -> None:
+        local = hiring_decision_from_raw(
+            self.outcome({"origin": "local", "name": "taste"})
+        )
+        market = hiring_decision_from_raw(
+            self.outcome(
+                {
+                    "origin": "market",
+                    "name": "taste",
+                    "provider": "github.com/example/skills",
+                }
+            )
+        )
+
+        self.assertFalse(local.outcomes[0].is_external_bundle)
+        self.assertTrue(market.outcomes[0].is_external_bundle)

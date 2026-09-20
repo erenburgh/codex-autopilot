@@ -61,8 +61,9 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_SKILL_FILE_BYTES = 512 * 1024
 
 
-# Codex's own preinstalled skills. They are available to every session
-# already, so offering them to a screener adds nothing and crowds the brief.
+# Codex's own preinstalled skills, excluded by the dotted-entry rule in
+# installed_skill_bundles. They are available to every session already, so
+# offering them to a screener adds nothing and crowds the brief.
 CODEX_SYSTEM_SKILLS_DIRNAME = ".system"
 
 
@@ -105,9 +106,11 @@ def installed_skill_bundles(
     bundles: list[dict[str, Any]] = []
     refused: list[str] = []
     for path in sorted(root.iterdir()):
+        # Dotted entries are skipped, and that is what excludes Codex's own
+        # preinstalled skills: they live in `.system`. A separate check for
+        # the name was written here and a mutation proved it dead - this
+        # line already covered it - so the reason lives where the rule is.
         if not path.is_dir() or path.name.startswith("."):
-            continue
-        if path.name == CODEX_SYSTEM_SKILLS_DIRNAME:
             continue
         skill_file = path / SKILL_FILE
         if not skill_file.is_file():
@@ -118,6 +121,11 @@ def installed_skill_bundles(
             continue
         try:
             files = _bundle_files(path)
+            # The digest reads every file, so it belongs inside the guard:
+            # one unreadable file in HER directory must be a named refusal,
+            # not an exception that stops the whole read of a directory
+            # Autopilot does not own.
+            digest = _bundle_digest(files)
         except (HiredSkillError, OSError) as exc:
             refused.append(f"{path.name}: {exc}")
             continue
@@ -125,7 +133,7 @@ def installed_skill_bundles(
             {
                 "name": path.name,
                 "path": str(path),
-                "digest": _bundle_digest(files),
+                "digest": digest,
                 "files": len(files),
             }
         )

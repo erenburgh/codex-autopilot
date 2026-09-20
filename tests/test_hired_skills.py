@@ -361,16 +361,19 @@ class InstalledSkillsAreReadNeverWrittenTests(unittest.TestCase):
 
     def test_codex_own_system_skills_are_not_offered(self) -> None:
         """They are preinstalled for every session by Codex itself, so
-        hiring one adds nothing and only crowds the brief."""
+        hiring one adds nothing and only crowds the brief. They are excluded
+        by the dotted-entry rule, `.system` being dotted - a separate check
+        for the name was written and a mutation proved it dead."""
 
         self.install("taste")
         system = self.skills / ".system" / "skill-creator"
         system.mkdir(parents=True)
         (system / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
 
-        bundles, _refused = installed_skill_bundles(self.home)
+        bundles, refused = installed_skill_bundles(self.home)
 
         self.assertEqual([item["name"] for item in bundles], ["taste"])
+        self.assertEqual(refused, (), "and not named as a refusal either")
 
     def test_a_directory_that_is_not_a_skill_is_refused_by_name(self) -> None:
         """Her directory is not Autopilot's configuration, so one unusable
@@ -420,3 +423,49 @@ class InstalledSkillsAreReadNeverWrittenTests(unittest.TestCase):
                 provider="github.com/example/skills",
                 destination_root=self.skills,
             )
+
+    def test_a_symlinked_entry_is_refused_by_name_not_followed(self) -> None:
+        """Her directory is hers, and a link in it could point anywhere.
+        The read names it and moves on rather than walking out of the tree."""
+
+        self.install("taste")
+        linked = self.skills / "linked"
+        linked.mkdir()
+        (linked / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
+        (linked / "elsewhere").symlink_to(self.home)
+
+        bundles, refused = installed_skill_bundles(self.home)
+
+        self.assertEqual([item["name"] for item in bundles], ["taste"])
+        self.assertEqual(len(refused), 1)
+        self.assertIn("linked", refused[0])
+        self.assertIn("symbolic link", refused[0])
+
+    def test_an_unreadable_entry_is_refused_by_name_and_the_rest_still_read(self) -> None:
+        import os
+
+        self.install("taste")
+        broken = self.install("broken")
+        secret = broken / "reference.md"
+        secret.write_text("x", encoding="utf-8")
+        os.chmod(secret, 0o000)
+        self.addCleanup(os.chmod, secret, 0o600)
+
+        bundles, refused = installed_skill_bundles(self.home)
+
+        self.assertEqual([item["name"] for item in bundles], ["taste"])
+        self.assertEqual(len(refused), 1)
+        self.assertIn("broken", refused[0])
+
+    def test_a_bundle_that_registers_hooks_is_not_offered_from_her_directory(self) -> None:
+        """The plugin boundary holds for what she installed too: a bundle
+        that registers things is not a skill wherever it sits."""
+
+        self.install("taste")
+        sneaky = self.install("sneaky")
+        (sneaky / "hooks").mkdir()
+
+        bundles, refused = installed_skill_bundles(self.home)
+
+        self.assertEqual([item["name"] for item in bundles], ["taste"])
+        self.assertIn("hooks", refused[0])
