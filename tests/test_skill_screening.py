@@ -2294,6 +2294,59 @@ class HerOwnSkillsAreUsedTests(AttestedProjectCase):
             record["decision"]["outcomes"][0]["bundle"]["origin"], "local"
         )
 
+    def test_a_skill_that_is_there_but_unreadable_leads_with_that(self) -> None:
+        """The same defect as the false "carries no SKILL.md", in a second
+        place: the sentence led with "not installed" about a skill that IS
+        installed, sending her to look for something sitting right there.
+        The truth was in the tail of the string; the ordering lied.
+        """
+
+        import os
+        from unittest import mock
+
+        home = self._codex_home()
+        locked = home / "skills" / "locked"
+        locked.mkdir(parents=True)
+        (locked / "SKILL.md").write_text(
+            "---\nname: locked\n---\n\n# Locked\n", encoding="utf-8"
+        )
+        os.chmod(locked, 0o000)
+        self.addCleanup(os.chmod, locked, 0o700)
+        with mock.patch.dict("os.environ", {"CODEX_HOME": str(home)}):
+            self._qualified_pack(trailing_task=_trailing_task())
+            cfg = load_config(self.root)
+            activate_via_app_server(
+                cfg, self.root, self.last_descriptors[0], "screening-M1"
+            )
+            complete_desktop_worker(
+                cfg,
+                thread_id="screening-M1",
+                turn_id="screening-turn-M1",
+                final_message=screening_message(
+                    {
+                        "task_id": "M1",
+                        "items": [
+                            {
+                                "capability": "frontend-taste",
+                                "rationale": "M1 builds a page.",
+                                "necessity": "required",
+                                "installed": "locked",
+                            }
+                        ],
+                    }
+                ),
+            )
+
+        reason = json.loads(
+            (cfg.state_dir / "run-state.json").read_text(encoding="utf-8")
+        )["task_hiring"]["M1"]["decision"]["outcomes"][0]["reason"]
+        self.assertTrue(
+            reason.startswith("locked: installed but could not be read"),
+            f"the sentence must lead with the real cause; got {reason!r}",
+        )
+        self.assertIn("errno 13", reason)
+        self.assertNotIn("not installed", reason)
+
     def test_naming_a_skill_she_does_not_have_says_what_she_does(self) -> None:
         from unittest import mock
 

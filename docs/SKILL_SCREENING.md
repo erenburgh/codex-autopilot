@@ -639,6 +639,35 @@ against checks the project already ran. R18 is unchanged too: it shapes HOW
 the work is done and never decides WHETHER it is accepted, which is why such a
 pack is still withheld from the verification-phase prompt.
 
+## Sweeping the magnitudes — a rule, not a fact about this feature
+
+Every constant here was moved far past anything a fixture reaches, and the
+suite re-run for each. Nine of twelve were **held by nothing**: deleting the
+check would have reddened no test, and the suite stayed green. Among them were
+the only two quantitative guards on the path that reaches the internet.
+
+The direction matters, and the asymmetry is the rule worth carrying to the next
+feature:
+
+* **Downward, a guard is held for free.** Zero a limit and it refuses the
+  things the happy-path tests depend on, so they break. Ten constants zeroed,
+  ten caught, independently confirmed.
+* **Upward, a guard is held by nothing until someone writes it.** Raising a
+  limit breaks nothing, because every test that exercised the guard was written
+  to stay inside it.
+
+Upward is also the dangerous direction: that is where a guard silently stops
+guarding. So a bound needs two different tests, and one does not imply the
+other:
+
+1. that it is **enforced** — a case on each side of the boundary;
+2. that it is **this number** — the value asserted, with the reason.
+
+A fixture sized *from* the constant proves only the first, and looks like it
+proves both. That mistake was made here: "at the limit is admitted" and "one
+over is refused" both still passed with the limit raised a thousandfold,
+because the fixture rose with it.
+
 ## What is not built
 
 * Acquisition of any kind. A requisition item that nothing installed satisfies

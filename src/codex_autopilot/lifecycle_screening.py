@@ -344,6 +344,20 @@ def _admit_bundles(
         if item.installed:
             entry = by_name.get(item.installed)
             if entry is None:
+                # Lead with the real cause. A skill that is present but
+                # unreadable was reported as "not installed", which sends
+                # somebody looking for a skill that is sitting right there -
+                # the same defect as a refusal naming a missing SKILL.md in
+                # a directory that carries one.
+                blocked = [
+                    line for line in unreadable if line.startswith(f"{item.installed} ")
+                ]
+                if blocked:
+                    refused[item.capability] = (
+                        f"{item.installed}: installed but could not be read - "
+                        + "; ".join(blocked)
+                    )
+                    continue
                 present = ", ".join(sorted(by_name)) or "nothing is installed"
                 refused[item.capability] = (
                     f"{item.installed}: not installed in this machine's Codex "
