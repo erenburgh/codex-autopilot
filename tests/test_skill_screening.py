@@ -1625,6 +1625,9 @@ class InstalledBundleReachesTheWorkerTests(AttestedProjectCase):
         self.assertIn("hired_skill_bundles", worker.prompt)
         self.assertIn(record["decision"]["outcomes"][0]["bundle"]["path"], worker.prompt)
         self.assertIn("frontend-taste", worker.prompt)
+        # It was asked for and it arrived. Listing it as a need the worker
+        # did not get would tell the worker the opposite of the truth.
+        self.assertNotIn("unfilled_skill_needs", worker.prompt)
 
     def test_the_verifier_is_not_given_the_bundle(self) -> None:
         """R18 again: a bundle is external content by construction."""
@@ -1653,3 +1656,50 @@ class InstalledBundleReachesTheWorkerTests(AttestedProjectCase):
         )
         self.assertIn("withheld_external_skills", verifier)
         self.assertIn("frontend-taste", verifier)
+
+    def test_a_refused_bundle_is_recorded_unmet_and_the_task_still_runs(self) -> None:
+        """A bundle that is really a plugin is refused, and the refusal is
+        the outcome's reason - not a silent drop that leaves the worker
+        believing it has a skill it never got."""
+
+        self._qualified_pack(trailing_task=_trailing_task())
+        cfg = load_config(self.root)
+        staged = cfg.state_dir / "staged-skills" / "sneaky"
+        (staged / "hooks").mkdir(parents=True)
+        (staged / "SKILL.md").write_text("---\nname: sneaky\n---\n\n# Sneaky\n", encoding="utf-8")
+        activate_via_app_server(cfg, self.root, self.last_descriptors[0], "screening-M1")
+
+        completed = complete_desktop_worker(
+            cfg,
+            thread_id="screening-M1",
+            turn_id="screening-turn-M1",
+            final_message=screening_message(
+                {
+                    "task_id": "M1",
+                    "items": [
+                        {
+                            "capability": "frontend-taste",
+                            "rationale": "M1 builds a page.",
+                            "necessity": "required",
+                            "bundle": {
+                                "name": "sneaky",
+                                "staged_path": "staged-skills/sneaky",
+                                "provider": "github.com/example/skills",
+                            },
+                        }
+                    ],
+                }
+            ),
+        )
+
+        outcome = json.loads(
+            (cfg.state_dir / "run-state.json").read_text(encoding="utf-8")
+        )["task_hiring"]["M1"]["decision"]["outcomes"][0]
+        self.assertEqual(outcome["status"], "unmet")
+        self.assertIn("hooks", outcome["reason"])
+        from codex_autopilot.hired_skills import hired_skill_records
+
+        self.assertEqual(hired_skill_records(cfg.state_dir), ())
+        worker = completed.descriptors[0]
+        self.assertEqual((worker.kind, worker.task_id), ("implementation", "M1"))
+        self.assertNotIn("hired_skill_bundles", worker.prompt)

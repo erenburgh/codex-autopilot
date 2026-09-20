@@ -209,3 +209,111 @@ class AdmissionTests(AdmissionCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterruptedAndRepeatedAdmissionTests(AdmissionCase):
+    """What the coordinating session said it would aim at.
+
+    Already present, present at another revision, a half-finished copy, and
+    a run interrupted between installing and hiring.
+    """
+
+    def test_a_half_finished_copy_is_never_mistaken_for_an_admitted_bundle(self) -> None:
+        """A bundle is copied under a dotted name and renamed into place, so
+        an interrupted admission leaves nothing that looks installed."""
+
+        staged = self.stage()
+        record = self.admit(staged)
+        pending = Path(record["path"]).parent / f".{Path(record['path']).name}.pending"
+        pending.mkdir()
+        (pending / "SKILL.md").write_text("half a file", encoding="utf-8")
+
+        self.assertEqual(
+            [item["id"] for item in hired_skill_records(self.state_dir)],
+            [record["id"]],
+        )
+
+    def test_a_leftover_pending_copy_does_not_block_a_later_admission(self) -> None:
+        staged = self.stage()
+        root = self.state_dir / HIRED_SKILLS_DIRNAME
+        root.mkdir(parents=True)
+        digest_dir = root / ".taste@000000000000.pending"
+        digest_dir.mkdir()
+        (digest_dir / "junk").write_text("x", encoding="utf-8")
+
+        record = self.admit(staged)
+
+        self.assertTrue(Path(record["path"]).is_dir())
+
+    def test_readmitting_the_same_bundle_does_not_disturb_what_is_installed(self) -> None:
+        """The run may be interrupted between installing and hiring, and the
+        next screening staging the same bundle must be harmless."""
+
+        first = self.admit(self.stage())
+        marker = Path(first["path"]) / "SKILL.md"
+        before = marker.stat().st_mtime_ns
+
+        second = self.admit(self.stage())
+
+        self.assertEqual(second["path"], first["path"])
+        self.assertEqual(marker.stat().st_mtime_ns, before, "it was not recopied")
+
+    def test_revoking_one_revision_leaves_the_other(self) -> None:
+        first = self.admit(self.stage())
+        second = self.admit(self.stage(body=SKILL_MD + "\nAlso: prefer grid.\n"))
+
+        revoke_hired_skill(self.state_dir, first["id"])
+
+        self.assertFalse(Path(first["path"]).exists())
+        self.assertTrue(Path(second["path"]).is_dir())
+        self.assertEqual(
+            [item["id"] for item in hired_skill_records(self.state_dir)], [second["id"]]
+        )
+
+    def test_an_unreadable_file_is_refused_before_anything_is_copied(self) -> None:
+        """The digest reads every file, so a bundle that cannot be read in
+        full never reaches the copy at all."""
+
+        import os
+
+        staged = self.stage()
+        unreadable = staged / "reference.md"
+        unreadable.write_text("half of a procedure", encoding="utf-8")
+        os.chmod(unreadable, 0o000)
+        self.addCleanup(os.chmod, unreadable, 0o600)
+
+        with self.assertRaises(PermissionError):
+            self.admit(staged)
+
+        self.assertEqual(hired_skill_records(self.state_dir), ())
+
+    def test_a_copy_that_dies_partway_leaves_nothing_that_looks_admitted(self) -> None:
+        """Measured on this machine: shutil.copytree creates its destination
+        first and copies afterwards, so a failure partway leaves a partial
+        directory behind - `destination exists after failure: True`. Copying
+        under a dotted name and renaming into place is what keeps that
+        wreckage from being listed, and handed to a worker, as the skill.
+
+        The failure is injected because the real one is a disk filling up or
+        a process dying mid-copy; the shape injected here is the shape that
+        was measured.
+        """
+
+        from unittest import mock
+
+        staged = self.stage()
+
+        def half_a_copy(src, dst, **_kwargs):
+            Path(dst).mkdir(parents=True, exist_ok=True)
+            (Path(dst) / "SKILL.md").write_text("half a", encoding="utf-8")
+            raise OSError("no space left on device")
+
+        with mock.patch("codex_autopilot.hired_skills.shutil.copytree", half_a_copy):
+            with self.assertRaises(OSError):
+                self.admit(staged)
+
+        self.assertEqual(
+            hired_skill_records(self.state_dir),
+            (),
+            "a half-copied bundle must not be listed as installed",
+        )
