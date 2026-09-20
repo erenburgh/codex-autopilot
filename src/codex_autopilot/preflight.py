@@ -749,7 +749,9 @@ def run_preflight(
             )
             emit(
                 "Capacity: "
-                + capacity_notice(limits, declared_workers)
+                + capacity_notice(
+                    limits, declared_workers, running=plan.max_parallel_workers
+                )
             )
             emit("")
             emit("Preflight: PASS")

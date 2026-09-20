@@ -100,47 +100,72 @@ def worker_budget(
     return WorkerBudget(1, f"{used:.0f}% of the window used", True)
 
 
-def capacity_notice(limits: Mapping[str, Any] | None, declared: int | None) -> str:
-    """What to tell the human about capacity before the run starts.
+def capacity_notice(
+    limits: Mapping[str, Any] | None,
+    declared: int | None,
+    running: int | None = None,
+) -> str:
+    """What to tell the human about the capacity this run is using.
 
     The user need not know their plan, nor that the number of workers can
-    be set at all. Asking once, naming their own situation, is more honest
-    than silently setting the template's ten - which is exactly how it
-    stood for a whole 24-task run.
+    be set at all. Naming their own situation once is more honest than
+    silently taking the template's ten - which is exactly how it stood for
+    a whole 24-task run.
+
+    ``running`` is the number the run will actually use. It matters most on
+    Plus, where ``default_workers`` recommends three: this line used to
+    announce "3 parallel workers by default" while the plan carried ten and
+    nothing anywhere brought the two together, so the one person warned
+    about a narrow window was the one told the wrong number. The
+    recommendation is still here, as a recommendation, beside what is
+    really happening.
+
+    The line is printed by preflight, which runs inside the command that
+    also creates the run and its first worker. It is therefore a disclosure
+    and not a question: by the time anyone reads it the number is in the
+    plan. Changing it means naming another number and starting again.
     """
 
     snapshot = _snapshot(limits)
     credits = snapshot.get("credits")
     credits = credits if isinstance(credits, Mapping) else {}
     plan_type = _human_plan_name(snapshot.get("planType"))
+    fallback = default_workers(limits)
+    actual = running if running is not None else fallback
 
     if declared is not None:
         return (
             f"Parallel workers: {declared} - as you specified. "
-            "You can change it at any time by naming another number."
+            "To change it, name another number and start again."
         )
     if _burns_without_a_wall(credits):
         return (
             "Your billing is unlimited, so there is no ceiling on parallel workers: "
-            "as many tasks run at once as the plan opens. "
-            "To cap it, name a number."
+            f"as many tasks run at once as the plan opens, up to {actual}. "
+            "To cap it, name a number and start again."
         )
-    fallback = default_workers(limits)
     if _is_plus(snapshot.get("planType")):
+        recommendation = (
+            f"{fallback} is what it comfortably supports"
+            if actual != fallback
+            else "that is what it comfortably supports"
+        )
         return (
-            f"Plan {plan_type}: {fallback} parallel workers by default - "
-            "the limit window is narrow here, and ten would burn it in one run. "
-            "You can set your own number."
+            f"Plan {plan_type}: this run uses {actual} parallel workers. "
+            f"The limit window is narrow here and {recommendation}; "
+            "ten would burn it in one run. "
+            "To change it, name a number and start again."
         )
     if plan_type:
         return (
-            f"Plan {plan_type}: {fallback} parallel workers by default, "
+            f"Plan {plan_type}: this run uses {actual} parallel workers, "
             "and they narrow by themselves as the limit window runs low. "
-            "You can set your own number."
+            "To change it, name a number and start again."
         )
     return (
-        f"{fallback} parallel workers by default. You can set your own "
-        "number; as the limit approaches they narrow by themselves."
+        f"This run uses {actual} parallel workers. To change it, name a "
+        "number and start again; as the limit approaches they narrow by "
+        "themselves."
     )
 
 

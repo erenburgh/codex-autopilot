@@ -128,17 +128,47 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TheUserIsAskedBeforeTheFirstWorkerTests(unittest.TestCase):
-    """The worker count is asked for, not substituted silently.
+class TheUserLearnsWhatTheRunIsSpendingTests(unittest.TestCase):
+    """The worker count is disclosed, not substituted silently.
 
     The ten from the template stood through a whole run of 24 tasks with
     four independent branches, and nobody had chosen it.
+
+    It is a disclosure and not a question: preflight prints this line from
+    inside the command that also creates the run and its first worker, so
+    by the time anyone reads it the number is already in the plan. The
+    skill used to instruct the model to "let them answer before the first
+    worker starts", which no model could obey.
     """
 
-    def notice(self, limits, declared=None):
+    def notice(self, limits, declared=None, running=None):
         from codex_autopilot.usage import capacity_notice
 
-        return capacity_notice(limits, declared)
+        return capacity_notice(limits, declared, running)
+
+    def test_it_names_the_number_this_run_actually_uses(self) -> None:
+        """Plus was told three while ten was what ran.
+
+        ``default_workers`` returns three for Plus and is called by nobody
+        but this notice: nothing narrows the plan to it. So the one person
+        warned that their window is narrow read "3 parallel workers by
+        default" and got ten - the number the plan template carries and
+        the scheduler honours.
+        """
+
+        text = self.notice({"planType": "plus", "credits": {}}, running=10)
+        self.assertIn("10", text)
+        self.assertIn("3", text)
+        self.assertIn("narrow", text)
+
+    def test_the_skill_does_not_promise_an_answer_before_the_first_worker(self) -> None:
+        from pathlib import Path as _Path
+
+        root = _Path(__file__).resolve().parent.parent
+        for skill in root.glob("plugins/*/skills/*/SKILL.md"):
+            with self.subTest(skill=skill.parts[-3]):
+                text = skill.read_text(encoding="utf-8")
+                self.assertNotIn("let them answer before the first worker", text)
 
     def test_unlimited_is_told_it_has_no_ceiling(self) -> None:
         text = self.notice({"credits": {"unlimited": True}})

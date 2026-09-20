@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.11.2-beta
+
+The capacity line stops asking a question it cannot ask, and starts naming the
+number that is actually running.
+
+- The skill told the model to show the user the `Capacity:` line and "let them
+  answer before the first worker starts". No model could obey it: preflight
+  prints that line from inside `start-skill`, the same command that creates the
+  run and Worker 1, so by the time anyone reads it the number is already in the
+  plan. The instruction now says what it is - a disclosure, shown verbatim in
+  the first reply after the command returns, with how to change the number
+  (name another and repeat the start with `--replace`) and a standing rule
+  never to present the template's ten as the user's own choice.
+- The line itself was worse than unfollowable on Plus. `default_workers`
+  recommends three there, is called by this notice and by nothing else, and
+  narrows no plan: the one person warned that their window is narrow was told
+  "3 parallel workers by default" while ten was what ran. The notice now names
+  the run's real number and keeps the recommendation beside it.
+- "You can change it at any time by naming another number" was not true either.
+  Nothing changes the worker ceiling mid-run; the text says so.
+
 ## 0.11.1-beta
 
 What a stranger receives, audited as a stranger receives it: the published
