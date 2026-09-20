@@ -7,9 +7,13 @@
 - The official Codex CLI, signed in, with `codex app-server` available.
 - An eligible ChatGPT/Codex account.
 - Python 3.11 or newer.
-- An existing Git repository for the project Autopilot will change.
+- An existing Git repository, **with at least one commit**, for the project Autopilot will change.
 
-Normal use does not require Python commands, pip, a manual venv, PATH changes, or manual state editing. Homebrew is optional. Git must exist because the target must already be a repository; Autopilot does not run `git init`.
+Normal use does not require Python commands, pip, a manual venv, PATH changes, or manual state editing. Homebrew is optional.
+
+Git is local here and unrelated to GitHub: no remote, nothing pushed, and Autopilot creates no commits of its own (`git.auto_commit` is off). It is there because it is how the runtime sees what a task changed - `git diff --name-only` plus `git ls-files --others` - and that observation is what the declared write scope is audited against. Autopilot does not run `git init` for you.
+
+One commit matters. A repository that has been initialised but never committed has no `HEAD`, so there is nothing to compare against: the run works, but the write-scope rule is recorded as unchecked for every task instead of being enforced. Preflight prints `Git: WARN` in that case and says so.
 
 ## Install once
 

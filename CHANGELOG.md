@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.11.5-beta
+
+`git init` was never enough, and every document said it was.
+
+The Git check asked one question: does `.git` exist. A repository that has been
+initialised and never committed passes it, and then fails where it matters.
+`observe_changed_paths` compares against `HEAD`; without a commit there is no
+`HEAD`, `git diff` refuses, and `artifact_staging_lifecycle` records
+`scope_not_observed` and carries on. The run works. R7 - the rule that catches a
+worker writing outside the scope it declared - is simply not enforced, for every
+task, and nothing tells the user. `git init` with no commit is exactly the state
+a first-time user is most likely to be in, and the requirement line, the
+refusal message and Getting Started all advised precisely that and stopped.
+
+- Preflight now reports `Git: WARN` when the repository has no commits, says
+  that the declared write scope cannot be observed and will be recorded as
+  unchecked, and says that one commit enables it. It is a warning, not a
+  refusal: the run is still legitimate, it is just less guarded than the user
+  would assume.
+- Both refusals - `bootstrap` and `preflight` - now name the commit rather than
+  only the repository.
+- The README and Getting Started say what git is actually for here, because the
+  requirement reads as bureaucracy until you know: it is local, unrelated to
+  GitHub, needs no remote, and Autopilot creates no commits of its own. It is
+  how the runtime sees what a task changed - `git diff --name-only` plus
+  `git ls-files --others` - and that observation is the whole basis of the
+  write-scope audit.
+- The README's requirement line also stopped listing Python and the Codex CLI as
+  things to arrange: `install.sh --install-deps` installs both when they are
+  missing.
+
 ## 0.11.4-beta
 
 `logs/` is what fills the disk, and 0.11.3 said it was `staged-artifacts/`.

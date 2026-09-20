@@ -33,7 +33,9 @@ The initiating request also establishes one durable BCP-47 response language for
 
 ## Install
 
-Requirements: macOS, Codex Desktop, a signed-in official Codex CLI with App Server, Python 3.11 or newer, an eligible account, and an existing Git repository for the target project.
+Requirements: macOS, Codex Desktop, an eligible account, and for the target project an existing Git repository **with at least one commit**. Python 3.11+ and the Codex CLI are installed for you by `install.sh --install-deps` if they are missing.
+
+Git here is local and has nothing to do with GitHub: no remote is needed, nothing is pushed, and Autopilot creates no commits (`git.auto_commit` is off). It is how the runtime sees what a task changed — `git diff` plus `git ls-files --others` — which is what the declared write-scope rule is checked against. A repository with no commits has no `HEAD` to compare with: the run still works, but that rule is recorded as unchecked for every task, so preflight warns about it.
 
 Open the Codex project you want to work on and say:
 

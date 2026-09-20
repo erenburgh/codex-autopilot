@@ -46,7 +46,7 @@ def initialize_project(
     if not root.is_dir():
         raise ValueError(f"project directory does not exist: {root}")
     if not (root / ".git").exists():
-        raise ValueError("Codex Autopilot public beta requires an existing Git repository. Run `git init` if appropriate; Autopilot never changes Git identity or creates commits by default.")
+        raise ValueError("Codex Autopilot public beta requires an existing Git repository. Run `git init` and make one commit - without a commit there is no HEAD to compare against, and the declared write scope cannot be checked. Autopilot never changes Git identity or creates commits by default.")
     if profile not in {"adaptive", "host-settings"}:
         raise ValueError("profile must be adaptive or host-settings")
     if not skill_path.is_file():
