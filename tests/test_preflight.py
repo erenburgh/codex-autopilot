@@ -740,17 +740,18 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class ARepositoryWithoutCommitsIsNamedTests(unittest.TestCase):
-    """`git init` alone silently disables the write-scope rule.
+class ARepositoryWithoutCommitsIsUsableTests(unittest.TestCase):
+    """`git init` alone is enough, and for one release it was not.
 
-    The Git check only asked whether `.git` exists. A repository that has
-    been initialised and never committed passes it and then fails where it
-    matters: ``observe_changed_paths`` diffs against HEAD, there is no HEAD,
-    and ``artifact_staging_lifecycle`` records ``scope_not_observed`` and
-    carries on. The run works; R7 - the rule that catches a worker writing
-    outside its declared scope - is not enforced for any task, and nothing
-    says so. Every document advised exactly `git init` and stopped there,
-    which is the state a first-time user is most likely to be in.
+    The scope audit diffed against HEAD. A repository that had been
+    initialised and never committed has none, `git diff` failed, and
+    `artifact_staging_lifecycle` recorded `scope_not_observed` and carried
+    on - so R7, the rule that catches a worker writing outside its declared
+    scope, was silently not enforced for any task. 0.11.5 warned about it
+    and told the user to make a commit. That was the wrong end: the
+    requirement was the runtime's convenience, not the user's business.
+    Diffing against the empty tree asks the same question - everything
+    present is a change from nothing - and works with no commits at all.
     """
 
     def setUp(self) -> None:
@@ -759,54 +760,39 @@ class ARepositoryWithoutCommitsIsNamedTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
 
-    def _has_no_commits(self) -> bool:
-        from codex_autopilot.preflight import _git_has_no_commits
+    def test_changed_paths_are_observed_with_no_commits_at_all(self) -> None:
+        from codex_autopilot.scope import observe_changed_paths
 
-        return _git_has_no_commits(self.root)
-
-    def test_a_fresh_repository_is_reported_as_having_no_commits(self) -> None:
-        self.assertTrue(self._has_no_commits())
-
-    def test_one_commit_is_enough(self) -> None:
-        (self.root / "file.txt").write_text("hello\n", encoding="utf-8")
-        env = {
-            **os.environ,
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@example.com",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@example.com",
-        }
-        subprocess.run(["git", "-C", str(self.root), "add", "file.txt"], check=True)
-        subprocess.run(
-            ["git", "-C", str(self.root), "commit", "-q", "-m", "first"],
-            check=True,
-            env=env,
+        (self.root / "written.txt").write_text("hello\n", encoding="utf-8")
+        observed = observe_changed_paths(self.root, None)
+        self.assertEqual(
+            [Path(path).name for path in observed], ["written.txt"]
         )
-        self.assertFalse(self._has_no_commits())
 
-    def test_what_the_warning_is_about_actually_happens(self) -> None:
-        """Not the helper's opinion: the observation really does fail."""
+    def test_a_staged_file_is_seen_too(self) -> None:
+        """Staged and untracked together, or half the writes are invisible."""
 
-        from codex_autopilot.scope import ScopeNotObservable, observe_changed_paths
+        from codex_autopilot.scope import observe_changed_paths
 
-        (self.root / "file.txt").write_text("hello\n", encoding="utf-8")
-        with self.assertRaises(ScopeNotObservable):
-            observe_changed_paths(self.root, None)
+        (self.root / "staged.txt").write_text("a\n", encoding="utf-8")
+        (self.root / "loose.txt").write_text("b\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "staged.txt"], check=True
+        )
+        observed = {Path(path).name for path in observe_changed_paths(self.root, None)}
+        self.assertEqual(observed, {"staged.txt", "loose.txt"})
 
-    def test_preflight_warns_instead_of_staying_silent(self) -> None:
-        source = (
-            Path(__file__).resolve().parents[1]
-            / "src/codex_autopilot/preflight.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("_git_has_no_commits(project)", source)
-        self.assertIn("repository has no commits", source)
+    def test_the_baseline_is_the_empty_tree_before_the_first_commit(self) -> None:
+        from codex_autopilot.scope import empty_tree, scope_baseline
 
-    def test_every_user_document_names_the_commit(self) -> None:
+        self.assertEqual(scope_baseline(self.root), empty_tree(self.root))
+
+    def test_no_document_demands_a_commit_any_more(self) -> None:
         root = Path(__file__).resolve().parents[1]
         for name in ("README.md", "GETTING_STARTED.md"):
             with self.subTest(document=name):
                 text = (root / name).read_text(encoding="utf-8")
-                self.assertIn("at least one commit", text)
+                self.assertNotIn("at least one commit", text)
 
 
 class TargetMustBelongToAProjectTests(unittest.TestCase):

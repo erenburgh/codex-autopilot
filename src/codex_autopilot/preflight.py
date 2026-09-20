@@ -279,25 +279,8 @@ def run_preflight(
     report("Target", "OK", "explicit project root resolved")
     if not (project / ".git").exists():
         report("Git", "FAIL", "existing repository required")
-        raise PreflightError("Codex Autopilot requires an existing Git repository with at least one commit; it does not run `git init` or create commits automatically")
-    # A repository with no commits passes the check above and fails where it
-    # matters: observe_changed_paths diffs against HEAD, and without a commit
-    # there is no HEAD. The run does not stop - artifact_staging_lifecycle
-    # records `scope_not_observed` and carries on - so R7, the rule that
-    # catches a worker writing outside its declared scope, is simply not
-    # enforced, silently, for every task. `git init` alone is the state a
-    # first-time user is most likely to be in, and the documents used to
-    # advise exactly that and nothing more.
-    if _git_has_no_commits(project):
-        report(
-            "Git",
-            "WARN",
-            "repository has no commits: declared write scope (R7) cannot be "
-            "observed and will be recorded as unchecked for every task. "
-            "Make one commit to enable it.",
-        )
-    else:
-        report("Git", "OK", "existing repository")
+        raise PreflightError("Codex Autopilot requires an existing Git repository; it does not run `git init` or create commits automatically")
+    report("Git", "OK", "existing repository")
     deterministic_issues = deterministic_plan_issues(plan)
     if deterministic_issues:
         detail = format_plan_verification_issues(deterministic_issues)
@@ -887,27 +870,6 @@ def _run_initial_plan_verification(
         verifier_thread_id=thread_id,
         verifier_turn_id=turn_id,
     )
-
-
-def _git_has_no_commits(project: Path) -> bool:
-    """Whether the repository has no HEAD to diff against.
-
-    Anything unexpected answers False: this gates a warning, and a warning
-    invented from a git that could not be run would be worse than silence.
-    """
-
-    import subprocess
-
-    try:
-        done = subprocess.run(
-            ["git", "-C", str(project), "rev-parse", "--verify", "HEAD"],
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return done.returncode != 0
 
 
 def _reject_unprobed_capabilities(

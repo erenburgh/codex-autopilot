@@ -36,6 +36,7 @@ __all__ = [
     "WRITE_ACCESS_MODES",
     "ScopeNotObservable",
     "audit_declared_scope",
+    "empty_tree",
     "observe_changed_paths",
     "scope_baseline",
 ]
@@ -45,11 +46,34 @@ class ScopeNotObservable(Exception):
     """No way to observe the changed paths; the scope was not checked."""
 
 
+def empty_tree(root: Path) -> str | None:
+    """The hash of the empty tree in this repository's hash algorithm.
+
+    A repository with no commits has no HEAD, and `git diff HEAD` in it
+    fails. Diffing against the empty tree is the same question asked in a
+    form that works: everything present is a change from nothing. The hash
+    is asked of git rather than hard-coded, because it differs between
+    sha1 and sha256 repositories.
+    """
+
+    value = _git(root, "hash-object", "-t", "tree", "/dev/null")
+    return value.strip() if value else None
+
+
 def scope_baseline(root: Path) -> str | None:
-    """The revision at task start, against which the diff is computed."""
+    """The revision at task start, against which the diff is computed.
+
+    Before a first commit there is no revision to name. The empty tree
+    stands in: a project that has just been `git init`-ed is a legitimate
+    target, and demanding a commit from the user for the runtime's own
+    convenience was a requirement nobody could guess and every document
+    got wrong.
+    """
 
     head = _git(root, "rev-parse", "HEAD")
-    return head.strip() if head else None
+    if head:
+        return head.strip()
+    return empty_tree(root)
 
 
 def observe_changed_paths(root: Path, baseline: str | None) -> tuple[str, ...]:
@@ -70,7 +94,13 @@ def observe_changed_paths(root: Path, baseline: str | None) -> tuple[str, ...]:
     # Names are taken without parsing status prefixes: git returns them as
     # is. --no-renames keeps both sides of a rename, because for the scope
     # those are two different paths, not one.
-    against = baseline or "HEAD"
+    # "HEAD" only while there is one. In a repository without commits the
+    # empty tree answers the same question, so a fresh `git init` is a
+    # fully observable target rather than a silently unchecked one.
+    against = baseline or _git(root, "rev-parse", "--verify", "HEAD")
+    against = against.strip() if against else empty_tree(root)
+    if not against:
+        raise ScopeNotObservable(f"cannot establish a baseline in {root}")
     changed = _git(root, "diff", "--name-only", "--no-renames", against)
     if changed is None:
         raise ScopeNotObservable(f"cannot diff against {against}")

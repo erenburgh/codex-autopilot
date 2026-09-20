@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.11.7-beta
+
+A bare `git init` is enough. The commit 0.11.5 demanded was never the user's
+business.
+
+0.11.5 found that a repository with no commits silently disabled the
+write-scope rule, and answered by warning the user and telling them to make a
+commit. That was the wrong end of the problem. The requirement existed because
+`observe_changed_paths` diffed against `HEAD` and a fresh repository has none -
+the runtime's own convenience, dressed up as something the user had to arrange.
+
+Diffing against the empty tree asks the same question in a form that works:
+everything present is a change from nothing. `git diff --name-only <empty-tree>`
+plus `git ls-files --others` covers staged and untracked alike, so a project
+that has just been `git init`-ed is now fully observed rather than silently
+unchecked. The hash is asked of git rather than hard-coded, because sha1 and
+sha256 repositories have different ones.
+
+The preflight warning and its helper are gone: they warned about a condition
+that no longer degrades anything. Both refusals and both user documents say
+`git init` and stop, which is what they said before 0.11.5 - only now it is
+true.
+
 ## 0.11.6-beta
 
 The traces stop piling up. 0.11.4 disclosed that nothing removed them; this
