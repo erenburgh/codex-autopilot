@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.11.0-beta
+
+Hiring. A task is screened for the skills its worker needs at the moment that
+worker is hired, not when the plan is written.
+
+### The screening session
+
+- Before a task is reserved, a short screening session reads the task, the
+  skills installed on this machine (`$CODEX_HOME/skills`, read-only), and the
+  bundles this project hired earlier, and decides what the worker for that task
+  carries. Nothing about skills is declared in the plan: a plan is authored
+  before anyone has looked at the repository, so it cannot know.
+- A screening is a session like any other - it is reserved, it is owned, it is
+  bounded. Two attempts per task per graph version; a task whose screening
+  cannot conclude proceeds unscreened rather than waiting forever, and the
+  status card says so.
+- A decision is `hired` only when a skill is actually attached to it. The flag
+  is derived, not stored, so a record cannot claim a hire it does not hold.
+
+### The market
+
+- A screening may name a skill it does not have, as a provider
+  (`github.com/<owner>/<repo>`) and a path inside it. The runtime performs the
+  fetch; the screening session is told it must not reach the network itself.
+- Only `github.com` and `raw.githubusercontent.com` are allowed by default, one
+  `SKILL.md` up to 512 KiB, 20-second timeout, all configurable through
+  `runtime.skill_fetch_hosts` and `runtime.skill_fetch_timeout_seconds`. An
+  empty host list means nothing is fetched at all.
+- A fetch that fails is an unmet need on the record, not a task that stops.
+- Only Skills are ever installed. Plugins, hooks and MCP servers are not, and a
+  fetched bundle is copied into the project's own
+  `.codex-autopilot/hired-skills/`; the destination is confined structurally,
+  so a locator cannot write anywhere else. `~/.codex/skills` is read and never
+  written.
+
+### What the user sees
+
+- `status` gained a screening line: the mode, the threads it has spent, tasks
+  screened and unscreened, skills hired, needs left unfilled, bundles installed.
+  A feature that is on by default has to be able to say what it cost.
+- `codex-autopilot skills --project <path>` lists what a project has hired;
+  `codex-autopilot revoke-skill --project <path> --skill-id <id>` removes one.
+- `runtime.skill_screening` is `always` by default; `auto` screens only when
+  something is available to hire, `never` switches it off.
+
+### Verified
+
+- The deterministic suite is 1187 tests and ends `OK`.
+- Live: a screening session ran inside a real run on a real project, reached
+  COMPLETED, and recorded its decision. That decision hired nothing, which is a
+  verdict and not an omission. A live hire and a live fetch have not happened
+  yet in a real run; both are covered by tests only.
+
 ## 0.10.0-beta
 
 The first release meant for people other than the author. Everything in it

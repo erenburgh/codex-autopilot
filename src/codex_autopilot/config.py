@@ -84,9 +84,9 @@ class RuntimeConfig:
     desktop_notifications: bool = False
     full_plan_revalidation_patches: int = DEFAULT_FULL_REVALIDATION_PATCHES
     # Whether a task is screened for skills before it gets a worker.
-    # Off by default for the same reason desktop_notifications is: one
-    # screening is one more Codex thread per task out of the user's limits,
-    # and spending them is the user's decision, not a default.
+    # On by default: a worker that carries the right skill is the point of
+    # the feature, and the cost - one more Codex thread per task out of the
+    # user's limits - is reported by the status card rather than hidden.
     # "auto" screens only when the plan or the installed library holds at
     # least one pack - with nothing to hire from, a screening turn can only
     # answer "nothing available". "always" screens every task, which is what

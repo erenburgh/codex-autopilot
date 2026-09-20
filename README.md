@@ -100,6 +100,40 @@ Each control is answered by the hook itself, without a model turn. Codex marks
 such an answer as a blocked message: that label means the hook replied instead
 of the model, not that something failed.
 
+## Hiring
+
+A task is screened before it is given a worker. A short screening session reads
+the task, looks at the skills already on the machine and at the skill library
+this project has hired before, and decides what the worker for that task should
+carry. Nothing about skills is declared in the plan: a plan is written before
+anyone has looked at the repository, so it cannot know.
+
+A screening may also name a skill it does not have, as a public repository and a
+path inside it. The runtime fetches that bundle - the screening session never
+touches the network itself - and copies it into
+`.codex-autopilot/hired-skills/` inside the project. Nothing is written to
+`~/.codex/skills`, to the Codex plugin cache, to hooks, or to MCP configuration.
+A fetch that fails is recorded as an unmet need, not an error that stops a task.
+
+Screening is on by default. It costs one extra Codex thread per task out of
+your limits, and `status` reports what it has spent and what it bought. To turn
+it off, or to screen only when something is actually available to hire:
+
+```toml
+# .codex-autopilot/config.toml
+[runtime]
+skill_screening = "never"   # or "auto", or the default "always"
+```
+
+What this project has hired, and how to remove one bundle:
+
+```bash
+codex-autopilot skills --project /absolute/path/to/my-project
+codex-autopilot revoke-skill --project /absolute/path/to/my-project --skill-id <id>
+```
+
+See [skill screening](docs/SKILL_SCREENING.md).
+
 ## Persistent state
 
 - `.codex-autopilot/plan.json`: canonical execution plan.
@@ -114,7 +148,7 @@ of the model, not that something failed.
 
 Workers use the configured `:workspace` App Server permission profile. App Server preflight and automatic worker processes never answer approval requests; an approval request fails closed. Autopilot does not call Codex App task APIs, change global Codex settings, change Git configuration, grant permissions, or auto-commit by default. The memory server exposes one tool with a strict operation union; Project Memory has no network service, shell tool, raw SQL tool, embedding service, or external database.
 
-The v0.10 beta supports macOS. It is developed against Codex CLI/App Server 0.154.0; App Server remains experimental.
+The v0.11 beta supports macOS. It is developed against Codex CLI/App Server 0.154.0; App Server remains experimental.
 
 Verified live, not only by tests: parallel workers on one dependency frontier, dependency unlock, independent verification, the Pipeline Engineer incident path including a closed-code escalation and the user's answer to it, and canonical project placement for every created task.
 
@@ -122,4 +156,4 @@ Not verified live and openly outstanding: a real multi-hour rate-limit wake-up, 
 
 Desktop cannot be told that a task started. Its App Server is a separate process from the one Autopilot drives, and the two share only the filesystem, so the sidebar refreshes on the app's own schedule. A created task becomes listable about a second after its turn starts; until the app re-reads, `runtime.desktop_notifications = true` is the only way to learn that work began or finished.
 
-Read [Getting Started](GETTING_STARTED.md), [Project Memory](docs/PROJECT_MEMORY.md), [Architecture](docs/ARCHITECTURE.md), [task graph](docs/DEPENDENCY_GRAPH.md), [parallel execution](docs/PARALLEL_EXECUTION.md), [roles](docs/ROLES.md), [resource locks](docs/RESOURCE_LOCKS.md), [thread naming](docs/THREAD_NAMING.md), [project association](docs/PROJECT_ASSOCIATION.md), [plan evolution and recovery](docs/PLAN_EVOLUTION_AND_RECOVERY.md), [v0.8 → v0.9 migration](docs/MIGRATION_0.8_TO_0.9.md), [MCP](docs/MCP.md), [Security](docs/SECURITY.md), [Testing](docs/TESTING.md), and [Verification](docs/VERIFICATION.md).
+Read [Getting Started](GETTING_STARTED.md), [Project Memory](docs/PROJECT_MEMORY.md), [Architecture](docs/ARCHITECTURE.md), [task graph](docs/DEPENDENCY_GRAPH.md), [parallel execution](docs/PARALLEL_EXECUTION.md), [roles](docs/ROLES.md), [resource locks](docs/RESOURCE_LOCKS.md), [thread naming](docs/THREAD_NAMING.md), [project association](docs/PROJECT_ASSOCIATION.md), [plan evolution and recovery](docs/PLAN_EVOLUTION_AND_RECOVERY.md), [v0.8 → v0.9 migration](docs/MIGRATION_0.8_TO_0.9.md), [skill screening](docs/SKILL_SCREENING.md), [MCP](docs/MCP.md), [Security](docs/SECURITY.md), [Testing](docs/TESTING.md), and [Verification](docs/VERIFICATION.md).

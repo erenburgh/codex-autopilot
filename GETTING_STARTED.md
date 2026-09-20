@@ -124,6 +124,39 @@ The official App Server stores its state, SQLite WAL/SHM files, locks, plugin ca
 
 Up to `max_parallel_workers` independent, resource-compatible READY tasks may overlap. Each worker completes one task, records evidence through the local memory MCP, writes a short handoff, and returns an allowed status. The Desktop Stop hook supplies authoritative task/turn identity before dependencies advance. Conflicting work waits; retries affect only their own task.
 
+## Skills per task
+
+Before a task is given a worker, a short screening session decides which skills
+that worker should carry. It reads the task, the skills already installed on
+this machine, and the bundles this project hired earlier. It may also name a
+skill it does not have yet, as a public repository plus a path inside it; the
+runtime fetches that bundle itself - the screening session never reaches the
+network - and copies it into `.codex-autopilot/hired-skills/` inside the
+project. Nothing goes to `~/.codex/skills`, the Codex plugin cache, hooks, or
+MCP configuration, and a fetch that fails is recorded as an unmet need rather
+than a failed task.
+
+This is on by default and costs one extra Codex thread per task out of your
+limits. `status` shows what it spent and what it bought. To change it:
+
+```toml
+# .codex-autopilot/config.toml
+[runtime]
+skill_screening = "always"          # default; "auto" screens only when something
+                                    # is available to hire, "never" switches it off
+skill_fetch_hosts = ["github.com", "raw.githubusercontent.com"]
+```
+
+An empty `skill_fetch_hosts` list means nothing is ever downloaded: a named
+skill is then recorded as an unmet need. To see or remove what a project holds:
+
+```bash
+"$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" skills --project /absolute/path/to/project
+"$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" revoke-skill --project /absolute/path/to/project --skill-id <id>
+```
+
+See [skill screening](docs/SKILL_SCREENING.md).
+
 ## Pause, resume, and inspect
 
 - Send `Pause Codex Autopilot.` to stop new launches. Existing workers drain
