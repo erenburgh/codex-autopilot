@@ -284,13 +284,20 @@ class AIStudioRuntime:
             "help this particular worker reach the goal, and name them."
         )
         honesty = (
-            "Autopilot ничего не скачивает и не устанавливает. Если ни в одном "
-            "из списков нет ничего подходящего, оставь candidates пустым и напиши в search_intent, "
-            "что именно понадобилось бы: это будет записано как незакрытая потребность."
+            "Если ни в одном из списков нет подходящего, ты можешь назвать, откуда "
+            "его взять: bundle с provider и locator. Скачивает рантайм, не ты - "
+            "сам в сеть не ходи. Неудачная загрузка это незакрытая потребность, а "
+            "не остановленная задача. Если не знаешь, откуда брать, оставь "
+            "candidates пустым и напиши в search_intent, что понадобилось бы."
             if russian
-            else "Autopilot downloads and installs nothing. If neither list holds "
-            "anything suitable, leave candidates empty and say in search_intent what "
-            "would have been needed: it is recorded as an unmet need."
+            else "If neither list holds anything suitable, you may name where to get "
+            "one: a `bundle` with `provider` (a host and path such as "
+            "'github.com/<owner>/<repo>') and `locator` (the path to the skill "
+            "inside it). The RUNTIME fetches it - you must not reach the network "
+            "yourself, from this turn or any other. A fetch that fails is an "
+            "unmet need, not a stopped task. If you do not know where to get "
+            "one, leave candidates empty and say in search_intent what would "
+            "have been needed."
         )
         brief = f"""Codex Autopilot AI Studio Runtime - Screening · Hiring.
 

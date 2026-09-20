@@ -38,6 +38,7 @@ from .lifecycle_base import (
     task_checkpoint,
 )
 from .memory import ProjectMemory
+from .skill_fetch import SkillFetchError, fetch_skill_bundle
 from .plan import Plan
 from .resources import ResourceLockCoordinator
 from .run_state import RunState, StateStore, utc_now
@@ -409,14 +410,36 @@ def _admit_bundles(
         if item.bundle is None:
             continue
         try:
+            staged = (
+                cfg.state_dir / item.bundle.staged_path
+                if item.bundle.staged_path
+                # The screener named where to get it; the runtime fetches.
+                # This runs in the dispatcher, an ordinary local process
+                # outside any Codex turn, so it raises no approval dialog -
+                # which inside a turn would wait unseen and kill the run.
+                else fetch_skill_bundle(
+                    cfg.state_dir,
+                    provider=item.bundle.provider,
+                    locator=item.bundle.locator,
+                    name=item.bundle.name,
+                    ref=item.bundle.ref,
+                    allowed_hosts=getattr(cfg.runtime, "skill_fetch_hosts", ()),
+                    timeout_seconds=getattr(
+                        cfg.runtime, "skill_fetch_timeout_seconds", 20
+                    ),
+                )
+            )
             record = admit_skill_bundle(
                 cfg.state_dir,
-                staged_path=cfg.state_dir / item.bundle.staged_path,
+                staged_path=staged,
                 name=item.bundle.name,
                 provider=item.bundle.provider,
                 locator=item.bundle.locator,
             )
-        except HiredSkillError as exc:
+        except (HiredSkillError, SkillFetchError) as exc:
+            # A wrong locator, an unreachable host, a page instead of a
+            # skill: all of them are an unmet need with the reason on
+            # record, never a stopped task.
             refused[item.capability] = f"{item.bundle.name}: {exc}"
             continue
         admitted[item.capability] = {

@@ -449,6 +449,34 @@ model-in-the-loop gate, not a deterministic one.
 
 **This, and not the provenance of the prose, is the supply-chain question.**
 
+## Fetching — the runtime, never the turn
+
+The obvious design is the one that kills runs. A fetch inside a screening turn
+is a Codex turn reaching the network, and this runtime's own rule — already in
+every worker prompt — is that a turn must never raise a permission dialog: the
+dispatcher answers no approval, the dialog waits in a task nobody is watching,
+and the run dies there.
+
+So the screener never touches the network. It names a `provider` and a
+`locator` from what it already knows, and the **dispatcher** fetches: an
+ordinary local process under the user's own shell, outside any Codex turn, and
+already the place that digests and admits a bundle.
+
+The bounds, each refusing rather than degrading:
+
+| bound | behaviour |
+| --- | --- |
+| HTTPS only, no credentials, no proxy from the environment | a source needing a secret is refused, not quietly authorized |
+| `runtime.skill_fetch_hosts` | a host outside it is refused naming what is allowed; an empty list fetches nothing |
+| no redirects | a redirect can land on a host nobody allowed, so the landing URL is compared, not trusted |
+| one `SKILL.md`, never an archive | nothing is expanded, so there is no archive to be a bomb |
+| 512 KiB, checked while streaming | a bound applied after the read has already let the bytes in |
+| staged in the project, then admitted normally | plugin-shaped bundles, symlinks, escaping paths and oversize are refused as always |
+
+Every failure — offline, 404, timeout, a page instead of a skill, a host
+outside the list, a repository with no `SKILL.md` — is an unmet need with the
+reason on record. The task runs on without the skill.
+
 ## Where a skill may come from — answered
 
 The owner rejected text-only, with an example worth keeping: if building a
@@ -670,9 +698,11 @@ because the fixture rose with it.
 
 ## What is not built
 
-* Acquisition of any kind. A requisition item that nothing installed satisfies
-  is recorded `unmet` with its `search_intent`, and no network access, download
-  or install happens. That is the seam, and it currently denies.
+* Search. A screener proposes a provider and a locator from what it already
+  knows; nothing queries a registry or an index. That is a separate question.
+* Multi-file bundles. One `SKILL.md` is fetched, which is the text a worker
+  reads and removes the whole archive surface: nothing is expanded, so there is
+  no archive to be a bomb and no redirect chain to follow.
 * The argv allowlist of question 1, which has nothing to act on until drafts
   can arrive.
 * Installing a real Codex skill bundle so a worker can invoke its scripts.

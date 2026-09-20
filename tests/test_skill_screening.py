@@ -2796,3 +2796,128 @@ class TheBriefReadsAsTheScreenerSeesItTests(AttestedProjectCase):
 
         self.assertLessEqual(len(brief), MAX_PROMPT_CHARS)
         self.assertIn("installed_skills_omitted", brief)
+
+
+class TheRuntimeFetchesNotTheScreenerTests(AttestedProjectCase):
+    """End to end: the screener names a source, the runtime brings it in.
+
+    The screener never touches the network. A fetch inside a screening turn
+    would be a Codex turn reaching out, and a turn that raises a permission
+    dialog kills the run: the dispatcher answers no approval and the dialog
+    waits in a task nobody is watching.
+    """
+
+    def _before_last_acceptance(self) -> None:
+        set_screening_mode(self.root, "always")
+
+    def _screen(self, *, transport, name="taste") -> tuple[Any, dict]:
+        from unittest import mock
+
+        self._qualified_pack(trailing_task=_trailing_task())
+        cfg = load_config(self.root)
+        activate_via_app_server(cfg, self.root, self.last_descriptors[0], "screening-M1")
+        with mock.patch(
+            "codex_autopilot.skill_fetch._open_without_credentials", transport
+        ):
+            completed = complete_desktop_worker(
+                cfg,
+                thread_id="screening-M1",
+                turn_id="screening-turn-M1",
+                final_message=screening_message(
+                    {
+                        "task_id": "M1",
+                        "items": [
+                            {
+                                "capability": "frontend-taste",
+                                "rationale": "M1 builds a page and needs this procedure.",
+                                "necessity": "required",
+                                "bundle": {
+                                    "name": name,
+                                    "provider": "github.com/example/skills",
+                                    "locator": "skills/taste",
+                                },
+                            }
+                        ],
+                    }
+                ),
+            )
+        record = json.loads(
+            (cfg.state_dir / "run-state.json").read_text(encoding="utf-8")
+        )["task_hiring"]["M1"]
+        return completed.descriptors[0], record
+
+    @staticmethod
+    def _serving(body: bytes):
+        import io
+
+        class Response(io.BytesIO):
+            def geturl(self):
+                return self.url
+
+            @property
+            def headers(self):
+                return {"Content-Type": "text/plain"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                self.close()
+                return False
+
+        def open_url(url, *, timeout):
+            response = Response(body)
+            response.url = url
+            return response
+
+        return open_url
+
+    def test_a_named_source_is_fetched_admitted_and_given_to_the_worker(self) -> None:
+        worker, record = self._screen(
+            transport=self._serving(
+                b"---\nname: taste\ndescription: A design discipline.\n---\n\n# Taste\n"
+            )
+        )
+
+        outcome = record["decision"]["outcomes"][0]
+        self.assertEqual(outcome["status"], "installed")
+        self.assertEqual(outcome["bundle"]["origin"], "market")
+        self.assertEqual(outcome["bundle"]["provider"], "github.com/example/skills")
+        self.assertIn(outcome["bundle"]["path"], worker.prompt)
+        self.assertTrue(
+            Path(outcome["bundle"]["path"]).is_relative_to(
+                (self.root / ".codex-autopilot").resolve()
+            ),
+            "fetched content lands in the project and nowhere else",
+        )
+
+    def test_being_offline_is_an_unmet_need_and_the_task_still_runs(self) -> None:
+        import urllib.error
+
+        def offline(url, *, timeout):
+            raise urllib.error.URLError("nodename nor servname provided")
+
+        worker, record = self._screen(transport=offline)
+
+        outcome = record["decision"]["outcomes"][0]
+        self.assertEqual(outcome["status"], "unmet")
+        self.assertIn("nodename", outcome["reason"])
+        self.assertEqual((worker.kind, worker.task_id), ("implementation", "M1"))
+        self.assertNotIn("hired_skill_bundles", worker.prompt)
+
+    def test_a_page_instead_of_a_skill_is_an_unmet_need(self) -> None:
+        worker, record = self._screen(
+            transport=self._serving(b"<!DOCTYPE html>\n<html>404</html>")
+        )
+
+        self.assertEqual(record["decision"]["outcomes"][0]["status"], "unmet")
+        self.assertIn("not a skill", record["decision"]["outcomes"][0]["reason"])
+        self.assertEqual(worker.kind, "implementation")
+
+    def test_the_brief_no_longer_claims_nothing_is_downloaded(self) -> None:
+        self._qualified_pack(trailing_task=_trailing_task())
+        brief = self.last_descriptors[0].prompt
+
+        self.assertNotIn("Autopilot downloads and installs nothing", brief)
+        self.assertIn("The RUNTIME fetches it", brief)
+        self.assertIn("must not reach the network", brief)

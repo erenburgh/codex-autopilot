@@ -63,7 +63,7 @@ REQUISITION_ITEM_FIELDS = (
 # field a screener can set to say so - if there were, a fetched bundle would
 # set it too and the R18 withholding would evaporate.
 FORBIDDEN_PROVENANCE_FIELDS = ("origin", "provenance", "local", "source", "trusted")
-BUNDLE_FIELDS = ("name", "staged_path", "provider", "locator")
+BUNDLE_FIELDS = ("name", "staged_path", "provider", "locator", "ref")
 MAX_RATIONALE_CHARS = 1_000
 MAX_SEARCH_INTENT_CHARS = 1_000
 MAX_REASON_CHARS = 2_000
@@ -169,16 +169,22 @@ class SkillBundleRequest:
     """
 
     name: str
-    staged_path: str
     provider: str
+    # Either the screener staged it itself, or it named where the RUNTIME
+    # should fetch it from. A screening turn never touches the network: a
+    # turn that raises a permission dialog kills the run, because the
+    # dispatcher answers no approval and the dialog waits unseen.
+    staged_path: str = ""
     locator: str = ""
+    ref: str = "main"
 
     def to_dict(self) -> dict[str, str]:
         return {
             "name": self.name,
-            "staged_path": self.staged_path,
             "provider": self.provider,
+            **({"staged_path": self.staged_path} if self.staged_path else {}),
             **({"locator": self.locator} if self.locator else {}),
+            **({"ref": self.ref} if self.ref != "main" else {}),
         }
 
 
@@ -591,26 +597,44 @@ def _bundle_from_raw(raw: Any, label: str) -> SkillBundleRequest:
     if not isinstance(raw, Mapping):
         raise ScreeningProtocolError(f"{label} must be an object")
     _reject_unknown(raw, set(BUNDLE_FIELDS), label)
-    staged = _required_text(raw.get("staged_path"), f"{label}.staged_path", 512)
-    if staged.startswith(("/", "~")) or ".." in Path(staged).parts:
-        # It is joined to the project state directory. A path that could
-        # climb out of it is refused where the screener can read why, not
-        # silently at the admission step.
+    staged = ""
+    if raw.get("staged_path") is not None:
+        staged = _required_text(raw.get("staged_path"), f"{label}.staged_path", 512)
+        if staged.startswith(("/", "~")) or ".." in Path(staged).parts:
+            # It is joined to the project state directory. A path that could
+            # climb out of it is refused where the screener can read why, not
+            # silently at the admission step.
+            raise ScreeningProtocolError(
+                f"{label}.staged_path must be relative to the project's "
+                f".codex-autopilot directory and must not climb out of it; got {staged!r}"
+            )
+    locator = (
+        _required_text(raw.get("locator"), f"{label}.locator", 512)
+        if raw.get("locator") is not None
+        else ""
+    )
+    # staged_path is the discriminator: present means the bundle is already
+    # in the project, absent means the runtime fetches provider+locator.
+    # locator stays meaningful in both - for a staged bundle it records
+    # where the text came from.
+    if not staged and not locator:
         raise ScreeningProtocolError(
-            f"{label}.staged_path must be relative to the project's "
-            f".codex-autopilot directory and must not climb out of it; got {staged!r}"
+            f"{label} names neither staged_path (a bundle already in the "
+            "project) nor locator (the path under provider that the runtime "
+            "will fetch), so there is nothing to bring in"
         )
     return SkillBundleRequest(
         name=_required_text(raw.get("name"), f"{label}.name", 128),
         staged_path=staged,
+        ref=(
+            _required_text(raw.get("ref"), f"{label}.ref", 128)
+            if raw.get("ref") is not None
+            else "main"
+        ),
         # External content: the trust ladder refuses an external record with
         # no provider, so a bundle with no origin could never be recorded.
         provider=_required_text(raw.get("provider"), f"{label}.provider", 512),
-        locator=(
-            _required_text(raw.get("locator"), f"{label}.locator", 512)
-            if raw.get("locator") is not None
-            else ""
-        ),
+        locator=locator,
     )
 
 

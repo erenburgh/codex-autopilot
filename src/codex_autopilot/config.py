@@ -5,6 +5,10 @@ from pathlib import Path
 import tomllib
 
 from .language import DEFAULT_LANGUAGE, normalize_language
+from .skill_fetch import (
+    DEFAULT_SKILL_FETCH_HOSTS,
+    DEFAULT_SKILL_FETCH_TIMEOUT_SECONDS,
+)
 from .plan import (
     DEFAULT_COMPUTER_USE_SLOTS,
     COMPAT_EXECUTION_STRATEGY,
@@ -88,6 +92,10 @@ class RuntimeConfig:
     # answer "nothing available". "always" screens every task, which is what
     # records unmet needs in a project that has no skills yet.
     skill_screening: str = DEFAULT_SKILL_SCREENING
+    # Hosts a screening may fetch a skill from. Empty means nothing is
+    # fetched: a locator is then recorded as an unmet need, never an error.
+    skill_fetch_hosts: tuple[str, ...] = DEFAULT_SKILL_FETCH_HOSTS
+    skill_fetch_timeout_seconds: int = DEFAULT_SKILL_FETCH_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +254,15 @@ def load_config(root_or_path: Path) -> Config:
             skill_screening=_skill_screening(
                 runtime.get("skill_screening", DEFAULT_SKILL_SCREENING)
             ),
+            skill_fetch_hosts=_fetch_hosts(
+                runtime.get("skill_fetch_hosts", list(DEFAULT_SKILL_FETCH_HOSTS))
+            ),
+            skill_fetch_timeout_seconds=_positive_int(
+                runtime.get(
+                    "skill_fetch_timeout_seconds", DEFAULT_SKILL_FETCH_TIMEOUT_SECONDS
+                ),
+                "runtime.skill_fetch_timeout_seconds",
+            ),
             full_plan_revalidation_patches=_positive_int(
                 runtime.get(
                     "full_plan_revalidation_patches",
@@ -256,6 +273,20 @@ def load_config(root_or_path: Path) -> Config:
         ),
         auto_commit=auto_commit,
     )
+
+
+def _fetch_hosts(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise ValueError("runtime.skill_fetch_hosts must be an array of host names")
+    hosts = tuple(item.strip().lower() for item in value)
+    for host in hosts:
+        if "/" in host or "://" in host:
+            raise ValueError(
+                f"runtime.skill_fetch_hosts entry {host!r} must be a bare host name"
+            )
+    return hosts
 
 
 def _skill_screening(value: object) -> str:
