@@ -1944,3 +1944,146 @@ class BudgetTrimmingTests(unittest.TestCase):
 
         self.assertEqual([item.id for item in kept], ["planned"])
         self.assertEqual(withheld, ())
+
+
+class ScreeningAcrossAGraphChangeTests(AttestedProjectCase):
+    """A replan while a screening is in flight.
+
+    The bookkeeping is per task per graph version, because a replan rewrites
+    task contracts under the same ids. But the session already in flight
+    belongs to the old version, and if the gate looks only at the new one it
+    cannot see it - and reserves a second screener for the same task while
+    the first is still running.
+    """
+
+    def _gate(self, state, plan, cfg):
+        from codex_autopilot.lifecycle_reservations import _build_descriptor
+        from codex_autopilot.lifecycle_screening import screening_gate
+
+        return screening_gate(
+            cfg,
+            plan,
+            state,
+            task_id="M1",
+            memory_audit_before=0,
+            relay_owner_thread_id="owner-thread",
+            build_descriptor=_build_descriptor,
+        )
+
+    def _before_last_acceptance(self) -> None:
+        set_screening_mode(self.root, "always")
+
+    def test_a_screening_in_flight_is_seen_after_the_graph_moves(self) -> None:
+        self._qualified_pack(trailing_task=_trailing_task())
+        cfg = load_config(self.root)
+        store = StateStore(cfg.state_dir)
+        state = store.load()
+        plan = load_plan(cfg.state_dir, cfg.profile)
+        pending = [
+            item for item in state.worker_sessions if item["kind"] == "screening"
+        ]
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["graph_version"], 1)
+
+        # The replan lands while that screener is still running.
+        state.graph_version = 2
+
+        gate = self._gate(state, plan, cfg)
+
+        self.assertEqual(
+            gate.action,
+            "wait",
+            "a second screener must not be hired while the first is running",
+        )
+        self.assertEqual(
+            len([item for item in state.worker_sessions if item["kind"] == "screening"]),
+            1,
+        )
+
+    def test_the_wait_ends_when_the_stale_screener_is_no_longer_running(self) -> None:
+        """Waiting is only correct if it ends. Once the in-flight screener
+        is over, the new contract gets a screening of its own."""
+
+        self._qualified_pack(trailing_task=_trailing_task())
+        cfg = load_config(self.root)
+        store = StateStore(cfg.state_dir)
+        state = store.load()
+        plan = load_plan(cfg.state_dir, cfg.profile)
+        state.graph_version = 2
+        stale = next(
+            item for item in state.worker_sessions if item["kind"] == "screening"
+        )
+        stale["status"] = "BLOCKED"
+
+        gate = self._gate(state, plan, cfg)
+
+        self.assertEqual(gate.action, "reserve")
+        self.assertEqual(gate.descriptor.task_id, "M1")
+        fresh = [
+            item
+            for item in state.worker_sessions
+            if item["kind"] == "screening" and item["graph_version"] == 2
+        ]
+        self.assertEqual(len(fresh), 1, "the new contract is screened afresh")
+
+    def test_a_requisition_for_a_vanished_contract_is_refused(self) -> None:
+        """The stale screener's own answer is about work that no longer
+        exists under that id, and saying so is what ends the wait."""
+
+        from codex_autopilot.lifecycle_screening import _record_requisition
+
+        self._qualified_pack(trailing_task=_trailing_task())
+        cfg = load_config(self.root)
+        store = StateStore(cfg.state_dir)
+        state = store.load()
+        plan = load_plan(cfg.state_dir, cfg.profile)
+        session = next(
+            item for item in state.worker_sessions if item["kind"] == "screening"
+        )
+        state.graph_version = 2
+
+        failure = _record_requisition(
+            cfg,
+            plan,
+            state,
+            session=session,
+            task_id="M1",
+            final_message=screening_message({"task_id": "M1", "items": []}),
+            thread_id="screening-M1",
+            turn_id="screening-turn-M1",
+            at="2026-09-20T00:00:00+00:00",
+        )
+
+        self.assertIn("graph version 2", failure)
+        self.assertIn("version 1", failure)
+        self.assertNotIn("M1", state.task_hiring)
+
+    def test_a_new_contract_gets_its_own_attempts(self) -> None:
+        """Attempts are spent against the contract that was screened. A
+        replan writes a different task under the same id, and making it
+        inherit the old failures would send it to a worker unscreened
+        without one screening of its own ever having been tried.
+        """
+
+        from codex_autopilot.lifecycle_screening import MAX_SCREENING_ATTEMPTS
+
+        self._qualified_pack(trailing_task=_trailing_task())
+        cfg = load_config(self.root)
+        store = StateStore(cfg.state_dir)
+        state = store.load()
+        plan = load_plan(cfg.state_dir, cfg.profile)
+        stale = next(
+            item for item in state.worker_sessions if item["kind"] == "screening"
+        )
+        stale["status"] = "BLOCKED"
+        for extra in range(MAX_SCREENING_ATTEMPTS):
+            spent = dict(stale)
+            spent["reservation_token"] = f"spent-{extra}"
+            spent["worker_sequence"] = 900 + extra
+            state.worker_sessions.append(spent)
+        state.graph_version = 2
+
+        gate = self._gate(state, plan, cfg)
+
+        self.assertEqual(gate.action, "reserve")
+        self.assertNotIn("M1", state.task_hiring)

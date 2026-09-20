@@ -97,9 +97,19 @@ def screening_gate(
         state.task_hiring, task_id=task_id, graph_version=state.graph_version
     ) is not None:
         return ScreeningGate("proceed")
-    sessions = _screening_sessions(state, task_id)
-    if any(item.get("status") in PENDING_SESSION_STATUSES for item in sessions):
+    # Pending is asked across every graph version, attempts only within the
+    # current one. A replan rewrites task contracts under the same ids, so an
+    # in-flight screener belongs to the contract it was briefed on - but it is
+    # still a live Codex thread for this task, and a gate that could not see
+    # it hired a second screener beside it. Waiting is self-healing: that
+    # screener's own completion notices the drift, fails with it on record,
+    # and the frontier pass it triggers screens the new contract afresh.
+    if any(
+        item.get("status") in PENDING_SESSION_STATUSES
+        for item in _screening_sessions(state, task_id, any_graph_version=True)
+    ):
         return ScreeningGate("wait")
+    sessions = _screening_sessions(state, task_id)
     if len(sessions) >= MAX_SCREENING_ATTEMPTS:
         record_hiring(
             state.task_hiring,
@@ -405,15 +415,20 @@ def _reserve_screening_in_state(
     return descriptor
 
 
-def _screening_sessions(state: RunState, task_id: str) -> tuple[dict[str, Any], ...]:
-    """Screening sessions for this task under the graph version in force."""
+def _screening_sessions(
+    state: RunState, task_id: str, *, any_graph_version: bool = False
+) -> tuple[dict[str, Any], ...]:
+    """Screening sessions for this task, by default only the current graph."""
 
     return tuple(
         item
         for item in state.worker_sessions
         if _session_kind(item) == "screening"
         and item.get("task_id") == task_id
-        and int(item.get("graph_version") or 0) == state.graph_version
+        and (
+            any_graph_version
+            or int(item.get("graph_version") or 0) == state.graph_version
+        )
     )
 
 
