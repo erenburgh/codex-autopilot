@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.11.6-beta
+
+The traces stop piling up. 0.11.4 disclosed that nothing removed them; this
+removes them.
+
+Each dispatcher sweeps `.codex-autopilot/logs/` before it opens its own trace:
+whole files, oldest first, until the directory fits `runtime.log_retention_mb`
+(512 MB by default; 0 keeps everything). Replayed against the pile that was
+actually measured - 167 files, 2338 MB - it leaves 504 MB in 36 files and frees
+1834 MB.
+
+What holds it back, each tested rather than trusted:
+
+- **Nothing is truncated.** A capped trace loses its tail, and the tail is where
+  the failure is - the on-call engineer reads these to find out what the server
+  actually said. Whole files go, or nothing does.
+- **The newest five survive** whatever the budget says. A ticket opened an hour
+  later must still find the traces it is about.
+- **Nothing written in the last hour is touched.** Deciding whether another
+  process holds a file handle is not portable; age is, and a live dispatcher's
+  own trace is by definition fresh.
+- **Only this runtime's own files are eligible**, matched by the `app-server-`
+  and `automatic-relay-` prefixes. Anything else in that directory belongs to
+  whoever put it there.
+
+`staged-artifacts/` is deliberately not swept: those are a task's working copy
+of the project, not a diagnostic, and deciding when a copy is finished with is
+not this sweep's business. The footprint document says so and says removing them
+is the owner's `rm -rf`.
+
 ## 0.11.5-beta
 
 `git init` was never enough, and every document said it was.

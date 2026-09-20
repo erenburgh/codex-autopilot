@@ -246,6 +246,32 @@ deliver, by which route, who judges it, and which files it holds for writing -
 before it reads a single file. Opening the task tells you where it is without
 reading the whole transcript.
 
+## Disk
+
+The run writes the whole App Server conversation to
+`.codex-autopilot/logs/`, one file per dispatcher. These are debugging traces,
+not the run's memory, and they are by far the largest thing in the project: on
+one real run, 2.3 GB across 167 files while the journal, plan and project
+memory together were a few megabytes.
+
+The runtime keeps them bounded itself. Each dispatcher sweeps finished traces -
+whole files, oldest first - until the directory fits:
+
+```toml
+# .codex-autopilot/config.toml
+[runtime]
+log_retention_mb = 512   # 0 keeps everything
+```
+
+The newest five traces survive whatever the budget says, and nothing written in
+the last hour is removed, so a live dispatcher never loses its own file. Deleting
+old traces by hand between runs is also safe.
+
+The other space is `staged-artifacts/`: a task with a filesystem deliverable runs
+against a full copy of the project tree rather than the project itself, one copy
+per such task, and those are not swept. Removing a finished run's copies is your
+own `rm -rf`.
+
 ## Uninstall
 
 ```bash

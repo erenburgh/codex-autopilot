@@ -163,9 +163,11 @@ See [skill screening](docs/SKILL_SCREENING.md).
 - `ROADMAP.md` in the project root, and `.codex-autopilot/PROJECT_STATE.md` and `.codex-autopilot/DECISIONS.md`: human-readable views.
 - `.codex-autopilot/MILESTONE.md`: current worker cache.
 - `.codex-autopilot/logs/`: the full App Server wire conversation, one file per
-  dispatcher. Nothing rotates or deletes it: on one real run this reached 2.3 GB
-  across 167 files, against 28 MB of staged workspaces. They are debugging
-  traces, not the run's memory - deleting old ones between runs is safe. See
+  dispatcher. Before 0.11.6 nothing removed these and one real run reached
+  2.3 GB across 167 files, against 28 MB of staged workspaces; the runtime now
+  sweeps finished traces down to `runtime.log_retention_mb` (512 MB by default,
+  0 keeps everything) before each dispatcher starts, never touching the newest
+  five or anything written in the last hour. See
   [Install and uninstall footprint](docs/INSTALL_FOOTPRINT.md).
 - `.codex-autopilot/HANDOFF.md`: short advisory note; never treated as evidence.
 

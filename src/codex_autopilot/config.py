@@ -34,6 +34,10 @@ SKILL_SCREENING_MODES = {"auto", "always", "never"}
 # with no reuse to offset it. A feature that is on by default has to be
 # able to say what it spent, so the status card reports it.
 DEFAULT_SKILL_SCREENING = "always"
+# Generous enough that a normal run never notices, small enough that a
+# forgotten project cannot reach a gigabyte: the traces it deletes are
+# from dispatchers that finished over an hour ago.
+DEFAULT_LOG_RETENTION_MB = 512
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +100,12 @@ class RuntimeConfig:
     # fetched: a locator is then recorded as an unmet need, never an error.
     skill_fetch_hosts: tuple[str, ...] = DEFAULT_SKILL_FETCH_HOSTS
     skill_fetch_timeout_seconds: int = DEFAULT_SKILL_FETCH_TIMEOUT_SECONDS
+    # How much of the wire traces under logs/ to keep. Nothing removed them
+    # before: one real run left 167 files and 2.3 GB in a project whose
+    # actual memory was a few megabytes. Whole files go, oldest first, and
+    # never the newest few or anything written in the last hour. 0 keeps
+    # everything, which is the opt-out.
+    log_retention_mb: int = DEFAULT_LOG_RETENTION_MB
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +273,10 @@ def load_config(root_or_path: Path) -> Config:
                 ),
                 "runtime.skill_fetch_timeout_seconds",
             ),
+            log_retention_mb=_non_negative_int(
+                runtime.get("log_retention_mb", DEFAULT_LOG_RETENTION_MB),
+                "runtime.log_retention_mb",
+            ),
             full_plan_revalidation_patches=_positive_int(
                 runtime.get(
                     "full_plan_revalidation_patches",
@@ -287,6 +301,14 @@ def _fetch_hosts(value: object) -> tuple[str, ...]:
                 f"runtime.skill_fetch_hosts entry {host!r} must be a bare host name"
             )
     return hosts
+
+
+def _non_negative_int(value: object, label: str) -> int:
+    """Zero is meaningful here: it is the opt-out, not a broken setting."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label} must be an integer of zero or more")
+    return value
 
 
 def _skill_screening(value: object) -> str:

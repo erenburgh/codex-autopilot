@@ -381,6 +381,32 @@ class _RelayCursor:
     token: str
 
 
+def _sweep_finished_traces(cfg, directory: Path) -> None:
+    """Bound the wire traces, and never stand between a run and its start."""
+
+    from .config import DEFAULT_LOG_RETENTION_MB
+    from .log_retention import sweep_logs
+
+    budget_mb = getattr(
+        getattr(cfg, "runtime", None), "log_retention_mb", DEFAULT_LOG_RETENTION_MB
+    )
+    try:
+        budget_bytes = int(budget_mb) * 1024 * 1024
+    except (TypeError, ValueError):
+        return
+    try:
+        removed, freed = sweep_logs(directory, budget_bytes=budget_bytes)
+    except Exception as exc:  # noqa: BLE001 - janitorial work, never fatal
+        print(f"Logs: the sweep was skipped ({exc})")
+        return
+    if removed:
+        print(
+            f"Logs: removed {removed} finished trace(s), freed "
+            f"{freed // (1024 * 1024)} MB "
+            f"(runtime.log_retention_mb = {budget_mb})"
+        )
+
+
 def _automatic_relay_loop(
     cfg,
     *,
@@ -396,6 +422,19 @@ def _automatic_relay_loop(
         dispatcher_log = (
             cfg.state_dir / "logs" / f"app-server-dispatcher-{token}.jsonl"
         )
+        # Before this dispatcher starts writing its own trace, take the
+        # finished ones out. Nothing else ever removed them, and a long run
+        # left gigabytes of protocol beside a journal of a few megabytes.
+        # The sweep is by whole files and never touches one written in the
+        # last hour, so the trace about to be opened here is safe by age.
+        #
+        # Housekeeping must never be the reason a run does not start. Every
+        # failure here - an unreadable directory, a config without the key,
+        # a permission error mid-sweep - skips the sweep and says so. The
+        # worst outcome of that is a full disk, which is the state this
+        # whole feature was written to improve, not a dispatcher that dies
+        # before its first turn.
+        _sweep_finished_traces(cfg, dispatcher_log.parent)
         client = AppServerClient(
             cfg.desktop.binary,
             dispatcher_log,

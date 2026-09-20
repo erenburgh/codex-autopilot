@@ -2,7 +2,7 @@
 
 ## Default installation
 
-`install.sh` creates or replaces the directory of the version it installs (`0.11.5-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
+`install.sh` creates or replaces the directory of the version it installs (`0.11.6-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
 
 ```text
 ~/Library/Application Support/CodexAutopilot/
@@ -120,10 +120,26 @@ run journal in the same project. The whole project directory was 2.4 GB, and
 
 They are debugging traces, not the run's memory. The state the runtime needs is
 `run-state.json`, `plan.json`, `memory.sqlite3`, `memory-backups/` and
-`handoff/`, and all of those together are a few megabytes. Deleting old
-`app-server-dispatcher-*.jsonl` between runs is safe; keep the newest few if an
-incident is open, because that is where the on-call engineer reads what the
-server actually said.
+`handoff/`, and all of those together are a few megabytes.
+
+Since 0.11.6 the runtime keeps them bounded itself. Every dispatcher sweeps the
+directory before it opens its own trace: whole files, oldest first, until
+`runtime.log_retention_mb` is met (512 MB by default). The newest five are kept
+whatever the budget says, and nothing written in the last hour is touched - the
+dispatcher writing right now owns one of those. Nothing is ever truncated: a
+capped trace loses its tail, and the tail is where the failure is. Only this
+runtime's own `app-server-*` and `automatic-relay-*` files are eligible;
+anything else in that directory is left alone.
+
+```toml
+# .codex-autopilot/config.toml
+[runtime]
+log_retention_mb = 512   # 0 keeps everything
+```
+
+Deleting old `app-server-dispatcher-*.jsonl` by hand is still safe; keep the
+newest few if an incident is open, because that is where the on-call engineer
+reads what the server actually said.
 
 `skills/` is read, never written, by Autopilot: one JSON manifest per exact Skill Pack revision, put there by you. It is the second half of the skill catalog, beside the packs a plan declares. Initialization does not create it.
 
