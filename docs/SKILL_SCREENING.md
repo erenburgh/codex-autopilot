@@ -510,7 +510,12 @@ exact path.** Not `$CODEX_HOME/skills`, for four reasons:
   bundle is undone by deleting one directory, which
   `--purge-project-state` already covers.
 
-`hired` is a derived property over the outcomes, not a stored field — it is
+Two skews that look possible and are not, written down because they are
+cheaper to read than to re-derive. The capability-keyed admission map and the
+outcomes from `resolve_requisition` are built from the same validated item
+list, and the parser refuses a duplicated capability outright — one capability,
+one item, both maps keyed by it — so an item cannot exist in one traversal and
+not the other. And `hired` is a derived property over the outcomes, not a stored field — it is
 `status == "hired" and skill is not None` — which is why the necessity map used
 by the context-budget trim cannot go out of step with it: both are built from
 the same outcomes, keyed identically, and an outcome carrying no skill is

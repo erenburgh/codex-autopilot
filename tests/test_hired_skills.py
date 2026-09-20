@@ -113,6 +113,7 @@ class TheInstallerCannotReachTheHostTests(AdmissionCase):
             staged = Path(elsewhere) / "taste"
             staged.mkdir()
             (staged / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
+            self.assertFalse(staged.is_relative_to(self.state_dir))
 
             with self.assertRaisesRegex(HiredSkillError, "inside the project"):
                 self.admit(staged)
@@ -120,6 +121,7 @@ class TheInstallerCannotReachTheHostTests(AdmissionCase):
     def test_a_symlink_that_escapes_the_project_is_refused(self) -> None:
         staged = self.stage()
         (staged / "outside").symlink_to(Path.home() / ".codex")
+        self.assertTrue((staged / "outside").is_symlink())
 
         with self.assertRaisesRegex(HiredSkillError, "symbolic link"):
             self.admit(staged)
@@ -177,6 +179,7 @@ class AdmissionTests(AdmissionCase):
         staged = self.stage()
         (staged / ".codex-plugin").mkdir()
         (staged / ".codex-plugin" / "plugin.json").write_text("{}", encoding="utf-8")
+        self.assertTrue((staged / ".codex-plugin" / "plugin.json").is_file())
 
         with self.assertRaisesRegex(HiredSkillError, "plugin"):
             self.admit(staged)
@@ -222,9 +225,12 @@ class InterruptedAndRepeatedAdmissionTests(AdmissionCase):
     a run interrupted between installing and hiring.
     """
 
-    def test_a_half_finished_copy_is_never_mistaken_for_an_admitted_bundle(self) -> None:
-        """A bundle is copied under a dotted name and renamed into place, so
-        an interrupted admission leaves nothing that looks installed."""
+    def test_a_pending_directory_is_not_listed_as_installed(self) -> None:
+        """Narrower than it first read: this drives the LISTING, not an
+        interrupted copy. The interrupted copy is driven by
+        test_a_copy_that_dies_partway_leaves_nothing_that_looks_admitted,
+        and the two names were close enough to be mistaken for each other.
+        """
 
         staged = self.stage()
         record = self.admit(staged)
@@ -433,6 +439,10 @@ class InstalledSkillsAreReadNeverWrittenTests(unittest.TestCase):
         linked.mkdir()
         (linked / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
         (linked / "elsewhere").symlink_to(self.home)
+        # The shape this name claims: a real directory whose CONTENT holds
+        # a link. The sibling test drives the entry itself being one.
+        self.assertFalse(linked.is_symlink())
+        self.assertTrue((linked / "elsewhere").is_symlink())
 
         bundles, refused = installed_skill_bundles(self.home)
 
@@ -460,6 +470,13 @@ class InstalledSkillsAreReadNeverWrittenTests(unittest.TestCase):
         outside.mkdir(parents=True)
         (outside / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
         (self.skills / "linked").symlink_to(outside)
+        # The shape this name claims: the ENTRY is the link, and it leaves
+        # her skills root. A fixture that drifted to any other shape fails
+        # here rather than passing under a name that promises this one.
+        self.assertTrue((self.skills / "linked").is_symlink())
+        self.assertFalse(
+            (self.skills / "linked").resolve().is_relative_to(self.skills.resolve())
+        )
 
         bundles, refused = installed_skill_bundles(self.home)
 

@@ -1668,6 +1668,11 @@ class InstalledBundleReachesTheWorkerTests(AttestedProjectCase):
             hiring=decision,
         )
 
+        self.assertEqual(
+            record["decision"]["outcomes"][0]["bundle"]["origin"],
+            "market",
+            "the shape this name claims: a fetched bundle, not one of hers",
+        )
         self.assertNotIn("hired_skill_bundles", verifier)
         self.assertNotIn(
             record["decision"]["outcomes"][0]["bundle"]["path"], verifier
@@ -2147,7 +2152,12 @@ class ProvenanceCannotBeClaimedTests(unittest.TestCase):
 
     def test_a_fetched_bundle_cannot_pose_as_an_installed_one(self) -> None:
         """One capability, one way to fill it. Offering both is the shape a
-        bypass would take, so it is refused rather than resolved."""
+        bypass would take, so it is refused rather than resolved.
+
+        The shape this name claims is BOTH keys present on ONE item - not a
+        bundle item beside a separate installed item, which is a different
+        thing and allowed.
+        """
 
         with self.assertRaisesRegex(ScreeningProtocolError, "installed"):
             parse_screening_result(
@@ -2277,6 +2287,12 @@ class HerOwnSkillsAreUsedTests(AttestedProjectCase):
 
         self.assertIn("hired_skill_bundles", verifier)
         self.assertNotIn("withheld_external_skills", verifier)
+        # The shape this name claims: the bundle really was read as local.
+        # If the fixture drifted to a market bundle the assertions above
+        # would still hold for the wrong reason.
+        self.assertEqual(
+            record["decision"]["outcomes"][0]["bundle"]["origin"], "local"
+        )
 
     def test_naming_a_skill_she_does_not_have_says_what_she_does(self) -> None:
         from unittest import mock
