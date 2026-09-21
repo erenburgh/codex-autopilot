@@ -2376,13 +2376,25 @@ class HerOwnSkillsAreUsedTests(AttestedProjectCase):
                 ),
             )
 
-        outcome = json.loads(
+        # It used to parse cleanly, resolve to `unmet`, and send the task
+        # straight to work with the capability written off - the market
+        # never considered. Now the name is refused while it is still a
+        # protocol error the screener can read, so it gets its second
+        # attempt instead of a silent dead end.
+        state = json.loads(
             (cfg.state_dir / "run-state.json").read_text(encoding="utf-8")
-        )["task_hiring"]["M1"]["decision"]["outcomes"][0]
-        self.assertEqual(outcome["status"], "unmet")
-        self.assertIn("not installed", outcome["reason"])
-        self.assertIn("taste", outcome["reason"])
-        self.assertEqual(completed.descriptors[0].kind, "implementation")
+        )
+        self.assertNotIn("M1", state.get("task_hiring") or {})
+        self.assertEqual(completed.descriptors[0].kind, "screening")
+        refusals = [
+            item
+            for item in state["worker_sessions"]
+            if item.get("task_id") == "M1" and item.get("kind") == "screening"
+        ]
+        reason = json.dumps(refusals, ensure_ascii=False)
+        # R31: the refusal names what she DOES have.
+        self.assertIn("taste", reason)
+        self.assertIn("not-there", reason)
 
 
 class BundleOriginIsCheckedOnReadTests(unittest.TestCase):
@@ -2921,3 +2933,93 @@ class TheRuntimeFetchesNotTheScreenerTests(AttestedProjectCase):
         self.assertNotIn("Autopilot downloads and installs nothing", brief)
         self.assertIn("The RUNTIME fetches it", brief)
         self.assertIn("must not reach the network", brief)
+
+
+class AnInventedInstalledNameIsRefusedInTimeTests(unittest.TestCase):
+    """The screener must not be able to name a skill it was never shown.
+
+    Measured on a live run, twice in a row. `installed_skills` was omitted
+    from the brief whenever nothing was installed, while the instruction
+    beside it still said "name one of `installed_skills`, prefer them" -
+    so the screener named a plausible skill this machine does not have.
+    That parsed cleanly, resolved to `unmet`, and the capability went down
+    as an unfilled need with the market never considered. Two screenings,
+    two unmet needs, zero fetches - which is exactly why no live hire had
+    ever been seen.
+
+    Refusing it at parse time makes it a protocol error the screener reads
+    and answers on its second attempt, instead of a silent dead end.
+    """
+
+    def _line(self, installed: str) -> str:
+        return SCREENING_PREFIX + json.dumps(
+            {
+                "task_id": "M6",
+                "items": [
+                    {
+                        "capability": "runtime-invariants",
+                        "rationale": "M6 implements the write-scope gate.",
+                        "necessity": "helpful",
+                        "installed": installed,
+                    }
+                ],
+            }
+        )
+
+    def test_a_name_that_was_not_offered_is_a_protocol_error(self) -> None:
+        with self.assertRaises(ScreeningProtocolError) as caught:
+            parse_screening_result(
+                self._line("codex-autopilot-adaptive"),
+                task_id="M6",
+                installed_names=(),
+            )
+        message = str(caught.exception)
+        self.assertIn("codex-autopilot-adaptive", message)
+        self.assertIn("nothing at all", message)
+        self.assertIn("bundle", message)
+
+    def test_the_refusal_names_what_is_installed(self) -> None:
+        """R31: a refusal names what IS accepted."""
+
+        with self.assertRaises(ScreeningProtocolError) as caught:
+            parse_screening_result(
+                self._line("wishful-thinking"),
+                task_id="M6",
+                installed_names=("taste", "brandkit"),
+            )
+        message = str(caught.exception)
+        self.assertIn("brandkit", message)
+        self.assertIn("taste", message)
+
+    def test_a_name_that_was_offered_passes(self) -> None:
+        requisition = parse_screening_result(
+            self._line("taste"), task_id="M6", installed_names=("taste",)
+        )
+        self.assertEqual(requisition.items[0].installed, "taste")
+
+    def test_without_a_list_the_shape_check_still_applies_and_nothing_else(self) -> None:
+        """Callers that cannot read the directory must not lose the answer."""
+
+        requisition = parse_screening_result(self._line("anything"), task_id="M6")
+        self.assertEqual(requisition.items[0].installed, "anything")
+        with self.assertRaises(ScreeningProtocolError):
+            parse_screening_result(self._line("a/path/not/a/name"), task_id="M6")
+
+
+class TheBriefMatchesWhatItHandsOverTests(unittest.TestCase):
+    """The instruction may not point at a list that is not in the brief."""
+
+    def test_installed_skills_is_present_even_when_empty(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "src/codex_autopilot/ai_studio.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"installed_skills": shown,', source)
+        self.assertNotIn('**({"installed_skills": shown} if shown else {})', source)
+
+    def test_an_empty_list_steers_to_the_market_instead_of_preferring_nothing(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "src/codex_autopilot/ai_studio.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("`installed_skills` is empty", source)
+        self.assertIn("a name invented", source)
+        self.assertIn("{sourcing}", source)

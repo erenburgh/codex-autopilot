@@ -114,6 +114,54 @@ class TheRefusalExplainsItselfTests(unittest.TestCase):
             )
 
 
+class TheLadderStopsAtMaxOnPurposeTests(unittest.TestCase):
+    """`ultra` is a rung the runtime refuses, and the refusal has a price.
+
+    App Server offers `ultra` above `max` - "Maximum reasoning with
+    automatic task delegation". Measured on 21 Sep 2026: one thread/start
+    sent, four threads on the wire. The server created three of its own,
+    each running its own turn and returning its own full answer, and the
+    parent turn reported one agentMessage item with no trace of them.
+
+    Autopilot journals only its own creations, so those threads would be
+    in no journal, and audit_creation_causality - which reads that
+    journal - would keep reporting every creation audited beside them.
+    Blind, not broken. The ceiling therefore stays, and this test is here
+    so that removing it is a decision rather than a tidy-up.
+    """
+
+    def test_ultra_is_not_in_the_ladder(self) -> None:
+        from codex_autopilot.models import PUBLIC_REASONING
+
+        self.assertNotIn("ultra", PUBLIC_REASONING)
+        self.assertEqual(PUBLIC_REASONING[-1], "max")
+
+    def test_the_ceiling_is_the_end_of_the_hiring_ladder(self) -> None:
+        from codex_autopilot.models import next_effort_step
+
+        self.assertIsNone(next_effort_step("max"))
+
+    def test_an_account_offering_ultra_does_not_drag_it_in(self) -> None:
+        """The catalog advertises it; the runtime still will not take it."""
+
+        from codex_autopilot.models import resolve_reasoning
+
+        offered = ("medium", "high", "xhigh", "max", "ultra")
+        resolved, adjustment = resolve_reasoning("max", offered)
+        self.assertEqual(resolved, "max")
+        self.assertIsNone(adjustment)
+        with self.assertRaises(ModelRoutingError):
+            resolve_reasoning("ultra", offered)
+
+    def test_the_reason_is_written_down_where_it_will_be_read(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "src/codex_autopilot/models.py").read_text(encoding="utf-8")
+        self.assertIn('Adding "ultra" here is therefore not a missing rung', source)
+        self.assertIn("four threads on the wire", source)
+        doc = (root / "docs/MODEL_ROUTING.md").read_text(encoding="utf-8")
+        self.assertIn("Why the ladder stops at `max`", doc)
+
+
 class ItIsWiredWhereItWillBeSeenTests(unittest.TestCase):
     def _source(self, relative: str) -> str:
         return (

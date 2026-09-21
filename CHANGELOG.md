@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.11.9-beta
+
+Hiring reaches the market, and the effort ladder stops where it stops on purpose.
+
+### The screener stopped inventing skills
+
+Found on a live run, twice in a row, and it explains why a live hire had never
+been seen. `installed_skills` was left out of the brief entirely whenever
+nothing was installed, while the instruction beside it still read "name one of
+`installed_skills` ... prefer them". Pointed at a list that was not there, the
+screener named a plausible skill the machine does not have. That parsed
+cleanly, resolved to `unmet`, and the task went to work with the capability
+written off - the market never considered.
+
+- The brief always carries `installed_skills`, empty list included, and the
+  sourcing instruction depends on what was actually handed over: with nothing
+  installed it says so, says an invented name will be refused, and points at
+  declared packs or a `bundle`.
+- A name that is not installed is now refused while it is still a protocol
+  error the screener can read - so it spends its second attempt answering,
+  instead of dying silently into an unmet need.
+- Presence and readability are asked separately. A skill that is there but
+  unreadable is still a name the screener could legitimately give, and keeps
+  its honest "installed but could not be read" refusal rather than being
+  accused of being made up; `installed_skill_names` reads the directory for
+  that question alone.
+
+### The ladder stops at `max` on purpose
+
+App Server offers one rung above it - `ultra`, "Maximum reasoning with
+automatic task delegation". It was measured rather than argued about: one
+`thread/start` sent, four threads on the wire. The server created three of its
+own, each running its own turn and returning its own 9-12 KB answer, while the
+parent turn reported a single `agentMessage` item and nothing else.
+
+Autopilot journals only the creations it performs, so those threads would exist
+in no journal, and `audit_creation_causality` - which reads that journal -
+would keep reporting every creation audited beside them. Blind rather than
+broken, which is worse. The ceiling stays, the measurement is written where the
+next reader will find it, and four tests hold it so that lifting it is a
+decision rather than a tidy-up.
+
 ## 0.11.8-beta
 
 The runtime notices when the model it pins stops being the current one.

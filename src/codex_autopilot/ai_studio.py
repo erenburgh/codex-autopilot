@@ -249,7 +249,15 @@ class AIStudioRuntime:
             # What she already installed and uses. Hiring one of these costs
             # nothing, nothing is fetched, and it is hers rather than
             # outside material - so it is preferred over the market.
-            **({"installed_skills": shown} if shown else {}),
+            # ALWAYS present, empty list included. Omitting the key when
+            # nothing is installed left the instruction below pointing at a
+            # field that was not in the brief - and a screener told to
+            # "prefer installed_skills" with no such list invented a
+            # plausible name instead. Measured twice on a live run: both
+            # screenings named a skill this machine does not have, got
+            # refused, and recorded an unmet need without ever considering
+            # the market.
+            "installed_skills": shown,
             **(
                 {"installed_skills_omitted": installed_omitted}
                 if installed_omitted
@@ -283,6 +291,38 @@ class AIStudioRuntime:
             else "You are hiring the worker for one task. Decide which skills would "
             "help this particular worker reach the goal, and name them."
         )
+        # What the screener is told about sourcing depends on what it was
+        # actually handed. Telling it to prefer a list that is empty is how
+        # both live screenings ended up naming a skill that does not exist
+        # on this machine.
+        if shown:
+            sourcing = (
+                "Назови один из `installed_skills` через `installed: \"<имя>\"` - "
+                "только имя, никогда не путь - или выбери из `declared_skill_packs` "
+                "по точным id и version. Предпочитай `installed_skills`: они уже "
+                "стоят на этой машине, ничего не стоят, ничего не качают и выбраны "
+                "самим пользователем, а не взяты со стороны. Имя, которого нет в "
+                "выданном списке, будет отклонено."
+                if russian
+                else "Name one of `installed_skills` with `installed: \"<name>\"` - a "
+                "name only, never a path - or pick from `declared_skill_packs` by "
+                "exact id and version. Prefer `installed_skills`: those are already "
+                "on this machine, cost nothing to use, fetch nothing, and are the "
+                "user's own choice of tool rather than outside material. A name "
+                "that is not in the list you were given is refused."
+            )
+        else:
+            sourcing = (
+                "`installed_skills` пуст: на этой машине не установлено ни одного "
+                "навыка, поэтому взять оттуда нечего и придумывать имя нельзя - "
+                "любое будет отклонено. Выбирай из `declared_skill_packs` по точным "
+                "id и version, либо называй `bundle`, как описано ниже."
+                if russian
+                else "`installed_skills` is empty: this machine has no skills "
+                "installed, so there is nothing to take from it and a name invented "
+                "for it will be refused. Pick from `declared_skill_packs` by exact "
+                "id and version, or name a `bundle` as described below."
+            )
         honesty = (
             "Если ни в одном из списков нет подходящего, ты можешь назвать, откуда "
             "его взять: bundle с provider и locator. Скачивает рантайм, не ты - "
@@ -312,11 +352,7 @@ bounded and your reading is not: walking the whole repository spends a turn on
 a task that has not started. You do no production work in this turn: you
 change no file the task is about, record no evidence, and start no other task.
 
-Name one of `installed_skills` with `installed: "<name>"` - a name only, never a
-path - or pick from `declared_skill_packs` by exact id and version. Prefer
-`installed_skills`: those are already on this machine, cost nothing to use,
-fetch nothing, and are the user's own choice of tool rather than outside
-material.
+{sourcing}
 Every item needs a `rationale` written in terms of THIS task - not a general
 endorsement of the skill. Ask for at most {MAX_REQUISITION_ITEMS} capabilities,
 each capability once, and exactly one way of filling each. Asking for nothing is

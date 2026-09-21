@@ -315,8 +315,27 @@ def _record_requisition(
             f"the plan advanced to graph version {state.graph_version} while "
             f"task {task_id} was being screened for version {graph_version}"
         )
+    # The same source the brief was built from. A name the screener could
+    # not have been shown is refused as a protocol error, which is what
+    # earns it its second attempt; resolution would have taken it as a
+    # legitimate ask that simply failed.
+    # Presence, not readability. A skill that is there but cannot be read
+    # is still a name the screener could legitimately give, and its honest
+    # refusal is "installed but could not be read" - accusing it of being
+    # invented would send the user looking for something sitting right
+    # there.
+    from .hired_skills import installed_skill_names
+
     try:
-        requisition = parse_screening_result(final_message, task_id=task_id)
+        installed_names = installed_skill_names()
+    except Exception:
+        # Our own failure to look is not the screener's fault: fall back to
+        # shape-only validation rather than refusing its answer over it.
+        installed_names = None
+    try:
+        requisition = parse_screening_result(
+            final_message, task_id=task_id, installed_names=installed_names
+        )
     except ScreeningProtocolError as exc:
         return str(exc)
     runtime = AIStudioRuntime(

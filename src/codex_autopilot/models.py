@@ -8,6 +8,27 @@ MODEL_IDS = {"sol": "gpt-5.6-sol", "astra": "gpt-6-astra"}
 MODEL_LABELS = {"sol": "GPT-5.6 Sol", "astra": "GPT-6 Astra"}
 STRATEGIES = {"auto", "sol-only", "astra-only", "host-settings"}
 EXECUTION_MODES = {"code", "computer_use"}
+# The ladder stops at max ON PURPOSE. App Server offers one more rung
+# above it - "ultra", described as "Maximum reasoning with automatic task
+# delegation" - and it was measured on 21 Sep 2026 rather than reasoned
+# about:
+#
+#   one thread/start sent; four threads on the wire. The server created
+#   three of its own, each running its own turn and returning its own
+#   9-12 KB answer. From the parent thread the turn reported a single
+#   agentMessage item and nothing else - wait_for_turn would hand the
+#   dispatcher a clean one-item result while three unrecorded threads had
+#   just spent the user's limits.
+#
+# That is not a deeper worker, it is an orchestrator inside an
+# orchestrator. Autopilot journals only the creations it performs, so
+# those threads would exist in no journal; audit_creation_causality reads
+# that journal and would keep printing "N/N creations audited" beside
+# them - blind rather than broken, which is worse. The worker-slot
+# accounting would not see them either.
+#
+# Adding "ultra" here is therefore not a missing rung. Reinstate it only
+# with a way to observe and attribute the threads it creates.
 PUBLIC_REASONING = ("medium", "high", "xhigh", "max")
 
 

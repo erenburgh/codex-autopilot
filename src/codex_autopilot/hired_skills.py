@@ -86,6 +86,25 @@ def codex_skills_root(codex_home: Path | None = None) -> Path:
     return Path(home).expanduser() / "skills"
 
 
+def installed_skill_names(codex_home: Path | None = None) -> tuple[str, ...]:
+    """Every name present in her skills directory, readable or not.
+
+    Two different questions get asked about an installed skill, and
+    answering them with one list was a bug: "did you invent this name?"
+    is about presence, "why can you not have it?" is about readability. A
+    skill that is there but unreadable must still be recognised as named
+    rather than accused of being made up - the honest refusal is "installed
+    but could not be read", and it is the one that sends her to the right
+    place.
+    """
+
+    root = codex_skills_root(codex_home)
+    try:
+        return tuple(sorted(path.name for path in root.iterdir()))
+    except OSError:
+        return ()
+
+
 def installed_skill_bundles(
     codex_home: Path | None = None,
 ) -> tuple[tuple[dict[str, Any], ...], tuple[str, ...]]:

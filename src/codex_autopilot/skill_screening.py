@@ -311,7 +311,9 @@ class HiringDecision:
         }
 
 
-def parse_screening_result(message: str, *, task_id: str) -> SkillRequisition:
+def parse_screening_result(
+    message: str, *, task_id: str, installed_names: Sequence[str] | None = None
+) -> SkillRequisition:
     """Parse one exact, final, structured requisition for this exact task.
 
     Free-form reasoning may precede the protocol line.  The line must occur
@@ -334,10 +336,12 @@ def parse_screening_result(message: str, *, task_id: str) -> SkillRequisition:
         raw = json.loads(protocol[0][len(SCREENING_PREFIX) :])
     except json.JSONDecodeError as exc:
         raise ScreeningProtocolError("screening result is not valid JSON") from exc
-    return requisition_from_raw(raw, task_id=task_id)
+    return requisition_from_raw(raw, task_id=task_id, installed_names=installed_names)
 
 
-def requisition_from_raw(raw: Any, *, task_id: str) -> SkillRequisition:
+def requisition_from_raw(
+    raw: Any, *, task_id: str, installed_names: Sequence[str] | None = None
+) -> SkillRequisition:
     if not isinstance(raw, Mapping):
         raise ScreeningProtocolError("screening result must be a JSON object")
     _reject_unknown(raw, {"task_id", "items"}, "screening result")
@@ -356,7 +360,7 @@ def requisition_from_raw(raw: Any, *, task_id: str) -> SkillRequisition:
             f"got {len(items_raw)}"
         )
     items = tuple(
-        _item_from_raw(item, f"screening item {index}")
+        _item_from_raw(item, f"screening item {index}", installed_names)
         for index, item in enumerate(items_raw, 1)
     )
     capabilities = [item.capability for item in items]
@@ -516,7 +520,9 @@ def hiring_decision_from_raw(raw: Any) -> HiringDecision:
     return HiringDecision(task_id=task_id, outcomes=outcomes)
 
 
-def _item_from_raw(raw: Any, label: str) -> RequisitionItem:
+def _item_from_raw(
+    raw: Any, label: str, installed_names: Sequence[str] | None = None
+) -> RequisitionItem:
     if not isinstance(raw, Mapping):
         raise ScreeningProtocolError(f"{label} must be an object")
     _reject_unknown(raw, set(REQUISITION_ITEM_FIELDS), label)
@@ -557,6 +563,19 @@ def _item_from_raw(raw: Any, label: str) -> RequisitionItem:
             raise ScreeningProtocolError(
                 f"{label}.installed must be the name of one installed skill, not a "
                 f"path: got {installed!r}"
+            )
+        # A name that was never offered is refused HERE, while it is still a
+        # protocol error the screener gets to read and answer - it has one
+        # more attempt. Left to resolution it became a valid requisition
+        # that merely failed, and the capability went down as an unmet need
+        # with the market never considered. Measured twice on a live run.
+        if installed_names is not None and installed not in set(installed_names):
+            offer = ", ".join(sorted(installed_names))
+            raise ScreeningProtocolError(
+                f"{label}.installed names {installed!r}, which is not among the "
+                f"skills installed on this machine. Installed: "
+                f"{offer or 'nothing at all'}. Name one of those, pick a declared "
+                f"pack, or hand over a bundle instead - do not invent a name."
             )
     offered = [
         name

@@ -18,6 +18,29 @@ Public reasoning values are `medium`, `high`, `xhigh`, and `max`. If the request
 
 The dispatcher never changes model to evade quota. Sol and Astra share account allowance.
 
+## Why the ladder stops at `max`
+
+App Server advertises one effort above `max`: `ultra`, "Maximum reasoning with
+automatic task delegation". It is deliberately not in `PUBLIC_REASONING`, and
+the reason is a measurement rather than a worry.
+
+On 21 Sep 2026 one plain turn was started at `ultra` with three independent
+analyses in the prompt. One `thread/start` was sent. Four threads appeared on
+the wire: ours, and three the server created for itself, each running its own
+turn and returning its own full answer. The parent turn completed after 250
+seconds reporting a single `agentMessage` item - from the thread we started,
+the other three were invisible.
+
+That is an orchestrator inside an orchestrator. Autopilot journals only the
+creations it makes itself, so those threads would appear in no journal;
+`audit_creation_causality` reads that journal and would go on reporting every
+creation audited while untracked threads spent the account's limits beside it.
+Blind, not broken - which is the worse failure, because the status card keeps
+saying everything is accounted for.
+
+Reinstating `ultra` needs a way to observe and attribute the threads it
+creates, not just a line added to the tuple.
+
 ## When a newer model appears
 
 The Adaptive profile asks App Server for an exact id - `gpt-5.6-sol`,
