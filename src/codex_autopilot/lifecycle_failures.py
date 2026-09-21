@@ -292,7 +292,42 @@ def record_desktop_failure(
             # the real fault. The state machine is right to forbid the
             # self-transition; it is the failure record that must be
             # idempotent.
-            if state.task_states.get(task_id) != TaskState.RETRY_WAIT.value:
+            # A verification that never answered did not undo the work.
+            # This else-branch is the one path every kind of session falls
+            # into, and it sends the task to RETRY_WAIT, whose only exit is
+            # READY - which means a fresh implementation. For an
+            # implementation or a revision that is right: the attempt
+            # failed, redo it. For a verifier it is backwards.
+            #
+            # The state machine already says so at TaskState.VERIFYING:
+            # "A verifier whose reply cannot be read verified nothing. The
+            # work stays done and still awaits acceptance, so the task
+            # returns to IMPLEMENTED rather than being redone." That path
+            # was taken only when a verdict arrived and could not be read.
+            # A verifier drained by a pause, killed by a reboot or lost to
+            # a rate limit answered nothing at all - the work is at least
+            # as intact - and it was the one getting thrown away.
+            #
+            # Measured on a live run: pausing to install a new version
+            # retired M20's verifier mid-flight; the task went RETRY_WAIT
+            # -> READY and spent a whole implementation turn redoing work
+            # that was already finished and merely unjudged.
+            verifier_lost_mid_flight = (
+                str(session.get("kind") or "") == "verifier"
+                and state.task_states.get(task_id) == TaskState.VERIFYING.value
+            )
+            if verifier_lost_mid_flight:
+                state.task_states = transition_task(
+                    plan, state.task_states, task_id, TaskState.IMPLEMENTED
+                )
+                _append_event(
+                    state,
+                    "verification_returned_for_reverification",
+                    session,
+                    timestamp,
+                    detail=reason,
+                )
+            elif state.task_states.get(task_id) != TaskState.RETRY_WAIT.value:
                 state.task_states = transition_task(
                     plan, state.task_states, task_id, TaskState.RETRY_WAIT
                 )

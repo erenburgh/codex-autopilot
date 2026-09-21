@@ -1,6 +1,6 @@
 {
   "name": "codex-autopilot-host-settings",
-  "version": "0.11.9-beta",
+  "version": "0.11.10-beta",
   "description": "Run long Codex projects as serial visible fresh workers with evidence-backed Project Memory and host defaults.",
   "author": {
     "name": "Codex Autopilot contributors"

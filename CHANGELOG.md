@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.11.10-beta
+
+An interrupted verification is re-judged, not re-done.
+
+The state machine has said so all along, at `TaskState.VERIFYING`: *"A verifier
+whose reply cannot be read verified nothing. The work stays done and still
+awaits acceptance, so the task returns to IMPLEMENTED rather than being
+redone."* Exactly one path took it - the one where a verdict arrived and could
+not be parsed.
+
+A verifier that answered nothing at all - drained by a pause, killed by a
+reboot, taken by a rate limit - fell into the generic failure branch instead,
+which sends any task to `RETRY_WAIT`. The only exit from `RETRY_WAIT` is
+`READY`, and `READY` means a fresh implementation. So the better-informed
+failure was handled gently while the less-informed one threw the work away,
+although nothing had judged it and it was at least as intact.
+
+Measured here rather than argued about: pausing a live run to install a new
+version retired M20's verifier mid-flight, and the task spent a whole
+implementation turn redoing work that was finished and merely unjudged.
+
+A verifier session lost while its task is in `VERIFYING` now returns that task
+to `IMPLEMENTED` and records `verification_returned_for_reverification`, so the
+case is visible in the journal instead of dissolving into "failed, retrying".
+Every other kind of session still takes the shared retry branch, because an
+implementation or a revision that failed is exactly what should be redone.
+
 ## 0.11.9-beta
 
 Hiring reaches the market, and the effort ladder stops where it stops on purpose.

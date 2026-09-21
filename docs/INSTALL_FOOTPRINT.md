@@ -2,7 +2,7 @@
 
 ## Default installation
 
-`install.sh` creates or replaces the directory of the version it installs (`0.11.9-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
+`install.sh` creates or replaces the directory of the version it installs (`0.11.10-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
 
 ```text
 ~/Library/Application Support/CodexAutopilot/
