@@ -305,9 +305,35 @@ def complete_desktop_worker(
                         f"expected {expected_title!r}, observed {actual_title!r}"
                     )
             elif verdict.rubric is not None:
-                raise DepartmentAcceptanceError(
-                    "verifier attested a department rubric for a task without "
-                    "department-binding and rubric-binding resources"
+                # The same class as the unreadable verdict above, reaching
+                # the runtime by the other door. There the verdict cannot be
+                # parsed; here it parses perfectly and carries a `rubric`
+                # the task is not entitled to - `rubric` is a legal field,
+                # just not for a task with no department binding.
+                #
+                # That second door bypassed the rejection recorder, so the
+                # reason was never written down and the NEXT verifier was
+                # told nothing. It repeated the mistake, its turn was
+                # interrupted again, and the task sat in VERIFYING waiting
+                # for the on-call engineer. Measured three times on one
+                # live run - twice on M6, once on M11A - each time costing
+                # a worker turn and a stall.
+                #
+                # Recording it reaches the note that already exists and
+                # says exactly the right thing: return AUTOPILOT_VERIFICATION
+                # with exactly two top-level fields.
+                return _reject_verifier_result(
+                    cfg,
+                    session=session,
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    reason=(
+                        "verifier attested a department rubric for a task without "
+                        "department-binding and rubric-binding resources"
+                    ),
+                    at=at,
+                    now_epoch=now_epoch,
+                    dispatcher_authorized=dispatcher_authorized,
                 )
         except (DepartmentAcceptanceError, ContextBoundaryError) as exc:
             raise WorkerProtocolError(str(exc)) from exc

@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.11.11-beta
+
+A rubric the task cannot have now teaches the next verifier instead of
+repeating.
+
+Two doors lead to the same failure. Behind the first the verdict cannot be
+parsed; that one already went through `_reject_verifier_result`, which writes
+the reason into `verification_rejections`, and the next verifier is handed it
+with the corrective that fits exactly - return `AUTOPILOT_VERIFICATION` with
+exactly two top-level fields. The comment beside it even says the measurement
+was taken on the `rubric` field.
+
+Behind the second the verdict parses perfectly and carries `rubric` - a legal
+field, just not for a task with no department binding. That door raised
+straight to `WorkerProtocolError` and recorded nothing. The next verifier was
+told nothing, did the same thing, and its turn was interrupted again; the task
+sat in `VERIFYING` waiting for the on-call engineer.
+
+Measured three times on one live run - twice on M6, once on M11A - each costing
+a worker turn and a stall.
+
+The rubric case now records through the same recorder and reaches the same
+note. The fix is deliberately narrow: only the mistake the verifier itself
+invents. Other department-acceptance failures - a title that does not identify
+the pinned Lead Role, a missing rubric where one is required - still raise,
+because there the verifier is not the one at fault.
+
 ## 0.11.10-beta
 
 An interrupted verification is re-judged, not re-done.
