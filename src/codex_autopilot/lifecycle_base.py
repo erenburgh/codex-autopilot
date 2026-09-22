@@ -687,6 +687,8 @@ def _rehire_or_block_on_revision_limit(
     """
 
     task = plan.task_map[task_id]
+    # Attempts spent on other premises do not count: revision_budget.
+    _reset_revision_budget_if_premises_changed(plan, state, task_id, at)
     used = int(state.task_revisions.get(task_id, 0))
     hires = int(state.task_rehires.get(task_id, 0))
     maximum = task.verification.max_revision_attempts
@@ -1383,6 +1385,49 @@ def _run_own_thread_ids(state: RunState) -> set[str]:
         for item in state.worker_sessions
         if item.get("thread_id")
     }
+
+
+def _reset_revision_budget_if_premises_changed(
+    plan: Plan, state: RunState, task_id: str, at: str
+) -> None:
+    """Start over when the task no longer rests on what it was tried on.
+
+    Why, and what it measured, is in `revision_budget`."""
+
+    from .revision_budget import basis_for, premises_changed, recorded_depends_on
+
+    basis = (state.task_revision_basis or {}).get(task_id)
+    task = plan.task_map[task_id]
+    if not premises_changed(basis, task.depends_on):
+        return
+    before = recorded_depends_on(basis) or []
+    spent = int(state.task_revisions.get(task_id, 0))
+    hires = int(state.task_rehires.get(task_id, 0))
+    state.task_revisions[task_id] = 0
+    state.task_rehires[task_id] = 0
+    state.task_effort.pop(task_id, None)
+    state.task_revision_basis[task_id] = basis_for(state.graph_version, task.depends_on)
+    _append_event(
+        state,
+        "revision_budget_reset_on_new_premises",
+        {
+            "operation_id": f"revision-budget-reset:{task_id}",
+            "task_id": task_id,
+            "attempt": int(state.task_attempts.get(task_id, 0)),
+            "reservation_token": f"revision-budget-reset:{task_id}",
+        },
+        at,
+        detail=json.dumps(
+            {
+                "task_id": task_id,
+                "depends_on_before": before,
+                "depends_on_now": [str(item) for item in task.depends_on],
+                "revisions_forgiven": spent,
+                "rehires_forgiven": hires,
+            },
+            sort_keys=True,
+        ),
+    )
 
 
 def audit_creation_causality(state: RunState) -> list[str]:

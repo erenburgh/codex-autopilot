@@ -18,6 +18,7 @@ from .lifecycle_prompts import (
 )
 from .memory import ProjectMemory
 from .models import MODEL_IDS, ModelRoutingError, logical_model
+from .revision_budget import basis_for
 from .plan import Plan, load_plan, validate_plan_change
 from .plan_verification import (
     FULL_PLAN_REVALIDATION,
@@ -957,6 +958,13 @@ def _reserve_followup_sessions_in_state(
         state.worker_sequence = worker_sequence
         if kind == "revision":
             state.task_revisions[task.id] = revision_number
+            # Remember WHAT the attempt was spent on. A replanner can insert
+            # a prerequisite under a task, and the attempts made before it
+            # existed were attempts at a different problem on a different
+            # tree; without this the ladder charges the new work for them.
+            state.task_revision_basis[task.id] = basis_for(
+                state.graph_version, task.depends_on
+            )
         descriptor = _build_descriptor(
             cfg,
             plan,

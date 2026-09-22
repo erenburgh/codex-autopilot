@@ -60,6 +60,12 @@ class RunState:
     # The effort step assigned by a re-hire on top of what the plan records.
     # Empty until a re-hire happened.
     task_effort: dict[str, str] = field(default_factory=dict)
+    # What the revision counter above was spent ON: the task's prerequisites
+    # at the time. A replanner can insert a prerequisite under a task, which
+    # makes the work a different problem on a different tree - and the
+    # attempts made before it existed were attempts at something else.
+    # Keyed by task id: {"graph_version": int, "depends_on": [ids]}.
+    task_revision_basis: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Which skills each task's worker was hired with, on what grounds, and by
     # which screening session. Keyed by task id and bound to the graph
     # version the hire was made for: a replan rewrites task contracts under

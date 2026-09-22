@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.11.13-beta
+
+A task rebuilt on new prerequisites no longer pays for the old attempts.
+
+The hiring ladder bounds how many times one problem may be retried, and that
+ceiling is the point: a task failing under an unchanged contract must run out,
+or acceptance moves to meet the work. But a replanner can insert a prerequisite
+beneath a task, and then it is not the same problem.
+
+Measured. M11 spent four revisions and a re-hire against its original
+prerequisites, failing each time on a hole in what it depended upon. Its worker
+requested a plan change; the replanner inserted M11A, which closed that hole,
+was verified independently and promoted. M11's `depends_on` became a different
+set entirely - and M11 got exactly ONE attempt at the new problem, on the new
+tree with the old obstacle gone, before the ladder, still holding a tally from
+work that no longer existed, declared it exhausted and stopped the run.
+
+- The revision tally now carries its grounds: the prerequisites the attempts
+  were made against, recorded beside the count.
+- When those prerequisites change, the tally, the re-hire count and the raised
+  effort start over, and `revision_budget_reset_on_new_premises` records what
+  was forgiven and why.
+- Nothing else resets it. A bare graph-version bump does not, and attempts
+  recorded before this bookkeeping existed stay charged - the conservative
+  reading keeps the ceiling.
+
+The reasoning and the measurement live in the new `revision_budget` module,
+which is where the section-0 limit on module size sent them: `lifecycle_base`
+was one line over, and the right answer was to move the explanation out rather
+than to grow the largest module in the runtime.
+
 ## 0.11.12-beta
 
 A staged workspace the project has outgrown is replaced instead of reused.
