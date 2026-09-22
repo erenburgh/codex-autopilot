@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.11.12-beta
+
+A staged workspace the project has outgrown is replaced instead of reused.
+
+A staged workspace is a copy of the project taken at one moment. Reuse was
+decided on nothing but "same run, and not finished" - not the graph version,
+not what had been promoted since, not whether the project had moved at all. A
+task returning after a pause was handed its own old snapshot.
+
+Measured on a live run. M11 staged its workspace on 20 Sep. It came back on
+22 Sep, after its new prerequisite M11A had been implemented, verified and
+promoted, and received the two-day-old copy: no `memory_lineage.py`, and
+`trust.py` at hash `913fa1dc` instead of `a7ae5693`. Its worker compared the
+prerequisite by hash, refused to copy the missing file in by hand because that
+"would hide the dependency defect", and blocked - stopping the whole run. That
+refusal is the only reason this surfaced as a stop rather than as work built on
+a tree two days stale.
+
+- `prepare` now asks whether anything was promoted into the project after the
+  copy was taken. If so the copy is fenced, moved aside as
+  `<task-id>.superseded-<stamp>`, and a fresh one is made. R28 holds: the old
+  workspace and everything in it is kept, not deleted.
+- Each fresh copy records what had already been promoted when it was taken, so
+  the question can be asked at all.
+- A record written before that field existed is not trusted: a copy of unknown
+  age is exactly the thing that must not be reused silently, so it is replaced
+  once.
+
+The test is deliberately coarse - ANY promotion since the copy makes it stale,
+not only one this task depends on. Asking the narrow question means comparing
+trees on every reservation; re-copying once too often costs one copy.
+
 ## 0.11.11-beta
 
 A rubric the task cannot have now teaches the next verifier instead of

@@ -362,13 +362,19 @@ class ArtifactStagingStore:
                     raise ArtifactStagingError(
                         f"staged task {task_id} is already {status.value.lower()}"
                     )
-                tokens = [str(item) for item in existing.get("reservation_tokens") or ()]
-                if reservation_token not in tokens:
-                    tokens.append(reservation_token)
-                    existing["reservation_tokens"] = tokens
-                    existing["updated_at"] = _utc_now()
-                    self._save_raw(task_id, existing)
-                return self._from_raw(existing)
+                stale = self._workspace_is_stale(existing)
+                if stale:
+                    self._set_aside_stale(task_id, existing, stale)
+                else:
+                    tokens = [
+                        str(item) for item in existing.get("reservation_tokens") or ()
+                    ]
+                    if reservation_token not in tokens:
+                        tokens.append(reservation_token)
+                        existing["reservation_tokens"] = tokens
+                        existing["updated_at"] = _utc_now()
+                        self._save_raw(task_id, existing)
+                    return self._from_raw(existing)
 
             task_root = self._task_root(task_id)
             workspace = task_root / "workspace"
@@ -376,6 +382,7 @@ class ArtifactStagingStore:
                 raise ArtifactStagingError(
                     f"untracked staging directory already exists for {task_id}: {task_root}"
                 )
+            promoted_when_staged = self._promoted_task_ids()
             task_root.mkdir(parents=True)
             try:
                 self._copy_project(workspace)
@@ -389,6 +396,10 @@ class ArtifactStagingStore:
                     "run_id": run_id,
                     "task_id": task_id,
                     "workspace": str(workspace.relative_to(self.project_root)),
+                    # What had already been merged into the project when this
+                    # copy was taken. Reuse compares against it; anything
+                    # promoted later means the copy is behind the project.
+                    "promoted_when_staged": list(promoted_when_staged),
                     "status": StagingStatus.PREPARED.value,
                     "created_at": now,
                     "updated_at": now,
@@ -892,6 +903,89 @@ class ArtifactStagingStore:
             changes=changes,
             reservation_tokens=tuple(tokens_raw),
         )
+
+    def _promoted_task_ids(self) -> tuple[str, ...]:
+        """Tasks whose work has already been merged into the project.
+
+        Read from the sibling records rather than from run state: staging
+        is what promotes, so staging is what knows. Directories set aside
+        under a dotted suffix are not task roots and are skipped.
+        """
+
+        found: list[str] = []
+        try:
+            entries = sorted(self.root.iterdir())
+        except OSError:
+            return ()
+        for entry in entries:
+            if not entry.is_dir() or "." in entry.name:
+                continue
+            record = entry / "record.json"
+            if not record.is_file():
+                continue
+            try:
+                raw = json.loads(record.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(raw, dict) and str(raw.get("status")) == StagingStatus.PROMOTED.value:
+                found.append(entry.name)
+        return tuple(found)
+
+    def _workspace_is_stale(self, raw: Mapping[str, Any]) -> str:
+        """Why this workspace no longer reflects the project, or "".
+
+        A staged workspace is a copy of the project taken at one moment.
+        Reuse was decided on nothing but "same run, not finished", so a
+        task returning after a pause worked against its own old snapshot
+        while the project had moved on beneath it.
+
+        Measured: M11 staged its workspace on 20 Sep, came back on 22 Sep
+        after its new prerequisite M11A had been verified and promoted, and
+        was handed the two-day-old copy - no `memory_lineage.py`, and
+        `trust.py` at the old hash. Its worker compared prerequisites by
+        hash, refused to paper over the difference by copying the file in
+        by hand, and blocked the whole run. That refusal is the only reason
+        the defect surfaced as a stop instead of as wrong work.
+
+        The test is deliberately coarse: ANY promotion since the copy was
+        taken makes it stale, not only a promotion this task depends on.
+        Asking the narrow question means comparing trees, which costs a
+        full manifest on every reservation; re-copying once too often costs
+        one copy.
+        """
+
+        promoted_now = set(self._promoted_task_ids())
+        if not promoted_now:
+            return ""
+        recorded = raw.get("promoted_when_staged")
+        if recorded is None:
+            # Written before this field existed. We cannot tell what the
+            # copy saw, and a copy of unknown age is exactly the thing that
+            # must not be trusted silently.
+            return (
+                "the workspace predates staleness tracking and "
+                f"{len(promoted_now)} task(s) have been promoted since"
+            )
+        merged_since = promoted_now - {str(item) for item in recorded}
+        if merged_since:
+            return (
+                "these tasks were promoted into the project after this "
+                f"workspace was copied: {', '.join(sorted(merged_since))}"
+            )
+        return ""
+
+    def _set_aside_stale(self, task_id: str, raw: dict[str, Any], reason: str) -> Path:
+        """Fence the stale copy and move it out of the way. R28: nothing is destroyed."""
+
+        raw["status"] = StagingStatus.ABANDONED.value
+        raw["abandoned_reason"] = reason
+        raw["updated_at"] = _utc_now()
+        self._save_raw(task_id, raw)
+        task_root = self._task_root(task_id)
+        stamp = _utc_now().replace(":", "").replace("-", "").replace(".", "")[:15]
+        aside = task_root.parent / f"{task_id}.superseded-{stamp}"
+        task_root.rename(aside)
+        return aside
 
     def _task_root(self, task_id: str) -> Path:
         return self.root / _safe_id(task_id, "task_id")
