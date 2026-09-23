@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Callable
 
 from .blocked_runs import stop_run as _stop_run
@@ -89,6 +88,14 @@ from .lifecycle_base import (
     _sync_legacy_cursor,
     _verified_prefix,
     parse_desktop_worker_status,
+)
+from .engineer_escalation import (  # noqa: F401 - re-exported for existing importers
+    ESCALATION_CODES,
+    PIPELINE_ENGINEER_STATUS,
+    _relayable_descriptors_without_a_thread,
+    _would_idle_forever,
+    escalate_engineer_ticket,
+    parse_pipeline_engineer_status,
 )
 from .lifecycle_failures import reconcile_desktop_thread_identity
 from .lifecycle_reservations import _reserve_in_state
@@ -657,6 +664,7 @@ def complete_desktop_worker(
             _stop_run(
                 cfg,
                 state,
+                stop_kind="worker_blocked",
                 phase="BLOCKED",
                 reason=f"{task_id} {kind} {worker_status} {reason_code}".strip(),
                 summary=(
@@ -666,9 +674,6 @@ def complete_desktop_worker(
                 at=timestamp,
                 task_ids=(task_id,),
                 system_state={"reason_code": reason_code, "kind": kind},
-                # A worker stopping its own task leaves the rest of the graph
-                # runnable; calling the on-call here would halt them too.
-                route=False,
             )
             current["reason_code"] = reason_code
             if reason_code == "UNSPECIFIED":
@@ -760,88 +765,6 @@ def _notify_completion(cfg, plan, task_id: str, *, state_after: str, done: bool)
     word = "verified" if state_after == TaskState.VERIFIED.value else "stopped"
     notify(cfg, "Codex Autopilot", cfg.root.name, f"{task_id} {word}: {title}")
 
-# R13: DevOps resolves infrastructure bugs on the user's behalf, and the
-# user takes no part in choosing the fix. So an escalation is not a second
-# equal exit but an exception, and it must name its reason with a code from
-# the closed list.
-ESCALATION_CODES = frozenset({
-    "DANGEROUS_PERMISSION",
-    "GLOBAL_CONFIG_CHANGE",
-    "PROJECT_DAMAGE_RISK",
-    "RECOVERY_EXHAUSTED",
-    "PRODUCT_DECISION",
-    "ARCHITECTURE_DECISION",
-})
-PIPELINE_ENGINEER_STATUS = re.compile(
-    r"(?m)^PIPELINE_ENGINEER_STATUS:\s*(RESOLVED|ESCALATE_TO_USER(?:\s+\S+)?)\s*$"
-)
-
-
-def parse_pipeline_engineer_status(message: str) -> tuple[str, str]:
-    """The engineer's final line: the outcome and, for an escalation, the reason code."""
-
-    matches = PIPELINE_ENGINEER_STATUS.findall(message or "")
-    last = next(
-        (line.strip() for line in reversed((message or "").splitlines()) if line.strip()),
-        "",
-    )
-    if len(matches) != 1 or last != f"PIPELINE_ENGINEER_STATUS: {matches[0]}":
-        raise DesktopLifecycleError(
-            "the on-call engineer must finish with exactly one line "
-            "PIPELINE_ENGINEER_STATUS: RESOLVED or "
-            "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"
-        )
-    parts = matches[0].split()
-    if parts[0] == "RESOLVED":
-        return "RESOLVED", ""
-    if len(parts) != 2 or parts[1] not in ESCALATION_CODES:
-        raise DesktopLifecycleError(
-            "an escalation requires a reason code from the closed list (R13): "
-            + ", ".join(sorted(ESCALATION_CODES))
-        )
-    return "ESCALATE_TO_USER", parts[1]
-
-
-def _relayable_descriptors_without_a_thread(state: RunState) -> tuple[Any, ...]:
-    """Reserved work that nobody is left to raise.
-
-    After an incident, sessions remain in states fit for a relay: the thread
-    was never created, so there is nothing to duplicate. Their owner - the
-    task that completed its turn before the incident - can no longer raise
-    them: its process has exited. Returning their descriptors is how the run
-    continues without an operator.
-    """
-
-    from .lifecycle_base import RELAYABLE_SESSION_STATUSES, LaunchDescriptor
-
-    return tuple(
-        LaunchDescriptor.from_dict(dict(item["descriptor"]))
-        for item in state.worker_sessions
-        if item.get("status") in RELAYABLE_SESSION_STATUSES
-        and isinstance(item.get("descriptor"), dict)
-        and not str(item.get("thread_id") or "")
-    )
-
-
-def _would_idle_forever(state: RunState) -> bool:
-    """The run would stand forever: work is ready and nobody is there to do it.
-
-    An empty successor list is legitimate in itself - when everything hangs
-    on a blocked task, say. The sign of trouble is different: a task in READY
-    and not one live session, so nobody will come and nothing will move.
-    """
-
-    active = any(
-        item.get("status") in PENDING_SESSION_STATUSES
-        for item in state.worker_sessions
-    )
-    if active:
-        return False
-    return any(
-        value == TaskState.READY.value for value in (state.task_states or {}).values()
-    )
-
-
 def _complete_pipeline_engineer(
     cfg: Config,
     *,
@@ -922,94 +845,88 @@ def _complete_pipeline_engineer(
         _record_rule_conflicts(
             cfg, state, current, final_message, timestamp, ProjectMemory(cfg.root)
         )
-        descriptors: tuple[Any, ...] = ()
         if status == "ESCALATE_TO_USER":
-            # The ticket must learn of the escalation together with the run.
-            # The run used to go to BLOCKED while the ticket stayed in
-            # PIPELINE_ENGINEER: the store believed the engineer was working,
-            # the task hung paused, and neither it nor the user had anything
-            # to close the ticket with.
+            # One ticket goes up; the run does not. This used to stop the
+            # whole run through the door, without a reservation: tasks the
+            # ticket never named froze with it. Now its own tasks stay held
+            # by the ticket, and everything else takes the same path as a
+            # resolution below.
+            escalate_engineer_ticket(
+                cfg,
+                state,
+                current,
+                incident_id=incident_id,
+                code=escalation_code,
+                final_message=final_message,
+                at=timestamp,
+            )
+        else:
+            state.last_error = None
+        # A repair without a successor is not a completion: the causal
+        # predecessor is dead by then - its death was the incident - so the
+        # causal link is the engineer's own turn, and its Stop hook performs
+        # the relay, as for any worker.
+        plan = load_plan(cfg.state_dir, cfg.profile)
+        descriptors = _reserve_in_state(
+            cfg,
+            plan,
+            state,
+            memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
+            relay_owner_thread_id=thread_id,
+            now_epoch=now_epoch,
+        )
+        # A reservation created BEFORE the incident is not new, and
+        # `_reserve_in_state` will not return it; left hanging it needed a
+        # human to resume by hand.
+        if not descriptors:
+            descriptors = _relayable_descriptors_without_a_thread(state)
+        if not descriptors and _would_idle_forever(state):
+            # A ready task and nobody to take it is a defect of the
+            # reservation, not a decision. It used to hand the just-closed
+            # ticket to the owner without a code - refused by R13, swallowed,
+            # a silent BLOCKED. Now it is a fresh ticket that holds nothing
+            # (the ready tasks are what should go, not what should wait), and
+            # the on-call is reserved for it in this same transaction.
             _stop_run(
                 cfg,
                 state,
-                phase="PIPELINE_ENGINEER_ESCALATED",
+                stop_kind="no_successor",
+                phase="PIPELINE_ENGINEER_NO_SUCCESSOR",
                 reason=(
-                    f"the on-call engineer handed incident {incident_id} to the "
-                    f"user: {escalation_code}"
+                    f"the engineer closed incident {incident_id}, but no successor "
+                    "was assigned: there is a ready task and not one active session"
                 ),
-                summary=(
-                    "The on-call engineer looked at this and says the call is "
-                    f"not theirs to make: {escalation_code}."
-                ),
+                summary="A task is ready and no session can be assigned to it.",
                 at=timestamp,
-                incident_id=incident_id,
-                escalation_code=escalation_code,
+                context_task_id=next(
+                    (k for k, v in state.task_states.items() if v == TaskState.READY.value), ""
+                ),
             )
-        else:
-            state.status = "READY"
-            state.phase = "PREPARING"
-            state.last_error = None
-            # A repair without a successor is not a completion. An empty
-            # list used to be returned here, the run went to READY/PREPARING,
-            # and that was the end: the engineer closed the incident, its
-            # process exited normally, and nobody was left to launch M1. The
-            # causal predecessor is dead by then - its death was the incident
-            # - so the causal link is the engineer's own turn: its Stop hook
-            # performs the relay, as for any worker.
+            _append_event(
+                state, "pipeline_engineer_left_no_successor", current, timestamp, detail=incident_id
+            )
             descriptors = _reserve_in_state(
                 cfg,
-                load_plan(cfg.state_dir, cfg.profile),
+                plan,
                 state,
                 memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
                 relay_owner_thread_id=thread_id,
                 now_epoch=now_epoch,
             )
-            # A reservation created BEFORE the incident is not new, and
-            # `_reserve_in_state` will not return it. It used to stay hanging
-            # in CREATE_REQUESTED: the engineer fixed the cause, exited, and
-            # the run stood until a human resumed it by hand. Exactly this
-            # made the pipeline non-automatic - every repair needed an
-            # operator.
-            if not descriptors:
-                descriptors = _relayable_descriptors_without_a_thread(state)
-            if dispatcher_authorized:
-                # The same transition-ownership bookkeeping as for an
-                # ordinary worker. The engineer used to assign a successor
-                # without marking it on itself: the dispatcher refused to
-                # carry the chain on with "current dispatcher does not own
-                # the completed-to-successor transition", the reservation
-                # hung in CREATE_REQUESTED, and a new incident - about the
-                # dispatcher's own crash - opened on top of the closed one.
-                current["automatic_successor_tokens"] = [
-                    item.reservation_token for item in descriptors
-                ]
-                current["automatic_dispatch_state"] = (
-                    "ADVANCING" if descriptors else "COMPLETED"
-                )
-            if not descriptors and _would_idle_forever(state):
-                # An exception here would lose the very record of the
-                # engineer's completion, so the run stops loudly rather than
-                # crashing: the task is ready, but nobody can be assigned.
-                _stop_run(
-                    cfg,
-                    state,
-                    phase="PIPELINE_ENGINEER_NO_SUCCESSOR",
-                    reason=(
-                        f"the engineer closed incident {incident_id}, but no successor "
-                        "was assigned: there is a ready task and not one active session"
-                    ),
-                    summary="A task is ready and no session can be assigned to it.",
-                    at=timestamp,
-                    incident_id=incident_id,
-                )
-                _append_event(
-                    state,
-                    "pipeline_engineer_left_no_successor",
-                    current,
-                    timestamp,
-                    detail=incident_id,
-                )
+        if dispatcher_authorized:
+            # The same transition-ownership bookkeeping as for an ordinary
+            # worker; without it the dispatcher refused to carry the chain.
+            current["automatic_successor_tokens"] = [
+                item.reservation_token for item in descriptors
+            ]
+            current["automatic_dispatch_state"] = (
+                "ADVANCING" if descriptors else "COMPLETED"
+            )
+        _finish_global_state(
+            plan, state, descriptors, paused=store.pause_requested(), cfg=cfg
+        )
         store.save(state)
+    _materialize(descriptors)
     return CompletionOutcome(True, status, descriptors, False)
 
 
@@ -1128,6 +1045,8 @@ def _reject_replanner_result(
             _stop_run(
                 cfg,
                 state,
+                stop_kind="plan_change_rejected",
+                plan_change_id=str(change.get("id") or ""),
                 phase="PLAN_CHANGE_REJECTED",
                 reason=reason,
                 summary=(
@@ -1145,13 +1064,11 @@ def _reject_replanner_result(
                     for i in rejections
                 ),
             )
-            if dispatcher_authorized:
-                current["automatic_successor_tokens"] = []
-                current["automatic_dispatch_state"] = "COMPLETED"
-            store.save(state)
-            return CompletionOutcome(True, "PLAN_CHANGE_REJECTED", (), False)
-
-        change["status"] = "DRAINING"
+            # And then the ordinary path: the stop holds its own task, the
+            # on-call is reserved, the neighbours go on. Returning nothing
+            # here froze the run with nobody to raise it.
+        else:
+            change["status"] = "DRAINING"
         descriptors = _reserve_in_state(
             cfg,
             current_plan,
@@ -1253,11 +1170,13 @@ def _reject_verifier_result(
         )
         if exhausted:
             # Three unreadable verdicts in a row are no accident. Burning
-            # more turns is pointless: the run stops loudly and names the
-            # reason instead of spinning silently.
+            # more turns is pointless: the task stops loudly, names the
+            # reason, and - like every stop - takes the ordinary path below,
+            # so the on-call comes and independent tasks keep moving.
             _stop_run(
                 cfg,
                 state,
+                stop_kind="verification_protocol",
                 phase="VERIFICATION_PROTOCOL_BLOCKED",
                 reason=(
                     f"the verifier of {task_id} returned an unreadable verdict "
@@ -1267,12 +1186,6 @@ def _reject_verifier_result(
                 at=timestamp,
                 task_ids=(task_id,),
             )
-            if dispatcher_authorized:
-                current["automatic_successor_tokens"] = []
-                current["automatic_dispatch_state"] = "COMPLETED"
-            store.save(state)
-            return CompletionOutcome(True, "VERIFICATION_REJECTED", (), False)
-
         descriptors = _reserve_in_state(
             cfg,
             plan,

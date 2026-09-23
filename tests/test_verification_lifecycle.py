@@ -643,11 +643,17 @@ class VerificationLifecycleTests(unittest.TestCase):
             turn_id="implementation-turn",
             final_message="AUTOPILOT_STATUS: ROTATE",
         )
-        self.assertEqual(outcome.descriptors, ())
+        # Not a silent BLOCKED any more: the routing failure goes through the
+        # door, and the on-call is reserved by the same completion.
+        self.assertEqual([item.kind for item in outcome.descriptors], ["pipeline_engineer"])
         state = self.store.load()
         self.assertEqual(state.task_states["A"], TaskState.BLOCKED.value)
         self.assertEqual(state.task_states["B"], TaskState.WAITING.value)
         self.assertIn("requires Computer Use", state.last_error)
+        ticket = self._tickets()[-1]
+        self.assertEqual(ticket["system_state"]["stop_kind"], "verifier_routing")
+        self.assertEqual(ticket["affected_task_ids"], ["A"])
+        self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
 
     def test_auto_policy_is_rejected_before_initialization(self) -> None:
         with self.assertRaisesRegex(ValueError, 'must be "independent"'):
@@ -664,6 +670,57 @@ class VerificationLifecycleTests(unittest.TestCase):
         ]
         with self.assertRaisesRegex(ValueError, 'must be "independent"'):
             self.initialize(task("A", policy="deterministic", checks=checks))
+
+    def _tickets(self) -> list[dict]:
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        return list(PipelineIncidentStore(self.cfg.state_dir).load()["incidents"])
+
+    def _climb_the_ladder(self, descriptor, task_id: str = "A"):
+        """Refuse `task_id` until its hiring ladder is spent.
+
+        The loop ends when the task gets no more work of its own - not when
+        the outcome is empty: the last refusal now reserves the on-call next
+        to the neighbours, and the on-call's descriptor carries the same
+        task id as its anchor.
+        """
+
+        efforts: list[str] = []
+        for index in range(16):
+            outcome = self._reject_once(descriptor, index)
+            descriptor = next(
+                (
+                    item
+                    for item in outcome.descriptors
+                    if item.task_id == task_id and item.kind in {"revision", "verifier"}
+                ),
+                None,
+            )
+            if descriptor is None:
+                return outcome, efforts
+            if descriptor.thinking not in efforts:
+                efforts.append(descriptor.thinking)
+        self.fail("лестница найма не закончилась")
+
+    def _engineer_answers(self, outcome, message: str, thread: str = "engineer-thread"):
+        engineer = next(item for item in outcome.descriptors if item.kind == "pipeline_engineer")
+        self.activate(engineer, thread)
+        return complete_desktop_worker(
+            self.cfg,
+            thread_id=thread,
+            turn_id=f"{thread}-turn",
+            final_message=message,
+        )
+
+    ESCALATION = (
+        "Разобрал замечания: они о самой работе, не о гейте и не о рубрике.\n"
+        'AUTOPILOT_ESCALATION: {"diagnosis":"I-1 repeats at every effort",'
+        '"repaired":"nothing to repair in the runtime",'
+        '"decision_needed":"accept A as it is or change its contract",'
+        '"recommendation":"change the contract of A","options":["accept","replan"],'
+        '"scope":"%s"}\n'
+        "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER PRODUCT_DECISION"
+    )
 
     def _reject_once(self, descriptor, round_index: int):
         """One acceptance round: work -> fresh verifier -> refusal."""
@@ -745,27 +802,15 @@ class VerificationLifecycleTests(unittest.TestCase):
         """The ladder is finite: at its top the task really does stop.
 
         By the incident taxonomy the PRODUCTION class belongs to the
-        product owner, and automatic quality repair is forbidden here.
-        But the task has to stop at the top of the ladder, not on the
-        first refusal.
+        product owner, and automatic quality repair is forbidden here. But
+        the stop reaches the on-call first, and the owner hears from it -
+        with a diagnosis and a recommendation, not a bare code.
         """
 
         self.initialize(
             task("A", policy="independent", verifier_role="reviewer", max_revisions=2)
         )
-        descriptor = reserve_ready_frontier(self.cfg)[0]
-        # Every ladder step costs three refusals: two revisions within the
-        # budget plus the one on which the budget is exhausted.
-        efforts: list[str] = []
-        for index in range(16):
-            outcome = self._reject_once(descriptor, index)
-            if not outcome.descriptors:
-                break
-            descriptor = outcome.descriptors[0]
-            if descriptor.thinking not in efforts:
-                efforts.append(descriptor.thinking)
-        else:
-            self.fail("лестница найма не закончилась")
+        outcome, efforts = self._climb_the_ladder(reserve_ready_frontier(self.cfg)[0])
 
         # The first laps run at the task's own effort, and only an
         # exhausted budget raises it one step.
@@ -778,6 +823,9 @@ class VerificationLifecycleTests(unittest.TestCase):
             any(item["event"] == "hiring_ladder_exhausted" for item in state.lifecycle_journal)
         )
         self.assertIn("hiring ladder", state.last_error)
+        # The stop called the on-call in the same completion.
+        self.assertEqual([item.kind for item in outcome.descriptors], ["pipeline_engineer"])
+        self.assertEqual(state.status, "RUNNING")
 
         # The product owner must see exactly what acceptance rejected and
         # how many executors have already changed - otherwise they have nothing to decide with.
@@ -796,13 +844,28 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertIn("I-1", reason)
         self.assertIn("incorrect", reason)
 
+        # The on-call finds the judgement is hers and says so, with its reasons.
+        self._engineer_answers(outcome, self.ESCALATION % "task")
+        state = self.store.load()
+        self.assertEqual(state.task_states["B"], TaskState.WAITING.value)
+        # Nothing is left to do and what remains waits for her: derived.
+        self.assertEqual((state.status, state.phase), ("BLOCKED", "AWAITING_OWNER"))
+        ticket = next(
+            item for item in self._tickets()
+            if item["system_state"].get("stop_kind") == "ladder_exhausted"
+        )
+        self.assertEqual(ticket["phase"], "ESCALATE_TO_USER")
+        self.assertEqual(ticket["escalation"]["diagnosis"], "I-1 repeats at every effort")
+        self.assertEqual(ticket["escalation"]["recommendation"], "change the contract of A")
 
     def test_a_task_at_the_top_of_the_ladder_does_not_freeze_its_neighbours(self) -> None:
-        """One task stops - the neighbours that do not depend on it go on.
+        """One task stops - the on-call comes, and the neighbours go on.
 
-        The old hole had two halves: the task died on the first
-        acceptance refusal and stopped the run along with itself.
-        Rehiring closes the first half, this check closes the second.
+        The old hole had three halves: the task died on the first
+        acceptance refusal; then it stopped the run along with itself; then
+        (0.13.0) its ticket was deliberately not routed, so that the
+        engineer - who used to come INSTEAD of work - would not freeze the
+        neighbours, and nobody came at all.
         """
 
         payload = graph(task("A", policy="independent", verifier_role="reviewer", max_revisions=2))
@@ -817,26 +880,20 @@ class VerificationLifecycleTests(unittest.TestCase):
         frontier = {item.task_id: item for item in reserve_ready_frontier(self.cfg)}
         self.assertEqual(sorted(frontier), ["A", "C"])
 
-        descriptor = frontier["A"]
-        # Every ladder step costs three refusals: two revisions within the
-        # budget plus the one on which the budget is exhausted.
-        for index in range(16):
-            outcome = self._reject_once(descriptor, index)
-            if not outcome.descriptors:
-                break
-            descriptor = next(
-                (item for item in outcome.descriptors if item.task_id == "A"), None
-            )
-            if descriptor is None:
-                self.fail("A перестала получать исполнителей до вершины лестницы")
-        else:
-            self.fail("лестница найма не закончилась")
-
+        outcome, _efforts = self._climb_the_ladder(frontier["A"])
+        # The last refusal reserved the on-call, anchored to A.
+        self.assertEqual(
+            [(item.task_id, item.kind) for item in outcome.descriptors],
+            [("A", "pipeline_engineer")],
+        )
         state = self.store.load()
         self.assertEqual(state.task_states["A"], TaskState.BLOCKED.value)
-        # The run does not declare itself BLOCKED while live work goes on: the
-        # BLOCKED status rises only when no active task is left.
         self.assertEqual(state.status, "RUNNING")
+        ticket = next(
+            item for item in self._tickets()
+            if item["system_state"].get("stop_kind") == "ladder_exhausted"
+        )
+        self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
 
         # The point: a run with A stalled keeps moving C.
         self.activate(frontier["C"], "c-thread")
@@ -852,6 +909,79 @@ class VerificationLifecycleTests(unittest.TestCase):
             [("C", "verifier")],
         )
         self.assertEqual(self.store.load().task_states["A"], TaskState.BLOCKED.value)
+
+    def _serial_pair(self):
+        payload = graph(task("A", policy="independent", verifier_role="reviewer", max_revisions=2))
+        payload["tasks"] = [
+            payload["tasks"][0],
+            task("C", policy="independent", verifier_role="reviewer"),
+        ]
+        self.initialize({}, payload=payload)
+        first = reserve_ready_frontier(self.cfg)
+        self.assertEqual([item.task_id for item in first], ["A"])
+        return first[0]
+
+    def test_serial_one_worker_the_engineer_and_the_neighbour_come_together(self) -> None:
+        """Serial, one slot: one worker and one on-call side by side.
+
+        The engineer takes no work slot - it never did - so the slot A
+        leaves goes to C in the same completion that calls the engineer.
+        """
+
+        outcome, _efforts = self._climb_the_ladder(self._serial_pair())
+        self.assertEqual(
+            sorted((item.task_id, item.kind) for item in outcome.descriptors),
+            [("A", "pipeline_engineer"), ("C", "implementation")],
+        )
+        state = self.store.load()
+        self.assertEqual(state.active_task_ids, ["C"])
+        self.assertEqual(state.status, "RUNNING")
+
+    def test_an_escalation_of_one_task_does_not_freeze_the_others(self) -> None:
+        """The engineer hands A to her; C keeps going.
+
+        The escalation used to stop the whole run through the door: BLOCKED,
+        no reservation, independent work frozen next to one question.
+        """
+
+        from codex_autopilot.lifecycle_reservations import tasks_paused_by_incidents
+        from codex_autopilot.plan import load_plan
+
+        outcome, _efforts = self._climb_the_ladder(self._serial_pair())
+        c_work = next(item for item in outcome.descriptors if item.task_id == "C")
+        self._engineer_answers(outcome, self.ESCALATION % "task")
+        state = self.store.load()
+        self.assertEqual(state.status, "RUNNING")
+        plan = load_plan(self.cfg.state_dir, "adaptive")
+        self.assertEqual(tasks_paused_by_incidents(self.cfg, plan), {"A"})
+
+        self.activate(c_work, "c-thread")
+        self.evidence("C", "c implementation")
+        after = complete_desktop_worker(
+            self.cfg, thread_id="c-thread", turn_id="c-turn", final_message="AUTOPILOT_STATUS: ROTATE"
+        )
+        self.assertEqual([(item.task_id, item.kind) for item in after.descriptors], [("C", "verifier")])
+
+    def test_an_escalation_scoped_to_the_run_holds_every_task(self) -> None:
+        """Only the engineer's explicit finding stops the whole run."""
+
+        from codex_autopilot.lifecycle_reservations import tasks_paused_by_incidents
+        from codex_autopilot.plan import load_plan
+
+        outcome, _efforts = self._climb_the_ladder(self._serial_pair())
+        c_work = next(item for item in outcome.descriptors if item.task_id == "C")
+        self._engineer_answers(outcome, self.ESCALATION % "run")
+        plan = load_plan(self.cfg.state_dir, "adaptive")
+        self.assertEqual(tasks_paused_by_incidents(self.cfg, plan), {"A", "C"})
+
+        self.activate(c_work, "c-thread")
+        self.evidence("C", "c implementation")
+        after = complete_desktop_worker(
+            self.cfg, thread_id="c-thread", turn_id="c-turn", final_message="AUTOPILOT_STATUS: ROTATE"
+        )
+        self.assertEqual(after.descriptors, ())
+        state = self.store.load()
+        self.assertEqual((state.status, state.phase), ("BLOCKED", "AWAITING_OWNER"))
 
 
 class VerificationProtocolTests(unittest.TestCase):

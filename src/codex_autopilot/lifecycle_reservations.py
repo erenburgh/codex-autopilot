@@ -23,6 +23,7 @@ from .plan import Plan, load_plan, validate_plan_change
 from .plan_verification import (
     FULL_PLAN_REVALIDATION,
     PLAN_PATCH_VERIFICATION,
+    PlanVerificationError,
     build_plan_verification_prompt,
     load_active_memory_constraints,
     plan_sha256,
@@ -40,6 +41,15 @@ from .resources import (
     build_scheduler_availability,
 )
 from .lifecycle_screening import screening_gate
+from .blocked_runs import stop_run
+from .engineer_reservation import (  # noqa: F401 - re-exported for existing importers
+    _reserve_pipeline_engineer_in_state,
+    open_pipeline_engineer_incident,
+    pipeline_engineer_package,
+    route_waiting_tickets,
+    stop_on_inconsistent_state,
+    tasks_paused_by_incidents,
+)
 from .scope import scope_baseline
 from .run_state import RunState, StateStore, utc_now
 from .scheduler import effective_worker_limit, schedule
@@ -240,8 +250,16 @@ def _reserve_in_state(
     # sessions before the normal scheduler call below.  Gate the shared entry
     # point so none of those branches can reserve work from an unverified
     # canonical graph.  Persisted pre-v1 plans remain explicitly exempt in
-    # require_plan_verified.
-    require_plan_verified(plan, state)
+    # require_plan_verified. The gate used to raise before the on-call's
+    # reservation too, so the engineer for an open ticket could never come
+    # while it failed; the failure is now held until the ownership and
+    # external-dispatcher guards below have passed, and then only the
+    # engineer may pass it - see the invariant at `unverified`.
+    try:
+        require_plan_verified(plan, state)
+        unverified: PlanVerificationError | None = None
+    except PlanVerificationError as exc:
+        unverified = exc
     if state.status == "DONE" or StateStore(cfg.state_dir).pause_requested():
         return ()
     if not state.prep_app_server_exited_at:
@@ -261,51 +279,53 @@ def _reserve_in_state(
     # _prepare_state lifts an expired rate-limit barrier and raises tasks
     # whose retry time has passed. It used to be called only inside the
     # barrier branch: a run with no barrier at all never revisited its
-    # retry times.
-    #
-    # Measured: the on-call engineer closed the incident and exited, M0's
-    # retry time had expired twelve minutes earlier, the task stayed in
-    # RETRY_WAIT, the plan-change reservation saw RETRY_WAIT and parked the
-    # run in WAITING_RATE_LIMIT - with no rate limit in sight. The
-    # dispatcher exited, nobody was left to wake it, and a 24-task run
-    # stood forever with zero done.
+    # retry times - measured: M0's retry expired twelve minutes before the
+    # engineer exited, and a 24-task run stood forever with zero done.
     _prepare_state(plan, state, now_epoch=epoch)
-    # A broken pipeline outranks any work: while an incident is routed to
-    # the on-call engineer, no new tasks are taken - the engineer is
-    # reserved instead. This phase used to be only a label in JSON, and the
-    # run stood silently.
-    engineer = _reserve_pipeline_engineer_in_state(
-        cfg,
-        plan,
-        state,
-        memory_audit_before=memory_audit_before,
-        relay_owner_thread_id=relay_owner_thread_id,
-    )
-    if engineer:
-        return engineer
-    # An open incident no longer stops the whole run. It holds only its own
-    # tasks; everything else that is ready proceeds as usual. The on-call
-    # engineer closes the ticket in its own turn.
+    # Every ticket that needs the on-call reaches its lane, and a stopped
+    # task nobody holds gets a ticket (engineer_reservation).
+    route_waiting_tickets(cfg, plan, state)
+
+    def finish(work: tuple[LaunchDescriptor, ...]) -> tuple[LaunchDescriptor, ...]:
+        # The on-call comes last in the pass - a ticket filed by this very
+        # pass (the ladder, a routing failure) gets its engineer now - and
+        # NEXT TO the work, never instead of it: the early return here is
+        # what froze the neighbours of a stopped task.
+        found = _reserve_pipeline_engineer_in_state(
+            cfg,
+            plan,
+            state,
+            memory_audit_before=memory_audit_before,
+            relay_owner_thread_id=relay_owner_thread_id,
+        ) + tuple(work)
+        if found and not work:
+            state.status = "RUNNING"
+            state.phase = "AWAITING_DESKTOP_CREATE"
+        return found
+
+    if unverified is not None:
+        # Invariant: nothing is built from an unverified graph. The engineer
+        # is not work from it - its descriptor anchors a task only for cwd
+        # and title and its prompt is the incident package, never a task's
+        # role, DoD or dependencies. Without a ticket, the gate stands.
+        found = finish(())
+        if not found:
+            raise unverified
+        return found
     paused = tasks_paused_by_incidents(cfg, plan)
     if state.active_plan_change_id is not None:
         change = active_plan_change(state)
-        if change.get("status") in {
-            "PLAN_VERIFICATION_REQUIRED",
-            "PLAN_VERIFYING",
-        }:
-            return _reserve_plan_verifier_in_state(
+        verifying = change.get("status") in {"PLAN_VERIFICATION_REQUIRED", "PLAN_VERIFYING"}
+        # A plan change drains the run; it is a graph, not a stop, and the
+        # on-call is reserved during it like at any other time.
+        return finish(
+            (_reserve_plan_verifier_in_state if verifying else _reserve_replanner_in_state)(
                 cfg,
                 plan,
                 state,
                 memory_audit_before=memory_audit_before,
                 relay_owner_thread_id=relay_owner_thread_id,
             )
-        return _reserve_replanner_in_state(
-            cfg,
-            plan,
-            state,
-            memory_audit_before=memory_audit_before,
-            relay_owner_thread_id=relay_owner_thread_id,
         )
     descriptors: list[LaunchDescriptor] = list(
         _reserve_followup_sessions_in_state(
@@ -343,13 +363,9 @@ def _reserve_in_state(
         if gate.action == "reserve" and gate.descriptor is not None:
             descriptors.append(gate.descriptor)
             continue
-        if any(
-            item.get("task_id") == task_id
-            and item.get("status") in PENDING_SESSION_STATUSES
-            for item in state.worker_sessions
-        ):
-            raise DesktopLifecycleError(f"task {task_id} already has a pending reservation")
-        task = plan.task_map[task_id]
+        if _pending_producer(state, task_id):
+            stop_on_inconsistent_state(cfg, state, task_id, "already has a pending reservation")
+            continue
         attempt = state.task_attempts.get(task_id, 0) + 1
         state.task_attempts[task_id] = attempt
         state.worker_sequence += 1
@@ -359,6 +375,25 @@ def _reserve_in_state(
         )
         operation_id = _stable_id(state, f"operation:{token}")
         client_id = f"autopilot-{_stable_id(state, f'client:{token}')[:24]}"
+        owner = LockOwner.create(
+            run_id=state.run_id,
+            task_id=task_id,
+            attempt=attempt,
+            worker_id=f"desktop-worker-{state.worker_sequence}",
+            ownership_token=token,
+        )
+        # Locks first, then the descriptor and the RUNNING edge: a refused
+        # lock used to raise after the task was already marked RUNNING, and
+        # the raise rolled back the whole completion that called us.
+        acquired = acquire_resources_in_state(
+            plan, state, cfg.root, task_id, owner
+        )
+        if not acquired.acquired:
+            state.task_attempts[task_id] = attempt - 1
+            stop_on_inconsistent_state(
+                cfg, state, task_id, f"scheduler/resource race: {acquired.reason}"
+            )
+            continue
         descriptor = _build_descriptor(
             cfg,
             plan,
@@ -375,20 +410,6 @@ def _reserve_in_state(
         )
         if task_id not in state.active_task_ids:
             state.active_task_ids.append(task_id)
-        owner = LockOwner.create(
-            run_id=state.run_id,
-            task_id=task_id,
-            attempt=attempt,
-            worker_id=f"desktop-worker-{state.worker_sequence}",
-            ownership_token=token,
-        )
-        acquired = acquire_resources_in_state(
-            plan, state, cfg.root, task_id, owner
-        )
-        if not acquired.acquired:
-            raise DesktopLifecycleError(
-                f"scheduler/resource race for {task_id}: {acquired.reason}"
-            )
         session: dict[str, Any] = {
             "reservation_token": token,
             "resource_ownership_token": token,
@@ -425,157 +446,18 @@ def _reserve_in_state(
         state.status = "RUNNING"
         state.phase = "AWAITING_DESKTOP_CREATE"
         state.milestone_id = descriptors[0].task_id
-    return tuple(descriptors)
-
-def tasks_paused_by_incidents(cfg: Config, plan: Plan) -> set[str]:
-    """The tasks named by open incidents - and only those.
-
-    Any open incident used to stop the WHOLE run: while the on-call
-    engineer dealt with M0, nothing moved, not even tasks unrelated to the
-    incident. A ticket about a failed transport on one thread held
-    twenty-three others.
-
-    An incident names its own tasks - `affected_task_ids`. The pause covers
-    exactly those.
-    """
-
-    from .pipeline_engineer import PipelineIncidentStore
-
-    paused: set[str] = set()
-    for item in PipelineIncidentStore(cfg.state_dir).load().get("incidents", []):
-        if item.get("resolved_at"):
-            continue
-        for task_id in item.get("affected_task_ids") or ():
-            if str(task_id) in plan.task_map:
-                paused.add(str(task_id))
-    return paused
+    return finish(tuple(descriptors))
 
 
-def open_pipeline_engineer_incident(cfg: Config) -> dict[str, Any] | None:
-    """An open incident routed to the on-call engineer."""
+def _pending_producer(state: RunState, task_id: str) -> bool:
+    """A pending session that produces this task - the on-call only anchors to it."""
 
-    from .pipeline_engineer import IncidentPhase, PipelineIncidentStore
-
-    store = PipelineIncidentStore(cfg.state_dir)
-    for item in store.load().get("incidents", []):
-        if item.get("resolved_at"):
-            continue
-        if str(item.get("phase")) == IncidentPhase.PIPELINE_ENGINEER.value:
-            return item
-    return None
-
-
-def pipeline_engineer_package(cfg: Config, state: RunState) -> dict[str, Any]:
-    """The bounded incident package - the engineer's only entry into context."""
-
-    from .pipeline_engineer import PipelineIncidentStore
-
-    incident = open_pipeline_engineer_incident(cfg)
-    if incident is None:
-        raise DesktopLifecycleError(
-            "the on-call engineer is requested without an incident in phase PIPELINE_ENGINEER"
-        )
-    return PipelineIncidentStore(cfg.state_dir).incident_package(
-        str(incident["incident_id"])
-    )
-
-
-def _reserve_pipeline_engineer_in_state(
-    cfg: Config,
-    plan: Plan,
-    state: RunState,
-    *,
-    memory_audit_before: int,
-    relay_owner_thread_id: str,
-) -> tuple[LaunchDescriptor, ...]:
-    """Reserve exactly one on-call engineer for an open incident.
-
-    The engineer repairs the pipeline, not the task. So it deliberately does
-    NOT take the affected task's resources: the failed session may hold
-    them, and waiting on the lock would mean the repairer arrives blocked
-    itself. For the same reason the task state is not changed and the task
-    is not added to active_task_ids - the engineer takes no work slot.
-
-    The incident's task is needed only as context: its directory, the role
-    in the title and the scope baseline.
-    """
-
-    incident = open_pipeline_engineer_incident(cfg)
-    if incident is None:
-        return ()
-    incident_id = str(incident["incident_id"])
-    if any(
-        item.get("kind") == "pipeline_engineer"
-        and item.get("incident_id") == incident_id
+    return any(
+        item.get("task_id") == task_id
         and item.get("status") in PENDING_SESSION_STATUSES
+        and item.get("kind") != "pipeline_engineer"
         for item in state.worker_sessions
-    ):
-        return ()
-    affected = [
-        str(item)
-        for item in incident.get("affected_task_ids") or ()
-        if str(item) in plan.task_map
-    ]
-    if not affected:
-        raise DesktopLifecycleError(
-            f"incident {incident_id} names no task of the current plan; "
-            "there is nothing to bind the on-call engineer to"
-        )
-    task_id = affected[0]
-
-    worker_sequence = state.worker_sequence + 1
-    token = _stable_id(
-        state,
-        f"reservation:{task_id}:pipeline_engineer:{incident_id}:{worker_sequence}",
     )
-    state.worker_sequence = worker_sequence
-    operation_id = _stable_id(state, f"operation:{token}")
-    client_id = f"autopilot-{_stable_id(state, f'client:{token}')[:24]}"
-    descriptor = _build_descriptor(
-        cfg,
-        plan,
-        state,
-        task_id=task_id,
-        kind="pipeline_engineer",
-        attempt=int(state.task_attempts.get(task_id, 0)) or 1,
-        token=token,
-        operation_id=operation_id,
-        client_id=client_id,
-    )
-    session: dict[str, Any] = {
-        "reservation_token": token,
-        "resource_ownership_token": None,
-        "operation_id": operation_id,
-        "client_user_message_id": client_id,
-        "task_id": task_id,
-        "kind": "pipeline_engineer",
-        "attempt": int(state.task_attempts.get(task_id, 0)) or 1,
-        "worker_sequence": worker_sequence,
-        "incident_id": incident_id,
-        "status": "CREATE_REQUESTED",
-        "thread_id": None,
-        "turn_id": None,
-        "host_id": None,
-        "relay_owner_thread_id": relay_owner_thread_id,
-        "created_at": descriptor.created_at,
-        "memory_audit_before": memory_audit_before,
-        "checkpoint_before": task_checkpoint(
-            _descriptor_state_dir(cfg, descriptor), task_id
-        ),
-        "scope_baseline": scope_baseline(Path(descriptor.cwd)),
-        "descriptor": descriptor.to_dict(),
-    }
-    state.worker_sessions.append(session)
-    state.status = "RUNNING"
-    state.phase = "PIPELINE_ENGINEER_ACTIVE"
-    _append_event(
-        state,
-        "pipeline_engineer_reserved",
-        session,
-        utc_now(),
-        detail=f"{incident_id} -> {task_id}",
-    )
-    return (descriptor,)
 
 
 def _reserve_plan_verifier_in_state(
@@ -775,6 +657,24 @@ def _reserve_replanner_in_state(
         state.task_attempts[task_id] = previous_attempt
         state.status = "WAITING"
         state.phase = "PLAN_CHANGE_WAITING_LOCKS"
+        # Nothing is draining (that returned above), so a lock in the way
+        # belongs either to a live session or to nobody. Waiting on nobody
+        # was forever: no wake-up covers it and no door was opened.
+        live = {
+            str(item.get("resource_ownership_token"))
+            for item in state.worker_sessions
+            if item.get("status") in PENDING_SESSION_STATUSES
+        }
+        if not any(
+            str((lock.get("owner") or {}).get("ownership_token")) in live
+            for lock in state.resource_locks
+        ):
+            stop_on_inconsistent_state(
+                cfg,
+                state,
+                task_id,
+                f"the plan change waits on locks no live session holds: {acquired.reason}",
+            )
         return ()
     state.worker_sequence = worker_sequence
     operation_id = _stable_id(state, f"operation:{token}")
@@ -885,13 +785,24 @@ def _reserve_followup_sessions_in_state(
                 state.task_states = transition_task(
                     plan, state.task_states, task.id, TaskState.BLOCKED
                 )
-                state.last_error = str(exc)
                 _append_event(
                     state,
                     "verifier_routing_blocked",
                     _latest_task_session(state, task.id),
                     utc_now(),
                     detail=str(exc),
+                )
+                # It used to stop here with only last_error: no ticket, no
+                # on-call, a task BLOCKED that nobody would ever look at.
+                stop_run(
+                    cfg,
+                    state,
+                    stop_kind="verifier_routing",
+                    phase="VERIFIER_ROUTING_BLOCKED",
+                    reason=str(exc),
+                    summary=f"No verifier could be routed for {task.id}.",
+                    at=utc_now(),
+                    task_ids=(task.id,),
                 )
                 continue
         elif raw_state == TaskState.REVISION_REQUIRED.value:
@@ -910,23 +821,21 @@ def _reserve_followup_sessions_in_state(
             verification_round = 0
             issues = _latest_verification_issues(state, task.id)
             if not issues:
-                raise DesktopLifecycleError(
-                    f"task {task.id} requires revision without structured issues"
+                stop_on_inconsistent_state(
+                    cfg, state, task.id, "requires revision without structured issues"
                 )
+                continue
             evidence = ()
             check_results = ()
             execution_mode = task.execution_mode
         else:
             continue
 
-        if any(
-            item.get("task_id") == task.id
-            and item.get("status") in PENDING_SESSION_STATUSES
-            for item in state.worker_sessions
-        ):
-            raise DesktopLifecycleError(
-                f"task {task.id} already has a pending follow-up reservation"
+        if _pending_producer(state, task.id):
+            stop_on_inconsistent_state(
+                cfg, state, task.id, "already has a pending follow-up reservation"
             )
+            continue
         previous_attempt = int(state.task_attempts.get(task.id, 0))
         attempt = previous_attempt + 1
         worker_sequence = state.worker_sequence + 1

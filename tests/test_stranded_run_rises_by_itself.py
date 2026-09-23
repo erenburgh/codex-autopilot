@@ -82,11 +82,76 @@ class StrandedTests(unittest.TestCase):
         with mock.patch.object(wake, "_pid_alive", return_value=True):
             self.assertFalse(wake.is_stranded(self.cfg, _state(dispatcher_pid=4242)))
 
-    def test_a_run_a_human_stopped_is_left_alone(self) -> None:
+    def test_a_finished_run_is_left_alone(self) -> None:
         self._ticket_with_the_on_call()
-        for status in ("BLOCKED", "DONE"):
-            with self.subTest(status=status):
-                self.assertFalse(wake.is_stranded(self.cfg, _state(status=status)))
+        self.assertFalse(wake.is_stranded(self.cfg, _state(status="DONE")))
+
+    def test_blocked_is_not_a_reason_to_leave_a_ticket_unread(self) -> None:
+        """BLOCKED used to mean "a human stopped it" here. It never did.
+
+        The stop door itself wrote BLOCKED before the on-call had looked,
+        and this predicate then skipped exactly the runs whose ticket was
+        waiting for an engineer. BLOCKED is derived now; a ticket in the
+        lane with no engineer is stranded whatever the status says.
+        """
+
+        self._ticket_with_the_on_call()
+        self.assertTrue(wake.is_stranded(self.cfg, _state(status="BLOCKED")))
+
+    def test_blocked_with_everything_waiting_for_her_is_not_stranded(self) -> None:
+        """What waits for the owner is not the runtime's to raise."""
+
+        store = PipelineIncidentStore(self.cfg.state_dir)
+        self._ticket_with_the_on_call()
+        incident_id = store.load()["incidents"][0]["incident_id"]
+        store.escalate_incident_to_user(
+            incident_id, reason_code="PRODUCT_DECISION", at="2026-09-23T16:20:00+00:00"
+        )
+        state = _state(status="BLOCKED", task_states={"M01": "BLOCKED"}, worker_sessions=[])
+        self.assertFalse(wake.is_stranded(self.cfg, state))
+
+    def test_an_engineer_already_reserved_is_not_raised_twice(self) -> None:
+        self._ticket_with_the_on_call()
+        engineer = {"kind": "pipeline_engineer", "status": "ACTIVE", "thread_id": "t-1"}
+        self.assertFalse(
+            wake.is_stranded(self.cfg, _state(worker_sessions=[engineer]))
+        )
+
+    def test_ready_work_with_no_session_at_all_is_stranded(self) -> None:
+        """The generalisation of the engineer's "would idle forever"."""
+
+        state = _state(status="WAITING", task_states={"M01": "READY"}, worker_sessions=[])
+        self.assertTrue(wake.is_stranded(self.cfg, state))
+
+    def test_a_run_she_has_not_started_is_never_started_for_her(self) -> None:
+        state = _state(status="READY", task_states={"M01": "READY"}, worker_sessions=[])
+        self.assertFalse(wake.is_stranded(self.cfg, state))
+
+    def test_a_reservation_whose_dispatcher_died_is_stranded(self) -> None:
+        """The Stop hook raised these; the wake-up did not know the case."""
+
+        stalled = {
+            "kind": "implementation",
+            "status": "CREATE_REQUESTED",
+            "thread_id": None,
+            "automatic_dispatch_state": "RUNNING",
+            "automatic_dispatch_pid": 999_999_999,
+        }
+        state = _state(task_states={"M01": "RUNNING"}, worker_sessions=[stalled])
+        self.assertTrue(wake.is_stranded(self.cfg, state))
+
+    def test_a_worker_thinking_under_its_live_dispatcher_is_not_stranded(self) -> None:
+        import os
+
+        live = {
+            "kind": "implementation",
+            "status": "ACTIVE",
+            "thread_id": "t-1",
+            "automatic_dispatch_state": "RUNNING",
+            "automatic_dispatch_pid": os.getpid(),
+        }
+        state = _state(task_states={"M01": "RUNNING"}, worker_sessions=[live])
+        self.assertFalse(wake.is_stranded(self.cfg, state))
 
     def test_an_unreadable_journal_wakes_nothing(self) -> None:
         (self.cfg.state_dir / "pipeline-incidents.json").write_text("{", encoding="utf-8")
@@ -140,6 +205,109 @@ class WhenTheRunIsRaisedTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("due_wake_epoch(state, cfg)", source)
         self.assertNotIn("due_wake_epoch(state)\n", source)
+
+
+class TheWakeUpItselfNoLongerSkipsBlockedTests(unittest.TestCase):
+    """run_wake and the sweep skipped BLOCKED on their own, whatever
+    is_stranded said: fixing only the predicate left two doors shut."""
+
+    def setUp(self) -> None:
+        from codex_autopilot.run_state import RunState, StateStore
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name).resolve()
+        (root / ".codex-autopilot").mkdir()
+        self.cfg = types.SimpleNamespace(state_dir=root / ".codex-autopilot", root=root)
+        self.store = StateStore(self.cfg.state_dir)
+        self.store.save(RunState(status="BLOCKED", phase="BLOCKED", task_states={"M01": "BLOCKED"}))
+
+    def test_run_wake_goes_on_to_reserve_a_blocked_run(self) -> None:
+        reserved: list[str] = []
+
+        def reserve(cfg, **_kwargs):
+            reserved.append("asked")
+            return ()
+
+        with mock.patch.object(wake, "due_wake_epoch", return_value=0):
+            wake.run_wake(
+                self.cfg,
+                at_epoch=0,
+                owner="owner-thread",
+                owner_turn="owner-turn",
+                now=lambda: 10.0,
+                sleep=lambda _s: None,
+                reserve=reserve,
+                spawn_relay=lambda *a, **k: 1,
+                revive=lambda cfg: (),
+            )
+        self.assertEqual(reserved, ["asked"])
+
+    def test_an_empty_frontier_raises_a_reservation_whose_dispatcher_died(self) -> None:
+        with mock.patch.object(wake, "due_wake_epoch", return_value=0):
+            wake.run_wake(
+                self.cfg,
+                at_epoch=0,
+                owner="owner-thread",
+                owner_turn="owner-turn",
+                now=lambda: 10.0,
+                sleep=lambda _s: None,
+                reserve=lambda cfg, **_k: (),
+                spawn_relay=lambda *a, **k: 1,
+                revive=lambda cfg: (4242,),
+            )
+        last = self.store.load().resilience_journal[-1]
+        self.assertEqual(last["event"], "wake_dispatched")
+        self.assertEqual(last["detail"]["pids"], [4242])
+
+    def test_revoked_hook_trust_is_told_to_her_with_what_to_do(self) -> None:
+        """The one stop the on-call cannot take: raising it passes the same
+        trust gate, and going around the gate is hers to decide. So she is
+        told directly - it used to be a silent wake_skipped."""
+
+        from codex_autopilot.hook_trust import HookPreflightError
+
+        def refuse(cfg, **_kwargs):
+            raise HookPreflightError("the Stop hook is not trusted")
+
+        with mock.patch.object(wake, "due_wake_epoch", return_value=0):
+            wake.run_wake(
+                self.cfg,
+                at_epoch=0,
+                owner="owner-thread",
+                owner_turn="owner-turn",
+                now=lambda: 10.0,
+                sleep=lambda _s: None,
+                reserve=refuse,
+                spawn_relay=lambda *a, **k: 1,
+            )
+        journal = self.store.load().resilience_journal
+        self.assertEqual(journal[-2]["event"], "owner_signalled")
+        self.assertEqual(journal[-2]["detail"]["key"], "hook_trust")
+        self.assertIn("restore trust", journal[-1]["detail"]["recommendation"])
+
+    def test_the_sweep_does_not_call_a_blocked_run_stopped(self) -> None:
+        (self.cfg.root / ".codex-autopilot" / "config.toml").write_text("", encoding="utf-8")
+        with mock.patch.object(wake, "due_wake_epoch", return_value=None):
+            outcome = wake.sweep(roots=[str(self.cfg.root)], load=lambda _root: self.cfg)
+        self.assertEqual(outcome[str(self.cfg.root)], "nothing due")
+
+    def test_her_pause_still_stops_everything(self) -> None:
+        self.store.request_pause()
+        with mock.patch.object(wake, "due_wake_epoch", return_value=0):
+            wake.run_wake(
+                self.cfg,
+                at_epoch=0,
+                owner="owner-thread",
+                owner_turn="owner-turn",
+                now=lambda: 10.0,
+                sleep=lambda _s: None,
+                reserve=lambda cfg, **_k: self.fail("a paused run was reserved"),
+                spawn_relay=lambda *a, **k: 1,
+            )
+        (self.cfg.root / ".codex-autopilot" / "config.toml").write_text("", encoding="utf-8")
+        outcome = wake.sweep(roots=[str(self.cfg.root)], load=lambda _root: self.cfg)
+        self.assertEqual(outcome[str(self.cfg.root)], "stopped")
 
 
 class TheGateIsStillThereTests(unittest.TestCase):

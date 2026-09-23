@@ -360,6 +360,146 @@ class PlanEvolutionTests(unittest.TestCase):
         )
         self.assertIn("semantic plan verification rejected", change["rejections"][-1]["reason"])
 
+    def _to_the_plan_verifier(self, cfg, store, round_index: int, first=None):
+        """One round: (worker request) -> replanner -> proposed graph -> plan verifier."""
+
+        if first is None:
+            worker = reserve_ready_frontier(
+                cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None
+            )[0]
+            self.mark_active(store, worker.reservation_token, "worker-A")
+            bump_task_checkpoint(self.root, worker.task_id, "Plan change requested.")
+            first = complete_desktop_worker(
+                cfg,
+                thread_id="worker-A",
+                turn_id="turn-A",
+                final_message=request_line("A"),
+                hook_gate=lambda _cfg: None,
+            ).descriptors[0]
+        replanner = first
+        self.assertEqual(replanner.kind, "replanner")
+        self.mark_active(store, replanner.reservation_token, f"replanner-{round_index}")
+        candidate = self.candidate_with_prerequisite(load_plan(cfg.state_dir, cfg.profile))
+        proposed = complete_desktop_worker(
+            cfg,
+            thread_id=f"replanner-{round_index}",
+            turn_id=f"turn-replanner-{round_index}",
+            final_message=PLAN_CHANGE_RESULT_PREFIX
+            + " "
+            + json.dumps(
+                {"request_id": "PC1", "base_graph_version": 1, "plan": candidate},
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+        )
+        return proposed.descriptors[0]
+
+    def _ticket(self, cfg, stop_kind: str) -> dict:
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        return next(
+            item
+            for item in PipelineIncidentStore(cfg.state_dir).load()["incidents"]
+            if item["system_state"].get("stop_kind") == stop_kind
+        )
+
+    def test_a_plan_refused_every_time_calls_the_on_call_for_its_requester(self) -> None:
+        """It stopped without task_ids: the ticket named no task, broke every
+        later reservation with "names no task", and returned nothing."""
+
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        verdict = PLAN_VERIFICATION_PREFIX + " " + json.dumps(
+            {
+                "verdict": "REVISE",
+                "issues": [
+                    {
+                        "category": "necessity",
+                        "summary": "Task P is not necessary for the Goal Contract.",
+                        "task_ids": ["P"],
+                        "outcome_ids": [],
+                    }
+                ],
+            },
+            separators=(",", ":"),
+        )
+        replanner = None
+        for round_index in range(3):
+            plan_verifier = self._to_the_plan_verifier(cfg, store, round_index, replanner)
+            self.assertEqual(plan_verifier.kind, "plan_verifier")
+            self.mark_active(store, plan_verifier.reservation_token, f"plan-verifier-{round_index}")
+            outcome = complete_desktop_worker(
+                cfg,
+                thread_id=f"plan-verifier-{round_index}",
+                turn_id=f"turn-plan-verifier-{round_index}",
+                final_message=verdict,
+                hook_gate=lambda _cfg: None,
+            )
+            replanner = outcome.descriptors[0]
+            if replanner.kind != "replanner":
+                break
+        self.assertEqual([item.kind for item in outcome.descriptors], ["pipeline_engineer"])
+        ticket = self._ticket(cfg, "plan_verification_rejected")
+        self.assertEqual(ticket["affected_task_ids"], ["A"])
+        self.assertEqual(ticket["system_state"]["plan_change_id"], "PC1")
+        self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
+        self.assertEqual(store.load().status, "RUNNING")
+
+    def test_an_unreadable_plan_verifier_calls_the_on_call_for_its_requester(self) -> None:
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        plan_verifier = self._to_the_plan_verifier(cfg, store, 0)
+        for attempt in range(3):
+            self.assertEqual(plan_verifier.kind, "plan_verifier")
+            self.mark_active(store, plan_verifier.reservation_token, f"plan-verifier-{attempt}")
+            outcome = complete_desktop_worker(
+                cfg,
+                thread_id=f"plan-verifier-{attempt}",
+                turn_id=f"turn-plan-verifier-{attempt}",
+                final_message="не могу прочитать план\nнет вердикта",
+                hook_gate=lambda _cfg: None,
+            )
+            plan_verifier = outcome.descriptors[0]
+            if plan_verifier.kind != "plan_verifier":
+                break
+        self.assertEqual([item.kind for item in outcome.descriptors], ["pipeline_engineer"])
+        ticket = self._ticket(cfg, "plan_verification_protocol")
+        self.assertEqual(ticket["affected_task_ids"], ["A"])
+        self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
+
+    def test_a_plan_change_waiting_on_a_lock_nobody_holds_calls_the_on_call(self) -> None:
+        """PLAN_CHANGE_WAITING_LOCKS with a dead holder waited forever:
+        no wake-up covers it and no door was opened."""
+
+        cfg, store = self.initialize(graph([task("A")], max_workers=1))
+        worker = reserve_ready_frontier(
+            cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None
+        )[0]
+        self.mark_active(store, worker.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, worker.task_id, "Plan change requested.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        # The replanner's process died and its session was closed, but its
+        # lock was never released.
+        state = store.load()
+        session = next(
+            item for item in state.worker_sessions
+            if item["reservation_token"] == replanner.reservation_token
+        )
+        session["status"] = "COMPLETED"
+        state.active_task_ids = []
+        state.task_states["A"] = TaskState.READY.value
+        store.save(state)
+        reserved = reserve_ready_frontier(
+            cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None
+        )
+        self.assertEqual([item.kind for item in reserved], ["pipeline_engineer"])
+        ticket = self._ticket(cfg, "inconsistent_state")
+        self.assertIn("locks no live session holds", ticket["summary"])
+
     def test_t4_accumulated_patches_require_full_revalidation_and_can_be_rejected(self) -> None:
         cfg, store = self.initialize(graph([task("A")], max_workers=1))
         state = store.load()
@@ -838,16 +978,32 @@ class PlanEvolutionTests(unittest.TestCase):
                 ),
                 hook_gate=lambda _cfg: None,
             )
-            if not outcome.descriptors:
+            if outcome.descriptors[0].kind != "replanner":
                 break
             pending = outcome.descriptors[0]
-        # Returning the same error forever means burning limits.
-        # The run must stop and name the reason to the human.
-        self.assertEqual(outcome.descriptors, ())
+        # Returning the same error forever means burning limits. The task
+        # stops, names the reason, and the on-call comes in the same
+        # completion - it used to return nothing, set BLOCKED, and wait for
+        # nobody.
+        self.assertEqual(
+            [item.kind for item in outcome.descriptors], ["pipeline_engineer"]
+        )
         state = store.load()
-        self.assertEqual(state.status, "BLOCKED")
-        self.assertEqual(state.phase, "PLAN_CHANGE_REJECTED")
+        self.assertEqual(state.status, "RUNNING")
+        self.assertEqual(state.phase, "AWAITING_DESKTOP_CREATE")
+        self.assertEqual(state.task_states["A"], "BLOCKED")
+        self.assertIn("nonsense_field", state.last_error)
         self.assertIsNone(state.active_plan_change_id)
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        ticket = next(
+            item
+            for item in PipelineIncidentStore(cfg.state_dir).load()["incidents"]
+            if item["code"] == "run_stopped:PLAN_CHANGE_REJECTED"
+        )
+        self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
+        self.assertEqual(ticket["affected_task_ids"], ["A"])
+        self.assertEqual(ticket["system_state"]["stop_kind"], "plan_change_rejected")
         record = next(item for item in state.plan_changes if item["id"] == "PC1")
         self.assertEqual(record["status"], "REJECTED")
         self.assertEqual(len(record["rejections"]), 3)

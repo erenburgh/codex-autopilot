@@ -642,7 +642,11 @@ def _pipeline_engineer_prompt_with_server_view(
     from .plan import load_plan
 
     state = StateStore(cfg.state_dir).load()
-    package = pipeline_engineer_package(cfg, state)
+    # The session's own ticket: with the engineer next to the run, another
+    # ticket may have become first in the lane since the reservation.
+    package = pipeline_engineer_package(
+        cfg, state, str(session.get("incident_id") or "") or None
+    )
     package["server_view"] = server_view_for_incident(
         client, cfg, state, package["incident"]
     )

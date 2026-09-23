@@ -629,6 +629,46 @@ class ResolvedMustHandOverTests(unittest.TestCase):
         self.assertEqual(successor["relay_owner_thread_id"], "engineer-thread")
 
 
+    def test_no_successor_is_a_fresh_ticket_and_an_engineer_in_the_same_transaction(self) -> None:
+        """A ready task and nobody to take it is a reservation defect.
+
+        The old path handed the just-closed ticket to the owner without a
+        code: R13 refused it, the refusal was swallowed, and the run went
+        BLOCKED in silence. Now a fresh ticket holds nothing (the ready
+        task is what should go, not what should wait), and the next
+        engineer is reserved in the same transaction.
+        """
+
+        from unittest import mock
+
+        from codex_autopilot import lifecycle_completion
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        real = lifecycle_completion._reserve_in_state
+        calls: list[int] = []
+
+        def first_finds_nothing(*args, **kwargs):
+            calls.append(1)
+            return () if len(calls) == 1 else real(*args, **kwargs)
+
+        with mock.patch.object(lifecycle_completion, "_reserve_in_state", first_finds_nothing):
+            outcome = self.resolve_and_complete(
+                "инцидент закрыт\nPIPELINE_ENGINEER_STATUS: RESOLVED"
+            )
+        self.assertEqual(len(calls), 2, "the second reservation never ran")
+        self.assertIn("pipeline_engineer", [item.kind for item in outcome.descriptors])
+        incidents = PipelineIncidentStore(self.cfg.state_dir).load()["incidents"]
+        closed = next(item for item in incidents if item["incident_id"] == self.incident_id)
+        self.assertEqual(closed["phase"], "RESOLVED")
+        fresh = next(
+            item for item in incidents if item["system_state"].get("stop_kind") == "no_successor"
+        )
+        self.assertEqual(fresh["phase"], "PIPELINE_ENGINEER")
+        self.assertEqual(fresh["affected_task_ids"], [])
+        self.assertEqual(fresh["context_task_id"], self.task_id)
+        self.assertEqual(self.store.load().status, "RUNNING")
+
+
 class FailureBeforeTheRequestIsNotAmbiguousTests(unittest.TestCase):
     """A failure before the request is sent is known, not ambiguous.
 

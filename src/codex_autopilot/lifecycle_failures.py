@@ -219,11 +219,19 @@ def record_desktop_failure(
         # protocol error the rule was written for. While the count stood
         # after them, it was never counted once, and the ceiling caught only
         # signatures that reached RETRY_WAIT.
+        #
+        # Her own pause is not a failure of anything. A paused worker was
+        # recorded as worker_paused and counted like any fault: her fifth
+        # pause opened a ticket for the on-call about her pause (her
+        # boundary). It is recorded, never counted.
+        counted = not rate_limited and failure_code != "worker_paused"
         attempts = int(state.failure_signature_attempts.get(failure_code, 0))
-        if not rate_limited:
+        if counted:
             attempts += 1
             state.failure_signature_attempts[failure_code] = attempts
-        exhausted = not rate_limited and attempts == cfg.retry.maximum_attempts
+        # `>=`, not `==`: after the first ticket the same signature used to
+        # open none, and the retries went on forever without anyone looking.
+        exhausted = counted and attempts >= cfg.retry.maximum_attempts
         if exhausted:
             _append_event(
                 state,
@@ -397,7 +405,12 @@ def record_desktop_failure(
         incident_store = PipelineIncidentStore(cfg.state_dir)
         incident = incident_store.open_incident(
             IncidentSignal(
-                signal_id=f"{state.run_id}:{task_id}:{failure_code}:retry_budget_exhausted",
+                # The attempt count makes a repeat after a closed ticket a
+                # new ticket, not the old RESOLVED one handed back.
+                signal_id=(
+                    f"{state.run_id}:{task_id}:{failure_code}:retry_budget_exhausted"
+                    + ("" if attempts == cfg.retry.maximum_attempts else f"#{attempts}")
+                ),
                 code=failure_code,
                 surface=IncidentClass.PIPELINE,
                 summary=(

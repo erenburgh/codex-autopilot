@@ -59,16 +59,25 @@ the step reached and the number of attempts. The task status additionally
 prints the acceptance complaints themselves — otherwise the owner has
 nothing to decide with.
 
-This is the only stopping case, and it agrees with the incident taxonomy: the
-`PRODUCTION` class belongs to the product owner, and automatic repair of
-quality is forbidden. The Pipeline Engineer does not come here — it does not
-fix production quality failures.
+The stop goes through the one stop door (`blocked_runs.stop_run`) like every
+other: a `RUNTIME` ticket with `stop_kind=ladder_exhausted` that holds this
+task only, routed to the on-call at once. The on-call looks first - whether the
+refusals are about the work or about a gate, rubric or runtime defect. A
+judgement about the work stays the owner's: accepting it is never automated,
+and when the call is hers the engineer hands the ticket up with its diagnosis
+and recommendation.
+
+Until 0.13.1 this ticket was deliberately not routed, because the engineer then
+came instead of the work and would have frozen the neighbours; it was to be
+routed when the run went idle, and in practice nobody came.
 
 ## Neighbouring tasks
 
 A re-hire does not touch the shared graph, merges nothing and does not change
 the plan version, so tasks that do not depend on the stalled one keep going.
-The run declares itself `BLOCKED` only when no active work remains at all.
+The on-call is reserved next to them, in the same completion, and takes no
+work slot. The run's status is derived: `BLOCKED` (`AWAITING_OWNER`) appears
+only when nothing can be taken and what is left waits for the owner.
 
 ## Extension point
 

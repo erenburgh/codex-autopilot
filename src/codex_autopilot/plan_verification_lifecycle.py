@@ -208,9 +208,13 @@ def reject_plan_verifier_result(
             change["status"] = "REJECTED"
             change["completed_at"] = timestamp
             state.active_plan_change_id = None
+            # The requester's task is what the stop holds: a ticket naming no
+            # task broke every later reservation with "names no task".
             _stop_run(
                 cfg,
                 state,
+                stop_kind="plan_verification_protocol",
+                plan_change_id=str(change.get("id") or ""),
                 phase="PLAN_VERIFICATION_PROTOCOL_REJECTED",
                 reason=reason,
                 summary=(
@@ -218,19 +222,20 @@ def reject_plan_verifier_result(
                     "was asked."
                 ),
                 at=timestamp,
-                system_state={"plan_change_id": str(change.get("id") or "")},
+                task_ids=(task_id,),
             )
-            descriptors = ()
         else:
             change["status"] = "PLAN_VERIFICATION_REQUIRED"
-            descriptors = _reserve_in_state(
-                cfg,
-                plan,
-                state,
-                memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
-                relay_owner_thread_id=thread_id,
-                now_epoch=now_epoch,
-            )
+        # A stop takes the ordinary path too: the on-call is reserved and
+        # the neighbours go on. It used to return nothing and freeze.
+        descriptors = _reserve_in_state(
+            cfg,
+            plan,
+            state,
+            memory_audit_before=ProjectMemory(cfg.root).audit_highwater(),
+            relay_owner_thread_id=thread_id,
+            now_epoch=now_epoch,
+        )
         _record_successors(current, descriptors, dispatcher_authorized)
         _finish_global_state(
             plan,
@@ -405,13 +410,22 @@ def complete_plan_verifier(
                 _stop_run(
                     cfg,
                     state,
+                    stop_kind="plan_verification_rejected",
+                    plan_change_id=str(change.get("id") or ""),
                     phase="PLAN_VERIFICATION_REJECTED",
                     reason=issue_payload,
                     summary="The plan verifier refused the proposed plan every time.",
                     at=timestamp,
-                    system_state={"plan_change_id": str(change.get("id") or "")},
+                    task_ids=(task_id,),
                 )
-                descriptors = ()
+                descriptors = _reserve_in_state(
+                    cfg,
+                    current_plan,
+                    state,
+                    memory_audit_before=memory.audit_highwater(),
+                    relay_owner_thread_id=thread_id,
+                    now_epoch=now_epoch,
+                )
             else:
                 change["status"] = "DRAINING"
                 for key in (

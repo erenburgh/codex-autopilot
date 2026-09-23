@@ -254,11 +254,62 @@ class RetryBudgetTests(unittest.TestCase):
                 with self.subTest(code=code, definitive=definitive):
                     before = self.attempts(code)
                     self.fail_once("A", code, definitive=definitive)
+                    # Her own pause is the one code that is recorded and
+                    # never counted: see test_her_pause_never_spends_the_cap.
                     self.assertEqual(
                         self.attempts(code),
-                        before + 1,
-                        f"{code} with definitive={definitive} never got counted",
+                        before if code == "worker_paused" else before + 1,
+                        f"{code} with definitive={definitive} was counted wrongly",
                     )
+
+    def test_her_pause_never_spends_the_cap(self) -> None:
+        """A pause is hers, not a fault of the pipeline.
+
+        Production records a paused worker as ``worker_paused`` with
+        ``definitive=True``, and it used to be counted like any failure:
+        the fifth time she paused, the on-call got a ticket about her
+        pause - a ticket about her own decision, which is not its to
+        look at.
+        """
+
+        cap = self.cfg.retry.maximum_attempts
+        for _ in range(cap + 1):
+            self.fail_once("A", "worker_paused", definitive=True)
+        self.assertEqual(self.attempts("worker_paused"), 0)
+        self.assertEqual(self.incidents_for("worker_paused"), [])
+
+    def test_a_repeat_after_a_closed_ticket_opens_a_new_one(self) -> None:
+        """At the cap and beyond, not only exactly at it.
+
+        The check was ``attempts == cap``: once the first ticket closed,
+        the same signature never opened another, and the retries went on
+        forever with nobody looking.
+        """
+
+        from codex_autopilot.pipeline_engineer import HealthcheckResult, _expected_healthcheck
+        from codex_autopilot.run_state import utc_now
+
+        cap = self.cfg.retry.maximum_attempts
+        for _ in range(cap):
+            self.fail_once("A", "worker_protocol_rejected")
+        store = PipelineIncidentStore(self.cfg.state_dir)
+        first = self.incidents_for("worker_protocol_rejected")[0]
+        store.complete_pipeline_engineer(
+            first["incident_id"],
+            success=True,
+            actions=("rearm_relay_owner",),
+            at=utc_now(),
+            healthcheck=HealthcheckResult(
+                name=_expected_healthcheck(first) or "causal_predecessor_rearm_ready",
+                passed=True,
+                checks=("relay armed",),
+                observed_at=utc_now(),
+            ),
+        )
+        self.fail_once("A", "worker_protocol_rejected")
+        opened = self.incidents_for("worker_protocol_rejected")
+        self.assertEqual(len(opened), 2, "the repeat past the cap reached nobody")
+        self.assertIsNone(opened[-1]["resolved_at"])
 
     def test_waiting_for_a_rate_limit_does_not_spend_the_cap(self) -> None:
         """A rate limit has its own barrier and its own reason.

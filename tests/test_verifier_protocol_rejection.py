@@ -145,14 +145,23 @@ class VerifierProtocolRejectionTests(unittest.TestCase):
                 final_message="разбор\n" + VERDICT,
                 hook_gate=lambda _cfg: None,
             )
-            if not outcome.descriptors:
+            if outcome.descriptors[0].kind != "verifier":
                 break
             token = outcome.descriptors[0].reservation_token
-        self.assertEqual(outcome.descriptors, ())
+        # The task stops and the on-call is reserved in the same completion.
+        # It used to return nothing and set the run BLOCKED, which the
+        # wake-up skipped: nobody ever came.
+        self.assertEqual([item.kind for item in outcome.descriptors], ["pipeline_engineer"])
         state = self.store.load()
-        self.assertEqual(state.status, "BLOCKED")
-        self.assertEqual(state.phase, "VERIFICATION_PROTOCOL_BLOCKED")
+        self.assertEqual(state.status, "RUNNING")
+        self.assertEqual(state.task_states["A"], "BLOCKED")
         self.assertIn("rubric", str(state.last_error))
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        ticket = PipelineIncidentStore(self.cfg.state_dir).load()["incidents"][-1]
+        self.assertEqual(ticket["code"], "run_stopped:VERIFICATION_PROTOCOL_BLOCKED")
+        self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
+        self.assertEqual(ticket["system_state"]["stop_kind"], "verification_protocol")
 
 
 if __name__ == "__main__":

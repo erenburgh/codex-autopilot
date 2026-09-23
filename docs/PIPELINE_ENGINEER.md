@@ -62,10 +62,50 @@ the same signal returns that same incident and lane without duplicate journal
 events.
 
 Each incident names exact `affected_task_ids`. The scheduler marks only those
-tasks unavailable and continues independent work. Existing active work is not
+tasks unavailable and continues independent work. `context_task_id` only
+anchors the engineer's thread (cwd and title) for a ticket that holds no task
+- a stop of the run itself, a reservation that found no successor - and pauses
+nothing; a ticket with neither is anchored to the first unfinished task and no
+longer breaks every reservation with "names no task". Only the engineer's own
+escalation with `scope: run` (`blocks_run`) holds every task. Existing active work is not
 silently declared stopped; an authoritative interrupt/terminal event remains
 required. A task may resume only after every incident affecting it is
 `RECOVERED` with a recorded passing healthcheck or `RESOLVED`.
+
+## Every stop reaches the on-call
+
+Every place that stops a task goes through one door, `blocked_runs.stop_run`:
+the hiring ladder, a worker's own `BLOCKED`/`ESCALATE`, three unreadable
+verdicts, an unroutable verifier, an exhausted replanner, both refusals of
+plan verification (holding the requester), a reservation that finds state that
+cannot be, a plan change waiting on locks no live session holds, and an
+engineer that leaves no successor. The door opens a fresh `RUNTIME` ticket per
+stop (the signal carries `stop_kind`, the plan change and an ordinal, so a
+second stop after an answered one is never handed the old `RESOLVED` ticket),
+records `stop_kind` in `system_state`, always routes the ticket to the
+engineer's lane, and does not touch the run's status. A structural test lists
+every transition into `TaskState.BLOCKED` with its door.
+
+The on-call is reserved next to the work, never instead of it: at the end of
+every reservation pass (so a ticket filed in that pass gets its engineer at
+once), outside the worker slots, at most one per run. It is reserved above the
+plan-verification gate - its descriptor builds nothing from the graph but an
+anchor - and below the `CODEX_THREAD_ID` and external-dispatcher guards.
+Every pass also sweeps the journal: tickets in `DEGRADED` that no runbook will
+replay (stop tickets never are) and in `AUTO_RECOVERY_FAILED` go to the lane,
+and a `BLOCKED` task that no open ticket holds and no plan change explains gets
+an `orphan_block` ticket; after two such closures the next one goes to the
+owner as `RECOVERY_EXHAUSTED`.
+
+The engineer's `ESCALATE_TO_USER` moves its own ticket to the owner with the
+diagnosis, repair, decision and recommendation from its `AUTOPILOT_ESCALATION`
+line (the bounded end of its message when the line is missing) and holds only
+that ticket's tasks; the run continues around it. The run's status is derived
+in `run_status`: `RUNNING` while any session is pending, `WAITING`
+(`PIPELINE_ENGINEER_PENDING`) while a ticket waits for an engineer, and
+`BLOCKED` (`AWAITING_OWNER`) only when nothing can be taken and what is left
+waits for the owner. The wake-up raises a stranded run whatever its status
+says, except a paused or finished one.
 
 ## Bounded recovery
 
@@ -123,7 +163,7 @@ reuses the same incident and reservation; DevOps does not perform destination
 
 ## When a person is required
 
-The incident routes to the user for a dangerous permission, global Codex
+The on-call hands a ticket to the user for a dangerous permission, global Codex
 configuration, potentially destructive repair, production/product or
 architecture choice, ambiguous create/turn outcome that cannot be reconciled,
 or a failed Pipeline Engineer recovery after the bounded automatic attempts.

@@ -484,6 +484,22 @@ class SurvivesARebootTests(WakeTests):
         self.assertEqual(outcome[str(self.root)], "no completed owner")
         self.assertEqual(calls, [])
 
+    def test_a_retry_without_an_owner_is_told_to_her_once_not_every_sweep(self) -> None:
+        """Raising it on someone else's behalf is refused by the ownership
+        guard - hers. The sweep used to pass it by in silence; now she is
+        told, once per cause."""
+
+        self.hit_the_limit()
+        for _ in range(3):
+            sweep(roots=[str(self.root)], spawn=lambda cfg, **kw: 1)
+        told = [
+            item
+            for item in self.store.load().resilience_journal
+            if item["event"] == "owner_signalled"
+        ]
+        self.assertEqual(len(told), 1)
+        self.assertEqual(told[0]["detail"]["key"], "no_completed_owner")
+
     def test_projects_are_registered_once_and_survive_rereading(self) -> None:
         registry = self.root / "projects.json"
         register_project(self.root, path=registry)

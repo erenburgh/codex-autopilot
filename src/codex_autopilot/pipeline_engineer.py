@@ -34,6 +34,11 @@ RECOVERY_LOCK_FILE = "pipeline-recovery.lock"
 MAX_RECENT_EVENTS = 20
 MAX_EVENT_CHARS = 2_000
 LEGACY_PERSISTED_AUTHORITY_KINDS = frozenset({"PIPELINE_RECOVERY_MANDATE"})
+# The code prefix of a ticket the stop door opened (blocked_runs). Named so a
+# reader of the journal can tell a stop from a transport fault, and so no
+# learned runbook ever stands between a stop and the on-call: a run that
+# stopped needs someone to look, not a replay.
+STOP_CODE_PREFIX = "run_stopped:"
 
 
 class IncidentPhase(str, Enum):
@@ -64,6 +69,10 @@ class EscalationReason(str, Enum):
 
 
 ESCALATION_REASONS = frozenset(item.value for item in EscalationReason)
+# What an escalation carries to the owner besides its code.
+ESCALATION_FIELDS = (
+    "diagnosis", "repaired", "decision_needed", "recommendation", "options", "scope",
+)
 
 
 def escalate_to_user(
@@ -141,6 +150,9 @@ class IncidentSignal:
     side_effect_outcome: SideEffectOutcome = SideEffectOutcome.NONE
     system_state: Mapping[str, Any] = field(default_factory=dict)
     recent_events: tuple[Mapping[str, Any], ...] = ()
+    # Where the on-call's thread is anchored when the ticket holds no task.
+    # `affected_task_ids` pause their tasks; this pauses nothing.
+    context_task_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +276,7 @@ class PipelineIncidentStore:
                 "signature": signature,
                 "summary": _bounded(signal.summary, MAX_EVENT_CHARS),
                 "affected_task_ids": list(signal.affected_task_ids),
+                "context_task_id": str(signal.context_task_id or ""),
                 "operation": signal.operation,
                 "side_effect_outcome": signal.side_effect_outcome.value,
                 "phase": IncidentPhase.DEGRADED.value,
@@ -559,7 +572,10 @@ class PipelineIncidentStore:
                 )
             if phase in {IncidentPhase.PIPELINE_ENGINEER, IncidentPhase.RESOLVED}:
                 return self._incident_package(state, incident)
-            if phase is IncidentPhase.DEGRADED and incident.get("runbook_id") is None:
+            if phase is IncidentPhase.DEGRADED and (
+                incident.get("runbook_id") is None
+                or str(incident.get("code") or "").startswith(STOP_CODE_PREFIX)
+            ):
                 incident["phase"] = IncidentPhase.AUTO_RECOVERY_FAILED.value
                 incident["updated_at"] = at
                 _append_event(
@@ -647,8 +663,17 @@ class PipelineIncidentStore:
         reason_code: str,
         at: str,
         detail: str = "",
+        escalation: Mapping[str, Any] | None = None,
+        blocks_run: bool = False,
     ) -> IncidentPhase:
         """Move the ticket to ESCALATE_TO_USER with the code the engineer named.
+
+        `escalation` is what the owner decides with - the engineer's
+        diagnosis, what it already repaired, the decision needed and its
+        recommendation - kept on the ticket, not only in a thread nobody
+        opens. `blocks_run` is the engineer's own finding that the whole run
+        must wait (revoked hook trust, a global setting): then the ticket
+        holds every task, not just its own.
 
         The run was marked BLOCKED/PIPELINE_ENGINEER_ESCALATED while the
         ticket itself stayed in PIPELINE_ENGINEER: the store believed the
@@ -683,6 +708,11 @@ class PipelineIncidentStore:
                     "by Pipeline Engineer"
                 )
             escalate_to_user(incident, reason_code, at=at, detail=detail)
+            if escalation:
+                incident["escalation"] = _bounded_mapping(
+                    {key: escalation[key] for key in ESCALATION_FIELDS if key in escalation}
+                )
+            incident["blocks_run"] = bool(blocks_run)
             incident["updated_at"] = at
             _append_event(
                 state,

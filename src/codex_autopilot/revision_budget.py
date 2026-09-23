@@ -79,8 +79,12 @@ def block_on_exhausted_ladder(
     left is a judgement about the work, which no automaton may make for them.
 
     It used to stop in silence: a state on disk, a line in run state, and
-    nothing in the incident journal. `stop_run` opens the ticket and hands it
-    over with the reason attached.
+    nothing in the incident journal. Then (0.13.0) it opened a ticket but did
+    not route it, so the neighbours would keep the dispatcher - and the
+    engineer never came. Now the ticket goes to the on-call like any other:
+    it works next to the neighbours, looks at whether the refusals are about
+    the work or about the gate, rubric or runtime, and hands the owner a
+    diagnosis only when the judgement really is hers.
     """
 
     import json
@@ -108,6 +112,7 @@ def block_on_exhausted_ladder(
     stop_run(
         cfg,
         state,
+        stop_kind="ladder_exhausted",
         phase="BLOCKED",
         reason=(
             f"{task_id} exhausted the hiring ladder: {hires} hire(s) up to "
@@ -120,9 +125,4 @@ def block_on_exhausted_ladder(
         at=at,
         task_ids=(task_id,),
         system_state={"hires": hires, "effort": effort, "revision_attempts": used},
-        # One task at the top of its ladder is not a stalled run: the
-        # neighbours that do not depend on it keep going, and the engineer
-        # would take the dispatcher away from them. The ticket waits for the
-        # moment the run itself has nothing left to do.
-        route=False,
     )

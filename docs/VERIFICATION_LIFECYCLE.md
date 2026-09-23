@@ -91,8 +91,11 @@ It never receives the verifier transcript.
 
 A successful revision returns to `IMPLEMENTED` and re-enters the same policy.
 An independent policy therefore creates fresh verifier `V<n+1>` rather than
-reusing the prior verifier thread. Exhausting `max_revision_attempts` moves the
-task to `BLOCKED` with a journaled reason; it never unlocks dependents.
+reusing the prior verifier thread. Exhausting `max_revision_attempts` re-hires
+the task up the effort ladder (see `REHIRING.md`); at the top the task moves to
+`BLOCKED` through the stop door - a ticket to the on-call, reserved in the same
+completion next to independent work - and it never unlocks dependents. Three
+unreadable verdicts and an unroutable verifier stop the same way.
 
 ## Routing, resources, and dependency unlock
 

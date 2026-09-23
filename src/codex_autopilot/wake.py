@@ -15,9 +15,15 @@ as a hook-driven launch: if the human revoked trust meanwhile, the retry is
 not raised. The owner is the same, and the ownership check in
 reserve_ready_frontier and spawn_automatic_app_server_relay is the same.
 
-What the wake-up does not do: it does not wake a run stopped by a human
-(pause, BLOCKED), does not wake a finished one, does not race a live
-dispatcher, and does not fire early if the limit was extended.
+What the wake-up does not do: it does not wake a run she paused, does not
+wake a finished one, does not race a live dispatcher, and does not fire
+early if the limit was extended.
+
+BLOCKED used to be on that list, as "stopped by a human". It never was: the
+stop door wrote it before the on-call had looked, so the wake-up skipped
+exactly the runs whose ticket was waiting for an engineer. BLOCKED is now
+derived (run_status) and means only "everything left waits for her"; what
+decides here is whether anything waits for the runtime.
 """
 
 from __future__ import annotations
@@ -55,7 +61,7 @@ def due_wake_epoch(state: Any, cfg: Config | None = None) -> int | None:
 
 
 def is_stranded(cfg: Config, state: Any) -> bool:
-    """A run with a ticket waiting on the on-call and nobody left to run it.
+    """A run nobody will move unless it is raised.
 
     The normal cycle leaves no dispatcher between turns on purpose: it
     launches a worker and exits, and the worker's own Stop hook raises the
@@ -64,37 +70,42 @@ def is_stranded(cfg: Config, state: Any) -> bool:
     It becomes one when the hook never fires. Measured 23 Sep 2026: a
     detached dispatch failed, the incident went to the on-call, and there
     the run sat - state saying RUNNING, a verifier marked ACTIVE, no process
-    anywhere, and nothing that would ever raise one. The owner had to type
-    "Resume" for something the runtime knew how to do, which is the same
-    hole this module was written to close for retries.
+    anywhere, and nothing that would ever raise one.
 
-    The signal is narrow on purpose: a ticket in the engineer's own lane
-    means the on-call is needed and has not run. Anything looser would race
-    a dispatcher that is simply waiting for a worker to think.
+    Stranded means: no live dispatcher, and one of
+    - a ticket waits for the on-call (in its lane, on its way there, or a
+      stopped task nobody holds) with no engineer session pending;
+    - work the frontier could take, and not one pending session;
+    - a pending reservation that can be raised again, whose dispatcher is
+      gone (the Stop hook knew this case; the wake-up did not).
     """
 
-    # A run a human stopped is not stranded, it is stopped. The sweep checks
-    # the pause marker separately, so nothing was woken that should not have
-    # been - but a predicate that answers "stranded" about a paused run is
-    # one wrong caller away from waking it, and this module's whole promise
-    # is that it never overrides a person.
-    if state.status in {"BLOCKED", "DONE", "PAUSED"}:
+    # Her pause, the pause marker and a finished run are stops; nothing
+    # else is. The marker is the authority - the status may lag behind it.
+    if state.status in {"DONE", "PAUSED"}:
         return False
     if StateStore(cfg.state_dir).pause_requested():
         return False
-    if isinstance(state.dispatcher_pid, int) and _pid_alive(state.dispatcher_pid):
+    if _dispatcher_alive(state):
         return False
     try:
-        from .pipeline_engineer import IncidentPhase, PipelineIncidentStore
+        from .engineer_reservation import stranded_reason
 
-        loaded = PipelineIncidentStore(cfg.state_dir).load().get("incidents") or {}
-        incidents = loaded.values() if isinstance(loaded, dict) else loaded
-        return any(
-            str(item.get("phase")) == IncidentPhase.PIPELINE_ENGINEER.value
-            for item in incidents
-        )
+        return stranded_reason(cfg, _Sessions(state)) is not None
     except Exception:  # noqa: BLE001 - an unreadable journal wakes nothing
         return False
+
+
+class _Sessions:
+    """The state as the stranding check reads it, tolerant of older shapes."""
+
+    def __init__(self, state: Any) -> None:
+        self.status = getattr(state, "status", "")
+        self.rate_limit_until = getattr(state, "rate_limit_until", None)
+        self.worker_sessions = list(getattr(state, "worker_sessions", None) or [])
+        self.task_states = dict(getattr(state, "task_states", None) or {})
+        self.active_plan_change_id = getattr(state, "active_plan_change_id", None)
+        self.plan_changes = list(getattr(state, "plan_changes", None) or [])
 
 
 def ensure_wake(
@@ -141,6 +152,7 @@ def run_wake(
     sleep: Callable[[float], None] = time.sleep,
     reserve: Callable[..., tuple[Any, ...]] | None = None,
     spawn_relay: Callable[..., int] | None = None,
+    revive: Callable[[Config], Any] | None = None,
 ) -> int:
     """Sleep until the due time and raise the dispatcher - or leave quietly if not allowed."""
 
@@ -149,8 +161,8 @@ def run_wake(
     store = StateStore(cfg.state_dir)
     while True:
         state = store.load()
-        if state.status in {"BLOCKED", "DONE"} or store.pause_requested():
-            _finish(cfg, store, "wake_skipped", detail={"why": "run is stopped or paused"})
+        if state.status == "DONE" or store.pause_requested():
+            _finish(cfg, store, "wake_skipped", detail={"why": "run is finished or paused"})
             return 0
         due = due_wake_epoch(state, cfg)
         if due is None:
@@ -185,15 +197,33 @@ def run_wake(
             relay_owner_thread_id=owner,
         )
     except HookPreflightError as exc:
+        # The one stop that cannot go through the on-call: raising the
+        # engineer passes the same trust gate, and going around it is hers
+        # to decide, never ours. So she is told directly, with what to do.
+        detail = {
+            "why": "hook trust is not in place",
+            "error": str(exc),
+            "diagnosis": "the Stop hook is not trusted, so no session of this run can be raised",
+            "recommendation": "restore trust in the Codex Autopilot hook; the run then continues by itself",
+        }
+        _signal_owner_once(cfg, "hook_trust", detail["recommendation"])
+        _finish(cfg, store, "wake_skipped", detail=detail)
+        return 0
+    if not descriptors:
+        # A reservation made earlier whose dispatcher died is not new, and
+        # the frontier does not return it. The Stop hook already raised
+        # these; the wake-up gave up with "reserved nothing".
+        try:
+            pids = list((revive or _revive_stalled)(cfg))
+            why = "raised stalled reservations" if pids else "the frontier reserved nothing"
+        except Exception as exc:  # noqa: BLE001 - the ownership check refused; leave a trace
+            pids, why = [], f"stalled reservations could not be raised: {exc}"
         _finish(
             cfg,
             store,
-            "wake_skipped",
-            detail={"why": "hook trust is not in place", "error": str(exc)},
+            "wake_dispatched" if pids else "wake_skipped",
+            detail={"why": why, "pids": pids},
         )
-        return 0
-    if not descriptors:
-        _finish(cfg, store, "wake_skipped", detail={"why": "the frontier reserved nothing"})
         return 0
     pids = [
         spawn_relay(
@@ -235,13 +265,76 @@ def _finish(cfg: Config, store: StateStore, event: str, *, detail: dict[str, Any
         store.save(state)
 
 
+def _revive_stalled(cfg: Config) -> tuple[int, ...]:
+    """Raise reservations whose dispatcher died - each by its own causal owner."""
+
+    from .control import _reservations_without_a_live_dispatcher, _spawn_automatic_descriptors
+    from .lifecycle_base import RELAYABLE_SESSION_STATUSES
+
+    state = StateStore(cfg.state_dir).load()
+    raisable = {
+        str(item.get("reservation_token"))
+        for item in state.worker_sessions
+        if item.get("status") in RELAYABLE_SESSION_STATUSES
+        or (item.get("status") == "RELAYING" and not str(item.get("thread_id") or ""))
+    }
+    stalled = tuple(
+        item
+        for item in _reservations_without_a_live_dispatcher(cfg)
+        if item.reservation_token in raisable
+    )
+    if not stalled:
+        return ()
+    return _spawn_automatic_descriptors(
+        cfg, stalled, triggering_thread_id="", triggering_turn_id=""
+    )
+
+
+def _signal_owner_once(cfg: Config, key: str, message: str) -> None:
+    """Tell her once per cause, not once per sweep: a banner every few minutes gets switched off."""
+
+    from .blocked_runs import _tell_owner
+
+    try:
+        _record_signal(cfg, key, message)
+    except Exception:  # noqa: BLE001 - telling her may never break the sweep
+        return
+    _tell_owner(cfg, message)
+
+
+def _record_signal(cfg: Config, key: str, message: str) -> None:
+    from .resilience import append_resilience_event
+
+    store = StateStore(cfg.state_dir)
+    with ResourceLockCoordinator(store, cfg.root).transaction():
+        state = store.load()
+        last = next(
+            (
+                item
+                for item in reversed(state.resilience_journal)
+                if item.get("event") == "owner_signalled"
+            ),
+            None,
+        )
+        if last is not None and (last.get("detail") or {}).get("key") == key:
+            raise _AlreadyTold()
+        append_resilience_event(
+            state, "owner_signalled", at=utc_now(), detail={"key": key, "message": message}
+        )
+        store.save(state)
+
+
+class _AlreadyTold(Exception):
+    """The same cause was already signalled; saying it again is noise."""
+
+
 def _dispatcher_alive(state: Any) -> bool:
-    if _pid_alive(state.dispatcher_pid):
+    if _pid_alive(getattr(state, "dispatcher_pid", None)):
         return True
     return any(
         item.get("automatic_dispatch_state") == "RUNNING"
         and _pid_alive(item.get("automatic_dispatch_pid"))
-        for item in state.worker_sessions
+        for item in getattr(state, "worker_sessions", None) or []
     )
 
 
@@ -418,7 +511,7 @@ def sweep(
         except Exception as exc:  # noqa: BLE001 - one sick project does not break the sweep
             outcome[raw] = f"unreadable: {exc}"
             continue
-        if state.status in {"BLOCKED", "DONE"} or StateStore(cfg.state_dir).pause_requested():
+        if state.status == "DONE" or StateStore(cfg.state_dir).pause_requested():
             outcome[raw] = "stopped"
             continue
         if due_wake_epoch(state, cfg) is None:
@@ -426,6 +519,16 @@ def sweep(
             continue
         owner = derive_owner(state)
         if owner is None:
+            # Something is due and there is no causal owner to raise it on
+            # behalf of. Raising it on someone else's behalf is the
+            # ownership guard's to refuse, not ours to skip - so she is
+            # told, once, instead of the sweep passing by in silence.
+            _signal_owner_once(
+                cfg,
+                "no_completed_owner",
+                "the run has work due but no completed turn to continue from; "
+                "resume it once and it continues by itself",
+            )
             outcome[raw] = "no completed owner"
             continue
         pid = ensure_wake(cfg, owner=owner[0], owner_turn=owner[1], spawn=spawn)

@@ -96,23 +96,25 @@ class IncidentScopeTests(unittest.TestCase):
         incidents.route_incident(incident_id, at=utc_now())
         incidents.ensure_pipeline_engineer(incident_id, at=utc_now())
 
-        # The engineer goes first - repair outranks any work.
-        engineer = reserve_ready_frontier(
+        # The engineer comes NEXT TO the work, in the same reservation. It
+        # used to come instead of it: repair outranked any work, and the
+        # free slot waited for the next pass - which, for a stop, never came.
+        together = reserve_ready_frontier(
             self.cfg, relay_owner_thread_id="owner-2", now_epoch=2_000_000_000
         )
-        self.assertEqual(
-            [item.to_dict()["kind"] for item in engineer], ["pipeline_engineer"]
-        )
-        # And then the run must continue without waiting for the ticket to close.
-        later = reserve_ready_frontier(
-            self.cfg, relay_owner_thread_id="owner-3", now_epoch=2_000_000_000
-        )
-        started = {item.task_id for item in later if item.to_dict()["kind"] != "pipeline_engineer"}
+        kinds = [item.to_dict()["kind"] for item in together]
+        self.assertEqual(kinds.count("pipeline_engineer"), 1)
+        started = {item.task_id for item in together if item.to_dict()["kind"] != "pipeline_engineer"}
         self.assertNotIn(stuck, started, "the incident task must wait")
         self.assertTrue(
             started,
             "an independent task must go while the ticket is still open",
         )
+        # One engineer per run: the next pass does not raise a second one.
+        later = reserve_ready_frontier(
+            self.cfg, relay_owner_thread_id="owner-3", now_epoch=2_000_000_000
+        )
+        self.assertNotIn("pipeline_engineer", [item.to_dict()["kind"] for item in later])
 
 
     def test_the_pause_covers_exactly_the_tasks_the_incident_names(self) -> None:

@@ -450,13 +450,16 @@ def _active_sessions(state: RunState) -> dict[str, dict[str, Any]]:
 def _plan_change_status(state: RunState) -> dict[str, Any] | None:
     selected = state.active_plan_change_id
     if selected is None:
-        # An exhausted plan change stops being active, but the run stands
+        # An exhausted plan change stops being active, but its task stands
         # on it. Not showing it here leaves the person facing a stop with no
-        # reason - exactly why the run went silent.
-        if state.phase != "PLAN_CHANGE_REJECTED":
-            return None
+        # reason - exactly why the run went silent. The run's phase no
+        # longer names the stop (it is derived, and the on-call may be at
+        # work), so the task still stopped is what says it matters.
         rejected = [
-            item for item in state.plan_changes if item.get("status") == "REJECTED"
+            item
+            for item in state.plan_changes
+            if item.get("status") == "REJECTED"
+            and state.task_states.get(str(item.get("requester_task_id") or "")) == "BLOCKED"
         ]
         if not rejected:
             return None

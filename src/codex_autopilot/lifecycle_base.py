@@ -12,7 +12,7 @@ import time
 import uuid
 from typing import Any, Callable, Mapping
 
-from .blocked_runs import route_pending_stops
+from .run_status import _finish_global_state  # re-export: derived in one place
 from .revision_budget import block_on_exhausted_ladder
 from .config import Config, DESKTOP_OWNED_SURFACE
 from .language import is_russian
@@ -891,7 +891,8 @@ def fence_superseded_sessions(
     """
     fenced: list[dict[str, Any]] = []
     for session in state.worker_sessions:
-        if session.get("task_id") != task_id:
+        # The on-call only anchors to a task; it is not that task's producer.
+        if session.get("task_id") != task_id or session.get("kind") == "pipeline_engineer":
             continue
         if session.get("status") in _TERMINAL_SESSION_STATUSES:
             continue
@@ -988,65 +989,6 @@ def _bind_resource_identity(
             )
         updated.append(lock.to_dict())
     state.resource_locks = updated
-
-def _finish_global_state(
-    plan: Plan,
-    state: RunState,
-    descriptors: tuple[LaunchDescriptor, ...],
-    *,
-    paused: bool = False,
-    cfg: Any = None,
-) -> None:
-    if all(value == TaskState.VERIFIED.value for value in state.task_states.values()):
-        state.status = "DONE"
-        state.phase = "DONE"
-        state.completed_at = utc_now()
-        return
-    if paused:
-        state.status = "PAUSED"
-        state.phase = "PAUSED_DRAINING" if state.active_task_ids else "PAUSED"
-        return
-    if state.active_plan_change_id is not None:
-        if descriptors:
-            state.status = "RUNNING"
-            state.phase = "AWAITING_DESKTOP_CREATE"
-        elif state.active_task_ids:
-            replanning = any(
-                item.get("kind") == "replanner"
-                and item.get("task_id") in state.active_task_ids
-                and item.get("status") in PENDING_SESSION_STATUSES
-                for item in state.worker_sessions
-            )
-            state.status = "RUNNING"
-            state.phase = "PLAN_CHANGE_REPLANNING" if replanning else "PLAN_CHANGE_DRAINING"
-        elif state.rate_limit_until is not None:
-            state.status = "WAITING"
-            state.phase = "WAITING_RATE_LIMIT"
-        else:
-            state.status = "WAITING"
-            state.phase = "PLAN_CHANGE_WAITING_LOCKS"
-        return
-    if descriptors:
-        state.status = "RUNNING"
-        state.phase = "AWAITING_DESKTOP_CREATE"
-    elif state.active_task_ids:
-        state.status = "RUNNING"
-        state.phase = "DESKTOP_WORKERS_ACTIVE"
-    elif state.rate_limit_until is not None or any(
-        value == TaskState.RETRY_WAIT.value for value in state.task_states.values()
-    ):
-        state.status = "WAITING"
-        state.phase = "WAITING_RATE_LIMIT"
-    elif any(value == TaskState.BLOCKED.value for value in state.task_states.values()):
-        # Derived, not decided: the ticket was opened when the task blocked.
-        # Nothing is left to run, so it need wait no longer - call the on-call.
-        if cfg is not None:
-            route_pending_stops(cfg)
-        state.status = "BLOCKED"
-        state.phase = "BLOCKED"
-    else:
-        state.status = "WAITING"
-        state.phase = "WAITING_DEPENDENCIES"
 
 def _sync_legacy_cursor(plan: Plan, state: RunState) -> None:
     for index, task in enumerate(plan.tasks):
