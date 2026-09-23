@@ -14,19 +14,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from .plan import (
-    LEGACY_PLAN_SCHEMA_VERSION,
-    PLAN_SCHEMA_VERSION,
-    Plan,
-    RoleProfile,
-    Task,
-    _identifier,
-    _plan_header,
-    _reject_unknown,
-    _role_from_raw,
-    _task_from_raw,
-    _validate_graph,
-    _validate_unique,
+from .plan import LEGACY_PLAN_SCHEMA_VERSION, PLAN_SCHEMA_VERSION, Plan, RoleProfile, Task
+from .plan_admission import validate_graph as _validate_graph
+from .plan_parse import (
+    identifier as _identifier,
+    plan_header as _plan_header,
+    reject_unknown as _reject_unknown,
+    role_from_raw as _role_from_raw,
+    task_from_raw as _task_from_raw,
+    validate_unique as _validate_unique,
 )
 
 

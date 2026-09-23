@@ -332,7 +332,9 @@ Its tools are the helper commands, resolved relative to this `SKILL.md`:
 `relay-status`, `relay-complete`, `relay-fail --failure-code <kind> --definitive`,
 `devops-rearm-relay-owner`, `arm`, `devops-repair-runtime`,
 `devops-return-task` (return a stopped task this ticket holds to work),
-`devops-request-plan-change` (ask the replanner on the task's behalf), and
+`devops-request-plan-change` (ask the replanner on the task's behalf - after a
+replanner spent its three attempts this is a fresh round that carries every
+earlier refusal to the next replanner), and
 `devops-resolve-incident`. The last three act only from the engineer's own
 thread and only as far as the stop's `means` allow; a stop ticket is not closed
 with diagnostics alone, with its task still stopped, or naming a repair that

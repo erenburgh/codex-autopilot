@@ -241,7 +241,13 @@ def _record_answer(
         grant: dict[str, Any] | None = None
         moved_to = state.task_states.get(task_id)
         if choice == "replan":
-            moved_to = _owner_plan_change(plan, state, task_id, decision, closed, timestamp)
+            moved_to = _owner_plan_change(
+                plan, state, task_id, decision, closed, timestamp,
+                tuple(
+                    str((item.get("system_state") or {}).get("plan_change_id") or "")
+                    for item in tickets
+                ),
+            )
         elif blocked:
             if owes_fresh_hire(plan, state, task_id, kinds):
                 grant = grant_fresh_hire(
@@ -374,7 +380,8 @@ def _at_ladder_top(state: Any, task_id: str) -> bool:
 
 
 def _owner_plan_change(
-    plan: Any, state: Any, task_id: str, decision: str, closed: list[str], at: str
+    plan: Any, state: Any, task_id: str, decision: str, closed: list[str], at: str,
+    inherited: tuple[str, ...] = (),
 ) -> str:
     from .resilience import PlanChangeRequest, register_plan_change_request
 
@@ -399,6 +406,11 @@ def _owner_plan_change(
     record["requested_by_owner"] = True
     if closed:
         record["answering_incidents"] = list(closed)
+    from .replanner_hint import inherit_rejections
+
+    for change_id in inherited:
+        if inherit_rejections(state, record, change_id):
+            break
     return TaskState.BLOCKED.value
 
 

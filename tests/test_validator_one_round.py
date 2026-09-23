@@ -1,0 +1,490 @@
+"""The plan validator reports every violation in one round.
+
+The replanner has three attempts. The validator stopped at its first
+violation, and two more checks waited behind it (Goal Contract coverage,
+and the state conditions checked only at the commit after the plan
+verifier's PASS - where a conflict took the dispatcher down). These tests
+drive the production entry points: the worker's completion
+(``complete_desktop_worker``), ``validate_plan_change``, the reservation
+frontier, the on-call's own action. Fakes only.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+from _handoff import bump_task_checkpoint
+from _relay import reserve_ready_frontier
+from codex_autopilot.lifecycle import complete_desktop_worker
+from codex_autopilot.plan import load_plan, validate_plan, validate_plan_change
+from codex_autopilot.plan_fields import ALLOWED_FIELDS
+from codex_autopilot.plan_issues import PlanIssues
+from codex_autopilot.plan_verification import PLAN_VERIFICATION_PREFIX
+from codex_autopilot.resilience import PLAN_CHANGE_RESULT_PREFIX, active_plan_change
+from test_plan_evolution import PlanEvolutionTests, graph, request_line, task
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def reply(change_id: str, base: int, plan: dict) -> str:
+    return PLAN_CHANGE_RESULT_PREFIX + " " + json.dumps(
+        {"request_id": change_id, "base_graph_version": base, "plan": plan}, separators=(",", ":")
+    )
+
+
+def messages(exc: PlanIssues) -> list[str]:
+    return [item.message for item in exc.issues]
+
+
+class _Replanning(unittest.TestCase):
+    setUp = PlanEvolutionTests.setUp
+    tearDown = PlanEvolutionTests.tearDown
+    initialize = PlanEvolutionTests.initialize
+    mark_active = staticmethod(PlanEvolutionTests.mark_active)
+    candidate_with_prerequisite = PlanEvolutionTests.candidate_with_prerequisite
+
+    def at_the_replanner(self, raw_graph=None):
+        """A's worker asks for a plan change; the replanner PC1 is reserved."""
+
+        cfg, store = self.initialize(raw_graph or graph([task("A")], max_workers=1))
+        worker = next(
+            item
+            for item in reserve_ready_frontier(cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None)
+            if item.task_id == "A"
+        )
+        self.mark_active(store, worker.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, "A", "Plan change requested.")
+        replanner = complete_desktop_worker(
+            cfg, thread_id="worker-A", turn_id="turn-A", final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.assertEqual(replanner.kind, "replanner")
+        return cfg, store, replanner
+
+    def answer(self, cfg, store, replanner, message: str, thread: str = "replanner-PC1"):
+        self.mark_active(store, replanner.reservation_token, thread)
+        return complete_desktop_worker(
+            cfg, thread_id=thread, turn_id=f"turn-{thread}", final_message=message,
+            hook_gate=lambda _cfg: None,
+        )
+
+    def valid_candidate(self, cfg) -> dict:
+        return self.candidate_with_prerequisite(load_plan(cfg.state_dir, cfg.profile))
+
+
+class OneRefusalCarriesEveryDefectTests(_Replanning):
+    def test_four_independent_defects_come_back_in_one_refusal_and_one_prompt(self) -> None:
+        cfg, store, replanner = self.at_the_replanner()
+        bad = self.valid_candidate(cfg)
+        bad["nonsense_field"] = 1
+        del bad["roles"][0]["name"]
+        del bad["tasks"][0]["reasoning"]
+        bad["departments"] = [{
+            "id": "eng", "name": "Engineering", "lead_role": "builder",
+            "rubric": {"record_id": "r", "version": 1, "sha256": "0" * 64},
+        }]
+
+        outcome = self.answer(cfg, store, replanner, reply("PC1", 1, bad))
+
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        change = active_plan_change(store.load(), request_id="PC1")
+        self.assertEqual(len(change["rejections"]), 1)
+        issues = [item["message"] for item in change["rejections"][-1]["issues"]]
+        self.assertEqual(len(issues), 4, issues)
+        self.assertIn("plan has unknown fields: ['nonsense_field']", issues[0])
+        self.assertIn("role 1.name must be a non-empty string", issues[1])
+        self.assertIn("department 1 has unknown fields: ['lead_role']", issues[2])
+        self.assertIn("missing required fields: ['lead_role_id']", issues[2])
+        self.assertIn("task 1 requires reasoning", issues[3])
+        prompt = outcome.descriptors[0].prompt
+        self.assertIn("The previous attempt was rejected for 4 reasons;", prompt)
+        for number in range(1, 5):
+            self.assertIn(f"\n{number}. ", prompt)
+
+    def test_two_defects_inside_one_task_are_both_reported(self) -> None:
+        cfg, _store = self.initialize(graph([task("A")], max_workers=1))
+        current = load_plan(cfg.state_dir, cfg.profile)
+        bad = self.candidate_with_prerequisite(current)
+        del bad["tasks"][0]["execution_mode_reason"]
+        del bad["tasks"][0]["verification"]["max_revision_attempts"]
+        with self.assertRaises(PlanIssues) as caught:
+            validate_plan_change(current, bad, "adaptive")
+        found = messages(caught.exception)
+        self.assertEqual(len(found), 2, found)
+        self.assertIn("task 1.execution_mode_reason must be a non-empty string", found[0])
+        self.assertIn("task 1.verification.max_revision_attempts must be declared", found[1])
+
+    def test_a_broken_task_id_raises_no_false_dependency_and_no_cycle_crash(self) -> None:
+        cfg, _store = self.initialize(graph([task("A")], max_workers=1))
+        current = load_plan(cfg.state_dir, cfg.profile)
+        bad = self.candidate_with_prerequisite(current)
+        broken = task("X")
+        broken["title"] = ""
+        bad["tasks"].append(broken)
+        bad["tasks"].append(task("Y", depends_on=("X",)))
+        with self.assertRaises(PlanIssues) as caught:
+            validate_plan_change(current, bad, "adaptive")
+        found = messages(caught.exception)
+        # Y is read and checked; X, unread, is not reported as missing, and
+        # the cycle search does not meet an id it has no entry for.
+        self.assertEqual(found, ["task 3.title must be a non-empty string"])
+
+    def test_the_immutables_are_compared_on_what_was_read(self) -> None:
+        cfg, _store = self.initialize(graph([task("A")], max_workers=1))
+        current = load_plan(cfg.state_dir, cfg.profile)
+        bad = self.candidate_with_prerequisite(current)
+        bad["goal"] = "A different goal."
+        bad["tasks"][0]["title"] = ""
+        with self.assertRaises(PlanIssues) as caught:
+            validate_plan_change(current, bad, "adaptive")
+        found = messages(caught.exception)
+        self.assertEqual(len(found), 2, found)
+        self.assertIn("task 1.title must be a non-empty string", found[0])
+        self.assertEqual(found[1], "plan changes must not replace the run goal")
+
+    def test_coverage_is_reported_in_the_same_round(self) -> None:
+        contract = {
+            "required_outcomes": [
+                {"id": "test-outcome", "description": "The first result."},
+                {"id": "second", "description": "The second result."},
+            ],
+            "deliverables": [{"id": "d", "description": "A deliverable."}],
+            "constraints": [],
+            "global_acceptance": [{"id": "g", "description": "Accepted."}],
+        }
+        b = task("B")
+        b["produces_outcomes"] = ["second"]
+        raw = graph([task("A"), b], max_workers=1)
+        raw["goal_contract"] = contract
+        cfg, store, replanner = self.at_the_replanner(raw)
+        bad = self.valid_candidate(cfg)
+        next(item for item in bad["tasks"] if item["id"] == "B")["produces_outcomes"] = ["test-outcome"]
+        bad["roles"][0]["responsibilities"] = []
+
+        outcome = self.answer(cfg, store, replanner, reply("PC1", 1, bad))
+
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        issues = active_plan_change(store.load(), request_id="PC1")["rejections"][-1]["issues"]
+        stages = [item["stage"] for item in issues]
+        self.assertEqual(stages, ["roles", "coverage"], issues)
+        self.assertIn("'second' has no producer", issues[1]["message"])
+
+    def test_one_violation_reads_exactly_as_before(self) -> None:
+        cfg, _store = self.initialize(graph([task("A")], max_workers=1))
+        current = load_plan(cfg.state_dir, cfg.profile)
+        bad = self.candidate_with_prerequisite(current)
+        bad["goal"] = "Another goal."
+        with self.assertRaises(PlanIssues) as caught:
+            validate_plan_change(current, bad, "adaptive")
+        self.assertEqual(str(caught.exception), "plan changes must not replace the run goal")
+        self.assertIsInstance(caught.exception, ValueError)
+
+    def test_the_order_does_not_depend_on_the_hash_seed(self) -> None:
+        script = (
+            "import json,sys\n"
+            "sys.path[:0]=[%r,%r]\n"
+            "from codex_autopilot.plan import validate_plan\n"
+            "from codex_autopilot.plan_issues import PlanIssues\n"
+            "from test_plan_evolution import graph, task\n"
+            "raw=graph([task('A'),task('B'),task('C')])\n"
+            "raw['zeta']=1; raw['alpha']=2\n"
+            "for t in raw['tasks']: t.pop('title'); t['bogus']=1; t['other']=2\n"
+            "try:\n"
+            "    validate_plan(raw,'adaptive')\n"
+            "except PlanIssues as exc:\n"
+            "    print(json.dumps([i.message for i in exc.issues]))\n"
+        ) % (str(ROOT / "src"), str(ROOT / "tests"))
+        runs = []
+        for seed in ("1", "2", "3"):
+            env = {**os.environ, "PYTHONHASHSEED": seed}
+            done = subprocess.run(
+                [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True
+            )
+            runs.append(done.stdout)
+        self.assertTrue(runs[0].strip())
+        self.assertEqual(len(json.loads(runs[0])), 7)
+        self.assertEqual(runs[0], runs[1])
+        self.assertEqual(runs[1], runs[2])
+
+
+class TheStateIsCheckedBeforeTheVerifierTests(_Replanning):
+    def two_tasks(self):
+        return self.at_the_replanner(graph([task("A"), task("B")], max_workers=1))
+
+    def test_removing_an_existing_task_is_refused_before_the_plan_verifier(self) -> None:
+        cfg, store, replanner = self.two_tasks()
+        bad = self.valid_candidate(cfg)
+        bad["tasks"] = [item for item in bad["tasks"] if item["id"] != "B"]
+
+        outcome = self.answer(cfg, store, replanner, reply("PC1", 1, bad))
+
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        self.assertNotIn("plan_verifier", [item.kind for item in outcome.descriptors])
+        issues = active_plan_change(store.load(), request_id="PC1")["rejections"][-1]["issues"]
+        self.assertIn("cannot remove tasks with durable history: ['B']", issues[-1]["message"])
+
+    def _with_b(self, state_value: str):
+        cfg, store, replanner = self.two_tasks()
+        state = store.load()
+        state.task_states["B"] = state_value
+        store.save(state)
+        candidate = self.valid_candidate(cfg)
+        next(item for item in candidate["tasks"] if item["id"] == "B")["objective"] = "Rewritten."
+        return cfg, store, self.answer(cfg, store, replanner, reply("PC1", 1, candidate))
+
+    def test_a_verified_task_rewritten_is_refused_at_once(self) -> None:
+        _cfg, store, outcome = self._with_b("VERIFIED")
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        issues = active_plan_change(store.load(), request_id="PC1")["rejections"][-1]["issues"]
+        self.assertEqual(issues[-1]["message"], "verified task B is immutable during plan evolution")
+
+    def test_an_advanced_task_rewritten_is_left_to_the_commit(self) -> None:
+        cfg, store, outcome = self._with_b("IMPLEMENTED")
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_PROPOSED")
+        verifier = outcome.descriptors[0]
+        self.assertEqual(verifier.kind, "plan_verifier")
+
+        # By the commit B is still advanced: the verifier's PASS cannot be
+        # applied. It used to raise out of the dispatcher.
+        self.mark_active(store, verifier.reservation_token, "plan-verifier-PC1")
+        passed = complete_desktop_worker(
+            cfg, thread_id="plan-verifier-PC1", turn_id="turn-pv",
+            final_message=PLAN_VERIFICATION_PREFIX + ' {"verdict":"PASS","issues":[]}',
+            hook_gate=lambda _cfg: None,
+        )
+
+        self.assertEqual(passed.worker_status, "PLAN_REVISION_REQUIRED")
+        self.assertEqual([item.kind for item in passed.descriptors], ["replanner"])
+        self.assertEqual(load_plan(cfg.state_dir, cfg.profile).graph_version, 1)
+        rejection = active_plan_change(store.load(), request_id="PC1")["rejections"][-1]
+        self.assertEqual(rejection["issues"][0]["stage"], "reconcile")
+        self.assertIn("advanced task B cannot be rewritten", rejection["issues"][0]["message"])
+        self.assertIn("advanced task B cannot be rewritten", passed.descriptors[0].prompt)
+
+
+class TheProtocolLineIsPartOfTheRoundTests(_Replanning):
+    def test_a_malformed_line_is_a_refusal_with_its_reasons(self) -> None:
+        cfg, store, replanner = self.at_the_replanner()
+        line = PLAN_CHANGE_RESULT_PREFIX + " " + json.dumps(
+            {"request_id": "PC9", "base_graph_version": 1, "plan": self.valid_candidate(cfg), "note": "x"}
+        )
+        outcome = self.answer(cfg, store, replanner, line)
+
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        issues = active_plan_change(store.load(), request_id="PC1")["rejections"][-1]["issues"]
+        self.assertEqual([item["stage"] for item in issues], ["protocol", "protocol"], issues)
+        self.assertEqual(issues[0]["accepted"], ["request_id", "base_graph_version", "plan"])
+        self.assertIn("request_id must be 'PC1'", issues[1]["message"])
+        self.assertIn("request_id must be 'PC1'", outcome.descriptors[0].prompt)
+
+    def test_a_graph_that_moved_spends_no_attempt(self) -> None:
+        cfg, store, replanner = self.at_the_replanner()
+        state = store.load()
+        active_plan_change(state, request_id="PC1")["base_graph_version"] = 7
+        store.save(state)
+
+        outcome = self.answer(cfg, store, replanner, reply("PC1", 7, self.valid_candidate(cfg)))
+
+        change = active_plan_change(store.load(), request_id="PC1")
+        self.assertEqual(change["rejections"], [])
+        self.assertEqual(change["base_graph_version"], 1)
+        self.assertEqual([item.kind for item in outcome.descriptors], ["replanner"])
+
+
+class TheNextPromptTests(_Replanning):
+    def test_a_repeated_issue_is_marked_and_every_attempt_is_listed(self) -> None:
+        cfg, store, replanner = self.at_the_replanner()
+        first = self.valid_candidate(cfg)
+        first["nonsense_field"] = 1
+        first["tasks"][0]["title"] = ""
+        outcome = self.answer(cfg, store, replanner, reply("PC1", 1, first))
+        second = self.valid_candidate(cfg)
+        second["nonsense_field"] = 1
+        outcome = self.answer(cfg, store, outcome.descriptors[0], reply("PC1", 1, second), "replanner-2")
+
+        prompt = outcome.descriptors[0].prompt
+        context = json.loads(prompt.split("AUTOPILOT_CONTEXT: ", 1)[1].split("\n", 1)[0])
+        self.assertEqual([item["attempt"] for item in context["rejected_attempts"]], [1, 2])
+        self.assertIn("title", context["rejected_attempts"][0]["issues"][1]["message"])
+        self.assertIn("[repeated from attempt 1]", prompt)
+        self.assertEqual(context["constraints"]["allowed_fields"], {k: list(v) for k, v in ALLOWED_FIELDS.items()})
+        self.assertIn("independent", context["constraints"]["allowed_values"]["plan.tasks[].verification.policy"])
+
+    def test_the_plan_verifiers_issues_reach_the_replanner_one_by_one(self) -> None:
+        cfg, store, replanner = self.at_the_replanner()
+        verifier = self.answer(cfg, store, replanner, reply("PC1", 1, self.valid_candidate(cfg))).descriptors[0]
+        self.mark_active(store, verifier.reservation_token, "plan-verifier-PC1")
+        verdict = {"verdict": "REVISE", "issues": [
+            {"category": "necessity", "summary": "P is not needed.", "task_ids": ["P"], "outcome_ids": []},
+            {"category": "dod_sufficiency", "summary": "A's DoD proves nothing.", "task_ids": ["A"],
+             "outcome_ids": []},
+        ]}
+        outcome = complete_desktop_worker(
+            cfg, thread_id="plan-verifier-PC1", turn_id="turn-pv",
+            final_message=PLAN_VERIFICATION_PREFIX + " " + json.dumps(verdict), hook_gate=lambda _cfg: None,
+        )
+        prompt = outcome.descriptors[0].prompt
+        self.assertIn("rejected for 2 reasons", prompt)
+        self.assertIn("1. necessity: P is not needed.", prompt)
+        self.assertIn("2. dod_sufficiency: A's DoD proves nothing.", prompt)
+
+
+class TheExhaustedBudgetIsTheOnCallsTests(_Replanning):
+    """Three refusals hold the requester only, and the on-call raises a new round."""
+
+    def exhaust(self, raw_graph=None):
+        cfg, store, replanner = self.at_the_replanner(raw_graph)
+        bad = self.valid_candidate(cfg)
+        bad["nonsense_field"] = 1
+        for attempt in range(3):
+            outcome = self.answer(cfg, store, replanner, reply("PC1", 1, bad), f"replanner-{attempt}")
+            replanner = outcome.descriptors[0]
+        return cfg, store, outcome
+
+    def test_the_run_goes_on_beside_the_held_requester(self) -> None:
+        _cfg, store, outcome = self.exhaust(graph([task("A"), task("B")], max_workers=1))
+        self.assertEqual(
+            sorted((item.kind, item.task_id) for item in outcome.descriptors),
+            [("implementation", "B"), ("pipeline_engineer", "A")],
+        )
+        state = store.load()
+        self.assertNotEqual(state.status, "BLOCKED")
+        self.assertEqual(state.task_states["B"], "RUNNING")
+
+    def test_the_on_call_raises_a_fresh_round_that_knows_the_refusals(self) -> None:
+        from _appserver_fakes import activate_via_app_server
+        from codex_autopilot.engineer_stop_actions import request_plan_change
+
+        cfg, store, outcome = self.exhaust()
+        engineer = outcome.descriptors[0]
+        self.assertEqual(engineer.kind, "pipeline_engineer")
+        activate_via_app_server(cfg, self.root, engineer, "eng-1")
+        incident_id = next(
+            item["incident_id"] for item in store.load().worker_sessions
+            if item.get("reservation_token") == engineer.reservation_token
+        )
+
+        request_plan_change(
+            cfg, incident_id=incident_id, task_id="A", reason="another round, with the history",
+            thread_id="eng-1",
+        )
+
+        change = active_plan_change(store.load())
+        self.assertEqual(change["id"], "PC2")
+        self.assertEqual(len(change["inherited_rejections"]), 3)
+        self.assertEqual(change.get("rejections") or [], [])
+        replanner = next(
+            item for item in reserve_ready_frontier(cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None)
+            if item.kind == "replanner"
+        )
+        context = json.loads(replanner.prompt.split("AUTOPILOT_CONTEXT: ", 1)[1].split("\n", 1)[0])
+        self.assertEqual([item.get("from_plan_change") for item in context["rejected_attempts"]], ["PC1"] * 3)
+        self.assertIn("nonsense_field", replanner.prompt.split("The previous attempt", 1)[1])
+        # Its own budget: one refusal of PC2 does not stop it.
+        bad = self.valid_candidate(cfg)
+        bad["nonsense_field"] = 1
+        again = self.answer(cfg, store, replanner, reply("PC2", 1, bad), "replanner-PC2")
+        self.assertEqual([item.kind for item in again.descriptors], ["replanner"])
+        self.assertIn("[repeated from attempt 3]", again.descriptors[0].prompt)
+
+
+    def test_her_replan_answer_carries_the_refusals_too(self) -> None:
+        from codex_autopilot.blocked_runs import escalate_to_owner
+        from codex_autopilot.owner_answers import answer_task
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        cfg, store, _outcome = self.exhaust()
+        ticket = next(
+            item for item in PipelineIncidentStore(cfg.state_dir).load()["incidents"]
+            if item["system_state"].get("stop_kind") == "plan_change_rejected"
+        )
+        escalate_to_owner(
+            cfg, ticket["incident_id"], code="PRODUCT_DECISION", detail="d", at="2026-09-24T10:00:00+00:00",
+            escalation={"diagnosis": "d", "recommendation": "r",
+                        "options": [{"code": "replan", "means": "split A"}], "scope": "task"},
+        )
+
+        answer_task(cfg, "A", "split A in two", option="replan", raise_run=False)
+
+        change = active_plan_change(store.load())
+        self.assertTrue(change.get("requested_by_owner"))
+        self.assertEqual(len(change["inherited_rejections"]), 3)
+
+
+class OneSourceOfFieldsTests(unittest.TestCase):
+    setUp = PlanEvolutionTests.setUp
+    tearDown = PlanEvolutionTests.tearDown
+
+    def plan(self) -> dict:
+        raw = graph([task("A")])
+        a = raw["tasks"][0]
+        a["outputs"] = [{"id": "o", "description": "An output."}]
+        a["context"] = {"memory_queries": []}
+        return raw
+
+    def objects(self, raw: dict) -> dict[str, dict]:
+        a = raw["tasks"][0]
+        raw.setdefault("departments", [])
+        return {
+            "plan": raw,
+            "plan.roles[]": raw["roles"][0],
+            "plan.tasks[]": a,
+            "plan.tasks[].verification": a["verification"],
+            "plan.tasks[].verification.deterministic_checks[]": a["verification"]["deterministic_checks"][0],
+            "plan.tasks[].resources[]": a["resources"][0],
+            "plan.tasks[].outputs[]": a["outputs"][0],
+            "plan.tasks[].context": a["context"],
+        }
+
+    def issues_for(self, raw: dict) -> list:
+        try:
+            validate_plan(raw, "adaptive")
+        except PlanIssues as exc:
+            return list(exc.issues)
+        except ValueError as exc:
+            return [type("I", (), {"message": str(exc), "accepted": getattr(exc, "accepted", ())})()]
+        return []
+
+    def test_every_object_names_its_accepted_fields_and_they_are_the_single_source(self) -> None:
+        validate_plan(self.plan(), "adaptive")  # the fixture itself is valid
+        for path, obj in self.objects(self.plan()).items():
+            with self.subTest(path):
+                raw = self.plan()
+                target = self.objects(raw)[path]
+                target["bogus"] = 1
+                unknown = [item for item in self.issues_for(raw) if "unknown fields: ['bogus']" in item.message]
+                self.assertEqual(len(unknown), 1)
+                self.assertIn(f"accepted fields are {sorted(ALLOWED_FIELDS[path])}", unknown[0].message)
+                self.assertEqual(tuple(unknown[0].accepted), tuple(ALLOWED_FIELDS[path]))
+
+    def test_every_listed_field_is_accepted_by_the_parser(self) -> None:
+        for path in self.objects(self.plan()):
+            for name in ALLOWED_FIELDS[path]:
+                with self.subTest(path=path, field=name):
+                    raw = self.plan()
+                    target = self.objects(raw)[path]
+                    target.setdefault(name, None)
+                    self.assertFalse(
+                        [item for item in self.issues_for(raw) if "unknown fields" in item.message]
+                    )
+
+
+class RefusalsNameWhatIsAcceptedTests(unittest.TestCase):
+    def test_a_department_names_the_unknown_and_the_missing_in_one_line(self) -> None:
+        from codex_autopilot.department_acceptance import DepartmentAcceptanceError, department_contract_from_raw
+
+        with self.assertRaises(DepartmentAcceptanceError) as caught:
+            department_contract_from_raw(
+                {"id": "eng", "name": "E", "lead_role": "x", "rubric": {}}, "department 1"
+            )
+        self.assertIn("unknown fields: ['lead_role']", str(caught.exception))
+        self.assertIn("missing required fields: ['lead_role_id']", str(caught.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

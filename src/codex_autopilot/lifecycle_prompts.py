@@ -17,6 +17,8 @@ from .language import is_russian
 from .memory import ProjectMemory
 from .department_acceptance import DEPARTMENT_FIELDS, RUBRIC_REFERENCE_FIELDS
 from .plan import GRAPH_PLAN_FIELDS, Plan, Task, plan_to_dict
+from .plan_fields import ALLOWED_FIELDS
+from .replanner_hint import allowed_plan_values, replanner_rejections, retry_hint
 from .resilience import PLAN_CHANGE_RESULT_PREFIX
 from .rules import rules_for_prompt
 from .run_state import RunState
@@ -55,11 +57,10 @@ def _replanner_prompt(
         )
     # The refusals of earlier attempts. Without them the model redoes the
     # work blind and returns the same error: measured on a departments
-    # field absent from the plan schema.
-    rejections = [
-        {"reason": str(item.get("reason") or "")}
-        for item in (change.get("rejections") or [])
-    ]
+    # field absent from the plan schema. Each carries its structured
+    # issues, and a change the on-call raised after another one used every
+    # attempt carries that one's refusals too (``inherited_rejections``).
+    rejections = replanner_rejections(change)
     envelope = {
         # R17: the rules stand before any specification they judge, and this
         # is the phase that rewrites the whole graph. It was asked to report
@@ -91,6 +92,11 @@ def _replanner_prompt(
             # state and impossible to derive.
             "allowed_department_fields": sorted(DEPARTMENT_FIELDS),
             "allowed_rubric_reference_fields": sorted(RUBRIC_REFERENCE_FIELDS),
+            # Every nested set, by the path a refusal names (R31): for a
+            # task, a verification, a check, a resource, an output and a
+            # context the model used to see no list at all.
+            "allowed_fields": {key: list(value) for key, value in ALLOWED_FIELDS.items()},
+            "allowed_values": allowed_plan_values(),
         },
     }
     if rejections:
@@ -133,20 +139,7 @@ def _replanner_prompt(
             f"it currently holds {plan.max_parallel_workers}."
         )
     if rejections:
-        last = rejections[-1]["reason"]
-        allowed = ", ".join(sorted(GRAPH_PLAN_FIELDS))
-        retry_ru = (
-            f"\n\nThe previous attempt was rejected by the runtime: {last}. "
-            f"The graph is unchanged. The top-level plan fields are limited to this "
-            f"list and it cannot be extended: {allowed}. Anything outside it "
-            f"is expressed inside tasks and roles."
-        )
-        retry_en = (
-            f"\n\nThe previous attempt was rejected by the runtime: {last}. "
-            f"The graph is unchanged. Top-level plan fields are limited to this "
-            f"list and it cannot be extended: {allowed}. Anything else belongs "
-            f"inside tasks and roles."
-        )
+        retry_ru = retry_en = retry_hint(rejections)
     if is_russian(cfg.language):
         prompt = f"""Codex Autopilot AI Studio Runtime — fresh replanner.
 

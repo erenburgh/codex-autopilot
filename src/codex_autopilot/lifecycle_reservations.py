@@ -1033,9 +1033,7 @@ def _build_descriptor(
         mode = str(change.get("verification_mode") or "")
         title = plan_verifier_thread_title(candidate.graph_version, mode)
         prompt = build_plan_verification_prompt(
-            candidate,
-            load_active_memory_constraints(cfg.root),
-            mode=mode,
+            candidate, load_active_memory_constraints(cfg.root), mode=mode, state_dir=cfg.state_dir
         )
     else:
         role_id = route.role_id if kind == "verifier" else task.role

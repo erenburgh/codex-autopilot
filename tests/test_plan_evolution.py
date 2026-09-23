@@ -958,8 +958,11 @@ class PlanEvolutionTests(unittest.TestCase):
         # the redo goes blind and returns the same error.
         self.assertIn("rejected_attempts", prompt)
         self.assertIn("allowed_plan_fields", prompt)
-        self.assertIn("The previous attempt was rejected by the runtime", prompt)
-        self.assertIn("plan has unknown fields: ['nonsense_field']", prompt)
+        # The hint is now a numbered list of every reason of the last refusal
+        # (it was one line with rejections[-1]["reason"]); a single reason
+        # reads the same words, numbered 1.
+        self.assertIn("The previous attempt was rejected for 1 reason;", prompt)
+        self.assertIn("1. plan has unknown fields: ['nonsense_field']", prompt)
 
     def test_user_declared_worker_count_reaches_the_replanner(self) -> None:
         """The worker cap lives in the plan, which the replanner rewrites.

@@ -307,6 +307,11 @@ def request_plan_change(
             at=timestamp,
         )
         record["requested_by_incident"] = incident_id
+        # A replanner that used every attempt: the new change is a fresh
+        # budget, and it carries the refusals so the next replanner is not blind.
+        from .replanner_hint import inherit_rejections
+
+        inherit_rejections(state, record, str((incident.get("system_state") or {}).get("plan_change_id") or ""))
         PipelineIncidentStore(cfg.state_dir).record_engineer_action(
             incident_id,
             field="plan_change_requests",

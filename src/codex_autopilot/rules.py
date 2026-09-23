@@ -263,7 +263,8 @@ RULES: tuple[Rule, ...] = (
         check="the rules block is present in the assembled prompt before any "
         "specification and is never truncated. If the budget cannot hold the rules "
         "plus a minimal specification, the task is not launched, and that is reported "
-        "as a context-planning defect.",
+        "as a context-planning defect. Within the block the rules are ordered by "
+        "violation history: the more often violated stand higher.",
     ),
     Rule(
         id="R18",
@@ -390,7 +391,9 @@ RULES: tuple[Rule, ...] = (
         statement="",
         check="deleting or overwriting project state, the plan, memory or "
         "configuration without a prior snapshot is refused. The snapshot is "
-        "recoverable and its path is journaled.",
+        "recoverable and its path is journaled. Separately: push, tag, publish and a "
+        "forced Git clean are performed only at the user's explicit request in the "
+        "current session. An automatic invocation is refused.",
     ),
     Rule(
         id="R29",
@@ -577,7 +580,8 @@ def rules_for_prompt(state_dir=None, *, task=None) -> list[dict[str, str]]:
     """The rules block for a worker prompt.
 
     The order is fixed by rule R17: ENFORCED first; within a mode, the more
-    often violated higher; then by id. The block is never truncated: if the
+    often violated higher; then by id. The block is never truncated - each
+    entry carries the rule's statement and its check verbatim: if the
     context budget cannot hold it, the task is not launched.
 
     When the task is known, a rule the runtime activates conditionally also
@@ -596,7 +600,12 @@ def rules_for_prompt(state_dir=None, *, task=None) -> list[dict[str, str]]:
 
     block: list[dict[str, str]] = []
     for item in sorted(RULES, key=key):
-        entry = {"id": item.id, "mode": item.mode, "rule": item.statement}
+        # The check goes whole. Only the statement went, and for R26, R27
+        # and R28 the statement is the title alone - their whole substance
+        # is the check: a worker was never told to mark NOT TESTED (R26).
+        # A shortened or phase-picked check would be the same truncation R17
+        # forbids; an over-budget prompt is refused instead.
+        entry = {"id": item.id, "mode": item.mode, "rule": item.statement, "check": item.check}
         scope = _SCOPED_RULES.get(item.id)
         if scope is not None and task is not None:
             entry["scope"] = scope(task)

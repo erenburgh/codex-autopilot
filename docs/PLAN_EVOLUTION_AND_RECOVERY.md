@@ -44,6 +44,33 @@ strategy, every existing task ID, and every verified task contract. It must
 also pass all role, output, dependency, resource, verification, and cycle
 checks. Invalid or stale results perform no plan or run-state write.
 
+Every violation is reported in one round (`plan_admission.admit_replanner_result`).
+The replanner has three attempts, and the validator used to stop at its first
+violation, with Goal Contract coverage and the state conditions (a removed task,
+a rewritten `VERIFIED` task) each costing a round of their own - the last of them
+only at the commit, after the plan verifier's PASS. One pass now collects, in a
+fixed order: the protocol line itself, unknown fields (each refusal names the
+accepted set, `plan_fields.ALLOWED_FIELDS`), every field of every role,
+department and task, outcome bindings and the R29 acceptance floor per task, the
+graph references, the fields a change may not replace, coverage, and the
+run-state conditions that can only get worse while the change drains (removed
+task, requester gone, `VERIFIED` or `CANCELLED` task rewritten). A check that
+depends on another runs only when that one is clean, and no wider. One violation
+reads exactly as before; several read `plan has N issues:` and a numbered list.
+
+The refusal is recorded in `rejections` with its structured `issues`, and the next
+replanner's prompt lists every refused attempt (`rejected_attempts`) and the last
+one as a numbered list, marking an issue that repeats an earlier one; its
+constraints carry `allowed_fields` and `allowed_values`. A graph that moved under
+the replanner is the runtime's state, not its mistake: the change is rebased and
+a fresh replanner is raised without spending an attempt. A semantic `REVISE` from
+the plan verifier, and a commit conflict after its PASS (an advanced task
+rewritten), return to the replanner the same way instead of taking the dispatcher
+down. When the three attempts are spent, only the requester is held and the
+on-call is called; it can raise a new change (`devops-request-plan-change`) with a
+fresh budget that carries the old refusals as `inherited_rejections`, and so does
+her `unblock --option replan`.
+
 ## Crash-safe graph commit
 
 An accepted replacement is reconciled against mutable state before it becomes

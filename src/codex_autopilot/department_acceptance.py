@@ -189,24 +189,26 @@ def department_contract_from_raw(raw: object, label: str) -> DepartmentContract:
     )
 
 
-def validate_department_contracts(
+def department_contract_issues(
     departments: Sequence[DepartmentContract],
     *,
     role_ids: Iterable[str],
-) -> None:
+) -> list[str]:
+    """Every duplicate id and every unknown lead, not just the first."""
+
+    found: list[str] = []
     ids = [item.id for item in departments]
     duplicate_ids = sorted({item for item in ids if ids.count(item) > 1})
     if duplicate_ids:
-        raise DepartmentAcceptanceError(
-            f"department mapping is ambiguous; duplicate department ids: {duplicate_ids}"
-        )
+        found.append(f"department mapping is ambiguous; duplicate department ids: {duplicate_ids}")
     known_roles = set(role_ids)
     for department in departments:
         if department.lead_role_id not in known_roles:
-            raise DepartmentAcceptanceError(
+            found.append(
                 f"department {department.id!r} references unknown Lead Role "
                 f"{department.lead_role_id!r}"
             )
+    return found
 
 
 def resolve_department(
@@ -862,10 +864,13 @@ def _exact_keys(data: Mapping[str, object], allowed: set[str], label: str) -> No
         # R31: a refusal names what IS accepted. Naming only the rejected key
         # cost a real run its whole replan budget - the replanner wrote
         # `lead_role`, the field is `lead_role_id`, and nothing it could read
-        # said so.
+        # said so. And the missing ones in the same line: `lead_role` for
+        # `lead_role_id` is one unknown and one missing, and the refusal
+        # used to name only the first, leaving the second for a later round.
         raise DepartmentAcceptanceError(
             f"{label} has unknown fields: {unknown}; accepted fields are "
             f"{sorted(allowed)}"
+            + (f"; missing required fields: {missing}" if missing else "")
         )
     if missing:
         raise DepartmentAcceptanceError(f"{label} is missing required fields: {missing}")

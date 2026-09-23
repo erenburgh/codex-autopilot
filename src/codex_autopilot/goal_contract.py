@@ -151,26 +151,34 @@ def validate_goal_contract(
     )
 
 
-def validate_outcome_bindings(
+def outcome_binding_issues(
     contract: GoalContract,
-    task_outcomes: Mapping[str, Iterable[str]],
-) -> None:
-    """Require every graph task to produce at least one declared outcome."""
+    task_outcomes: Mapping[str, Iterable[str]] | Iterable[tuple[str, Iterable[str]]],
+) -> list[tuple[str, str]]:
+    """Every task's binding problem, in task order - not just the first task's.
 
+    Each task's binding depends on the contract and the task alone, so one
+    task's defect is no reason to stay silent about the next.
+    """
+
+    items = task_outcomes.items() if isinstance(task_outcomes, Mapping) else task_outcomes
     known = contract.outcome_ids
-    for task_id, raw_ids in task_outcomes.items():
+    found: list[tuple[str, str]] = []
+    for task_id, raw_ids in items:
         outcome_ids = tuple(raw_ids)
         if not outcome_ids:
-            raise GoalContractError(
-                f"task {task_id} must declare at least one produces_outcomes entry"
-            )
-        _unique(outcome_ids, f"task {task_id} produced outcome id")
+            found.append((task_id, f"task {task_id} must declare at least one produces_outcomes entry"))
+            continue
+        try:
+            _unique(outcome_ids, f"task {task_id} produced outcome id")
+        except GoalContractError as exc:
+            found.append((task_id, str(exc)))
         unknown = sorted(set(outcome_ids) - known)
         if unknown:
-            raise GoalContractError(
-                f"task {task_id} produces unknown Goal Contract outcomes: "
-                + ", ".join(unknown)
+            found.append(
+                (task_id, f"task {task_id} produces unknown Goal Contract outcomes: " + ", ".join(unknown))
             )
+    return found
 
 
 def is_persisted_goal_contract_compatibility(
@@ -333,7 +341,10 @@ def _required_string(raw: Any, label: str) -> str:
 def _reject_unknown(raw: dict[str, Any], allowed: set[str], label: str) -> None:
     unknown = sorted(set(raw) - allowed)
     if unknown:
-        raise GoalContractError(f"{label} has unknown fields: {', '.join(unknown)}")
+        # R31: the refusal names what is accepted, not only what is not.
+        raise GoalContractError(
+            f"{label} has unknown fields: {', '.join(unknown)}; accepted fields are {sorted(allowed)}"
+        )
 
 
 def _unique(values: Iterable[str], label: str) -> None:

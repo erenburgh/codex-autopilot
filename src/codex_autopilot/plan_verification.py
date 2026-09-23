@@ -22,7 +22,6 @@ PLAN_VERIFICATION_PREFIX = "AUTOPILOT_PLAN_VERIFICATION:"
 PLAN_VERIFICATION_ROLE = "Plan Verification Architect"
 PLAN_VERIFICATION_RECEIPT_SCHEMA = 1
 DEFAULT_FULL_REVALIDATION_PATCHES = 3
-MAX_PLAN_VERIFIER_PROMPT_CHARS = 64_000
 
 ISSUE_CATEGORIES = frozenset(
     {
@@ -129,10 +128,23 @@ def deterministic_plan_issues(plan: Plan) -> tuple[PlanVerificationIssue, ...]:
 
     if plan.goal_contract is None:
         return ()
+    return coverage_issues(plan.goal_contract, plan.tasks)
+
+
+def coverage_issues(
+    goal_contract: Any, tasks: Sequence[Task]
+) -> tuple[PlanVerificationIssue, ...]:
+    """Required outcomes with no producing task - from the contract and the tasks alone.
+
+    Split from ``deterministic_plan_issues`` so the replanner's admission can
+    report coverage in the same round as the graph's other defects; it ran
+    only after a clean validation and cost a round of its own.
+    """
+
     producers: dict[str, list[str]] = {
-        outcome_id: [] for outcome_id in plan.goal_contract.outcome_ids
+        outcome_id: [] for outcome_id in goal_contract.outcome_ids
     }
-    for task in plan.tasks:
+    for task in tasks:
         for outcome_id in task.produces_outcomes:
             if outcome_id in producers:
                 producers[outcome_id].append(task.id)
@@ -196,7 +208,21 @@ def build_plan_verification_prompt(
     constraints: Sequence[Mapping[str, Any]],
     *,
     mode: str = INITIAL_PLAN_VERIFICATION,
+    state_dir: Any = None,
 ) -> str:
+    """The fresh plan verifier's prompt: the rules first, then the bounded graph.
+
+    R17: the rules block stands before any specification in every phase,
+    and this phase judges the whole graph - yet its prompt carried no rules
+    at all, and its ceiling was a second copy of the old 64 000 against
+    which the shared budget had long moved (ai_studio.MAX_PROMPT_CHARS). A
+    prompt over the budget is refused, never cut: the reservation turns the
+    refusal into a stop for the on-call (plan_change_reservation).
+    """
+
+    from .ai_studio import MAX_PROMPT_CHARS
+    from .rules import rules_for_prompt
+
     if mode not in {
         INITIAL_PLAN_VERIFICATION,
         PLAN_PATCH_VERIFICATION,
@@ -206,7 +232,10 @@ def build_plan_verification_prompt(
     require_deterministic_plan_admission(plan)
     envelope = verifier_payload(plan, constraints)
     payload = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+    rules = json.dumps(rules_for_prompt(state_dir), ensure_ascii=False, separators=(",", ":"))
     prompt = f"""Codex Autopilot — fresh independent plan verifier.
+
+AUTOPILOT_RULES: {rules}
 
 Verification mode: {mode}.
 
@@ -236,10 +265,10 @@ non-empty line must be exactly:
 or
 {PLAN_VERIFICATION_PREFIX} {{"verdict":"REVISE","issues":[{{"category":"acceptance_class|coverage|necessity|dependencies|dod_sufficiency|integration_completeness","summary":"...","task_ids":[],"outcome_ids":[]}}]}}
 """
-    if len(prompt) > MAX_PLAN_VERIFIER_PROMPT_CHARS:
+    if len(prompt) > MAX_PROMPT_CHARS:
         raise PlanVerificationError(
             f"plan verifier prompt is {len(prompt)} characters against the "
-            f"{MAX_PLAN_VERIFIER_PROMPT_CHARS} character budget"
+            f"{MAX_PROMPT_CHARS} character budget derived from the model context window"
         )
     return prompt
 

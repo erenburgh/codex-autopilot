@@ -31,6 +31,7 @@ from .plan_verification import (
     validate_verdict_references,
 )
 from .resilience import (
+    PlanChangeConflictError,
     active_plan_change,
     append_resilience_event,
     commit_plan_change,
@@ -366,20 +367,49 @@ def complete_plan_verifier(
             item for item in state.active_task_ids if item != task_id
         ]
 
-        if verdict.verdict == "REVISE":
+        # The commit's own conditions on run state, checked before the PASS
+        # is acted on. A conflict here (an advanced task rewritten, say) was
+        # raised out of the dispatcher, which catches only protocol errors:
+        # the verifier's turn was spent and the dispatcher went down. It is
+        # the replanner's to fix, so it goes back to it like a REVISE.
+        conflict = ""
+        if verdict.verdict == "PASS":
+            try:
+                reconcile_plan_change_state(
+                    current_plan,
+                    candidate,
+                    state,
+                    request_id=request_id,
+                    requester_task_id=str(change["requester_task_id"]),
+                    at=timestamp,
+                )
+            except PlanChangeConflictError as exc:
+                conflict = str(exc)
+        accepted = verdict.verdict == "PASS" and not conflict
+        if not accepted:
             state.task_states = transition_task(
                 current_plan,
                 state.task_states,
                 task_id,
                 TaskState.BLOCKED,
             )
-            issue_payload = format_plan_verification_issues(verdict.issues)
+            issue_payload = (
+                f"the plan could not be committed against the run's state: {conflict}"
+                if conflict
+                else "semantic plan verification rejected: "
+                + format_plan_verification_issues(verdict.issues)
+            )
             rejections = list(change.get("rejections") or [])
             rejections.append(
                 {
                     "at": timestamp,
-                    "reason": "semantic plan verification rejected: "
-                    + issue_payload,
+                    "reason": issue_payload,
+                    # One by one, so the next replanner reads a numbered list.
+                    "issues": (
+                        [{"stage": "reconcile", "path": "plan.tasks", "message": conflict}]
+                        if conflict
+                        else [_semantic_issue(item) for item in verdict.issues]
+                    ),
                 }
             )
             change["rejections"] = rejections
@@ -388,7 +418,7 @@ def complete_plan_verifier(
                 {
                     "at": timestamp,
                     "mode": mode,
-                    "verdict": "REVISE",
+                    "verdict": "RECONCILE_CONFLICT" if conflict else "REVISE",
                     "issues": [item.to_dict() for item in verdict.issues],
                     "evidence_id": evidence_id,
                     "verification_result_id": verification_id,
@@ -400,7 +430,7 @@ def complete_plan_verifier(
                 [
                     item
                     for item in history
-                    if item.get("verdict") == "REVISE"
+                    if item.get("verdict") in {"REVISE", "RECONCILE_CONFLICT"}
                 ]
             ) > MAX_SEMANTIC_PLAN_REVISIONS
             if exhausted:
@@ -458,14 +488,6 @@ def complete_plan_verifier(
                 raise DesktopLifecycleError(
                     "PASS plan verdict did not produce a verification receipt"
                 )
-            reconcile_plan_change_state(
-                current_plan,
-                candidate,
-                state,
-                request_id=request_id,
-                requester_task_id=str(change["requester_task_id"]),
-                at=timestamp,
-            )
             state.plan_verification = receipt.to_dict()
             if mode == FULL_PLAN_REVALIDATION:
                 state.accepted_plan_patches_since_full_revalidation = 0
@@ -526,7 +548,7 @@ def complete_plan_verifier(
             completed = _verified_prefix(candidate, state)
             next_index = state.milestone_index
 
-    if verdict.verdict == "PASS":
+    if accepted:
         mark_roadmap(cfg.root, candidate, completed, language=cfg.language)
         if candidate.legacy_serial and not done:
             select_milestone(
@@ -535,10 +557,17 @@ def complete_plan_verifier(
     _materialize(descriptors)
     return CompletionOutcome(
         True,
-        "PLAN_VERIFIED" if verdict.verdict == "PASS" else "PLAN_REVISION_REQUIRED",
+        "PLAN_VERIFIED" if accepted else "PLAN_REVISION_REQUIRED",
         descriptors,
         done,
     )
+
+
+def _semantic_issue(issue: Any) -> dict[str, Any]:
+    """A plan verifier's issue as the replanner's numbered list reads it."""
+
+    where = ", ".join((*issue.task_ids, *issue.outcome_ids)) or "plan"
+    return {"stage": "semantic", "path": where, "message": f"{issue.category}: {issue.summary}"}
 
 
 def _complete_session_identity(

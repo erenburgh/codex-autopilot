@@ -23,13 +23,12 @@ from .hook_trust import require_trusted_stop_hook_for_config
 from .memory import ProjectMemory
 from .rules import record_violation
 from .memory_verification import evidence_that_may_support
-from .plan import Plan, load_plan, plan_to_dict, validate_plan_change
+from .plan import Plan, load_plan, plan_to_dict
+from .plan_admission import PlanIssues, admit_replanner_result
 from .lifecycle_screening import complete_screening_session
 from .skill_packs import record_runtime_skill_attestation
 from .plan_verification import (
     PlanVerificationError,
-    deterministic_plan_issues,
-    format_plan_verification_issues,
     parse_plan_verification_result,
     plan_change_verification_mode,
     plan_sha256,
@@ -41,10 +40,7 @@ from .resilience import (
     append_resilience_event,
     commit_plan_change,
     parse_plan_change_request,
-    parse_plan_change_result,
-    reconcile_plan_change_state,
     register_plan_change_request,
-    validate_replanner_result,
 )
 from .resources import (
     ResourceLockCoordinator,
@@ -184,10 +180,9 @@ def complete_desktop_worker(
             dispatcher_authorized=dispatcher_authorized,
         )
     if kind == "replanner":
-        try:
-            replanner_result = parse_plan_change_result(final_message)
-        except PlanChangeProtocolError as exc:
-            raise WorkerProtocolError(str(exc)) from exc
+        # The reply's protocol line is read with the plan it carries, and
+        # refused with it (plan_admission): a malformed line used to become a
+        # transport retry whose reason no later prompt carried (R31).
         # Ownership of the transition is passed here too. It was fixed for
         # the engineer and the worker separately and the replanner was
         # missed: the callee side was ready, the caller never passed the
@@ -200,7 +195,7 @@ def complete_desktop_worker(
             session=session,
             thread_id=thread_id,
             turn_id=turn_id,
-            result=replanner_result,
+            final_message=final_message,
             at=at,
             now_epoch=now_epoch,
             dispatcher_authorized=dispatcher_authorized,
@@ -934,8 +929,13 @@ def _reject_replanner_result(
     at: str | None,
     now_epoch: int | None,
     dispatcher_authorized: bool = False,
+    issues: Any = (),
+    counted: bool = True,
 ) -> CompletionOutcome:
     """Return the graph to the replanner with the reason and let it redo it.
+
+    ``issues`` are rendered one by one in the next prompt. ``counted=False``
+    (the graph moved) spends no attempt and rebases the change.
 
     The plan does not change: a rejected graph is written nowhere. Only the
     plan-change record changes - it accumulates the list of refusals that
@@ -959,9 +959,12 @@ def _reject_replanner_result(
             raise DesktopLifecycleError("plan change result came from a non-replanner task")
         change = active_plan_change(state, request_id=request_id)
         rejections = list(change.get("rejections") or [])
-        rejections.append({"at": timestamp, "reason": reason})
+        if counted:
+            rejections.append({"at": timestamp, "reason": reason, "issues": list(issues)})
+        else:
+            change["base_graph_version"] = current_plan.graph_version
         change["rejections"] = rejections
-        exhausted = len(rejections) > MAX_PLAN_CHANGE_REJECTIONS
+        exhausted = counted and len(rejections) > MAX_PLAN_CHANGE_REJECTIONS
 
         current["turn_id"] = turn_id
         current["final_status"] = "PLAN_CHANGE_REJECTED"
@@ -1017,11 +1020,10 @@ def _reject_replanner_result(
             # hour with an empty incident journal, and the question it
             # produced was "why did nobody come?". Nobody was called.
             #
-            # The record is all this does. No runbook matches the code, and
-            # the store executes nothing, so the engineer gains no authority
-            # to rewrite a plan - that stays with the replanner and the
-            # owner. What changes is that the failure is visible where
-            # failures are read.
+            # Only the requester is held. The on-call does not write a plan:
+            # it raises a new change (request_plan_change) - a fresh budget,
+            # carrying these refusals (inherited_rejections) - or repairs
+            # the runtime; her decision is needed only for her own codes.
             change["status"] = "REJECTED"
             state.active_plan_change_id = None
             _stop_run(
@@ -1195,7 +1197,7 @@ def _complete_replanner(
     session: dict[str, Any],
     thread_id: str,
     turn_id: str,
-    result: Any,
+    final_message: str,
     at: str | None,
     now_epoch: int | None,
     dispatcher_authorized: bool = False,
@@ -1203,52 +1205,44 @@ def _complete_replanner(
 ) -> CompletionOutcome:
     current_plan = load_plan(cfg.state_dir, cfg.profile)
     request_id = str(session.get("plan_change_id") or "")
+    state = StateStore(cfg.state_dir).load()
+    change = active_plan_change(state, request_id=request_id)
+    refusal: dict[str, Any] = {}
     try:
-        candidate = validate_replanner_result(
+        # Every violation in one round (plan_admission): they were three -
+        # validation, coverage, the commit after PASS - for three attempts.
+        result, candidate = admit_replanner_result(
             current_plan,
-            result,
+            final_message,
             request_id=request_id,
+            base_graph_version=int(change["base_graph_version"]),
+            requester_task_id=str(change.get("requester_task_id") or ""),
             profile=cfg.profile,
-            promotion_evidence_store=ProjectMemory(cfg.root),
+            evidence_store=ProjectMemory(cfg.root),
+            state=state,
         )
-    except (PlanChangeProtocolError, PlanChangeConflictError, ValueError) as exc:
-        # An invalid graph is a model error, not an infrastructure fault.
-        # It used to be raised as DesktopLifecycleError: the dispatcher
-        # crashed, a PIPELINE ticket opened, and the run stood forever - the
-        # on-call engineer had nothing to repair; the reply was broken, not
-        # the runtime. Measured: the replanner returned a departments field
-        # absent from the schema, and a 24-task run stood with zero done. A
-        # verifier in that situation returns the work to the worker with the
-        # reason; the replanner had no such path.
+    except PlanChangeConflictError as exc:
+        # The graph moved under the replanner: state, not its mistake, so
+        # no attempt is spent (it used to cost one).
+        refusal = {"reason": str(exc), "counted": False}
+    except PlanIssues as exc:
+        refusal = {"reason": str(exc), "issues": [item.to_dict() for item in exc.issues]}
+    except ValueError as exc:
+        refusal = {"reason": str(exc)}
+    if refusal:
+        # A model error, not an infrastructure fault: back to the replanner
+        # (it once crashed the dispatcher; a 24-task run stood with zero done).
         return _reject_replanner_result(
             cfg,
             session=session,
             thread_id=thread_id,
             turn_id=turn_id,
-            reason=str(exc),
             request_id=request_id,
             current_plan=current_plan,
             at=at,
             now_epoch=now_epoch,
             dispatcher_authorized=dispatcher_authorized,
-        )
-
-    admission_issues = deterministic_plan_issues(candidate)
-    if admission_issues:
-        return _reject_replanner_result(
-            cfg,
-            session=session,
-            thread_id=thread_id,
-            turn_id=turn_id,
-            reason=(
-                "proposed plan failed deterministic coverage admission: "
-                + format_plan_verification_issues(admission_issues)
-            ),
-            request_id=request_id,
-            current_plan=current_plan,
-            at=at,
-            now_epoch=now_epoch,
-            dispatcher_authorized=dispatcher_authorized,
+            **refusal,
         )
     if current_plan.goal_contract is None:
         return apply_legacy_plan_change_without_goal_contract(

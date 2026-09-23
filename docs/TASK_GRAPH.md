@@ -197,7 +197,11 @@ scheduler](SCHEDULER.md). It is the only component that promotes newly eligible
 A plan change is a complete schema-3 replacement, not an unchecked patch.
 `validate_plan_change` requires the same original `user_request`, goal, and model
 strategy and exactly the next graph version. It runs all nested schema, role,
-dependency, output-context, and cycle checks. `save_plan_change` performs no
+dependency, output-context, and cycle checks, and reports every violation at once
+(`PlanIssues`, a `ValueError`): a single violation reads as it always did, several
+as a numbered list. A refusal of unknown fields names the accepted ones
+(`plan_fields.ALLOWED_FIELDS`, the one source the parser and the replanner's prompt
+share). `save_plan_change` performs no
 write until validation has succeeded, then uses the existing atomic JSON
 replacement path.
 

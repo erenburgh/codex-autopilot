@@ -350,6 +350,13 @@ and contains:
 - the exact allowed and forbidden actions;
 - runbook, recovery slot/lock, attempt budget, backoff, and healthcheck gate.
 
+The rules block rides with it whole, statement and check. When the package and
+the rules do not fit the prompt ceiling together, the package gives way: its
+diagnostic parts (`server_view`, `recent_events`, `stop_context`, `system_state`)
+are replaced, largest first, by `{"truncated": true, "original_chars": N, "head": ...}`;
+the ticket's identity, class, phase and actions never are
+(`engineer_package_budget`).
+
 No worker transcript or forwarded authorization prose is accepted by this
 entry point. Status output shows the role, incident phase, paused task IDs,
 recovery-slot ownership, and pending authority-bound transport.

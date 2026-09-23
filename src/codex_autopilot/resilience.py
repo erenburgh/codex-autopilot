@@ -40,7 +40,6 @@ PLAN_CHANGE_STATUSES = PLAN_CHANGE_ACTIVE_STATUSES | frozenset(
 )
 AUTHORITATIVE_WORKER_STATES = frozenset({"active", "terminal", "absent", "unknown"})
 
-_REQUEST_ID = re.compile(r"^PC[1-9][0-9]*$")
 _TASK_ID = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
 _EVIDENCE_ID = re.compile(r"^EVID-[0-9]{3,}$")
 
@@ -133,48 +132,6 @@ def parse_plan_change_request(message: str) -> PlanChangeRequest | None:
         rationale=_text(raw["rationale"], "plan change rationale", maximum=4_000),
         change=dict(change),
         evidence_ids=tuple(evidence_ids),
-    )
-
-
-def parse_plan_change_result(message: str) -> PlanChangeResult:
-    raw = _single_final_protocol_object(message, PLAN_CHANGE_RESULT_PREFIX)
-    if raw is None:
-        raise PlanChangeProtocolError(
-            f"replanner must end with exactly one {PLAN_CHANGE_RESULT_PREFIX} object"
-        )
-    _exact_keys(raw, {"request_id", "base_graph_version", "plan"}, "plan change result")
-    request_id = _text(raw["request_id"], "plan change request_id")
-    if not _REQUEST_ID.fullmatch(request_id):
-        raise PlanChangeProtocolError("plan change request_id must match PC<number>")
-    base = raw["base_graph_version"]
-    if isinstance(base, bool) or not isinstance(base, int) or base <= 0:
-        raise PlanChangeProtocolError("base_graph_version must be a positive integer")
-    plan = raw["plan"]
-    if not isinstance(plan, dict):
-        raise PlanChangeProtocolError("plan change result plan must be an object")
-    return PlanChangeResult(request_id, base, dict(plan))
-
-
-def validate_replanner_result(
-    current: Plan,
-    result: PlanChangeResult,
-    *,
-    request_id: str,
-    profile: str,
-    promotion_evidence_store: Any | None = None,
-) -> Plan:
-    if result.request_id != request_id:
-        raise PlanChangeProtocolError("replanner returned a different plan change request_id")
-    if result.base_graph_version != current.graph_version:
-        raise PlanChangeConflictError(
-            "replanner base graph version is stale: "
-            f"expected {current.graph_version}, got {result.base_graph_version}"
-        )
-    return validate_plan_change(
-        current,
-        result.plan,
-        profile,
-        promotion_evidence_store=promotion_evidence_store,
     )
 
 

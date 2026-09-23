@@ -221,7 +221,10 @@ class EveryPhaseCarriesTheContractTests(unittest.TestCase):
         """A promise of "the same rules" without a rules block is a
         promise with nothing behind it."""
 
-        self.assertIn('package["rules"] = rules_for_prompt(self.state_dir)', self.studio)
+        # The package is now fitted around the rules (engineer_package_budget);
+        # the rules go in whole - the behaviour is held by
+        # test_validator_one_round.TheOnCallAlwaysFitsTests.
+        self.assertIn("engineer_payload(incident_package, rules_for_prompt(self.state_dir)", self.studio)
 
     def test_the_engineer_is_audited_like_a_worker(self) -> None:
         engineer = self.completion[self.completion.index("def _complete_pipeline_engineer"):]

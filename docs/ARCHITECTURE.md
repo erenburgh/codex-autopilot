@@ -105,7 +105,9 @@ Plan schema 3 models tasks as an acyclic graph with explicit role profiles,
 verification policies, resource claims, bounded context selectors, outputs,
 capabilities, priority, and execution requirements. The validator rejects
 unknown fields, missing references, self-dependencies, and cycles both on first
-load and before a graph-versioned plan change. See [Task graph](TASK_GRAPH.md)
+load and before a graph-versioned plan change, and reports every violation in
+one pass (`plan_admission`; the entity readers are in `plan_parse`, the field
+sets in `plan_fields`). See [Task graph](TASK_GRAPH.md)
 for the complete executable contract.
 
 Mutable task status is not stored in the plan. Run-state schema 5 uses the

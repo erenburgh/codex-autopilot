@@ -70,6 +70,52 @@ def _unverifiable_proposal(cfg: Config, plan: Plan, record: dict[str, Any]) -> s
     return None
 
 
+def _prompt_over_budget(cfg: Config, plan: Plan, state: RunState, record: dict[str, Any], task_id: str) -> bool:
+    """The verifier's prompt does not fit: a context-planning stop for the on-call.
+
+    R17: rules plus a minimal specification that do not fit are not
+    launched, and that is reported as a context-planning defect. Building
+    the prompt used to raise PlanVerificationError out of the reservation,
+    unguarded - the completion that reserved was rolled back with it.
+    """
+
+    from .blocked_runs import stop_run
+    from .plan_verification import (
+        PlanVerificationError,
+        build_plan_verification_prompt,
+        load_active_memory_constraints,
+    )
+    from .run_state import utc_now
+
+    try:
+        candidate = validate_plan_change(
+            plan, record["proposed_plan"], cfg.profile, promotion_evidence_store=ProjectMemory(cfg.root)
+        )
+        build_plan_verification_prompt(
+            candidate,
+            load_active_memory_constraints(cfg.root),
+            mode=str(record.get("verification_mode") or ""),
+            state_dir=cfg.state_dir,
+        )
+    except PlanVerificationError as exc:
+        stop_run(
+            cfg,
+            state,
+            stop_kind="context_budget",
+            phase="CONTEXT_BUDGET_EXCEEDED",
+            reason=f"{task_id}: the plan verifier cannot be launched: {exc}",
+            summary=(
+                f"The plan verifier's prompt for {record.get('id')} does not fit the context "
+                "budget with the rules block, which is never cut (R17)."
+            ),
+            at=utc_now(),
+            task_ids=(task_id,),
+            plan_change_id=str(record.get("id") or ""),
+        )
+        return True
+    return False
+
+
 def _reserve_plan_verifier_in_state(
     cfg: Config,
     plan: Plan,
@@ -98,6 +144,8 @@ def _reserve_plan_verifier_in_state(
     refusal = _unverifiable_proposal(cfg, plan, record)
     if refusal is not None:
         stop_on_inconsistent_state(cfg, state, task_id, refusal)
+        return ()
+    if _prompt_over_budget(cfg, plan, state, record, task_id):
         return ()
     mode = str(record.get("verification_mode") or "")
     raw_state = TaskState(state.task_states[task_id])
