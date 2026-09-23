@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.12.3-beta
+
+The wake-up agent stops writing 55 MB about nothing.
+
+launchd runs the sweep every five minutes and appends its output to one file
+forever, rotating nothing. The sweep printed a line per registered project -
+and `projects.json` keeps every project ever created, including the temporary
+ones test runs leave behind. Found by looking at the install root on the
+author's own machine: 55 MB, 596,661 lines, almost every one of them saying
+that a temp directory from a test was still gone.
+
+The sweep now prints what happened rather than what it looked at. A wake-up it
+armed and a project it could not read are named, with a timestamp; everything
+else is one counted line - `quiet: 412 gone, 3 nothing due` - and a sweep with
+nothing to report says nothing at all.
+
+The agent is also told where its own log is, and empties it when it passes
+1 MB. It empties rather than deletes: launchd opens that file before the sweep
+starts, so unlinking it would throw away the output of the run doing the
+cleanup. The reset says in the file how many bytes it dropped.
+
+Nothing about which runs are woken changed.
+
 ## 0.12.2-beta
 
 A new project picks the newest Codex on the machine, and writes it down.

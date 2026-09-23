@@ -96,3 +96,41 @@ def sweep_logs(
         removed += 1
         freed += size
     return (removed, freed)
+
+
+# The launch agent's own log is a different shape from a wire trace, and it
+# needs a different rule.
+#
+# launchd appends the sweep's stdout to one file at a fixed path, forever.
+# Nothing rotates it, and the sweep ran every five minutes printing one line
+# per registered project. Measured on the author's machine on 23 Sep 2026:
+# 55 MB, 596,661 lines, almost all of them reporting that a temporary project
+# from a test run was still gone.
+#
+# Deleting this file is not the same act as deleting a trace: launchd opened
+# it before the sweep started, so an unlink leaves the current run writing to
+# an inode nobody can find. Truncating to zero is safe with an append-mode
+# handle - the next write lands at the new start - and it loses nothing that
+# is worth reading, because a heartbeat's history is not evidence. The reset
+# says so in the file itself rather than silently starting over.
+WAKE_LOG_BUDGET_BYTES = 1_048_576
+
+
+def reset_oversized_log(path: Path, *, budget_bytes: int = WAKE_LOG_BUDGET_BYTES) -> int:
+    """Empty a launchd-owned append log that has outgrown its budget.
+
+    Returns the number of bytes dropped, or 0 when nothing was done.
+    """
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return 0
+    if size <= budget_bytes:
+        return 0
+    try:
+        with path.open("r+") as handle:
+            handle.truncate(0)
+    except OSError:
+        return 0
+    return size

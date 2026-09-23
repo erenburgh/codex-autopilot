@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="0.12.2-beta"
+version="0.12.3-beta"
 profile="adaptive"
 install_deps=0
 while [ "$#" -gt 0 ]; do
@@ -127,6 +127,12 @@ if [ "$(uname -s)" = "Darwin" ]; then
   <key>StartInterval</key><integer>300</integer>
   <key>StandardOutPath</key><string>$install_root/wake-sweep.log</string>
   <key>StandardErrorPath</key><string>$install_root/wake-sweep.log</string>
+  <!-- launchd appends here forever and rotates nothing. The sweep is told
+       where its own log is so it can empty it when it outgrows its budget. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CODEX_AUTOPILOT_WAKE_LOG</key><string>$install_root/wake-sweep.log</string>
+  </dict>
 </dict>
 </plist>
 EOF

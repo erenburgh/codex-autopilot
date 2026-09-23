@@ -585,10 +585,39 @@ def main(argv: list[str] | None = None) -> int:
             # The launchd agent: a sweep of the known projects. It launches
             # nothing itself - it only arms a wake-up where a due retry waits
             # and no live wake-up exists.
+            #
+            # It prints what happened, not what it looked at. Printing a line
+            # per registered project every five minutes wrote 55 MB of "still
+            # gone" about temporary projects from test runs; a heartbeat that
+            # loud is one nobody reads. Wakes and faults are named; the quiet
+            # majority is one counted line, and only when there is one.
+            from collections import Counter
+            from datetime import datetime, timezone
+
+            from .log_retention import reset_oversized_log
             from .wake import sweep
 
-            for root, decision in sweep().items():
-                print(f"{root}: {decision}", flush=True)
+            log_path = os.environ.get("CODEX_AUTOPILOT_WAKE_LOG")
+            if log_path:
+                dropped = reset_oversized_log(Path(log_path))
+                if dropped:
+                    print(
+                        f"log reset: {dropped} bytes of earlier sweeps dropped",
+                        flush=True,
+                    )
+            outcome = sweep()
+            quiet = Counter()
+            for root, decision in outcome.items():
+                if decision.startswith("wake ") or decision.startswith("unreadable"):
+                    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    print(f"{stamp} {root}: {decision}", flush=True)
+                else:
+                    quiet[decision] += 1
+            if quiet:
+                summary = ", ".join(
+                    f"{count} {name}" for name, count in sorted(quiet.items())
+                )
+                print(f"quiet: {summary}", flush=True)
             return 0
         if args.command == "_relay_dispatch":
             cfg = load_config(args.project)

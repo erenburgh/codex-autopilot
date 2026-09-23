@@ -2,7 +2,7 @@
 
 ## Default installation
 
-`install.sh` creates or replaces the directory of the version it installs (`0.12.2-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
+`install.sh` creates or replaces the directory of the version it installs (`0.12.3-beta` in this release), and writes two things outside it: one launch agent, and one marked block in the Codex execpolicy.
 
 ```text
 ~/Library/Application Support/CodexAutopilot/
@@ -18,7 +18,7 @@
 ├── legacy-backups/
 │   └── previous-installs-<stamp>.zip   # earlier installations, zipped and then removed
 ├── projects.json               # projects the wake-up sweep visits; written when a run is armed
-├── wake-sweep.log              # output of the wake-up agent
+├── wake-sweep.log              # output of the wake-up agent; emptied when it passes 1 MB
 └── current -> <version>
 
 ~/Library/LaunchAgents/
@@ -53,6 +53,8 @@ With `--install-deps`, missing Python may be installed with `brew install python
 The installer writes `~/Library/LaunchAgents/com.codex-autopilot.wake.plist` and loads it with `launchctl bootstrap gui/<uid>`. The agent runs `codex-autopilot _wake-sweep` once at login and then every 300 seconds, for as long as it stays installed, and appends its output to `~/Library/Application Support/CodexAutopilot/wake-sweep.log`.
 
 One sweep reads the project list from `projects.json` and decides per project. A project whose `.codex-autopilot/config.toml` is gone, whose run is paused, `BLOCKED` or `DONE`, or which has no task waiting for a retry, is skipped. Where a task waits in `RETRY_WAIT` with a due retry time and no live wake-up process is already waiting for it, the sweep arms one. That process sleeps until the time comes, passes the same hook-trust and ownership gate as a hook-driven launch, and then raises the dispatcher. The sweep itself starts no worker, makes no model request, and wakes no run a human stopped. It exists because the sleeping wake-up process does not survive a reboot.
+
+The sweep prints what it did, not what it looked at. It names a wake-up it armed and a project it could not read, and reduces everything else to one counted line. Until 0.12.3 it printed a line per registered project every five minutes; `projects.json` keeps every project ever created, including the temporary ones test runs leave behind, so on the author's machine the log had reached 55 MB and 596,661 lines, almost all of them reporting that a temporary directory was still gone. The agent is now also told where its own log is, and empties it when it passes 1 MB - launchd rotates nothing, and the file is a heartbeat, not evidence. It is emptied rather than deleted, because launchd opens it before the sweep starts.
 
 `CODEX_AUTOPILOT_SKIP_LAUNCHD=1` at install time still writes the plist but does not load it into launchd. `codex-autopilot uninstall --yes` boots the agent out and deletes the plist.
 
