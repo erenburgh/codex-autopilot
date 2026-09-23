@@ -81,7 +81,26 @@ TASK_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
         }
     ),
     TaskState.RETRY_WAIT: frozenset({TaskState.READY, TaskState.BLOCKED, TaskState.CANCELLED}),
-    TaskState.BLOCKED: frozenset({TaskState.WAITING, TaskState.READY, TaskState.CANCELLED}),
+    TaskState.BLOCKED: frozenset(
+        {
+            TaskState.WAITING,
+            TaskState.READY,
+            # A stop is not always about the work. When the run stopped over
+            # acceptance - a rule out of scope, a verdict nobody could give -
+            # the implementation is still there and still awaits a verdict,
+            # so lifting the stop returns the task to IMPLEMENTED rather than
+            # rebuilding it. The same reasoning as an unreadable verdict
+            # above.
+            #
+            # Sending it to READY instead was not merely wasteful. On a real
+            # run (23 Sep 2026) the re-run touched the staged workspace and
+            # the runtime refused the result: "staged output changed after
+            # verification; a new proposal is required". Redoing done work
+            # invalidated the very thing that was waiting to be accepted.
+            TaskState.IMPLEMENTED,
+            TaskState.CANCELLED,
+        }
+    ),
     TaskState.FAILED: frozenset({TaskState.RETRY_WAIT, TaskState.CANCELLED}),
     TaskState.VERIFIED: frozenset(),
     TaskState.CANCELLED: frozenset(),

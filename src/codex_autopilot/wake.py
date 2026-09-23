@@ -37,15 +37,57 @@ from .run_state import StateStore, utc_now
 MAX_NAP_SECONDS = 300
 
 
-def due_wake_epoch(state: Any) -> int | None:
-    """The nearest retry time among the tasks waiting for a retry."""
+def due_wake_epoch(state: Any, cfg: Config | None = None) -> int | None:
+    """When this run next needs raising, or None if it does not.
+
+    Two reasons, not one. A task waiting on a retry has a time; a stranded
+    run needs raising now.
+    """
 
     due = [
         int(retry_at)
         for task_id, retry_at in (state.task_retry_at or {}).items()
         if state.task_states.get(task_id) == "RETRY_WAIT"
     ]
+    if cfg is not None and is_stranded(cfg, state):
+        due.append(int(time.time()))
     return min(due) if due else None
+
+
+def is_stranded(cfg: Config, state: Any) -> bool:
+    """A run with a ticket waiting on the on-call and nobody left to run it.
+
+    The normal cycle leaves no dispatcher between turns on purpose: it
+    launches a worker and exits, and the worker's own Stop hook raises the
+    next one. So "no dispatcher" is not a fault - it is most of the run.
+
+    It becomes one when the hook never fires. Measured 23 Sep 2026: a
+    detached dispatch failed, the incident went to the on-call, and there
+    the run sat - state saying RUNNING, a verifier marked ACTIVE, no process
+    anywhere, and nothing that would ever raise one. The owner had to type
+    "Resume" for something the runtime knew how to do, which is the same
+    hole this module was written to close for retries.
+
+    The signal is narrow on purpose: a ticket in the engineer's own lane
+    means the on-call is needed and has not run. Anything looser would race
+    a dispatcher that is simply waiting for a worker to think.
+    """
+
+    if state.status in {"BLOCKED", "DONE"}:
+        return False
+    if isinstance(state.dispatcher_pid, int) and _pid_alive(state.dispatcher_pid):
+        return False
+    try:
+        from .pipeline_engineer import IncidentPhase, PipelineIncidentStore
+
+        loaded = PipelineIncidentStore(cfg.state_dir).load().get("incidents") or {}
+        incidents = loaded.values() if isinstance(loaded, dict) else loaded
+        return any(
+            str(item.get("phase")) == IncidentPhase.PIPELINE_ENGINEER.value
+            for item in incidents
+        )
+    except Exception:  # noqa: BLE001 - an unreadable journal wakes nothing
+        return False
 
 
 def ensure_wake(
@@ -65,7 +107,7 @@ def ensure_wake(
     store = StateStore(cfg.state_dir)
     with ResourceLockCoordinator(store, cfg.root).transaction():
         state = store.load()
-        due = due_wake_epoch(state)
+        due = due_wake_epoch(state, cfg)
         if due is None:
             return None
         if (
@@ -103,7 +145,7 @@ def run_wake(
         if state.status in {"BLOCKED", "DONE"} or store.pause_requested():
             _finish(cfg, store, "wake_skipped", detail={"why": "run is stopped or paused"})
             return 0
-        due = due_wake_epoch(state)
+        due = due_wake_epoch(state, cfg)
         if due is None:
             _finish(cfg, store, "wake_skipped", detail={"why": "nothing waits for a retry"})
             return 0
@@ -372,7 +414,7 @@ def sweep(
         if state.status in {"BLOCKED", "DONE"} or StateStore(cfg.state_dir).pause_requested():
             outcome[raw] = "stopped"
             continue
-        if due_wake_epoch(state) is None:
+        if due_wake_epoch(state, cfg) is None:
             outcome[raw] = "nothing due"
             continue
         owner = derive_owner(state)

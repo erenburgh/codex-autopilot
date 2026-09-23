@@ -651,8 +651,21 @@ def main(argv: list[str] | None = None) -> int:
             reason = str(args.reason).strip()
             if not reason:
                 raise SystemExit("a reason is required: --reason")
+            # A stop is not always about the work. When the task already had
+            # a verdict - it has revision history - the implementation exists
+            # and only acceptance was in dispute, so it goes back to waiting
+            # for a verifier, not back to the start.
+            #
+            # Sending done work to READY was not merely wasteful: the re-run
+            # touched the staged workspace and the runtime then refused the
+            # result, "staged output changed after verification". Redoing it
+            # invalidated the very thing that was waiting to be accepted.
+            done_before = int(state.task_revisions.get(task_id, 0)) > 0
             state.task_states = transition_task(
-                plan, state.task_states, task_id, TaskState.READY
+                plan,
+                state.task_states,
+                task_id,
+                TaskState.IMPLEMENTED if done_before else TaskState.READY,
             )
             state.user_unblocks.append(
                 {"task_id": task_id, "reason": reason, "at": utc_now()}

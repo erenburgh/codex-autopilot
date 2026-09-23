@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.13.1-beta
+
+A run nobody is left to raise raises itself.
+
+The normal cycle leaves no dispatcher between turns: it launches a worker and
+exits, and the worker's own Stop hook raises the next one. That is most of a
+run, and it is not a fault.
+
+It becomes one when the hook never fires. A detached dispatch failed, the
+incident went to the on-call - and there the run sat: state saying RUNNING, a
+verifier marked ACTIVE, no process anywhere, and nothing that would ever
+raise one. The owner had to type "Resume" for something the runtime knew how
+to do. That is the same hole this module was written to close for rate-limit
+retries, in a different place.
+
+The wake-up now also rises for a stranded run: a ticket in the on-call's own
+lane, and no live dispatcher. The signal is narrow on purpose - anything
+looser would race a dispatcher that is simply waiting for a worker to think.
+
+Nothing is bypassed. Raising the dispatcher still passes the same hook-trust
+and ownership gate as a hook-driven launch; a run a human stopped, paused or
+finished is still left alone.
+
+**Lifting a stop no longer redoes work that was already done.**
+
+`unblock` sent every task back to READY - the start. When the task already had
+a verdict, the implementation existed and only acceptance was in dispute, so
+the re-run touched the staged workspace and the runtime then refused the
+result: "staged output changed after verification; a new proposal is
+required". Redoing the work invalidated the very thing waiting to be accepted.
+
+A task with revision history now returns to IMPLEMENTED - waiting for a
+verifier, not for a worker. One with none still starts at READY.
+
 ## 0.13.0-beta
 
 Every stop opens a ticket, and a rule out of scope no longer stops anything.
