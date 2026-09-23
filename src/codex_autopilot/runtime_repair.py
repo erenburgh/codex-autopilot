@@ -110,6 +110,10 @@ GUARDED_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("pipeline_engineer.py", "route_incident"),
     ("pipeline_engineer.py", "complete_pipeline_engineer"),
     ("owner_answers.py", "answer_task"),
+    # Her answer's body and which tickets it answers: narrowing either
+    # would leave a ticket the card names and the answer refuses.
+    ("owner_answers.py", "_record_answer"),
+    ("owner_answers.py", "_tickets_holding"),
     ("run_arming.py", "arm_run"),
     # R4: which request the run's durable authorization covers, how it is
     # recorded, and the refusal to send a covered one to her. The list

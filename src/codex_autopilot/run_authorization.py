@@ -50,12 +50,25 @@ _PATH_FIELDS = ("cwd", "grantRoot", "path", "paths", "root")
 def authorization_record(cfg: Any, *, at: str, granted_by: str) -> dict[str, Any]:
     """The durable authorization as run-state keeps it."""
 
-    from .engineer_authority import RUN_AUTHORIZATION_VERSION, RUN_AUTHORIZED_OPERATIONS
+    from .engineer_authority import (
+        RUN_AUTHORIZATION_VERSION,
+        RUN_AUTHORIZED_CLI_SUBCOMMANDS,
+        RUN_AUTHORIZED_OPERATIONS,
+    )
 
     return {
         "version": RUN_AUTHORIZATION_VERSION,
         "operations": [
-            {"id": op_id, "methods": list(methods), "means": means}
+            {
+                "id": op_id,
+                "methods": list(methods),
+                "means": means,
+                **(
+                    {"subcommands": list(RUN_AUTHORIZED_CLI_SUBCOMMANDS)}
+                    if op_id == "autopilot_cli_in_project"
+                    else {}
+                ),
+            }
             for op_id, methods, means in RUN_AUTHORIZED_OPERATIONS
         ],
         "project_root": str(Path(cfg.root).resolve()),
@@ -110,21 +123,59 @@ def _paths(params: Mapping[str, Any]) -> list[Any]:
     return found
 
 
-def _is_autopilot_cli(command: Any) -> bool:
+def _cli_words(command: Any) -> list[str] | None:
+    """The words of a plain ``codex-autopilot`` command, or None."""
+
     if isinstance(command, (list, tuple)):
         words = [str(item) for item in command]
     elif isinstance(command, str):
         if any(char in _SHELL_SYNTAX for char in command):
-            return False
+            return None
         try:
             words = shlex.split(command)
         except ValueError:
-            return False
+            return None
     else:
-        return False
+        return None
     if not words or any(char in _SHELL_SYNTAX for word in words for char in word):
+        return None
+    return words if Path(words[0]).name == "codex-autopilot" else None
+
+
+def _authorized_cli(root: Path, operation: Mapping[str, Any], params: Mapping[str, Any]) -> bool:
+    """A plain ``codex-autopilot`` command the run is authorized for.
+
+    The subcommand must be on the list the run recorded (a record without
+    one - version 1 - covers none: what is not proven is not covered), the
+    turn must stand inside the project (a request that names no cwd proves
+    nothing about where it runs), and a ``--project`` it names must be this
+    one.
+    """
+
+    from .engineer_authority import RUN_AUTHORIZED_CLI_SUBCOMMANDS
+
+    words = _cli_words(params.get("command"))
+    if not words or len(words) < 2 or not _inside(root, params.get("cwd")):
         return False
-    return Path(words[0]).name == "codex-autopilot"
+    allowed = operation.get("subcommands")
+    if not isinstance(allowed, (list, tuple)):
+        return False
+    # Never wider than the list of the code that reads it, whatever a
+    # record says.
+    if words[1] not in allowed or words[1] not in RUN_AUTHORIZED_CLI_SUBCOMMANDS:
+        return False
+    cwd = Path(str(params.get("cwd"))).expanduser()
+    for at, word in enumerate(words):
+        if word == "--project":
+            named = words[at + 1] if at + 1 < len(words) else ""
+        elif word.startswith("--project="):
+            named = word.split("=", 1)[1]
+        else:
+            continue
+        # A relative --project is read from where the command runs.
+        if not named or not _inside(root, cwd / Path(named).expanduser()):
+            return False
+    return True
 
 
 def covering_operation(
@@ -135,7 +186,8 @@ def covering_operation(
     Only what the request itself proves: its method is one the operation
     answers for, every path it names lies inside the project root the
     authorization was recorded for, and - for a command - it is the plugin's
-    own CLI with no shell around it. A file change that names no target of
+    own CLI with no shell around it, run from inside the project, and a
+    subcommand the run is authorized for (not one of hers). A file change that names no target of
     its own (only the turn's cwd, or nothing) proves nothing and is not
     covered.
     """
@@ -161,6 +213,6 @@ def covering_operation(
         # the project may still ask to write outside it.
         if op_id == "file_change_in_project" and [item for item in paths if item != params.get("cwd")]:
             return op_id
-        if op_id == "autopilot_cli_in_project" and _is_autopilot_cli(params.get("command")):
+        if op_id == "autopilot_cli_in_project" and _authorized_cli(root, operation, params):
             return op_id
     return None

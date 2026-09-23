@@ -271,7 +271,13 @@ version and the covered operations of `engineer_authority`, which the engineer
 cannot edit. `run_authorization.covering_operation` reads from the request
 itself whether an operation covers it: a file change whose targets lie inside
 the project, or the plugin's own `codex-autopilot` command with no shell around
-it, run inside the project; what it cannot prove is not covered. A covered
+it, run from a cwd inside the project, aimed at this project, and one of the
+subcommands the run recorded (`RUN_AUTHORIZED_CLI_SUBCOMMANDS`, version 2: the
+read-only views, the relay protocol and the on-call's own actions). Her own
+commands are not on it - `unblock`, `authorize-project-root`, `arm`, `stop`,
+`resume`, `revoke-skill`, `uninstall`: arming a run does not authorize an answer
+on her behalf or a mutation of her saved projects, so such a request goes to
+her as a permission. What it cannot prove is not covered. A covered
 request is an R4 violation - the runtime asked for what the run already holds -
 and an escalation of it as `DANGEROUS_PERMISSION` is refused as a protocol
 error: that would be the very confirmation request R4 forbids. A runtime that asked
@@ -289,7 +295,11 @@ which answer closes it.
 ## Her answer
 
 `codex-autopilot unblock --project <root> --task <id> [--option <code>] --reason <text>`
-(`owner_answers.answer_task`) is one transaction: the task leaves `BLOCKED`, the
+(`owner_answers.answer_task`) is one transaction. A ticket that holds no task -
+the on-call's own permission request, anchored to a task only by
+`context_task_id`, or a run-level stop - is answered by its id instead
+(`--incident-id <ticket>`, the form the status card prints for it); naming the
+anchored task answers it too. It is one transaction: the task leaves `BLOCKED`, the
 open tickets that hold it are closed as answered by her, an answer at the top
 of the ladder grants a fresh hire, the decision and its option are recorded in
 `user_unblocks` where the next worker reads them, and the run is raised the way

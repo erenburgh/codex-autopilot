@@ -173,7 +173,10 @@ def parser() -> argparse.ArgumentParser:
         help="lift a task's stop by the user's decision, with a recorded reason",
     )
     unblock.add_argument("--project", type=Path, default=Path.cwd())
-    unblock.add_argument("--task", required=True)
+    unblock.add_argument("--task", default="")
+    # A ticket that holds no task (the on-call's own request, a run-level
+    # stop) is answered by its id; the card prints this form for it.
+    unblock.add_argument("--incident-id", default="")
     unblock.add_argument("--reason", required=True)
     # Her answer as a choice among the on-call's options (the status card
     # lists them); ``replan`` asks the replanner instead of returning the task.
@@ -659,12 +662,15 @@ def main(argv: list[str] | None = None) -> int:
             # (owner_answers).
             from .owner_answers import OwnerAnswerError, answer_task, render_answer
 
+            if not str(args.task).strip() and not str(args.incident_id).strip():
+                raise SystemExit("name the task (--task) or the ticket (--incident-id)")
             try:
                 result = answer_task(
                     load_config(args.project),
                     str(args.task).strip(),
                     str(args.reason),
                     option=str(args.option or ""),
+                    incident_id=str(args.incident_id or "").strip(),
                 )
             except OwnerAnswerError as exc:
                 raise SystemExit(str(exc)) from exc

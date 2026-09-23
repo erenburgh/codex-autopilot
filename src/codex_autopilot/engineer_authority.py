@@ -224,7 +224,39 @@ LADDER_RESET_DEFINITIONS: tuple[tuple[str, str, str | None], ...] = (
 # (guarded). An operation with no methods is the runtime's own transport:
 # it is never asked for. A change to this list is a new version - a run
 # keeps the version it was armed with in run-state.
-RUN_AUTHORIZATION_VERSION = 1
+#
+# Version 2 names the CLI subcommands the run is authorized for. Version 1
+# covered every ``codex-autopilot`` subcommand, and so her own commands
+# with them: a worker asking to run ``unblock`` (speaking for her) or
+# ``authorize-project-root`` (her R6) was marked covered, recorded as an R4
+# violation, and the on-call's escalation of it was refused as a protocol
+# error - the one request that is hers reached her only as
+# RECOVERY_EXHAUSTED, with the wrong class. Arming a run does not authorize
+# an answer on her behalf, a mutation of her saved projects, her start or
+# stop of a run, a skill revocation or an uninstall.
+RUN_AUTHORIZATION_VERSION = 2
+RUN_AUTHORIZED_CLI_SUBCOMMANDS: tuple[str, ...] = (
+    # Read-only views of the run and the machine.
+    "status",
+    "logs",
+    "timeline",
+    "doctor",
+    "preflight",
+    "skills",
+    # The runtime's own relay and recovery protocol.
+    "relay-status",
+    "relay-fail",
+    "relay-complete",
+    "reconcile-thread-identity",
+    "recreate-archived-retry",
+    # The on-call's actions - each one guarded by its own ticket and thread.
+    "devops-rearm-relay-owner",
+    "devops-repair-runtime",
+    "devops-revert-runtime-patch",
+    "devops-resolve-incident",
+    "devops-return-task",
+    "devops-request-plan-change",
+)
 RUN_AUTHORIZED_OPERATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (
         "task_transport",

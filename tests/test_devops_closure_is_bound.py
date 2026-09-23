@@ -222,10 +222,77 @@ class TheDurableAuthorizationTests(_Held):
                 None,
             ),
             "an MCP elicitation": ({"method": "mcpServer/elicitation/request", "params": {}}, None),
+            # Her own commands are not what arming authorized (R4 v2).
+            "her answer on her behalf": (
+                self._payload(["codex-autopilot", "unblock", "--project", root, "--task", "A",
+                               "--reason", "ok"], cwd=root),
+                None,
+            ),
+            "a mutation of her saved project (R6)": (
+                self._payload(f"codex-autopilot authorize-project-root --project {root} --yes", cwd=root),
+                None,
+            ),
+            "an uninstall": (self._payload(["codex-autopilot", "uninstall", "--yes"], cwd=root), None),
+            "the CLI with no cwd to stand in": (
+                self._payload(["codex-autopilot", "status", "--project", root]),
+                None,
+            ),
+            "the CLI aimed at another project": (
+                self._payload(["codex-autopilot", "status", "--project", "/tmp/other"], cwd=root),
+                None,
+            ),
+            "the CLI aimed at another project, = form": (
+                self._payload(["codex-autopilot", "status", "--project=/tmp/other"], cwd=root),
+                None,
+            ),
+            "the CLI with a bare program name only": (
+                self._payload(["codex-autopilot"], cwd=root),
+                None,
+            ),
         }
         for name, (payload, expected) in cases.items():
             with self.subTest(name):
                 self.assertEqual(covering_operation(record, payload), expected)
+
+    def test_a_version_1_record_covers_no_cli_command(self) -> None:
+        """A record without the subcommand list proves nothing about a command."""
+
+        record = authorization_record(self.cfg, at="t", granted_by="arm")
+        for operation in record["operations"]:
+            operation.pop("subcommands", None)
+        record["version"] = 1
+        payload = self._payload(["codex-autopilot", "status", "--project", str(self.root)], cwd=str(self.root))
+        self.assertIsNone(covering_operation(record, payload))
+
+    def test_a_request_to_answer_for_her_reaches_her_as_a_permission(self) -> None:
+        """Not an R4 violation: her escalation goes through as DANGEROUS_PERMISSION."""
+
+        from codex_autopilot.rules import violation_counts
+
+        incident_id = self._worker_asks(
+            self._payload(
+                ["codex-autopilot", "unblock", "--project", str(self.root), "--task", "A",
+                 "--reason", "done"],
+                cwd=str(self.root),
+            )
+        )
+        self.assertIsNone(self.ticket(incident_id)["system_state"]["covered_by"])
+        self.assertIsNone(violation_counts(self.cfg.state_dir).get("R4"))
+        engineer = next(item for item in reserve_ready_frontier(self.cfg) if item.kind == "pipeline_engineer")
+        activate_via_app_server(self.cfg, self.root, engineer, "eng-1")
+        outcome = complete_desktop_worker(
+            self.cfg,
+            thread_id="eng-1",
+            turn_id="eng-1-turn",
+            final_message=(
+                'AUTOPILOT_ESCALATION: {"diagnosis":"the worker wants to answer for you",'
+                '"decision_needed":"allow?","recommendation":"replan",'
+                '"options":[{"code":"replan","means":"no"}],"scope":"task"}\n'
+                "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER DANGEROUS_PERMISSION"
+            ),
+        )
+        self.assertNotEqual(outcome.worker_status, "PROTOCOL_ERROR")
+        self.assertEqual(self.ticket(incident_id)["phase"], IncidentPhase.ESCALATE_TO_USER.value)
 
     def test_a_covered_request_is_a_runtime_defect_and_never_reaches_her(self) -> None:
         from codex_autopilot.lifecycle_reservations import pipeline_engineer_package

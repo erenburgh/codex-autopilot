@@ -80,13 +80,21 @@ def means_for(incident: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def owner_answer(cfg: Any, incident: Mapping[str, Any]) -> str:
-    """The command that is her answer: ready to run, no Resume needed."""
+    """The command that is her answer: ready to run, no Resume needed.
+
+    A ticket that holds no task is named by its id. The card used to offer
+    ``--task <context task>`` for it, or the literal ``<task>`` for a
+    run-level stop - and ``unblock`` refused both: the task was not stopped.
+    """
 
     tasks = [str(item) for item in incident.get("affected_task_ids") or ()]
-    task = tasks[0] if tasks else str(incident.get("context_task_id") or "<task>")
     root = shlex.quote(str(getattr(cfg, "root", "<project>")))
+    if tasks:
+        target = f"--task {shlex.quote(tasks[0])}"
+    else:
+        target = f"--incident-id {shlex.quote(str(incident.get('incident_id') or '<ticket>'))}"
     return (
-        f"codex-autopilot unblock --project {root} --task {shlex.quote(task)} "
+        f"codex-autopilot unblock --project {root} {target} "
         "[--option <code>] --reason '<your decision>'"
     )
 

@@ -79,7 +79,8 @@ below answers a question users actually asked.
    choice, a dangerous permission. Even those pass through the on-call first:
    the status card shows its diagnosis, its recommendation, the options and
    the exact `codex-autopilot unblock --project <root> --task <id> --reason
-   <decision>` command, and answering it continues the run by itself - there
+   <decision>` command (`--incident-id <ticket>` in place of `--task` for a
+   ticket that holds no task), and answering it continues the run by itself - there
    is no Resume phrase to send afterwards. The one exception the command
    names itself: a run with no completed turn yet is started once with its
    phrase.

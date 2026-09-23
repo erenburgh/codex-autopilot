@@ -59,17 +59,53 @@ def unblock_target(state: Any, task_id: str) -> TaskState:
     return TaskState.IMPLEMENTED if done_before else TaskState.READY
 
 
-def _tickets_holding(loaded: Mapping[str, Any], task_id: str) -> list[dict[str, Any]]:
+def _waiting(item: Mapping[str, Any]) -> bool:
     from .pipeline_engineer import IncidentPhase
 
-    waiting = {IncidentPhase.ESCALATE_TO_USER.value, IncidentPhase.PIPELINE_ENGINEER.value}
-    return [
-        dict(item)
-        for item in loaded.get("incidents") or ()
-        if not item.get("resolved_at")
-        and str(item.get("phase")) in waiting
-        and task_id in [str(task) for task in item.get("affected_task_ids") or ()]
-    ]
+    return not item.get("resolved_at") and str(item.get("phase")) in {
+        IncidentPhase.ESCALATE_TO_USER.value,
+        IncidentPhase.PIPELINE_ENGINEER.value,
+    }
+
+
+def _tickets_holding(loaded: Mapping[str, Any], task_id: str) -> list[dict[str, Any]]:
+    """The open tickets her answer about ``task_id`` answers.
+
+    A ticket that holds the task (``affected_task_ids``), and a ticket that
+    holds no task but is anchored to it (``context_task_id``). Only the
+    first used to count. The independent check filed the on-call's own
+    permission request the way ``record_approval_required`` files it -
+    ``task_ids=()``, ``context_task_id=A`` - escalated it, and ran the
+    command the card offered: "A is not stopped: it is now READY". The same
+    dead end stood for a no_successor stop, its RECOVERY_EXHAUSTED after
+    repeats and any other ticket that carries only its anchor: the card
+    named the task, the answer refused it, and Resume was the only door.
+    """
+
+    found: list[dict[str, Any]] = []
+    for item in loaded.get("incidents") or ():
+        if not _waiting(item):
+            continue
+        affected = [str(task) for task in item.get("affected_task_ids") or ()]
+        if task_id in affected or (
+            not affected and str(item.get("context_task_id") or "") == task_id
+        ):
+            found.append(dict(item))
+    return found
+
+
+def _named_ticket(loaded: Mapping[str, Any], incident_id: str) -> dict[str, Any]:
+    """The ticket she named (``--incident-id``): open and waiting, or refused."""
+
+    for item in loaded.get("incidents") or ():
+        if str(item.get("incident_id")) == incident_id:
+            if not _waiting(item):
+                raise OwnerAnswerError(
+                    f"ticket {incident_id} is not waiting for an answer: it is {item.get('phase')}"
+                    + (" and closed" if item.get("resolved_at") else "")
+                )
+            return dict(item)
+    raise OwnerAnswerError(f"there is no ticket {incident_id!r}")
 
 
 def _options(tickets: list[dict[str, Any]]) -> dict[str, str]:
@@ -92,32 +128,74 @@ def answer_task(
     reason: str,
     *,
     option: str = "",
+    incident_id: str = "",
     at: str | None = None,
     raise_run: bool = True,
     spawn: Any = None,
 ) -> dict[str, Any]:
-    """Apply her answer about one task, then let the run continue by itself."""
+    """Apply her answer about one task, then let the run continue by itself.
 
-    from .pipeline_engineer import PipelineIncidentStore
-    from .plan import load_plan
-    from .resources import ResourceLockCoordinator
-    from .revision_budget import grant_fresh_hire
-    from .run_state import StateStore, utc_now
-    from .run_status import _finish_global_state
+    ``incident_id`` answers one named ticket. The task may then be left
+    out: it is the ticket's held task, else its anchor. A ticket with
+    neither - a run-level stop, an old ticket filed without a task - is
+    answered as itself: closed with her decision recorded, nothing to move.
+    """
+
+    from .run_state import utc_now
 
     timestamp = at or utc_now()
     text = str(reason or "").strip()
     if not text:
         raise OwnerAnswerError("a reason is required: --reason")
     choice = str(option or "").strip()
+    result = _record_answer(cfg, str(task_id or ""), text, choice, str(incident_id or ""), timestamp)
+    raised = (
+        _raise_the_run(cfg, spawn=spawn)
+        if raise_run
+        else {"raised": False, "continues": False, "why": "not asked"}
+    )
+    return {**result, **raised}
+
+
+def _record_answer(
+    cfg: Any, task_id: str, text: str, choice: str, incident_id: str, timestamp: str
+) -> dict[str, Any]:
+    """Her answer under the run's transaction; the run is raised after it."""
+
+    from .pipeline_engineer import PipelineIncidentStore
+    from .plan import load_plan
+    from .resources import ResourceLockCoordinator
+    from .revision_budget import grant_fresh_hire
+    from .run_state import StateStore
+    from .run_status import _finish_global_state
+
     store = StateStore(cfg.state_dir)
     incidents = PipelineIncidentStore(cfg.state_dir)
     with ResourceLockCoordinator(store, cfg.root).transaction():
         state = store.load()
         plan = load_plan(cfg.state_dir, cfg.profile)
+        loaded = incidents.load()
+        named = _named_ticket(loaded, incident_id) if incident_id else None
+        if named is not None and not task_id:
+            task_id = next(
+                (str(task) for task in named.get("affected_task_ids") or ()),
+                str(named.get("context_task_id") or ""),
+            )
+        if named is not None and not task_id:
+            if choice == "replan":
+                raise OwnerAnswerError(
+                    f"ticket {incident_id} names no task to re-plan; answer it with --task"
+                )
+            return _answer_ticket_alone(
+                cfg, store, incidents, state, plan, named, text, choice, timestamp
+            )
         if task_id not in plan.task_map:
             raise OwnerAnswerError(f"the plan has no task {task_id!r}")
-        tickets = _tickets_holding(incidents.load(), task_id)
+        tickets = _tickets_holding(loaded, task_id)
+        if named is not None and named["incident_id"] not in {
+            item["incident_id"] for item in tickets
+        }:
+            tickets.append(named)
         blocked = state.task_states.get(task_id) == TaskState.BLOCKED.value
         if not blocked and not tickets:
             raise OwnerAnswerError(
@@ -185,18 +263,60 @@ def answer_task(
         state.last_error = None
         _finish_global_state(plan, state, (), paused=store.pause_requested(), cfg=cfg)
         store.save(state)
-    raised = (
-        _raise_the_run(cfg, spawn=spawn)
-        if raise_run
-        else {"raised": False, "continues": False, "why": "not asked"}
-    )
     return {
         "task_id": task_id,
         "state": moved_to,
         "closed_tickets": closed,
         "option": choice,
         "grant": grant,
-        **raised,
+    }
+
+
+def _answer_ticket_alone(
+    cfg: Any,
+    store: Any,
+    incidents: Any,
+    state: Any,
+    plan: Any,
+    ticket: Mapping[str, Any],
+    text: str,
+    choice: str,
+    timestamp: str,
+) -> dict[str, Any]:
+    """Her answer to a ticket that names no task: close it, record it, go on.
+
+    Called inside the run's transaction; the run is raised after it.
+    """
+
+    from .run_status import _finish_global_state
+
+    incident_id = str(ticket["incident_id"])
+    offered = _options([dict(ticket)])
+    if choice and offered and choice not in offered:
+        raise OwnerAnswerError(
+            f"{choice!r} is not among the options: " + ", ".join(sorted(offered))
+        )
+    incidents.resolve_escalation_by_user(
+        incident_id, at=timestamp, note=f"{choice + ': ' if choice else ''}{text}"
+    )
+    state.user_unblocks.append(
+        {
+            "task_id": "",
+            "reason": text + (f" [option {choice}: {offered.get(choice, '')}]" if choice else ""),
+            "at": timestamp,
+            "incident_ids": [incident_id],
+            **({"option": choice} if choice else {}),
+        }
+    )
+    state.last_error = None
+    _finish_global_state(plan, state, (), paused=store.pause_requested(), cfg=cfg)
+    store.save(state)
+    return {
+        "task_id": "",
+        "state": "",
+        "closed_tickets": [incident_id],
+        "option": choice,
+        "grant": None,
     }
 
 
@@ -337,11 +457,14 @@ def _raise_the_run(cfg: Any, *, spawn: Any = None) -> dict[str, Any]:
 def render_answer(result: Mapping[str, Any]) -> str:
     """What she reads after answering: what changed, and whether the run goes on."""
 
-    lines = [
-        f"{result['task_id']}: your decision is recorded"
-        + (f" (option {result['option']})" if result.get("option") else "")
-        + f"; the task is now {result['state']}."
-    ]
+    option = f" (option {result['option']})" if result.get("option") else ""
+    if result.get("task_id"):
+        lines = [
+            f"{result['task_id']}: your decision is recorded{option}; "
+            f"the task is now {result['state']}."
+        ]
+    else:
+        lines = [f"Your decision is recorded{option}; the ticket named no task to move."]
     if result.get("closed_tickets"):
         lines.append("Answered tickets: " + ", ".join(result["closed_tickets"]) + ".")
     if result.get("grant"):
