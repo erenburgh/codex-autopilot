@@ -95,7 +95,10 @@ reusing the prior verifier thread. Exhausting `max_revision_attempts` re-hires
 the task up the effort ladder (see `REHIRING.md`); at the top the task moves to
 `BLOCKED` through the stop door - a ticket to the on-call, reserved in the same
 completion next to independent work - and it never unlocks dependents. Three
-unreadable verdicts and an unroutable verifier stop the same way.
+unreadable verdicts and an unroutable verifier also go through the door, but
+they are infrastructure (R3): the task stays `IMPLEMENTED`, held by its ticket,
+and a fresh verifier comes when the ticket closes. It becomes `BLOCKED` only
+when the on-call hands the ticket to the owner.
 
 ## Routing, resources, and dependency unlock
 

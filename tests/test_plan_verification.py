@@ -189,10 +189,23 @@ class PlanVerificationAcceptanceTests(unittest.TestCase):
             state.plan_verification = None
             store.save(state)
 
-            with self.assertRaisesRegex(PlanVerificationError, "PLAN_PROPOSED"):
-                reserve_ready_frontier(cfg, hook_gate=lambda _cfg: None)
+            # The frontier builds nothing from an unverified graph. It used to
+            # raise, which rolled back any completion that ended in this
+            # reservation and told nobody; now the refusal is a stop - a
+            # ticket that holds every task, and the on-call, whose prompt is
+            # the incident package and never a task of this graph.
+            reserved = reserve_ready_frontier(cfg, hook_gate=lambda _cfg: None)
 
-            self.assertEqual(store.load().worker_sessions, [])
+            self.assertEqual([item.kind for item in reserved], ["pipeline_engineer"])
+            self.assertEqual(
+                [item["kind"] for item in store.load().worker_sessions],
+                ["pipeline_engineer"],
+            )
+            from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+            ticket = PipelineIncidentStore(root / ".codex-autopilot").load()["incidents"][-1]
+            self.assertEqual(ticket["system_state"]["stop_kind"], "plan_unverified")
+            self.assertIn("PLAN_PROPOSED", ticket["summary"])
 
     def test_t4_patch_counter_and_critical_path_force_full_revalidation(self) -> None:
         current_raw = graph(

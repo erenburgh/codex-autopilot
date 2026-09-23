@@ -154,7 +154,17 @@ class VerifierProtocolRejectionTests(unittest.TestCase):
         self.assertEqual([item.kind for item in outcome.descriptors], ["pipeline_engineer"])
         state = self.store.load()
         self.assertEqual(state.status, "RUNNING")
-        self.assertEqual(state.task_states["A"], "BLOCKED")
+        # R3: an unreadable verifier is infrastructure. The work is done and
+        # awaits acceptance: A stays IMPLEMENTED, held by its ticket, and is
+        # BLOCKED only if the on-call hands the ticket up.
+        self.assertEqual(state.task_states["A"], "IMPLEMENTED")
+        from codex_autopilot.lifecycle_reservations import tasks_paused_by_incidents
+        from codex_autopilot.plan import load_plan
+
+        self.assertEqual(
+            tasks_paused_by_incidents(self.cfg, load_plan(self.cfg.state_dir, self.cfg.profile)),
+            {"A"},
+        )
         self.assertIn("rubric", str(state.last_error))
         from codex_autopilot.pipeline_engineer import PipelineIncidentStore
 

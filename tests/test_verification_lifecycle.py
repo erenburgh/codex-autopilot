@@ -647,13 +647,25 @@ class VerificationLifecycleTests(unittest.TestCase):
         # door, and the on-call is reserved by the same completion.
         self.assertEqual([item.kind for item in outcome.descriptors], ["pipeline_engineer"])
         state = self.store.load()
-        self.assertEqual(state.task_states["A"], TaskState.BLOCKED.value)
+        # R3: routing is infrastructure. The work is done and still awaits
+        # acceptance, so A stays IMPLEMENTED - held by its ticket, not
+        # BLOCKED - until the on-call has looked.
+        self.assertEqual(state.task_states["A"], TaskState.IMPLEMENTED.value)
         self.assertEqual(state.task_states["B"], TaskState.WAITING.value)
         self.assertIn("requires Computer Use", state.last_error)
         ticket = self._tickets()[-1]
         self.assertEqual(ticket["system_state"]["stop_kind"], "verifier_routing")
         self.assertEqual(ticket["affected_task_ids"], ["A"])
         self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
+        # The hold is real: the next pass neither routes A again nor files twice.
+        self.assertEqual(reserve_ready_frontier(self.cfg), ())
+        self.assertEqual(len(self._tickets()), 1)
+        # Only the on-call's escalation makes it BLOCKED - the half of R3
+        # that says DevOps is exhausted.
+        self._engineer_answers(outcome, self.ESCALATION % "task")
+        state = self.store.load()
+        self.assertEqual(state.task_states["A"], TaskState.BLOCKED.value)
+        self.assertEqual((state.status, state.phase), ("BLOCKED", "AWAITING_OWNER"))
 
     def test_auto_policy_is_rejected_before_initialization(self) -> None:
         with self.assertRaisesRegex(ValueError, 'must be "independent"'):
@@ -866,6 +878,13 @@ class VerificationLifecycleTests(unittest.TestCase):
         (0.13.0) its ticket was deliberately not routed, so that the
         engineer - who used to come INSTEAD of work - would not freeze the
         neighbours, and nobody came at all.
+
+        The ladder files its ticket inside the pass, after the place where
+        the engineer's early return used to stand, so the ladder alone
+        cannot show that return. The run goes on to the case that does: the
+        first engineer hands A up, and a neighbour's own stop then begins a
+        pass with a ticket in the lane and no engineer at work. The engineer
+        and the next task must both come out of that one pass.
         """
 
         payload = graph(task("A", policy="independent", verifier_role="reviewer", max_revisions=2))
@@ -874,6 +893,8 @@ class VerificationLifecycleTests(unittest.TestCase):
         payload["tasks"] = [
             payload["tasks"][0],
             task("C", policy="independent", verifier_role="reviewer"),
+            task("D", policy="independent", verifier_role="reviewer"),
+            task("F", policy="independent", verifier_role="reviewer"),
         ]
         self.initialize({}, payload=payload)
 
@@ -881,11 +902,13 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertEqual(sorted(frontier), ["A", "C"])
 
         outcome, _efforts = self._climb_the_ladder(frontier["A"])
-        # The last refusal reserved the on-call, anchored to A.
+        # The last refusal reserved the on-call, anchored to A, and gave the
+        # slot A left to D - in the same completion.
         self.assertEqual(
-            [(item.task_id, item.kind) for item in outcome.descriptors],
-            [("A", "pipeline_engineer")],
+            sorted((item.task_id, item.kind) for item in outcome.descriptors),
+            [("A", "pipeline_engineer"), ("D", "implementation")],
         )
+        d_work = next(item for item in outcome.descriptors if item.task_id == "D")
         state = self.store.load()
         self.assertEqual(state.task_states["A"], TaskState.BLOCKED.value)
         self.assertEqual(state.status, "RUNNING")
@@ -895,26 +918,45 @@ class VerificationLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
 
-        # The point: a run with A stalled keeps moving C.
+        # A run with A stalled keeps moving C.
         self.activate(frontier["C"], "c-thread")
         self.evidence("C", "c implementation")
-        outcome = complete_desktop_worker(
+        after = complete_desktop_worker(
             self.cfg,
             thread_id="c-thread",
             turn_id="c-turn",
             final_message="AUTOPILOT_STATUS: ROTATE",
         )
         self.assertEqual(
-            [(item.task_id, item.kind) for item in outcome.descriptors],
+            [(item.task_id, item.kind) for item in after.descriptors],
             [("C", "verifier")],
         )
         self.assertEqual(self.store.load().task_states["A"], TaskState.BLOCKED.value)
 
-    def _serial_pair(self):
+        # The engineer hands A to her; the lane is empty again.
+        self._engineer_answers(outcome, self.ESCALATION % "task")
+        # D stops over its environment: a ticket in the lane, no engineer at
+        # work. The early return gave the engineer and nothing else here.
+        self.activate(d_work, "d-thread")
+        bump_task_checkpoint(self.root, "D", "Stopped: the environment broke.")
+        stopped = complete_desktop_worker(
+            self.cfg,
+            thread_id="d-thread",
+            turn_id="d-turn",
+            final_message="AUTOPILOT_STATUS: BLOCKED ENVIRONMENT_FAILURE",
+        )
+        self.assertEqual(
+            sorted((item.task_id, item.kind) for item in stopped.descriptors),
+            [("D", "pipeline_engineer"), ("F", "implementation")],
+        )
+        self.assertEqual(self.store.load().status, "RUNNING")
+
+    def _serial_pair(self, *more: str):
         payload = graph(task("A", policy="independent", verifier_role="reviewer", max_revisions=2))
         payload["tasks"] = [
             payload["tasks"][0],
             task("C", policy="independent", verifier_role="reviewer"),
+            *(task(item, policy="independent", verifier_role="reviewer") for item in more),
         ]
         self.initialize({}, payload=payload)
         first = reserve_ready_frontier(self.cfg)
@@ -926,9 +968,12 @@ class VerificationLifecycleTests(unittest.TestCase):
 
         The engineer takes no work slot - it never did - so the slot A
         leaves goes to C in the same completion that calls the engineer.
+        Then again for a stop filed before its pass (C's own), which is the
+        pass the old early return used to take whole: the engineer came and
+        D, next in line for the one slot, did not.
         """
 
-        outcome, _efforts = self._climb_the_ladder(self._serial_pair())
+        outcome, _efforts = self._climb_the_ladder(self._serial_pair("D"))
         self.assertEqual(
             sorted((item.task_id, item.kind) for item in outcome.descriptors),
             [("A", "pipeline_engineer"), ("C", "implementation")],
@@ -936,6 +981,22 @@ class VerificationLifecycleTests(unittest.TestCase):
         state = self.store.load()
         self.assertEqual(state.active_task_ids, ["C"])
         self.assertEqual(state.status, "RUNNING")
+
+        c_work = next(item for item in outcome.descriptors if item.task_id == "C")
+        self._engineer_answers(outcome, self.ESCALATION % "task")
+        self.activate(c_work, "c-thread")
+        bump_task_checkpoint(self.root, "C", "Stopped: a key is missing.")
+        stopped = complete_desktop_worker(
+            self.cfg,
+            thread_id="c-thread",
+            turn_id="c-turn",
+            final_message="AUTOPILOT_STATUS: BLOCKED MISSING_RESOURCE",
+        )
+        self.assertEqual(
+            sorted((item.task_id, item.kind) for item in stopped.descriptors),
+            [("C", "pipeline_engineer"), ("D", "implementation")],
+        )
+        self.assertEqual(self.store.load().active_task_ids, ["D"])
 
     def test_an_escalation_of_one_task_does_not_freeze_the_others(self) -> None:
         """The engineer hands A to her; C keeps going.

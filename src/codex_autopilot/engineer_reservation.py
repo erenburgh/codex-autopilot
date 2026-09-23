@@ -386,6 +386,65 @@ def stop_on_inconsistent_state(cfg: Any, state: Any, task_id: str, reason: str) 
     )
 
 
+def stop_on_unverified_plan(cfg: Any, plan: Any, state: Any, error: Exception) -> None:
+    """The plan gate refused the graph. That is a stop, and it holds the run.
+
+    The refusal used to raise inside the frontier. Every completion that
+    ends in a reservation - a worker's, the on-call's own - was rolled back
+    with it: measured, the engineer escalated its ticket, the incident
+    journal moved, and run-state kept the engineer ACTIVE forever. One
+    engineer per run then kept every later engineer out, the status read
+    RUNNING, and the wake-up saw nothing to raise. A silent stop again.
+
+    Now the refusal files one ticket (``plan_unverified``) that holds every
+    unfinished task - nothing may be built from this graph - and the on-call
+    comes for it. While that ticket is open, no second one is filed. A repair
+    that does not take, closed twice, goes to the owner with its diagnosis,
+    the same bound as the orphan sweep: a third engineer would find the same.
+    """
+
+    from .blocked_runs import escalate_to_owner, stop_run
+
+    try:
+        earlier = [
+            item
+            for item in _incidents(cfg)
+            if str((item.get("system_state") or {}).get("stop_kind")) == "plan_unverified"
+        ]
+    except Exception:  # noqa: BLE001 - the door records its own failure below
+        earlier = []
+    if any(not item.get("resolved_at") for item in earlier):
+        return
+    unfinished = tuple(
+        task.id for task in plan.tasks if state.task_states.get(task.id) != TaskState.VERIFIED.value
+    )
+    incident_id = stop_run(
+        cfg,
+        state,
+        stop_kind="plan_unverified",
+        phase="PLAN_UNVERIFIED",
+        reason=f"the plan gate refused the canonical graph: {error}",
+        summary="The canonical plan has no valid verification receipt; nothing may be built from it.",
+        at=utc_now(),
+        task_ids=unfinished,
+        system_state={"earlier_plan_gate_tickets": len(earlier)},
+    )
+    if incident_id and len(earlier) >= MAX_ORPHAN_TICKETS_PER_TASK:
+        escalate_to_owner(
+            cfg,
+            incident_id,
+            code="RECOVERY_EXHAUSTED",
+            detail=f"The on-call closed {len(earlier)} plan-gate tickets and the plan is still refused.",
+            at=utc_now(),
+            escalation={
+                "diagnosis": f"the plan gate still refuses the graph: {error}",
+                "decision_needed": "whether the current plan is the one to run",
+                "recommendation": "verify the plan again or change it through the replanner",
+                "scope": "run",
+            },
+        )
+
+
 def _anchor_task(plan: Any, state: Any, incident: dict[str, Any]) -> str:
     affected = [
         str(item) for item in incident.get("affected_task_ids") or () if str(item) in plan.task_map

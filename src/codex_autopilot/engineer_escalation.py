@@ -134,6 +134,16 @@ def escalate_engineer_ticket(
         state.last_error = (
             f"the on-call engineer handed incident {incident_id} to the owner: {code}"
         )
+    if outcome == "escalated":
+        # R3: an infrastructure stop only HELD its task while the on-call
+        # looked (stop_holds). Handing the ticket up is the "DevOps
+        # exhausted" half of the rule - only now does the task go BLOCKED.
+        from .stop_holds import block_escalated_tasks
+
+        for task_id in block_escalated_tasks(cfg, state, incident_id):
+            _append_event(
+                state, "task_blocked_on_escalation", session, at, detail=f"{incident_id}: {task_id}"
+            )
     return outcome
 
 

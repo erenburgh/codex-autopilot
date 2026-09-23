@@ -339,18 +339,25 @@ class NoStopBypassesTheDoorTests(unittest.TestCase):
 
     # Every transition into TaskState.BLOCKED, and why it is allowed. A new
     # one fails this test until it is added here - with its door.
+    #
+    # R3 is read off this list too: an infrastructure stop may not appear
+    # here. Three used to - three unreadable verdicts (_reject_verifier_result),
+    # a verifier nobody could route (_reserve_followup_sessions_in_state) and
+    # a worker's ENVIRONMENT_FAILURE (inside complete_desktop_worker). They
+    # now only hold their task by its ticket; BLOCKED waits for the
+    # on-call's escalation (stop_holds.block_escalated_tasks).
     ALLOWED_TRANSITIONS_INTO_BLOCKED = {
-        # a worker's own BLOCKED/ESCALATE (door: worker_blocked) and a
-        # worker's plan-change request (the requester waits for its change)
-        ("lifecycle_completion.py", "complete_desktop_worker"): 2,
+        # a worker's plan-change request (the requester waits for its change)
+        ("lifecycle_completion.py", "complete_desktop_worker"): 1,
+        # a worker's own BLOCKED/ESCALATE with a product or policy code
+        # (door: worker_blocked); infrastructure codes are only held
+        ("stop_holds.py", "stop_worker_task"): 1,
+        # the on-call handed a ticket up: its held tasks now wait for her
+        ("stop_holds.py", "block_escalated_tasks"): 1,
         # the replanner's graph refused; exhausted -> door: plan_change_rejected
         ("lifecycle_completion.py", "_reject_replanner_result"): 1,
-        # three unreadable verdicts -> door: verification_protocol
-        ("lifecycle_completion.py", "_reject_verifier_result"): 1,
         # the proposed graph waits for plan verification (plan change)
         ("lifecycle_completion.py", "_complete_replanner"): 1,
-        # no verifier can be routed -> door: verifier_routing
-        ("lifecycle_reservations.py", "_reserve_followup_sessions_in_state"): 1,
         # unreadable plan verdict; exhausted -> door: plan_verification_protocol
         ("plan_verification_lifecycle.py", "reject_plan_verifier_result"): 1,
         # plan refused; exhausted -> door: plan_verification_rejected
@@ -453,6 +460,87 @@ class TheDoorEndToEndTests(unittest.TestCase):
         self.assertEqual(state.status, "RUNNING")
         self.assertEqual(state.active_task_ids, ["B"])
 
+    def _worker_stops(self, code: str):
+        from _appserver_fakes import activate_via_app_server
+        from _handoff import bump_task_checkpoint
+        from _relay import reserve_ready_frontier
+        from codex_autopilot.lifecycle import complete_desktop_worker
+
+        first = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")
+        activate_via_app_server(self.cfg, self.root, first[0], "worker-A")
+        bump_task_checkpoint(self.root, "A", f"Stopped: {code}.")
+        return complete_desktop_worker(
+            self.cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=f"итог\nAUTOPILOT_STATUS: BLOCKED {code}",
+        )
+
+    def _paused(self) -> set:
+        from codex_autopilot.lifecycle_reservations import tasks_paused_by_incidents
+        from codex_autopilot.plan import load_plan
+
+        return tasks_paused_by_incidents(self.cfg, load_plan(self.cfg.state_dir, self.cfg.profile))
+
+    def test_an_environment_stop_holds_the_task_until_the_on_call_hands_it_up(self) -> None:
+        """R3: an infrastructure cause is not BLOCKED while DevOps can still look.
+
+        It used to be BLOCKED at once: the engineer repaired the environment,
+        closed its ticket, and the task stayed stopped - a closed ticket does
+        not lift a stop - until the orphan sweep sent it to the owner.
+        """
+
+        from _appserver_fakes import activate_via_app_server
+        from codex_autopilot.lifecycle import complete_desktop_worker
+
+        outcome = self._worker_stops("ENVIRONMENT_FAILURE")
+        self.assertEqual(
+            sorted((item.task_id, item.kind) for item in outcome.descriptors),
+            [("A", "pipeline_engineer"), ("B", "implementation")],
+        )
+        state = self.store.load()
+        self.assertEqual(state.task_states["A"], "READY")
+        self.assertEqual(self._paused(), {"A"})
+        ticket = PipelineIncidentStore(self.cfg.state_dir).load()["incidents"][-1]
+        self.assertTrue(ticket["system_state"]["held"])
+        # The on-call hands it up: only now is A BLOCKED - hers to decide.
+        engineer = next(item for item in outcome.descriptors if item.kind == "pipeline_engineer")
+        activate_via_app_server(self.cfg, self.root, engineer, "engineer-1")
+        complete_desktop_worker(
+            self.cfg,
+            thread_id="engineer-1",
+            turn_id="engineer-1-turn",
+            final_message=self.ENGINEER_HANDS_UP,
+        )
+        self.assertEqual(self.store.load().task_states["A"], "BLOCKED")
+
+    def test_a_held_task_goes_back_to_work_when_its_ticket_closes(self) -> None:
+        """The same action runs again - R3's "DevOps returns control"."""
+
+        from _relay import reserve_ready_frontier
+
+        self._worker_stops("MISSING_RESOURCE")
+        store = PipelineIncidentStore(self.cfg.state_dir)
+        ticket = store.load()["incidents"][-1]
+        store.resolve_escalation_by_user(ticket["incident_id"], at="2026-09-23T15:05:00+00:00")
+        self.assertEqual(self._paused(), set())
+        reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")
+        # Nothing is left stopped: no orphan ticket about A, A waits for a slot.
+        self.assertEqual(self.store.load().task_states["A"], "READY")
+        self.assertEqual(
+            [item["system_state"]["stop_kind"] for item in store.load()["incidents"]],
+            ["worker_blocked"],
+        )
+
+    def test_a_product_stop_still_blocks_at_once(self) -> None:
+        """PRODUCT and POLICY are hers by R3 - no hold, no wait for DevOps."""
+
+        outcome = self._worker_stops("PRODUCT_DECISION")
+        self.assertEqual(self.store.load().task_states["A"], "BLOCKED")
+        self.assertIn(("A", "pipeline_engineer"), [(item.task_id, item.kind) for item in outcome.descriptors])
+        ticket = PipelineIncidentStore(self.cfg.state_dir).load()["incidents"][-1]
+        self.assertFalse(ticket["system_state"]["held"])
+
     def test_a_blocked_task_nobody_holds_gets_a_ticket_of_its_own(self) -> None:
         """The safety net under the list above: an orphaned stop is found.
 
@@ -519,11 +607,27 @@ class TheDoorEndToEndTests(unittest.TestCase):
         self.assertEqual(ticket["affected_task_ids"], ["A"])
         self.assertIn("requires revision without structured issues", ticket["summary"])
 
+    ENGINEER_HANDS_UP = (
+        'AUTOPILOT_ESCALATION: {"diagnosis":"d","recommendation":"r","scope":"task"}\n'
+        "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER PRODUCT_DECISION"
+    )
+
+    def _unverify(self) -> None:
+        state = self.store.load()
+        state.plan_verification = None
+        self.store.save(state)
+
+    def _plan_gate_tickets(self) -> list[dict]:
+        return [
+            item
+            for item in PipelineIncidentStore(self.cfg.state_dir).load()["incidents"]
+            if item["system_state"].get("stop_kind") == "plan_unverified"
+        ]
+
     def test_an_unverified_plan_still_lets_the_on_call_come(self) -> None:
         """The engineer is reserved above the plan gate - never work."""
 
         from _relay import reserve_ready_frontier
-        from codex_autopilot.plan_verification import PlanVerificationError
 
         stop_run(
             self.cfg,
@@ -535,21 +639,137 @@ class TheDoorEndToEndTests(unittest.TestCase):
             at="2026-09-23T15:02:27+00:00",
             task_ids=("A",),
         )
-        state = self.store.load()
-        state.plan_verification = None
-        self.store.save(state)
+        self._unverify()
         reserved = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")
         self.assertEqual([item.kind for item in reserved], ["pipeline_engineer"])
-        # Without a ticket the gate stands exactly as before.
+        self.assertEqual(
+            [item["kind"] for item in self.store.load().worker_sessions], ["pipeline_engineer"]
+        )
+
+    def test_the_on_call_finishes_under_an_unverified_plan(self) -> None:
+        """Its completion used to be rolled back by the plan gate.
+
+        Measured by the independent check: the engineer escalated, the
+        incident journal moved, and run-state kept the engineer ACTIVE and
+        the run RUNNING forever - one engineer per run then kept every later
+        one out, and the wake-up saw nothing to raise.
+        """
+
+        from _appserver_fakes import activate_via_app_server
+        from _relay import reserve_ready_frontier
+        from codex_autopilot.lifecycle import complete_desktop_worker
+
+        first = stop_run(
+            self.cfg,
+            self.store.load(),
+            stop_kind="worker_blocked",
+            phase="BLOCKED",
+            reason="r",
+            summary="s.",
+            at="2026-09-23T15:02:27+00:00",
+            task_ids=("A",),
+        )
+        self._unverify()
+        engineer = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")[0]
+        activate_via_app_server(self.cfg, self.root, engineer, "engineer-1")
+        outcome = complete_desktop_worker(
+            self.cfg,
+            thread_id="engineer-1",
+            turn_id="engineer-1-turn",
+            final_message=self.ENGINEER_HANDS_UP,
+        )
         state = self.store.load()
-        for item in state.worker_sessions:
-            item["status"] = "COMPLETED"
-        self.store.save(state)
+        session = next(
+            item for item in state.worker_sessions
+            if item["reservation_token"] == engineer.reservation_token
+        )
+        self.assertEqual(session["status"], "COMPLETED")
+        tickets = {
+            item["incident_id"]: item
+            for item in PipelineIncidentStore(self.cfg.state_dir).load()["incidents"]
+        }
+        self.assertEqual(tickets[first]["phase"], IncidentPhase.ESCALATE_TO_USER.value)
+        # The refusal itself is a ticket, and the next engineer comes for it
+        # in the same completion - never a worker built from the graph.
+        gate = self._plan_gate_tickets()
+        self.assertEqual(len(gate), 1)
+        self.assertEqual(gate[0]["affected_task_ids"], ["A", "B"])
+        self.assertEqual([item.kind for item in outcome.descriptors], ["pipeline_engineer"])
+        successor = next(
+            item for item in state.worker_sessions
+            if item["reservation_token"] == outcome.descriptors[0].reservation_token
+        )
+        self.assertEqual(successor["incident_id"], gate[0]["incident_id"])
+        self.assertEqual(state.status, "RUNNING")
+
+    def test_a_worker_completion_survives_the_plan_gate(self) -> None:
+        """A finished turn is recorded; only what would be built next waits."""
+
+        from _appserver_fakes import activate_via_app_server
+        from _handoff import bump_task_checkpoint
+        from _relay import reserve_ready_frontier
+        from codex_autopilot.lifecycle import complete_desktop_worker
+
+        first = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")
+        activate_via_app_server(self.cfg, self.root, first[0], "worker-A")
+        from codex_autopilot.memory import ProjectMemory
+
+        bump_task_checkpoint(self.root, "A", "Done.")
+        ProjectMemory(self.root).record_evidence(
+            kind="test",
+            summary="Evidence for A.",
+            created_by="plan-gate-test",
+            milestone_id="A",
+            role="verification",
+            command="verify A",
+            result="PASS",
+            exit_code=0,
+        )
+        self._unverify()
+        outcome = complete_desktop_worker(
+            self.cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message="AUTOPILOT_STATUS: ROTATE",
+        )
+        state = self.store.load()
+        self.assertEqual(state.task_states["A"], "IMPLEMENTED")
+        self.assertEqual([item.kind for item in outcome.descriptors], ["pipeline_engineer"])
+        self.assertEqual(len(self._plan_gate_tickets()), 1)
+
+    def test_the_plan_gate_alone_calls_the_on_call_and_then_the_owner(self) -> None:
+        """No ticket at all used to mean a bare raise: a stop nobody heard.
+
+        Now the refusal is its own ticket. A repair that does not take is
+        bounded like the orphan sweep: the third ticket goes to the owner,
+        and with nothing else to do the run derives BLOCKED.
+        """
+
+        from _relay import reserve_ready_frontier
+        from codex_autopilot.run_status import _finish_global_state
+        from codex_autopilot.plan import load_plan
+
+        self._unverify()
         store = PipelineIncidentStore(self.cfg.state_dir)
-        for item in store.load()["incidents"]:
-            store.resolve_escalation_by_user(item["incident_id"], at="2026-09-23T15:05:00+00:00")
-        with self.assertRaises(PlanVerificationError):
-            reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")
+        for lap in range(3):
+            reserved = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")
+            gate = self._plan_gate_tickets()
+            self.assertEqual(len(gate), lap + 1)
+            self.assertIn("PLAN_PROPOSED", gate[-1]["summary"])
+            if lap < 2:
+                self.assertEqual([item.kind for item in reserved], ["pipeline_engineer"])
+                # The on-call closes it without a fix.
+                state = self.store.load()
+                for item in state.worker_sessions:
+                    item["status"] = "COMPLETED"
+                self.store.save(state)
+                store.resolve_escalation_by_user(gate[-1]["incident_id"], at="2026-09-23T15:05:00+00:00")
+        self.assertEqual(gate[-1]["phase"], IncidentPhase.ESCALATE_TO_USER.value)
+        self.assertEqual(reserved, ())
+        state = self.store.load()
+        self.assertNotIn("implementation", [item["kind"] for item in state.worker_sessions])
+        _finish_global_state(load_plan(self.cfg.state_dir, self.cfg.profile), state, (), cfg=self.cfg)
+        self.assertEqual((state.status, state.phase), ("BLOCKED", "AWAITING_OWNER"))
 
 
 if __name__ == "__main__":

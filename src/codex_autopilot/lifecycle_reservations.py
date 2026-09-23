@@ -48,6 +48,7 @@ from .engineer_reservation import (  # noqa: F401 - re-exported for existing imp
     pipeline_engineer_package,
     route_waiting_tickets,
     stop_on_inconsistent_state,
+    stop_on_unverified_plan,
     tasks_paused_by_incidents,
 )
 from .scope import scope_baseline
@@ -304,14 +305,12 @@ def _reserve_in_state(
         return found
 
     if unverified is not None:
-        # Invariant: nothing is built from an unverified graph. The engineer
-        # is not work from it - its descriptor anchors a task only for cwd
-        # and title and its prompt is the incident package, never a task's
-        # role, DoD or dependencies. Without a ticket, the gate stands.
-        found = finish(())
-        if not found:
-            raise unverified
-        return found
+        # Invariant: nothing is built from an unverified graph - the engineer's
+        # descriptor anchors a task only for cwd and title. The refusal used
+        # to raise here, rolling back the completion that called us (the
+        # on-call's own included); now it is a stop with a ticket.
+        stop_on_unverified_plan(cfg, plan, state, unverified)
+        return finish(())
     paused = tasks_paused_by_incidents(cfg, plan)
     if state.active_plan_change_id is not None:
         change = active_plan_change(state)
@@ -782,9 +781,6 @@ def _reserve_followup_sessions_in_state(
             try:
                 execution_mode = verifier_route(plan, task).execution_mode
             except ModelRoutingError as exc:
-                state.task_states = transition_task(
-                    plan, state.task_states, task.id, TaskState.BLOCKED
-                )
                 _append_event(
                     state,
                     "verifier_routing_blocked",
@@ -792,8 +788,9 @@ def _reserve_followup_sessions_in_state(
                     utc_now(),
                     detail=str(exc),
                 )
-                # It used to stop here with only last_error: no ticket, no
-                # on-call, a task BLOCKED that nobody would ever look at.
+                # It used to stop with only last_error, then (0.13) BLOCKED
+                # and a ticket. R3: routing is infrastructure - the task stays
+                # IMPLEMENTED, held by the ticket until the on-call looks.
                 stop_run(
                     cfg,
                     state,

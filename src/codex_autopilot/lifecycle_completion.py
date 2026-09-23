@@ -4,6 +4,7 @@ import json
 from typing import Any, Callable
 
 from .blocked_runs import stop_run as _stop_run
+from .stop_holds import stop_worker_task
 from .ai_studio import AIStudioRuntime, ContextBoundaryError
 from .artifact_staging_lifecycle import (
     audit_completed_task_scope,
@@ -655,12 +656,9 @@ def complete_desktop_worker(
                 raise DesktopLifecycleError(
                     f"{kind} failure requires {source.value} state"
                 )
-            state.task_states = transition_task(
-                plan, state.task_states, task_id, TaskState.BLOCKED
-            )
-            # R13: the stop reason is a code from the closed list, not a
-            # retelling of the status. The old line "M9 worker returned
-            # BLOCKED" said nothing beyond the status itself.
+            # R3: an infrastructure cause only holds the task until the
+            # on-call looks (stop_holds). R13: the reason is a closed code.
+            held = stop_worker_task(plan, state, task_id, reason_code)
             _stop_run(
                 cfg,
                 state,
@@ -673,7 +671,7 @@ def complete_desktop_worker(
                 ),
                 at=timestamp,
                 task_ids=(task_id,),
-                system_state={"reason_code": reason_code, "kind": kind},
+                system_state={"reason_code": reason_code, "kind": kind, "held": held},
             )
             current["reason_code"] = reason_code
             if reason_code == "UNSPECIFIED":
@@ -1163,16 +1161,13 @@ def _reject_verifier_result(
             item for item in state.active_task_ids if item != task_id
         ]
         state.task_states = transition_task(
-            plan,
-            state.task_states,
-            task_id,
-            TaskState.BLOCKED if exhausted else TaskState.IMPLEMENTED,
+            plan, state.task_states, task_id, TaskState.IMPLEMENTED
         )
         if exhausted:
-            # Three unreadable verdicts in a row are no accident. Burning
-            # more turns is pointless: the task stops loudly, names the
-            # reason, and - like every stop - takes the ordinary path below,
-            # so the on-call comes and independent tasks keep moving.
+            # Three unreadable verdicts in a row are no accident: the task
+            # stops loudly and names the reason. It used to go BLOCKED too;
+            # R3 - the verifier's protocol is infrastructure - so it stays
+            # IMPLEMENTED, held by its ticket until the on-call looks.
             _stop_run(
                 cfg,
                 state,

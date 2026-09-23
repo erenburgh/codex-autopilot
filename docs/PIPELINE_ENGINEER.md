@@ -86,6 +86,23 @@ records `stop_kind` in `system_state`, always routes the ticket to the
 engineer's lane, and does not touch the run's status. A structural test lists
 every transition into `TaskState.BLOCKED` with its door.
 
+R3 decides what a stop does to its task. A product or policy stop (the ladder,
+a worker's `PRODUCT_DECISION`, a refused plan) blocks at once. An
+infrastructure stop only holds its task by the ticket's pause: a worker's
+`ENVIRONMENT_FAILURE`, `MISSING_RESOURCE`, `RECOVERY_EXHAUSTED` or missing code
+returns the task to `READY`; three unreadable verdicts and an unroutable
+verifier leave it `IMPLEMENTED`. When the ticket closes, the same action runs
+again. The task becomes `BLOCKED` only when the on-call hands the ticket up
+(`stop_holds.block_escalated_tasks`).
+
+The plan gate is a stop as well. When the canonical plan has no valid
+verification receipt, the reservation no longer raises (that rolled back the
+completion that called it, the engineer's own included, and left its session
+`ACTIVE` forever). It builds nothing from the graph, files one `plan_unverified`
+ticket holding every unfinished task, and reserves the on-call for it. After
+two closures that did not fix the plan, the third ticket goes to the owner as
+`RECOVERY_EXHAUSTED` with `scope: run`.
+
 The on-call is reserved next to the work, never instead of it: at the end of
 every reservation pass (so a ticket filed in that pass gets its engineer at
 once), outside the worker slots, at most one per run. It is reserved above the
