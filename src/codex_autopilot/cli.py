@@ -903,7 +903,24 @@ def doctor(project: Path) -> int:
     checks: list[tuple[str, bool, str]] = []
     checks.append(("macOS", sys.platform == "darwin", sys.platform))
     checks.append(("Python >=3.11", sys.version_info >= (3, 11), sys.version.split()[0]))
+    # The project's own channel, when it has one. A project may point
+    # `desktop.binary` at a different Codex than the one on PATH - Desktop
+    # carries its own inside the app bundle, and the two do not serve the
+    # same models. Asking PATH about a run that talks to another binary
+    # answers about the wrong thing: measured on the day GPT-6 Sol
+    # appeared, `doctor` reported the pinned model "no longer served"
+    # while the run's own channel served it perfectly.
     codex = shutil.which("codex")
+    try:
+        configured = load_config(project).desktop.binary
+    except Exception:
+        configured = ""
+    if configured:
+        resolved = shutil.which(configured) or (
+            configured if Path(configured).is_file() else ""
+        )
+        if resolved:
+            codex = resolved
     checks.append(("Codex CLI", bool(codex), codex or "not found"))
     if codex:
         auth = subprocess.run([codex, "login", "status"], capture_output=True, text=True)

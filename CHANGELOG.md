@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.12.1-beta
+
+`doctor` asks the channel the run actually uses.
+
+A project may point `desktop.binary` at a different Codex than the one on PATH:
+Desktop carries its own inside the app bundle, and the two do not serve the same
+models. `doctor` asked PATH regardless.
+
+Measured minutes after 0.12.0 pinned GPT-6 Sol. The run's own channel answered
+`gpt-6-sol is served`, and `doctor` - looking at an older binary on PATH -
+answered `FAIL: gpt-6-sol is no longer served to this account`. The command
+whose whole job is to say what is missing was the one looking in the wrong
+place, and it would have sent a reader to fix a model pin that was correct.
+
+It now prefers the project's configured binary and falls back to PATH when a
+directory has no project, so running it anywhere still works.
+
 ## 0.12.0-beta
 
 GPT-6 Sol. The Adaptive profile now pins `gpt-6-sol` and `gpt-6-astra`.

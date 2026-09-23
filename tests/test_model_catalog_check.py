@@ -179,5 +179,38 @@ class ItIsWiredWhereItWillBeSeenTests(unittest.TestCase):
         self.assertIn('"superseded"', source)
 
 
+class DoctorAsksTheProjectsOwnChannelTests(unittest.TestCase):
+    """The channel the run talks to, not whatever is on PATH.
+
+    A project may point `desktop.binary` at a different Codex than the one
+    on PATH - Desktop carries its own inside the app bundle, and the two do
+    not serve the same models. Measured on the day GPT-6 Sol appeared:
+    `doctor` asked PATH, got the older binary, and reported the pinned
+    model "no longer served to this account" while the run's own channel
+    served it perfectly. The command whose whole job is to say what is
+    missing was itself looking in the wrong place.
+    """
+
+    def test_doctor_prefers_the_configured_binary(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "src/codex_autopilot/cli.py"
+        ).read_text(encoding="utf-8")
+        body = source[source.index("def doctor(project: Path) -> int:") :]
+        body = body[: body.index("\n    for name, ok, details in checks:")]
+        self.assertIn("load_config(project).desktop.binary", body)
+        fallback = body.index('shutil.which("codex")')
+        configured = body.index("load_config(project).desktop.binary")
+        self.assertLess(fallback, configured, "the configured binary must win")
+
+    def test_a_projectless_directory_still_works(self) -> None:
+        """doctor runs anywhere; no config is not an error."""
+
+        source = (
+            Path(__file__).resolve().parents[1] / "src/codex_autopilot/cli.py"
+        ).read_text(encoding="utf-8")
+        body = source[source.index("def doctor(project: Path) -> int:") :]
+        self.assertIn("except Exception:", body[: body.index("if configured:")])
+
+
 if __name__ == "__main__":
     unittest.main()
