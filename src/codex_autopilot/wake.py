@@ -73,7 +73,14 @@ def is_stranded(cfg: Config, state: Any) -> bool:
     a dispatcher that is simply waiting for a worker to think.
     """
 
-    if state.status in {"BLOCKED", "DONE"}:
+    # A run a human stopped is not stranded, it is stopped. The sweep checks
+    # the pause marker separately, so nothing was woken that should not have
+    # been - but a predicate that answers "stranded" about a paused run is
+    # one wrong caller away from waking it, and this module's whole promise
+    # is that it never overrides a person.
+    if state.status in {"BLOCKED", "DONE", "PAUSED"}:
+        return False
+    if StateStore(cfg.state_dir).pause_requested():
         return False
     if isinstance(state.dispatcher_pid, int) and _pid_alive(state.dispatcher_pid):
         return False

@@ -92,6 +92,21 @@ class StrandedTests(unittest.TestCase):
         (self.cfg.state_dir / "pipeline-incidents.json").write_text("{", encoding="utf-8")
         self.assertFalse(wake.is_stranded(self.cfg, _state()))
 
+    def test_a_paused_run_is_stopped_not_stranded(self) -> None:
+        """The owner's pause outranks every reason to raise a run."""
+
+        self._ticket_with_the_on_call()
+        self.assertFalse(wake.is_stranded(self.cfg, _state(status="PAUSED")))
+
+    def test_a_pause_marker_alone_is_enough_to_leave_it_alone(self) -> None:
+        """The marker is the authority; the status may not have caught up."""
+
+        self._ticket_with_the_on_call()
+        (self.cfg.state_dir / "pause-requested").write_text(
+            "2026-09-23T16:29:55.848920+00:00", encoding="utf-8"
+        )
+        self.assertFalse(wake.is_stranded(self.cfg, _state(status="RUNNING")))
+
 
 class WhenTheRunIsRaisedTests(unittest.TestCase):
     def setUp(self) -> None:
