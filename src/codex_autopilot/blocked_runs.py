@@ -25,7 +25,9 @@ So the door now does three things, and no longer a fourth:
 
 - opens an incident - a fresh one for every stop, never an old closed one;
 - routes it to the on-call, always (the engineer works next to the
-  neighbours, not instead of them - see ``engineer_reservation``);
+  neighbours, not instead of them - see ``engineer_reservation``) - unless
+  the on-call already closed this very stop twice and it came back: then
+  R23 sends it to the owner with a report (``stop_repeats``);
 - records the reason where the status command reads it;
 - and does NOT set the run's status. BLOCKED is derived in ``run_status``
   from what is left to do, in one place, after the engineer was reserved.
@@ -179,6 +181,12 @@ def _file(
         IncidentPhase.AUTO_RECOVERY_FAILED.value,
     }:
         store.ensure_pipeline_engineer(incident_id, at=at)
+    if still_open is None:
+        # R23: the same stop the on-call already closed twice goes to the
+        # owner with a report, not to a third engineer (stop_repeats).
+        from .stop_repeats import bound_repeated_stop
+
+        bound_repeated_stop(cfg, state, incident_id, at=at, reason=reason)
     return incident_id
 
 

@@ -51,11 +51,6 @@ from .run_state import utc_now
 from .scope import scope_baseline
 from .task_state import TaskState
 
-# How many times the on-call may close a ticket about a blocked task and
-# leave the task blocked before the next such ticket goes to the owner. The
-# second closure without a return is not a repair; a third engineer would
-# only burn the limits on the same finding.
-MAX_ORPHAN_TICKETS_PER_TASK = 2
 RESERVABLE_TASK_STATES = frozenset(
     {TaskState.READY.value, TaskState.IMPLEMENTED.value, TaskState.REVISION_REQUIRED.value}
 )
@@ -233,20 +228,23 @@ def orphan_blocked_tasks(cfg: Any, state: Any, task_ids: Any = None) -> list[str
 
 
 def _file_orphan_blocks(cfg: Any, plan: Any, state: Any, at: str) -> None:
-    from .blocked_runs import escalate_to_owner, stop_run
+    """A ticket for every orphaned stop.
+
+    The second closure without a return is not a repair; a third engineer
+    would only burn the limits on the same finding. That bound used to live
+    here (and a copy in the plan gate); it is the door's now, for every stop
+    alike (``stop_repeats``): the third orphan ticket about a task goes to
+    the owner with what the first two closures did.
+    """
+
+    from .blocked_runs import stop_run
 
     try:
         orphans = orphan_blocked_tasks(cfg, state, [task.id for task in plan.tasks])
     except Exception:  # noqa: BLE001 - housekeeping may never stop a run
         return
     for task_id in orphans:
-        earlier = sum(
-            1
-            for item in _incidents(cfg)
-            if str((item.get("system_state") or {}).get("stop_kind")) == "orphan_block"
-            and task_id in (item.get("affected_task_ids") or ())
-        )
-        incident_id = stop_run(
+        stop_run(
             cfg,
             state,
             stop_kind="orphan_block",
@@ -258,25 +256,7 @@ def _file_orphan_blocks(cfg: Any, plan: Any, state: Any, at: str) -> None:
             ),
             at=at,
             task_ids=(task_id,),
-            system_state={"earlier_orphan_tickets": earlier},
         )
-        if incident_id and earlier >= MAX_ORPHAN_TICKETS_PER_TASK:
-            escalate_to_owner(
-                cfg,
-                incident_id,
-                code="RECOVERY_EXHAUSTED",
-                detail=(
-                    f"The on-call closed {earlier} tickets about {task_id} and left it "
-                    "stopped each time. Another engineer would find the same thing."
-                ),
-                at=at,
-                escalation={
-                    "diagnosis": f"{task_id} stays BLOCKED after {earlier} repairs",
-                    "decision_needed": f"whether {task_id} goes back to work",
-                    "recommendation": "look at the last ticket's diagnosis, then unblock or change the plan",
-                    "scope": "task",
-                },
-            )
 
 
 def engineer_session_pending(state: Any) -> bool:
@@ -312,7 +292,7 @@ def waiting_for_owner(cfg: Any, state: Any) -> bool:
     )
 
 
-def reservable_work(cfg: Any, state: Any) -> bool:
+def reservable_work(cfg: Any, state: Any, states: frozenset[str] = RESERVABLE_TASK_STATES) -> bool:
     """A task the frontier could take right now, not held by any ticket."""
 
     import time
@@ -326,7 +306,7 @@ def reservable_work(cfg: Any, state: Any) -> bool:
             return False
         held.update(str(task) for task in item.get("affected_task_ids") or ())
     return any(
-        value in RESERVABLE_TASK_STATES and task_id not in held
+        value in states and task_id not in held
         for task_id, value in state.task_states.items()
     )
 
@@ -399,26 +379,26 @@ def stop_on_unverified_plan(cfg: Any, plan: Any, state: Any, error: Exception) -
     Now the refusal files one ticket (``plan_unverified``) that holds every
     unfinished task - nothing may be built from this graph - and the on-call
     comes for it. While that ticket is open, no second one is filed. A repair
-    that does not take, closed twice, goes to the owner with its diagnosis,
-    the same bound as the orphan sweep: a third engineer would find the same.
+    that does not take, closed twice, goes to the owner with its diagnosis:
+    the door's R23 bound (``stop_repeats``), which replaced the copy that
+    lived here.
     """
 
-    from .blocked_runs import escalate_to_owner, stop_run
+    from .blocked_runs import stop_run
 
     try:
-        earlier = [
-            item
+        if any(
+            not item.get("resolved_at")
             for item in _incidents(cfg)
             if str((item.get("system_state") or {}).get("stop_kind")) == "plan_unverified"
-        ]
+        ):
+            return
     except Exception:  # noqa: BLE001 - the door records its own failure below
-        earlier = []
-    if any(not item.get("resolved_at") for item in earlier):
-        return
+        pass
     unfinished = tuple(
         task.id for task in plan.tasks if state.task_states.get(task.id) != TaskState.VERIFIED.value
     )
-    incident_id = stop_run(
+    stop_run(
         cfg,
         state,
         stop_kind="plan_unverified",
@@ -427,22 +407,7 @@ def stop_on_unverified_plan(cfg: Any, plan: Any, state: Any, error: Exception) -
         summary="The canonical plan has no valid verification receipt; nothing may be built from it.",
         at=utc_now(),
         task_ids=unfinished,
-        system_state={"earlier_plan_gate_tickets": len(earlier)},
     )
-    if incident_id and len(earlier) >= MAX_ORPHAN_TICKETS_PER_TASK:
-        escalate_to_owner(
-            cfg,
-            incident_id,
-            code="RECOVERY_EXHAUSTED",
-            detail=f"The on-call closed {len(earlier)} plan-gate tickets and the plan is still refused.",
-            at=utc_now(),
-            escalation={
-                "diagnosis": f"the plan gate still refuses the graph: {error}",
-                "decision_needed": "whether the current plan is the one to run",
-                "recommendation": "verify the plan again or change it through the replanner",
-                "scope": "run",
-            },
-        )
 
 
 def _anchor_task(plan: Any, state: Any, incident: dict[str, Any]) -> str:

@@ -86,14 +86,32 @@ records `stop_kind` in `system_state`, always routes the ticket to the
 engineer's lane, and does not touch the run's status. A structural test lists
 every transition into `TaskState.BLOCKED` with its door.
 
-R3 decides what a stop does to its task. A product or policy stop (the ladder,
-a worker's `PRODUCT_DECISION`, a refused plan) blocks at once. An
-infrastructure stop only holds its task by the ticket's pause: a worker's
-`ENVIRONMENT_FAILURE`, `MISSING_RESOURCE`, `RECOVERY_EXHAUSTED` or missing code
-returns the task to `READY`; three unreadable verdicts and an unroutable
-verifier leave it `IMPLEMENTED`. When the ticket closes, the same action runs
-again. The task becomes `BLOCKED` only when the on-call hands the ticket up
-(`stop_holds.block_escalated_tasks`).
+R3 decides what a stop does to its task. A stop that is hers (the ladder, a
+refused plan, a worker's `PRODUCT_DECISION`, `ARCHITECTURE_DECISION` or
+`DANGEROUS_PERMISSION`) blocks at once. Every other stop only holds its task by
+the ticket's pause: any other worker code - `ENVIRONMENT_FAILURE`,
+`MISSING_RESOURCE`, `DEPENDENCY_DEFECT`, `CONTRADICTORY_CONTRACT`,
+`RECOVERY_EXHAUSTED` or none - returns the task to `READY`; three unreadable
+verdicts and an unroutable verifier leave it `IMPLEMENTED`. When the ticket
+closes, the same action runs again. The task becomes `BLOCKED` only when the
+on-call hands the ticket up (`stop_holds.block_escalated_tasks`) or the same
+stop exhausts the on-call (below).
+
+R23 bounds every stop in the door (`stop_repeats`). The signature is the run,
+the stop kind, its plan change, the tasks it holds and the reason code. When
+the on-call has closed two tickets with that signature and the stop comes back,
+the third ticket is not given to a third engineer: it goes to the owner as
+`RECOVERY_EXHAUSTED` with a report (the signature, the attempt count, what
+each closure did - its actions, note and healthcheck), and the tasks the stop
+only held become `BLOCKED`. Her answer to a ticket that was handed to her
+starts the count again; a ticket Resume swept shut while it still sat in the
+on-call's lane counts as a closure. The orphan sweep and the plan gate use this
+bound instead of their own copies.
+
+An engineer that leaves no successor files `no_successor` only when a `READY`
+task that no open ticket holds has no session at all. Tasks held by a ticket
+that waits for the owner are not idle work: counting them made every engineer
+completion after the plan gate's escalation call another engineer, forever.
 
 The plan gate is a stop as well. When the canonical plan has no valid
 verification receipt, the reservation no longer raises (that rolled back the
@@ -101,7 +119,7 @@ completion that called it, the engineer's own included, and left its session
 `ACTIVE` forever). It builds nothing from the graph, files one `plan_unverified`
 ticket holding every unfinished task, and reserves the on-call for it. After
 two closures that did not fix the plan, the third ticket goes to the owner as
-`RECOVERY_EXHAUSTED` with `scope: run`.
+`RECOVERY_EXHAUSTED`, and the run derives `BLOCKED` (`AWAITING_OWNER`).
 
 The on-call is reserved next to the work, never instead of it: at the end of
 every reservation pass (so a ticket filed in that pass gets its engineer at
@@ -111,8 +129,7 @@ anchor - and below the `CODEX_THREAD_ID` and external-dispatcher guards.
 Every pass also sweeps the journal: tickets in `DEGRADED` that no runbook will
 replay (stop tickets never are) and in `AUTO_RECOVERY_FAILED` go to the lane,
 and a `BLOCKED` task that no open ticket holds and no plan change explains gets
-an `orphan_block` ticket; after two such closures the next one goes to the
-owner as `RECOVERY_EXHAUSTED`.
+an `orphan_block` ticket, bounded like every stop.
 
 The engineer's `ESCALATE_TO_USER` moves its own ticket to the owner with the
 diagnosis, repair, decision and recommendation from its `AUTOPILOT_ESCALATION`

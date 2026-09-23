@@ -878,7 +878,7 @@ def _complete_pipeline_engineer(
         # human to resume by hand.
         if not descriptors:
             descriptors = _relayable_descriptors_without_a_thread(state)
-        if not descriptors and _would_idle_forever(state):
+        if not descriptors and _would_idle_forever(cfg, state):
             # A ready task and nobody to take it is a defect of the
             # reservation, not a decision. It used to hand the just-closed
             # ticket to the owner without a code - refused by R13, swallowed,

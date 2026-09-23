@@ -24,8 +24,13 @@ fresh worker, a fresh verifier. BLOCKED arrives only when the on-call hands
 the ticket up (``block_escalated_tasks``): that is the "DevOps exhausted"
 half of R3, and it is what the owner's unblock expects to find.
 
-Product and policy stops - a worker's PRODUCT_DECISION, the top of the hiring
-ladder, a refused plan - still block at once: those are hers by the rule.
+Product and policy stops - a worker's PRODUCT_DECISION, ARCHITECTURE_DECISION
+or DANGEROUS_PERMISSION, the top of the hiring ladder, a refused plan - still
+block at once: those are hers by the rule.
+
+A hold is bounded like any repeated failure (R23, ``stop_repeats``): the same
+stop closed twice by the on-call and back again goes to the owner, and only
+then are the tasks it held BLOCKED.
 """
 
 from __future__ import annotations
@@ -34,31 +39,46 @@ from typing import Any
 
 from .task_state import IllegalTaskTransition, TaskState, transition_task
 
-# The worker's closed-list codes that name an infrastructure cause. The rest
-# (DANGEROUS_PERMISSION, DEPENDENCY_DEFECT, CONTRADICTORY_CONTRACT,
-# PRODUCT_DECISION, ARCHITECTURE_DECISION) are product or policy matters.
-# UNSPECIFIED is here on purpose: a stop that names no cause has not shown it
-# is hers, and R3 forbids BLOCKED until that is shown. RECOVERY_EXHAUSTED is
-# the worker's own means, not DevOps's - the engineer has not looked yet.
-INFRASTRUCTURE_WORKER_REASONS = frozenset(
-    {"ENVIRONMENT_FAILURE", "MISSING_RESOURCE", "RECOVERY_EXHAUSTED", "UNSPECIFIED"}
+# The worker's closed-list codes that are hers by R3: a product or
+# architecture decision (PRODUCTION) and a dangerous permission (POLICY - an
+# approval is hers to give, never the engineer's). Everything else is held.
+#
+# 61e80a6 listed the other way round - the four infrastructure codes it knew
+# - and so sent DEPENDENCY_DEFECT and CONTRADICTORY_CONTRACT to BLOCKED at
+# once, as "product or policy". They are neither. The door files every stop
+# as RUNTIME, and R3's check refuses BLOCKED for RUNTIME while DevOps is not
+# exhausted; the means table of the devops line repairs both with a plan
+# change or a runtime repair, not with her decision (sweep line, item 9:
+# class B). Naming what is HERS, not what is infrastructure, also holds a
+# code added to the closed list later until someone shows it is hers.
+OWNER_WORKER_REASONS = frozenset(
+    {"PRODUCT_DECISION", "ARCHITECTURE_DECISION", "DANGEROUS_PERMISSION"}
 )
+# Stops that leave their task where it can resume and hold it by the ticket.
+HOLDING_STOP_KINDS = frozenset({"verification_protocol", "verifier_routing", "inconsistent_state"})
 
 
 def stop_worker_task(plan: Any, state: Any, task_id: str, reason_code: str) -> bool:
     """Move a task whose worker stopped itself. True when it is only held.
 
-    An infrastructure stop returns the task to READY (through RETRY_WAIT, the
-    edge a failed attempt already takes): the ticket holds it, and when the
-    ticket closes the same work is taken up again. Anything else is BLOCKED.
+    A stop that is not hers returns the task to READY (through RETRY_WAIT,
+    the edge a failed attempt already takes): the ticket holds it, and when
+    the ticket closes the same work is taken up again. Hers is BLOCKED.
     """
 
-    if reason_code in INFRASTRUCTURE_WORKER_REASONS:
+    if reason_code not in OWNER_WORKER_REASONS:
         for step in (TaskState.RETRY_WAIT, TaskState.READY):
             state.task_states = transition_task(plan, state.task_states, task_id, step)
         return True
     state.task_states = transition_task(plan, state.task_states, task_id, TaskState.BLOCKED)
     return False
+
+
+def holds_its_tasks(incident: Any) -> bool:
+    """Whether this stop only held its tasks - so exhausting it blocks them."""
+
+    system = incident.get("system_state") or {}
+    return bool(system.get("held")) or str(system.get("stop_kind")) in HOLDING_STOP_KINDS
 
 
 def block_escalated_tasks(cfg: Any, state: Any, incident_id: str) -> list[str]:

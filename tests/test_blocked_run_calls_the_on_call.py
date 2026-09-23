@@ -213,6 +213,80 @@ class EveryStopIsFiledTests(unittest.TestCase):
         self.assertEqual(last["event"], "run_stop_unfiled")
         self.assertIn("disk gone", last["detail"]["error"])
 
+    def _engineer_closes(self, incident_id: str) -> None:
+        from codex_autopilot.pipeline_engineer import HealthcheckResult
+
+        PipelineIncidentStore(self.state_dir).complete_pipeline_engineer(
+            incident_id,
+            success=True,
+            actions=("repair_runtime_code",),
+            at="2026-09-23T15:05:00+00:00",
+            healthcheck=HealthcheckResult(
+                name="stop_repaired", passed=True, checks=("ok",), observed_at="2026-09-23T15:05:00+00:00"
+            ),
+            note="rewired the environment",
+        )
+
+    def test_the_same_stop_closed_twice_goes_to_the_owner_the_third_time(self) -> None:
+        """R23 lives in the door: every kind of stop is bounded, once.
+
+        The hold of R3 and a NO_SUCCESSOR ticket had no bound at all; the
+        orphan sweep and the plan gate each carried a copy.
+        """
+
+        for stop in STOPS:
+            with self.subTest(stop_kind=stop[0]):
+                self.setUp()
+                state = self._state()
+                phases = []
+                for _ in range(3):
+                    _state, incident_id = self._stop(*stop, state=state)
+                    phases.append(
+                        next(i for i in self._incidents() if i["incident_id"] == incident_id)["phase"]
+                    )
+                    if phases[-1] == IncidentPhase.PIPELINE_ENGINEER.value:
+                        self._engineer_closes(incident_id)
+                self.assertEqual(
+                    phases,
+                    [IncidentPhase.PIPELINE_ENGINEER.value] * 2 + [IncidentPhase.ESCALATE_TO_USER.value],
+                )
+                last = self._incidents()[-1]
+                self.assertEqual(last["escalation_reason"], "RECOVERY_EXHAUSTED")
+                self.assertEqual(
+                    [row["note"] for row in last["escalation"]["repaired"]],
+                    ["rewired the environment"] * 2,
+                )
+
+    def test_her_answer_to_a_ticket_handed_to_her_starts_the_count_again(self) -> None:
+        state = self._state()
+        for _ in range(2):
+            _state, incident_id = self._stop(*STOPS[1], state=state)
+            self._engineer_closes(incident_id)
+        _state, exhausted = self._stop(*STOPS[1], state=state)
+        self._resolve(exhausted)
+        _state, again = self._stop(*STOPS[1], state=state)
+        self.assertEqual(self._incidents()[-1]["phase"], IncidentPhase.PIPELINE_ENGINEER.value)
+
+    def test_a_ticket_she_swept_shut_unasked_still_counts(self) -> None:
+        """Resume closes the on-call's lane too; that answered no question."""
+
+        state = self._state()
+        for _ in range(2):
+            _state, incident_id = self._stop(*STOPS[1], state=state)
+            self._resolve(incident_id)
+        self._stop(*STOPS[1], state=state)
+        self.assertEqual(self._incidents()[-1]["phase"], IncidentPhase.ESCALATE_TO_USER.value)
+
+    def test_another_reason_code_is_another_signature(self) -> None:
+        state = self._state()
+        for code in ("MISSING_RESOURCE", "ENVIRONMENT_FAILURE", "MISSING_RESOURCE"):
+            _state, incident_id = self._stop(
+                "worker_blocked", "BLOCKED", f"M01 {code}", ("M01",), state=state,
+                system_state={"reason_code": code},
+            )
+            self.assertEqual(self._incidents()[-1]["phase"], IncidentPhase.PIPELINE_ENGINEER.value)
+            self._engineer_closes(incident_id)
+
 
 class TheEngineerHandsOneTicketUpTests(unittest.TestCase):
     """escalate_to_owner moves one ticket; it never stops the run."""
@@ -352,7 +426,8 @@ class NoStopBypassesTheDoorTests(unittest.TestCase):
         # a worker's own BLOCKED/ESCALATE with a product or policy code
         # (door: worker_blocked); infrastructure codes are only held
         ("stop_holds.py", "stop_worker_task"): 1,
-        # the on-call handed a ticket up: its held tasks now wait for her
+        # the on-call handed a ticket up, or the door found the same stop
+        # closed twice and back (R23, stop_repeats): held tasks wait for her
         ("stop_holds.py", "block_escalated_tasks"): 1,
         # the replanner's graph refused; exhausted -> door: plan_change_rejected
         ("lifecycle_completion.py", "_reject_replanner_result"): 1,
@@ -531,6 +606,31 @@ class TheDoorEndToEndTests(unittest.TestCase):
             [item["system_state"]["stop_kind"] for item in store.load()["incidents"]],
             ["worker_blocked"],
         )
+
+    def test_a_defect_upstream_or_in_the_contract_is_held_too(self) -> None:
+        """R3 names what is hers: PRODUCTION and POLICY. Nothing else blocks.
+
+        61e80a6 listed the infrastructure codes instead and missed two: a
+        DEPENDENCY_DEFECT or CONTRADICTORY_CONTRACT went BLOCKED at once,
+        although the door files them as RUNTIME and the on-call repairs both
+        with a plan change or a runtime repair.
+        """
+
+        for code in ("DEPENDENCY_DEFECT", "CONTRADICTORY_CONTRACT", "RECOVERY_EXHAUSTED", "UNSPECIFIED"):
+            with self.subTest(code=code):
+                self.setUp()
+                self._worker_stops(code)
+                self.assertEqual(self.store.load().task_states["A"], "READY")
+                self.assertEqual(self._paused(), {"A"})
+                ticket = PipelineIncidentStore(self.cfg.state_dir).load()["incidents"][-1]
+                self.assertTrue(ticket["system_state"]["held"])
+
+    def test_her_decisions_and_her_approvals_block_at_once(self) -> None:
+        for code in ("PRODUCT_DECISION", "ARCHITECTURE_DECISION", "DANGEROUS_PERMISSION"):
+            with self.subTest(code=code):
+                self.setUp()
+                self._worker_stops(code)
+                self.assertEqual(self.store.load().task_states["A"], "BLOCKED")
 
     def test_a_product_stop_still_blocks_at_once(self) -> None:
         """PRODUCT and POLICY are hers by R3 - no hold, no wait for DevOps."""

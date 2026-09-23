@@ -175,12 +175,20 @@ def _relayable_descriptors_without_a_thread(state: Any) -> tuple[Any, ...]:
     )
 
 
-def _would_idle_forever(state: Any) -> bool:
+def _would_idle_forever(cfg: Any, state: Any) -> bool:
     """The run would stand forever: work is ready and nobody is there to do it.
 
     An empty successor list is legitimate in itself - when everything hangs
     on a blocked task, say. The sign of trouble is different: a task in READY
     and not one live session, so nobody will come and nothing will move.
+
+    A READY task that an open ticket holds is not that sign: it waits for the
+    ticket, by design. It used to count. Measured by the independent check:
+    once the plan gate's ticket went to the owner, every engineer completion
+    saw its READY tasks, filed NO_SUCCESSOR and called another engineer -
+    five in a row, the run reading RUNNING while the decision was hers. So a
+    task counts only when no ticket holds it and no rate limit holds the
+    whole account (``reservable_work``, the same test the wake-up uses).
     """
 
     active = any(
@@ -189,6 +197,6 @@ def _would_idle_forever(state: Any) -> bool:
     )
     if active:
         return False
-    return any(
-        value == TaskState.READY.value for value in (state.task_states or {}).values()
-    )
+    from .engineer_reservation import reservable_work
+
+    return reservable_work(cfg, state, frozenset({TaskState.READY.value}))

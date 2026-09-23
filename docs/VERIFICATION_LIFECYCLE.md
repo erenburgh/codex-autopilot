@@ -98,7 +98,9 @@ completion next to independent work - and it never unlocks dependents. Three
 unreadable verdicts and an unroutable verifier also go through the door, but
 they are infrastructure (R3): the task stays `IMPLEMENTED`, held by its ticket,
 and a fresh verifier comes when the ticket closes. It becomes `BLOCKED` only
-when the on-call hands the ticket to the owner.
+when the on-call hands the ticket to the owner, or when the same stop comes
+back after the on-call closed it twice (R23: the third goes to the owner with a
+report, see `PIPELINE_ENGINEER.md`).
 
 ## Routing, resources, and dependency unlock
 
