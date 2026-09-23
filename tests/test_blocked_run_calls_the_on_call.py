@@ -707,6 +707,74 @@ class TheDoorEndToEndTests(unittest.TestCase):
         self.assertEqual(ticket["affected_task_ids"], ["A"])
         self.assertIn("requires revision without structured issues", ticket["summary"])
 
+    def test_task_states_that_do_not_fit_the_graph_are_a_stop_not_a_raise(self) -> None:
+        """``_prepare_state`` raised inside the frontier, in front of the engineer.
+
+        The same inconsistent-state character as the scheduler race and the
+        pending producer; the independent check named it once those had
+        become stops. Nothing is scheduled from such a map - only the
+        on-call comes, and one ticket holds the graph while it is open.
+        """
+
+        from _relay import reserve_ready_frontier
+
+        # A restore, or a plan change applied halfway: the map names a task
+        # the graph does not have.
+        state = self.store.load()
+        state.task_states["Z"] = "READY"
+        self.store.save(state)
+        for _pass in range(2):
+            reserved = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")
+            self.assertEqual([item.kind for item in reserved], ["pipeline_engineer"] if not _pass else [])
+        tickets = [
+            item
+            for item in PipelineIncidentStore(self.cfg.state_dir).load()["incidents"]
+            if item["system_state"].get("stop_kind") == "task_states_mismatch"
+        ]
+        self.assertEqual(len(tickets), 1)
+        self.assertEqual(tickets[0]["affected_task_ids"], ["A", "B"])
+        self.assertIn("unknown ['Z'], missing []", tickets[0]["summary"])
+        self.assertEqual(
+            [item["kind"] for item in self.store.load().worker_sessions], ["pipeline_engineer"]
+        )
+
+    def test_the_engineer_reads_no_routing_from_a_refused_graph(self) -> None:
+        """The invariant held only as a comment, the independent check found.
+
+        Under a refused graph ``_build_descriptor`` still took the model from
+        its ``model_strategy`` and the effort from the anchor task's
+        ``reasoning`` - the graph's word. The engineer now runs on her own
+        Codex settings then, as under ``host-settings``; under a verified
+        graph it is routed as before.
+        """
+
+        from _relay import reserve_ready_frontier
+
+        stop_run(
+            self.cfg,
+            self.store.load(),
+            stop_kind="worker_blocked",
+            phase="BLOCKED",
+            reason="r",
+            summary="s.",
+            at="2026-09-23T15:02:27+00:00",
+            task_ids=("A", "B"),
+        )
+        verified = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")[0]
+        self.assertEqual(verified.kind, "pipeline_engineer")
+        self.assertIsNotNone(verified.model)
+        self.assertEqual(verified.thinking, "medium")
+        state = self.store.load()
+        for item in state.worker_sessions:
+            item["status"] = "COMPLETED"
+        self.store.save(state)
+        self._unverify()
+        refused = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-1")[0]
+        self.assertEqual(refused.kind, "pipeline_engineer")
+        self.assertIsNone(refused.model)
+        self.assertIsNone(refused.thinking)
+        self.assertEqual(refused.cwd, str(self.root))
+
     ENGINEER_HANDS_UP = (
         'AUTOPILOT_ESCALATION: {"diagnosis":"d","recommendation":"r","scope":"task"}\n'
         "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER PRODUCT_DECISION"

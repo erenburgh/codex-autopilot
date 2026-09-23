@@ -110,12 +110,90 @@ class StrandedTests(unittest.TestCase):
         state = _state(status="BLOCKED", task_states={"M01": "BLOCKED"}, worker_sessions=[])
         self.assertFalse(wake.is_stranded(self.cfg, state))
 
-    def test_an_engineer_already_reserved_is_not_raised_twice(self) -> None:
+    def test_an_engineer_at_work_under_its_dispatcher_is_not_raised_twice(self) -> None:
+        """It used to pass with no dispatcher at all: "an engineer is pending".
+
+        That was the silent stop the independent check reproduced - an
+        engineer ACTIVE with a dead dispatcher kept the lane shut. Pending
+        is not enough; its dispatcher must be alive.
+        """
+
+        import os
+
         self._ticket_with_the_on_call()
-        engineer = {"kind": "pipeline_engineer", "status": "ACTIVE", "thread_id": "t-1"}
+        engineer = {
+            "kind": "pipeline_engineer",
+            "status": "ACTIVE",
+            "thread_id": "t-1",
+            "automatic_dispatch_state": "RUNNING",
+            "automatic_dispatch_pid": os.getpid(),
+        }
         self.assertFalse(
             wake.is_stranded(self.cfg, _state(worker_sessions=[engineer]))
         )
+
+    def test_an_engineer_whose_dispatcher_died_mid_turn_is_stranded(self) -> None:
+        """The independent check's case: completion raised, the process died."""
+
+        self._ticket_with_the_on_call()
+        engineer = {
+            "kind": "pipeline_engineer",
+            "status": "ACTIVE",
+            "thread_id": "t-1",
+            "automatic_dispatch_state": "RUNNING",
+            "automatic_dispatch_pid": 999_999_999,
+        }
+        self.assertTrue(
+            wake.is_stranded(self.cfg, _state(worker_sessions=[engineer]))
+        )
+
+    def test_a_running_worker_whose_dispatcher_died_is_stranded(self) -> None:
+        """No ticket at all: the worker's dispatcher alone consumed its turn."""
+
+        worker = {
+            "kind": "implementation",
+            "task_id": "M01",
+            "status": "ACTIVE",
+            "thread_id": "t-1",
+            "automatic_dispatch_state": "RUNNING",
+            "automatic_dispatch_pid": 999_999_999,
+        }
+        state = _state(task_states={"M01": "RUNNING"}, worker_sessions=[worker])
+        self.assertTrue(wake.is_stranded(self.cfg, state))
+
+    def test_a_create_in_doubt_that_a_ticket_holds_is_the_tickets(self) -> None:
+        """Nothing the wake-up can do for it; a wake every sweep is noise."""
+
+        ambiguous = {
+            "kind": "implementation",
+            "task_id": "M01",
+            "status": "AMBIGUOUS",
+            "thread_id": None,
+            "automatic_dispatch_pid": None,
+        }
+        state = _state(task_states={"M01": "RUNNING"}, worker_sessions=[ambiguous])
+        self.assertTrue(wake.is_stranded(self.cfg, state))
+        self._ticket_with_the_on_call()
+        PipelineIncidentStore(self.cfg.state_dir).escalate_incident_to_user(
+            PipelineIncidentStore(self.cfg.state_dir).load()["incidents"][0]["incident_id"],
+            reason_code="PRODUCT_DECISION",
+            at="2026-09-23T16:20:00+00:00",
+        )
+        self.assertFalse(wake.is_stranded(self.cfg, state))
+
+    def test_an_engineers_create_in_doubt_is_stranded_even_when_its_task_is_held(self) -> None:
+        """Its anchor IS the held task; left pending it shuts the lane."""
+
+        self._ticket_with_the_on_call()
+        ambiguous = {
+            "kind": "pipeline_engineer",
+            "task_id": "M01",
+            "status": "AMBIGUOUS",
+            "thread_id": None,
+            "automatic_dispatch_pid": None,
+        }
+        state = _state(task_states={"M01": "READY"}, worker_sessions=[ambiguous])
+        self.assertTrue(wake.is_stranded(self.cfg, state))
 
     def test_ready_work_with_no_session_at_all_is_stranded(self) -> None:
         """The generalisation of the engineer's "would idle forever"."""

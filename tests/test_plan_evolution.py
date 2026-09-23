@@ -500,6 +500,119 @@ class PlanEvolutionTests(unittest.TestCase):
         ticket = self._ticket(cfg, "inconsistent_state")
         self.assertIn("locks no live session holds", ticket["summary"])
 
+    def _at_the_replanner(self):
+        """A plan change whose replanner session is gone: the frontier must reserve one."""
+
+        cfg, store = self.initialize(graph([task("A"), task("B")], max_workers=1))
+        worker = reserve_ready_frontier(
+            cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None
+        )[0]
+        self.mark_active(store, worker.reservation_token, "worker-A")
+        bump_task_checkpoint(self.root, worker.task_id, "Plan change requested.")
+        replanner = complete_desktop_worker(
+            cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message=request_line("A"),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.assertEqual(replanner.kind, "replanner")
+        return cfg, store, replanner
+
+    def _at_the_plan_verifier(self):
+        """A proposed graph whose plan verifier session is gone."""
+
+        cfg, store, replanner = self._at_the_replanner()
+        self.mark_active(store, replanner.reservation_token, "replanner-PC1")
+        candidate = self.candidate_with_prerequisite(load_plan(cfg.state_dir, cfg.profile))
+        verifier = complete_desktop_worker(
+            cfg,
+            thread_id="replanner-PC1",
+            turn_id="turn-PC1",
+            final_message=PLAN_CHANGE_RESULT_PREFIX
+            + " "
+            + json.dumps(
+                {"request_id": "PC1", "base_graph_version": 1, "plan": candidate},
+                separators=(",", ":"),
+            ),
+            hook_gate=lambda _cfg: None,
+        ).descriptors[0]
+        self.assertEqual(verifier.kind, "plan_verifier")
+        self._session_gone(store, verifier.reservation_token)
+        return cfg, store
+
+    @staticmethod
+    def _session_gone(store: StateStore, token: str) -> None:
+        state = store.load()
+        session = next(item for item in state.worker_sessions if item["reservation_token"] == token)
+        session["status"] = "COMPLETED"
+        state.active_task_ids = []
+        state.task_states["A"] = TaskState.READY.value
+        store.save(state)
+
+    def _reserve_calls_the_on_call(self, cfg, store, why: str) -> dict:
+        """The refusal is a ticket and an engineer - never a raise, never a worker."""
+
+        before = [item["reservation_token"] for item in store.load().worker_sessions]
+        reserved = reserve_ready_frontier(
+            cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None
+        )
+        self.assertEqual([item.kind for item in reserved], ["pipeline_engineer"])
+        added = [
+            item["kind"]
+            for item in store.load().worker_sessions
+            if item["reservation_token"] not in before
+        ]
+        self.assertEqual(added, ["pipeline_engineer"])
+        ticket = self._ticket(cfg, "inconsistent_state")
+        self.assertIn(why, ticket["summary"])
+        self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
+        return ticket
+
+    def test_a_proposal_that_cannot_be_verified_is_a_stop_not_a_raise(self) -> None:
+        """These raised inside the frontier, in front of the engineer.
+
+        The raise rolled back the completion that called the frontier, and
+        while the record stayed as it was, the engineer - reserved after the
+        plan change's branch - never came. Named by the independent check.
+        """
+
+        breakages = {
+            "proposed plan digest changed": lambda record: record.update(
+                proposed_plan_sha256="0" * 64
+            ),
+            "no supported verification mode": lambda record: record.update(
+                verification_mode="guess"
+            ),
+            "complete proposed replacement graph": lambda record: record.pop("proposed_plan"),
+        }
+        for why, breakage in breakages.items():
+            with self.subTest(why=why):
+                self.tearDown()
+                self.setUp()
+                cfg, store = self._at_the_plan_verifier()
+                state = store.load()
+                breakage(state.plan_changes[0])
+                store.save(state)
+                ticket = self._reserve_calls_the_on_call(cfg, store, why)
+                self.assertEqual(ticket["affected_task_ids"], ["A"])
+
+    def test_a_requester_that_is_not_ready_is_a_stop_not_a_raise(self) -> None:
+        for kind in ("replanner", "plan_verifier"):
+            with self.subTest(kind=kind):
+                self.tearDown()
+                self.setUp()
+                if kind == "replanner":
+                    cfg, store, replanner = self._at_the_replanner()
+                    self._session_gone(store, replanner.reservation_token)
+                else:
+                    cfg, store = self._at_the_plan_verifier()
+                state = store.load()
+                state.task_states["A"] = TaskState.IMPLEMENTED.value
+                store.save(state)
+                ticket = self._reserve_calls_the_on_call(cfg, store, "IMPLEMENTED, not READY")
+                self.assertEqual(ticket["affected_task_ids"], ["A"])
+
     def test_t4_accumulated_patches_require_full_revalidation_and_can_be_rejected(self) -> None:
         cfg, store = self.initialize(graph([task("A")], max_workers=1))
         state = store.load()

@@ -197,6 +197,7 @@ def route_waiting_tickets(cfg: Any, plan: Any, state: Any) -> None:
                 store.ensure_pipeline_engineer(incident_id, at=at)
         except Exception:  # noqa: BLE001 - one sick ticket does not block the rest
             continue
+    _settle_lost_creates(cfg, plan, state, at)
     _file_orphan_blocks(cfg, plan, state, at)
 
 
@@ -311,17 +312,79 @@ def reservable_work(cfg: Any, state: Any, states: frozenset[str] = RESERVABLE_TA
     )
 
 
-def stalled_reservation(state: Any) -> bool:
-    """A reservation that can be raised again and whose dispatcher is gone."""
+def _lost_create(item: dict[str, Any]) -> bool:
+    """A pending session with no thread that cannot be raised again.
+
+    A create that ended in doubt (AMBIGUOUS) or a legacy RESERVED record:
+    a second create is forbidden (it could duplicate the thread), and with
+    no thread there is nothing the server could be asked about.
+    """
+
+    return (
+        not str(item.get("thread_id") or "")
+        and item.get("status") not in RELAYABLE_SESSION_STATUSES
+        and item.get("status") != "RELAYING"
+    )
+
+
+def stalled_reservation(state: Any, held: Any = frozenset()) -> bool:
+    """A pending session whose dispatcher is gone - whatever its status.
+
+    This used to ask only about reservations that can be raised again
+    (created, never sent). The independent check drove the other case on
+    the fakes: an on-call whose completion failed - an unreadable status
+    line, RESOLVED declared without devops-resolve-incident - raised
+    DesktopLifecycleError, the dispatcher (which catches only
+    WorkerProtocolError) died, and the session stayed ACTIVE with a dead
+    automatic_dispatch_pid. One engineer per run then kept every later one
+    out, the status read RUNNING, and this predicate said "not stranded":
+    a silent stop. The same held for a worker. The automatic dispatcher
+    waits for its turn and consumes it (the worker's Stop hook never does),
+    so a pending session without a live one is nobody's now.
+
+    Each such session has someone who moves it once the run is raised:
+    never created - raised again (``wake._revive_stalled``); with a thread -
+    settled by the server's word (``wake._settle_dead_sessions``); a create
+    in doubt - the reservation pass (``_settle_lost_creates``) files a
+    ticket for a worker's, and retires an engineer's, which did no work.
+
+    `held` are the tasks open tickets hold. A worker's create in doubt whose
+    task a ticket holds is that ticket's to settle - in the lane the first
+    clause of ``stranded_reason`` raises the engineer, and with the owner
+    the run waits for her. Counting it here would raise a wake-up every
+    sweep that can do nothing, each one a line in the run journal. An
+    engineer's never is: its anchor is exactly the task its ticket holds,
+    and while it stays pending no other engineer can come.
+    """
 
     return any(
-        (
-            item.get("status") in RELAYABLE_SESSION_STATUSES
-            or (item.get("status") == "RELAYING" and not str(item.get("thread_id") or ""))
-        )
+        item.get("status") in PENDING_SESSION_STATUSES
         and not _pid_alive(item.get("automatic_dispatch_pid"))
+        and not (
+            _lost_create(item)
+            and item.get("kind") != "pipeline_engineer"
+            and str(item.get("task_id") or "") in held
+        )
         for item in state.worker_sessions
     )
+
+
+def dead_session_tokens(state: Any) -> set[str]:
+    """Pending sessions past their creation whose dispatcher is gone.
+
+    These cannot simply be raised again - a thread exists and a turn may
+    have run - so only the server's own answer (thread/read) may retire
+    them. Reservations that were never created are raised again instead.
+    """
+
+    return {
+        str(item.get("resource_ownership_token") or item.get("reservation_token") or "")
+        for item in state.worker_sessions
+        if item.get("status") in PENDING_SESSION_STATUSES
+        and item.get("status") not in RELAYABLE_SESSION_STATUSES
+        and str(item.get("thread_id") or "")
+        and not _pid_alive(item.get("automatic_dispatch_pid"))
+    }
 
 
 def stranded_reason(cfg: Any, state: Any) -> str | None:
@@ -338,9 +401,75 @@ def stranded_reason(cfg: Any, state: Any) -> str | None:
     started = str(getattr(state, "status", "") or "") not in {"READY", "IDLE", ""}
     if started and not pending and reservable_work(cfg, state):
         return "reservable work without a session"
-    if stalled_reservation(state):
-        return "reservation without a live dispatcher"
+    held = {str(task) for item in _open(cfg) for task in item.get("affected_task_ids") or ()}
+    if stalled_reservation(state, held):
+        return "pending session without a live dispatcher"
     return None
+
+
+def _settle_lost_creates(cfg: Any, plan: Any, state: Any, at: str) -> None:
+    """Give every create in doubt whose dispatcher is gone someone to settle it.
+
+    Such a session was nobody's: the wake-up cannot raise it (a second
+    create is forbidden) or ask the server about it (it has no thread), the
+    frontier leaves pending sessions alone, and only a ticket below the
+    retry ceiling had ever been filed for it - so the task waited for her
+    Resume in silence.
+
+    - A worker's: a ticket through the door (``lost_create``) holds the
+      task, and the on-call settles the doubt with the tools it already has
+      (``reconcile-thread-identity``, a definitive transport failure). A
+      task an open ticket already holds is left to that ticket.
+    - An engineer's: it never started a turn - there is no thread to start
+      one on - so it did no work. It is retired, the lane is free, and the
+      next engineer takes its ticket; two lost on one ticket send it to the
+      owner (``hand_lost_engineers_to_owner``). Left pending, it kept every
+      later engineer out for good.
+
+    Housekeeping: a failure here never stops the reservation.
+    """
+
+    from .blocked_runs import stop_run
+
+    try:
+        held = {str(task) for item in _open(cfg) for task in item.get("affected_task_ids") or ()}
+    except Exception:  # noqa: BLE001 - an unreadable journal is itself a matter for doctor
+        return
+    for item in state.worker_sessions:
+        if not (
+            item.get("status") in PENDING_SESSION_STATUSES
+            and _lost_create(item)
+            and not _pid_alive(item.get("automatic_dispatch_pid"))
+        ):
+            continue
+        task_id = str(item.get("task_id") or "")
+        if item.get("kind") == "pipeline_engineer":
+            item["status"] = "RETRY_WAIT"
+            item["failure_reason"] = (
+                f"{LOST_ENGINEER_CREATE_REASON}: {item.get('failure_reason') or 'no thread'}"
+            )[:2000]
+            _append_event(state, "pipeline_engineer_create_lost", item, at)
+            continue
+        if task_id in held or task_id not in plan.task_map:
+            continue
+        stop_run(
+            cfg,
+            state,
+            stop_kind="lost_create",
+            phase="LOST_CREATE",
+            reason=(
+                f"{task_id}: the create of its {item.get('kind') or 'worker'} session ended "
+                f"in doubt and its dispatcher is gone: {item.get('failure_reason') or ''}"
+            )[:2000],
+            summary=(
+                f"{task_id} waits on a session whose thread may or may not exist; "
+                "nobody was left to settle it."
+            ),
+            at=at,
+            task_ids=(task_id,),
+            system_state={"reservation_token": str(item.get("reservation_token") or "")},
+        )
+        held.add(task_id)
 
 
 def stop_on_inconsistent_state(cfg: Any, state: Any, task_id: str, reason: str) -> None:
@@ -410,6 +539,52 @@ def stop_on_unverified_plan(cfg: Any, plan: Any, state: Any, error: Exception) -
     )
 
 
+def stop_on_mismatched_task_states(cfg: Any, plan: Any, state: Any, error: Exception) -> None:
+    """The durable task states do not fit the active graph. A stop, not a raise.
+
+    ``_prepare_state`` refuses a state map that names tasks the graph does
+    not have, or misses some it has. Inside the frontier that refusal was
+    the same raise as the plan gate's (sweep items 25 and 27): it rolled
+    back the completion that called the frontier, and stood in front of the
+    engineer's reservation, so the one who could look never came. The
+    independent check named it after the other inconsistent-state raises
+    had become stops.
+
+    Nothing may be scheduled from a map that does not fit the graph, so the
+    ticket (``task_states_mismatch``) holds every task of the graph that is
+    not VERIFIED, and only the on-call is reserved. It may not rewrite
+    run-state by hand (her boundary); what it can do is find how the map
+    and the graph parted - a plan change applied halfway, a restore - and
+    repair that, or bring her the diagnosis. One ticket while it is open.
+    """
+
+    from .blocked_runs import stop_run
+
+    try:
+        if any(
+            not item.get("resolved_at")
+            for item in _incidents(cfg)
+            if str((item.get("system_state") or {}).get("stop_kind")) == "task_states_mismatch"
+        ):
+            return
+    except Exception:  # noqa: BLE001 - the door records its own failure below
+        pass
+    stop_run(
+        cfg,
+        state,
+        stop_kind="task_states_mismatch",
+        phase="TASK_STATES_MISMATCH",
+        reason=f"the durable task states do not fit the active graph: {error}",
+        summary="The run's task states and its graph disagree; nothing may be scheduled from them.",
+        at=utc_now(),
+        task_ids=tuple(
+            task.id
+            for task in plan.tasks
+            if state.task_states.get(task.id) != TaskState.VERIFIED.value
+        ),
+    )
+
+
 def _anchor_task(plan: Any, state: Any, incident: dict[str, Any]) -> str:
     affected = [
         str(item) for item in incident.get("affected_task_ids") or () if str(item) in plan.task_map
@@ -459,6 +634,11 @@ def _reserve_pipeline_engineer_in_state(
     if engineer_session_pending(state):
         return ()
     incident = open_pipeline_engineer_incident(cfg)
+    # R23 for the on-call itself: a ticket whose engineers were lost twice
+    # (``hand_lost_engineers_to_owner``) goes to her, and the next ticket in
+    # the lane is taken instead.
+    while incident is not None and hand_lost_engineers_to_owner(cfg, state, incident):
+        incident = open_pipeline_engineer_incident(cfg)
     if incident is None:
         return ()
     incident_id = str(incident["incident_id"])
@@ -475,7 +655,7 @@ def _reserve_pipeline_engineer_in_state(
     attempt = int(state.task_attempts.get(task_id, 0)) or 1
     descriptor = _build_descriptor(
         cfg,
-        plan,
+        _graph_for_the_engineer(plan, state),
         state,
         task_id=task_id,
         kind="pipeline_engineer",
@@ -516,3 +696,126 @@ def _reserve_pipeline_engineer_in_state(
         detail=f"{incident_id} -> {task_id}",
     )
     return (descriptor,)
+
+
+# How many engineers may be lost on one ticket - their dispatcher died and
+# the server showed the turn over with no answer taken - before the ticket
+# goes to the owner. The same two as ``stop_repeats.MAX_REPEATED_STOPS``.
+MAX_LOST_ENGINEERS = 2
+# Written by ``resilience.reconcile_running_work`` when the server showed the
+# turn over, and by ``_settle_lost_creates`` for a create in doubt.
+LOST_ENGINEER_REASON = "crash reconciliation observed pipeline engineer"
+LOST_ENGINEER_CREATE_REASON = "lost pipeline engineer: create in doubt, dispatcher gone"
+
+
+def lost_engineers(state: Any, incident_id: str) -> list[dict[str, Any]]:
+    """The on-call sessions for this ticket that the wake-up had to retire."""
+
+    return [
+        item
+        for item in state.worker_sessions
+        if item.get("kind") == "pipeline_engineer"
+        and str(item.get("incident_id") or "") == incident_id
+        and str(item.get("failure_reason") or "").startswith(
+            (LOST_ENGINEER_REASON, LOST_ENGINEER_CREATE_REASON)
+        )
+    ]
+
+
+def hand_lost_engineers_to_owner(cfg: Any, state: Any, incident: dict[str, Any]) -> bool:
+    """Send a ticket to the owner once two engineers were lost on it. True if sent.
+
+    Lifting a dead engineer (``wake._settle_dead_sessions``) frees the lane,
+    and the next pass reserves a fresh engineer for the same ticket. If the
+    completion fails for the same reason every time - the engineer cannot
+    write a status line the runtime reads, or keeps declaring a repair the
+    gateway never recorded - that is a loop R23 forbids: each round burns
+    her limits on the same finding. So the third engineer is not reserved;
+    the ticket goes to her with what happened to the two before it. Never
+    raises: a reservation may not fail on bookkeeping.
+    """
+
+    incident_id = str(incident.get("incident_id") or "")
+    lost = lost_engineers(state, incident_id)
+    if len(lost) < MAX_LOST_ENGINEERS:
+        return False
+    from .blocked_runs import escalate_to_owner
+    from .stop_holds import block_escalated_tasks, holds_its_tasks
+
+    at = utc_now()
+    diagnosis = (
+        f"{len(lost)} on-call engineers for ticket {incident_id} ended without an "
+        "answer the runtime could take: each time the dispatcher died, and the "
+        "server showed the turn over. A third would meet the same end."
+    )
+    outcome = escalate_to_owner(
+        cfg,
+        incident_id,
+        code="RECOVERY_EXHAUSTED",
+        detail=diagnosis,
+        at=at,
+        escalation={
+            "diagnosis": diagnosis,
+            "repaired": [
+                {
+                    "session": item.get("reservation_token"),
+                    "thread_id": item.get("thread_id"),
+                    "failure": str(item.get("failure_reason") or "")[:600],
+                }
+                for item in lost
+            ],
+            "decision_needed": "whether the ticket's tasks go back to work, and how",
+            "recommendation": (
+                "read the engineers' threads and the dispatcher logs; the failure is "
+                "in how the on-call's answer is taken, not in the ticket's own fault"
+            ),
+            "scope": "task",
+        },
+    )
+    if outcome == "refused":
+        # Still told (escalate_to_owner banners a refusal); the ticket stays
+        # in the lane, and without this guard the loop would never end.
+        return False
+    if holds_its_tasks(incident):
+        try:
+            block_escalated_tasks(cfg, state, incident_id)
+        except Exception:  # noqa: BLE001 - the ticket still holds them; she is told
+            pass
+    _append_event(
+        state,
+        "pipeline_engineer_lost_twice",
+        lost[-1],
+        at,
+        detail=f"{incident_id} -> owner",
+    )
+    return True
+
+
+def _graph_for_the_engineer(plan: Any, state: Any) -> Any:
+    """The graph the engineer's descriptor may read: never a refused one's routing.
+
+    The plan gate refuses the graph, and the on-call is still reserved - it
+    is the one who comes for that very refusal. The invariant was that
+    nothing is built from the unverified graph; the independent check found
+    it held only as a comment: ``_build_descriptor`` took the model from the
+    graph's ``model_strategy`` and the effort from the anchor task's
+    ``reasoning``. Both are the graph's word, and a strategy corrupted by
+    hand would even raise ModelRoutingError inside the reservation and roll
+    back the completion that called it.
+
+    Under a refused graph the engineer runs on her own Codex settings - no
+    model and no effort are sent, exactly as for ``host-settings`` - the one
+    choice that is hers and not the graph's. The anchor still gives only the
+    task id; the working directory is the project root and the prompt is the
+    incident package, neither read from the graph.
+    """
+
+    from dataclasses import replace
+
+    from .plan_verification import PlanVerificationError, require_plan_verified
+
+    try:
+        require_plan_verified(plan, state)
+    except PlanVerificationError:
+        return replace(plan, model_strategy="host-settings")
+    return plan

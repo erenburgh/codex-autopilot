@@ -76,8 +76,11 @@ def is_stranded(cfg: Config, state: Any) -> bool:
     - a ticket waits for the on-call (in its lane, on its way there, or a
       stopped task nobody holds) with no engineer session pending;
     - work the frontier could take, and not one pending session;
-    - a pending reservation that can be raised again, whose dispatcher is
-      gone (the Stop hook knew this case; the wake-up did not).
+    - a pending session whose dispatcher is gone - one never created (the
+      Stop hook knew this case; the wake-up did not), one already running
+      (an on-call whose completion failed killed its dispatcher and stayed
+      ACTIVE, and the lane froze behind it with nobody told), and a create
+      in doubt that no ticket holds yet.
     """
 
     # Her pause, the pause marker and a finished run are stops; nothing
@@ -153,6 +156,7 @@ def run_wake(
     reserve: Callable[..., tuple[Any, ...]] | None = None,
     spawn_relay: Callable[..., int] | None = None,
     revive: Callable[[Config], Any] | None = None,
+    observe: Callable[[Config], dict[str, str]] | None = None,
 ) -> int:
     """Sleep until the due time and raise the dispatcher - or leave quietly if not allowed."""
 
@@ -191,11 +195,21 @@ def run_wake(
     from .hook_trust import HookPreflightError
 
     try:
-        descriptors = reserve(
-            cfg,
-            now_epoch=int(now()),
-            relay_owner_thread_id=owner,
+        descriptors = tuple(
+            reserve(
+                cfg,
+                now_epoch=int(now()),
+                relay_owner_thread_id=owner,
+            )
         )
+        # After the gate, never before it: sessions whose dispatcher died
+        # mid-turn are settled by the server's own word, and whatever that
+        # freed - the on-call's lane, above all - is reserved at once.
+        settled = _settle_dead_sessions(cfg, observe=observe)
+        if settled:
+            descriptors += tuple(
+                reserve(cfg, now_epoch=int(now()), relay_owner_thread_id=owner)
+            )
     except HookPreflightError as exc:
         # The one stop that cannot go through the on-call: raising the
         # engineer passes the same trust gate, and going around it is hers
@@ -263,6 +277,71 @@ def _finish(cfg: Config, store: StateStore, event: str, *, detail: dict[str, Any
         state.wake_pid = None
         state.wake_at = None
         store.save(state)
+
+
+def _settle_dead_sessions(
+    cfg: Config, *, observe: Callable[[Config], dict[str, str]] | None = None
+) -> tuple[str, ...]:
+    """Retire pending sessions whose dispatcher died and whose turn is over.
+
+    Such a session cannot be raised again - its thread exists and its turn
+    may have run - and nothing else ever retired it: the frontier leaves a
+    pending session alone, and ``_revive_stalled`` raises only reservations
+    that were never created. Measured by the independent check: the
+    on-call's completion raised before its transaction, the dispatcher
+    died, the session stayed ACTIVE, and one engineer per run kept the lane
+    shut for good.
+
+    The answer is the server's, not ours - the same observation and the
+    same reconciliation as her Resume (``observe_worker_states`` over
+    thread/read, then ``reconcile_desktop_runtime``). Only "terminal" and
+    "absent" retire anything; "active" and "unknown" are retained, as
+    Resume retains them. An active turn is not cut short: the next sweep
+    asks again, and once the turn is over it is retired then (the worker's
+    Stop hook observes an automatic turn but never consumes it - only the
+    dispatcher did). A retired worker goes to RETRY_WAIT; a retired
+    engineer frees the lane, and two lost on one ticket send that ticket to
+    her (``engineer_reservation.hand_lost_engineers_to_owner``). A create
+    in doubt has no thread to read; the reservation pass settles those
+    (``engineer_reservation._settle_lost_creates``).
+
+    Returns the tokens retired. Housekeeping: a failure is left in the
+    journal and retires nothing.
+    """
+
+    from .engineer_reservation import dead_session_tokens
+
+    store = StateStore(cfg.state_dir)
+    try:
+        dead = dead_session_tokens(store.load())
+        if not dead:
+            return ()
+        if observe is None:
+            from .lifecycle import observe_worker_states as observe
+        over = {
+            token: value
+            for token, value in observe(cfg).items()
+            if token in dead and value in {"terminal", "absent"}
+        }
+        if not over:
+            return ()
+        from .lifecycle import reconcile_desktop_runtime
+
+        reconcile_desktop_runtime(cfg, authoritative_states=over)
+    except Exception as exc:  # noqa: BLE001 - leave a trace, never break the wake-up
+        from .resilience import append_resilience_event
+
+        try:
+            with ResourceLockCoordinator(store, cfg.root).transaction():
+                state = store.load()
+                append_resilience_event(
+                    state, "dead_sessions_unsettled", at=utc_now(), detail={"error": str(exc)}
+                )
+                store.save(state)
+        except Exception:  # noqa: BLE001 - the trace is a courtesy
+            pass
+        return ()
+    return tuple(sorted(over))
 
 
 def _revive_stalled(cfg: Config) -> tuple[int, ...]:

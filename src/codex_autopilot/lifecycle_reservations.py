@@ -48,8 +48,13 @@ from .engineer_reservation import (  # noqa: F401 - re-exported for existing imp
     pipeline_engineer_package,
     route_waiting_tickets,
     stop_on_inconsistent_state,
+    stop_on_mismatched_task_states,
     stop_on_unverified_plan,
     tasks_paused_by_incidents,
+)
+from .plan_change_reservation import (  # noqa: F401 - re-exported for existing importers
+    _reserve_plan_verifier_in_state,
+    _reserve_replanner_in_state,
 )
 from .scope import scope_baseline
 from .run_state import RunState, StateStore, utc_now
@@ -157,7 +162,10 @@ def reserve_ready_frontier(
                         sort_keys=True,
                     ),
                 )
-        _prepare_state(plan, state, now_epoch=now_epoch)
+        try:
+            _prepare_state(plan, state, now_epoch=now_epoch)
+        except (DesktopLifecycleError, ValueError):
+            pass  # a stop, not a raise: _reserve_in_state files it past its guards
         descriptors = _reserve_in_state(
             cfg,
             plan,
@@ -282,7 +290,11 @@ def _reserve_in_state(
     # barrier branch: a run with no barrier at all never revisited its
     # retry times - measured: M0's retry expired twelve minutes before the
     # engineer exited, and a 24-task run stood forever with zero done.
-    _prepare_state(plan, state, now_epoch=epoch)
+    try:
+        _prepare_state(plan, state, now_epoch=epoch)
+        mismatch: Exception | None = None
+    except (DesktopLifecycleError, ValueError) as exc:
+        mismatch = exc  # a stop below, never a raise: see the plan gate
     # Every ticket that needs the on-call reaches its lane, and a stopped
     # task nobody holds gets a ticket (engineer_reservation).
     route_waiting_tickets(cfg, plan, state)
@@ -304,12 +316,16 @@ def _reserve_in_state(
             state.phase = "AWAITING_DESKTOP_CREATE"
         return found
 
-    if unverified is not None:
-        # Invariant: nothing is built from an unverified graph - the engineer's
-        # descriptor anchors a task only for cwd and title. The refusal used
-        # to raise here, rolling back the completion that called us (the
-        # on-call's own included); now it is a stop with a ticket.
-        stop_on_unverified_plan(cfg, plan, state, unverified)
+    if unverified is not None or mismatch is not None:
+        # Invariant: nothing is built from an unverified graph or from task
+        # states that do not fit it - only the engineer, whose descriptor
+        # reads no routing from a refused graph (_graph_for_the_engineer).
+        # Both refusals used to raise here, rolling back the completion that
+        # called us (the on-call's own included); now each is a stop.
+        if unverified is not None:
+            stop_on_unverified_plan(cfg, plan, state, unverified)
+        if mismatch is not None:
+            stop_on_mismatched_task_states(cfg, plan, state, mismatch)
         return finish(())
     paused = tasks_paused_by_incidents(cfg, plan)
     if state.active_plan_change_id is not None:
@@ -459,283 +475,6 @@ def _pending_producer(state: RunState, task_id: str) -> bool:
     )
 
 
-def _reserve_plan_verifier_in_state(
-    cfg: Config,
-    plan: Plan,
-    state: RunState,
-    *,
-    memory_audit_before: int,
-    relay_owner_thread_id: str,
-) -> tuple[LaunchDescriptor, ...]:
-    """Reserve a fresh semantic judge without committing the proposed graph."""
-
-    record = active_plan_change(state)
-    if state.active_task_ids:
-        state.status = "RUNNING"
-        state.phase = "PLAN_VERIFICATION_DRAINING"
-        return ()
-    if any(
-        item.get("kind") == "plan_verifier"
-        and item.get("plan_change_id") == record["id"]
-        and item.get("status") in PENDING_SESSION_STATUSES
-        for item in state.worker_sessions
-    ):
-        return ()
-    raw_candidate = record.get("proposed_plan")
-    if not isinstance(raw_candidate, dict):
-        raise DesktopLifecycleError(
-            "plan verification requires a complete proposed replacement graph"
-        )
-    candidate = validate_plan_change(
-        plan,
-        raw_candidate,
-        cfg.profile,
-        promotion_evidence_store=ProjectMemory(cfg.root),
-    )
-    if record.get("proposed_plan_sha256") != plan_sha256(candidate):
-        raise DesktopLifecycleError(
-            "proposed plan digest changed before independent verification"
-        )
-    mode = str(record.get("verification_mode") or "")
-    if mode not in {PLAN_PATCH_VERIFICATION, FULL_PLAN_REVALIDATION}:
-        raise DesktopLifecycleError("plan change has no supported verification mode")
-
-    task_id = str(record["requester_task_id"])
-    raw_state = TaskState(state.task_states[task_id])
-    if raw_state is TaskState.RETRY_WAIT:
-        state.status = "WAITING"
-        state.phase = "WAITING_RATE_LIMIT"
-        return ()
-    if raw_state is TaskState.BLOCKED:
-        state.task_states = transition_task(
-            plan, state.task_states, task_id, TaskState.READY
-        )
-        raw_state = TaskState.READY
-    if raw_state is not TaskState.READY:
-        raise DesktopLifecycleError(
-            f"plan verification anchor {task_id} is not ready"
-        )
-
-    previous_attempt = int(state.task_attempts.get(task_id, 0))
-    attempt = previous_attempt + 1
-    state.task_attempts[task_id] = attempt
-    state.worker_sequence += 1
-    token = _stable_id(
-        state,
-        f"reservation:{task_id}:plan-verifier:{record['id']}:{attempt}:{state.worker_sequence}",
-    )
-    operation_id = _stable_id(state, f"operation:{token}")
-    client_id = f"autopilot-{_stable_id(state, f'client:{token}')[:24]}"
-    descriptor = _build_descriptor(
-        cfg,
-        plan,
-        state,
-        task_id=task_id,
-        kind="plan_verifier",
-        attempt=attempt,
-        token=token,
-        operation_id=operation_id,
-        client_id=client_id,
-    )
-    state.task_states = transition_task(
-        plan, state.task_states, task_id, TaskState.RUNNING
-    )
-    state.active_task_ids.append(task_id)
-    session: dict[str, Any] = {
-        "reservation_token": token,
-        "resource_ownership_token": token,
-        "operation_id": operation_id,
-        "client_user_message_id": client_id,
-        "task_id": task_id,
-        "kind": "plan_verifier",
-        "attempt": attempt,
-        "worker_sequence": state.worker_sequence,
-        "plan_change_id": record["id"],
-        "verification_mode": mode,
-        "proposed_plan_sha256": record["proposed_plan_sha256"],
-        "status": "CREATE_REQUESTED",
-        "thread_id": None,
-        "turn_id": None,
-        "host_id": None,
-        "relay_owner_thread_id": relay_owner_thread_id,
-        "created_at": descriptor.created_at,
-        "memory_audit_before": memory_audit_before,
-        "descriptor": descriptor.to_dict(),
-    }
-    state.worker_sessions.append(session)
-    record["status"] = "PLAN_VERIFYING"
-    record["plan_verifier_session_token"] = token
-    record["plan_verification_attempts"] = int(
-        record.get("plan_verification_attempts") or 0
-    ) + 1
-    for event in ("reservation_created", "plan_verifier_started", "create_requested"):
-        _append_event(state, event, session, descriptor.created_at)
-    append_resilience_event(
-        state,
-        "plan_verifier_reserved",
-        at=descriptor.created_at,
-        task_id=task_id,
-        plan_change_id=str(record["id"]),
-        detail={
-            "reservation_token": token,
-            "mode": mode,
-            "proposed_plan_sha256": record["proposed_plan_sha256"],
-        },
-    )
-    state.status = "RUNNING"
-    state.phase = "PLAN_VERIFYING"
-    state.milestone_id = task_id
-    return (descriptor,)
-
-
-def _reserve_replanner_in_state(
-    cfg: Config,
-    plan: Plan,
-    state: RunState,
-    *,
-    memory_audit_before: int,
-    relay_owner_thread_id: str,
-) -> tuple[LaunchDescriptor, ...]:
-    """Reserve exactly one fresh replanner after all production workers drain."""
-
-    record = active_plan_change(state)
-    if state.active_task_ids:
-        state.status = "RUNNING"
-        state.phase = "PLAN_CHANGE_DRAINING"
-        return ()
-    if any(
-        item.get("kind") == "replanner"
-        and item.get("plan_change_id") == record["id"]
-        and item.get("status") in PENDING_SESSION_STATUSES
-        for item in state.worker_sessions
-    ):
-        return ()
-    task_id = str(record["requester_task_id"])
-    raw_state = TaskState(state.task_states[task_id])
-    if raw_state is TaskState.RETRY_WAIT:
-        state.status = "WAITING"
-        state.phase = "WAITING_RATE_LIMIT"
-        return ()
-    if raw_state is TaskState.BLOCKED:
-        state.task_states = transition_task(
-            plan,
-            state.task_states,
-            task_id,
-            TaskState.READY,
-        )
-        raw_state = TaskState.READY
-    if raw_state is not TaskState.READY:
-        raise DesktopLifecycleError(
-            f"plan change requester {task_id} is not ready for replanning"
-        )
-
-    previous_attempt = int(state.task_attempts.get(task_id, 0))
-    attempt = previous_attempt + 1
-    worker_sequence = state.worker_sequence + 1
-    token = _stable_id(
-        state,
-        f"reservation:{task_id}:replanner:{record['id']}:{attempt}:{worker_sequence}",
-    )
-    owner = LockOwner.create(
-        run_id=state.run_id,
-        task_id=task_id,
-        attempt=attempt,
-        worker_id=f"desktop-replanner-{worker_sequence}",
-        ownership_token=token,
-    )
-    state.task_attempts[task_id] = attempt
-    acquired = acquire_resources_in_state(
-        plan,
-        state,
-        cfg.root,
-        task_id,
-        owner,
-        execution_mode="code",
-    )
-    if not acquired.acquired:
-        state.task_attempts[task_id] = previous_attempt
-        state.status = "WAITING"
-        state.phase = "PLAN_CHANGE_WAITING_LOCKS"
-        # Nothing is draining (that returned above), so a lock in the way
-        # belongs either to a live session or to nobody. Waiting on nobody
-        # was forever: no wake-up covers it and no door was opened.
-        live = {
-            str(item.get("resource_ownership_token"))
-            for item in state.worker_sessions
-            if item.get("status") in PENDING_SESSION_STATUSES
-        }
-        if not any(
-            str((lock.get("owner") or {}).get("ownership_token")) in live
-            for lock in state.resource_locks
-        ):
-            stop_on_inconsistent_state(
-                cfg,
-                state,
-                task_id,
-                f"the plan change waits on locks no live session holds: {acquired.reason}",
-            )
-        return ()
-    state.worker_sequence = worker_sequence
-    operation_id = _stable_id(state, f"operation:{token}")
-    client_id = f"autopilot-{_stable_id(state, f'client:{token}')[:24]}"
-    descriptor = _build_descriptor(
-        cfg,
-        plan,
-        state,
-        task_id=task_id,
-        kind="replanner",
-        attempt=attempt,
-        token=token,
-        operation_id=operation_id,
-        client_id=client_id,
-    )
-    state.task_states = transition_task(
-        plan,
-        state.task_states,
-        task_id,
-        TaskState.RUNNING,
-    )
-    state.active_task_ids.append(task_id)
-    session: dict[str, Any] = {
-        "reservation_token": token,
-        "resource_ownership_token": token,
-        "operation_id": operation_id,
-        "client_user_message_id": client_id,
-        "task_id": task_id,
-        "kind": "replanner",
-        "attempt": attempt,
-        "worker_sequence": worker_sequence,
-        "plan_change_id": record["id"],
-        "status": "CREATE_REQUESTED",
-        "thread_id": None,
-        "turn_id": None,
-        "host_id": None,
-        "relay_owner_thread_id": relay_owner_thread_id,
-        "created_at": descriptor.created_at,
-        "memory_audit_before": memory_audit_before,
-        "checkpoint_before": task_checkpoint(
-            _descriptor_state_dir(cfg, descriptor), task_id
-        ),
-        "scope_baseline": scope_baseline(Path(descriptor.cwd)),
-        "descriptor": descriptor.to_dict(),
-    }
-    state.worker_sessions.append(session)
-    record["status"] = "REPLANNER_RESERVED"
-    record["replanner_session_token"] = token
-    for event in ("reservation_created", "replanner_started", "create_requested"):
-        _append_event(state, event, session, descriptor.created_at)
-    append_resilience_event(
-        state,
-        "replanner_reserved",
-        at=descriptor.created_at,
-        task_id=task_id,
-        plan_change_id=str(record["id"]),
-        detail={"reservation_token": token, "attempt": attempt},
-    )
-    state.status = "RUNNING"
-    state.phase = "AWAITING_DESKTOP_CREATE"
-    state.milestone_id = task_id
-    return (descriptor,)
 
 def _reserve_followup_sessions_in_state(
     cfg: Config,
@@ -937,7 +676,11 @@ def _reserve_followup_sessions_in_state(
 def _prepare_state(plan: Plan, state: RunState, *, now_epoch: int | None) -> None:
     if set(state.task_states) != set(plan.task_map):
         if state.worker_sessions or not plan.legacy_serial:
-            raise DesktopLifecycleError("durable task state does not match the active graph")
+            raise DesktopLifecycleError(
+                "durable task state does not match the active graph: "
+                f"unknown {sorted(set(state.task_states) - set(plan.task_map))}, "
+                f"missing {sorted(set(plan.task_map) - set(state.task_states))}"
+            )
         state.task_states = migrate_v08_task_states(plan, asdict(state))
         state.active_task_ids = [
             task_id

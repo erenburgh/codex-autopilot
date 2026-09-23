@@ -1639,7 +1639,12 @@ class DesktopLifecycleTests(unittest.TestCase):
             failure_code="app_server_rpc_failed",
             definitive=False,
         )
-        self.assertEqual(reserve_ready_frontier(reloaded), ())
+        # No second create for A, ever. What changed: the create in doubt is
+        # no longer nobody's. Its dispatcher is gone, and below the retry
+        # ceiling no ticket was filed, so A waited for her Resume in
+        # silence; now the next pass files one and the on-call comes for it.
+        again = reserve_ready_frontier(reloaded)
+        self.assertEqual([(item.task_id, item.kind) for item in again], [("A", "pipeline_engineer")])
         state = self.store.load()
         self.assertEqual(state.task_states["A"], TaskState.RUNNING.value)
         self.assertEqual(state.task_states["C"], TaskState.WAITING.value)
@@ -1647,6 +1652,9 @@ class DesktopLifecycleTests(unittest.TestCase):
             item for item in state.worker_sessions if item["reservation_token"] == first[0].reservation_token
         )
         self.assertEqual(ambiguous["status"], "AMBIGUOUS")
+        ticket = PipelineIncidentStore(self.cfg.state_dir).load()["incidents"][-1]
+        self.assertEqual(ticket["system_state"]["stop_kind"], "lost_create")
+        self.assertEqual(ticket["affected_task_ids"], ["A"])
 
 
     def test_platform_handoff_identity_reconciliation_preserves_completion(self) -> None:

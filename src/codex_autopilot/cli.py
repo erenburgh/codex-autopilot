@@ -254,8 +254,12 @@ def _record_detached_dispatch_failure(cfg, token: str, error: BaseException) -> 
             None,
         )
         task_id = str((session or {}).get("task_id") or "")
+        # The on-call's task is only its anchor (cwd, title): it did no work
+        # there. Its failed dispatch used to pause that neighbour for as
+        # long as the ticket stayed open.
+        engineer = str((session or {}).get("kind") or "") == "pipeline_engineer"
     except Exception:  # the state is unreadable - the report must still go out
-        task_id = ""
+        task_id, engineer = "", False
 
     try:
         store = PipelineIncidentStore(cfg.state_dir)
@@ -265,7 +269,8 @@ def _record_detached_dispatch_failure(cfg, token: str, error: BaseException) -> 
                 code="detached_dispatch_failed",
                 surface=IncidentClass.PIPELINE,
                 summary=summary[:2000],
-                affected_task_ids=(task_id,) if task_id else (),
+                affected_task_ids=(task_id,) if task_id and not engineer else (),
+                context_task_id=task_id if engineer else "",
                 operation="create_thread",
                 side_effect_outcome=SideEffectOutcome.KNOWN_FAILED,
                 system_state={"reservation_token": token},

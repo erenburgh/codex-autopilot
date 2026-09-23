@@ -141,6 +141,25 @@ in `run_status`: `RUNNING` while any session is pending, `WAITING`
 waits for the owner. The wake-up raises a stranded run whatever its status
 says, except a paused or finished one.
 
+A session whose dispatcher died is never left pending. An engineer whose
+completion raised - an unreadable status line, `RESOLVED` without
+`devops-resolve-incident` - used to stay `ACTIVE` with a dead dispatcher, and
+one engineer per run kept every later one out. The wake-up now counts any
+pending session without a live dispatcher as stranded, asks the server about
+its thread, and retires a turn that is over, so the next engineer takes the
+ticket in the same wake. A create in doubt has no thread to ask about: the
+reservation pass files a `lost_create` ticket for a worker's, and retires an
+engineer's, which never started a turn. Two engineers lost on one ticket send
+that ticket to the owner with what happened to them, not to a third (R23).
+
+The frontier's own refusals are stops too, not raises that roll back the
+completion calling it: task states that do not fit the graph
+(`task_states_mismatch`, holding every unfinished task), and a plan change
+whose proposal no longer validates, whose digest moved, whose verification
+mode is unknown or whose requester is not `READY` (`inconsistent_state`,
+holding the requester). Under a refused graph the engineer's descriptor takes
+no model or effort from that graph - it runs on the owner's Codex settings.
+
 ## Bounded recovery
 
 Automatic recovery has its own file lock, one logical recovery slot, ownership
