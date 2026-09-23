@@ -149,8 +149,13 @@ pending session without a live dispatcher as stranded, asks the server about
 its thread, and retires a turn that is over, so the next engineer takes the
 ticket in the same wake. A create in doubt has no thread to ask about: the
 reservation pass files a `lost_create` ticket for a worker's, and retires an
-engineer's, which never started a turn. Two engineers lost on one ticket send
-that ticket to the owner with what happened to them, not to a third (R23).
+engineer's, which never started a turn. An engineer whose own turn failed
+(the turn ended non-completed, `turn/start` was rejected) retires only its
+session: its task is an anchor it never executes, possibly running under a
+worker of its own, so no task state, active slot or retry time is touched.
+Her pause and the account's limit retire it without counting. Two engineers
+lost on one ticket - failed, or dead with the turn over - send that ticket to
+the owner with what happened to them, not to a third (R23).
 
 The frontier's own refusals are stops too, not raises that roll back the
 completion calling it: task states that do not fit the graph

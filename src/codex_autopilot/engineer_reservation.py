@@ -706,6 +706,9 @@ MAX_LOST_ENGINEERS = 2
 # turn over, and by ``_settle_lost_creates`` for a create in doubt.
 LOST_ENGINEER_REASON = "crash reconciliation observed pipeline engineer"
 LOST_ENGINEER_CREATE_REASON = "lost pipeline engineer: create in doubt, dispatcher gone"
+# Written by ``lifecycle_failures.record_desktop_failure`` when the engineer's
+# own turn failed definitively (not her pause, not the account's limit).
+LOST_ENGINEER_TURN_REASON = "lost pipeline engineer: its turn failed"
 
 
 def lost_engineers(state: Any, incident_id: str) -> list[dict[str, Any]]:
@@ -717,7 +720,7 @@ def lost_engineers(state: Any, incident_id: str) -> list[dict[str, Any]]:
         if item.get("kind") == "pipeline_engineer"
         and str(item.get("incident_id") or "") == incident_id
         and str(item.get("failure_reason") or "").startswith(
-            (LOST_ENGINEER_REASON, LOST_ENGINEER_CREATE_REASON)
+            (LOST_ENGINEER_REASON, LOST_ENGINEER_CREATE_REASON, LOST_ENGINEER_TURN_REASON)
         )
     ]
 
@@ -745,8 +748,8 @@ def hand_lost_engineers_to_owner(cfg: Any, state: Any, incident: dict[str, Any])
     at = utc_now()
     diagnosis = (
         f"{len(lost)} on-call engineers for ticket {incident_id} ended without an "
-        "answer the runtime could take: each time the dispatcher died, and the "
-        "server showed the turn over. A third would meet the same end."
+        "answer the runtime could take: their turns failed, or their dispatcher "
+        "died and the server showed the turn over. A third would meet the same end."
     )
     outcome = escalate_to_owner(
         cfg,

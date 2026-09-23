@@ -224,7 +224,14 @@ def record_desktop_failure(
         # recorded as worker_paused and counted like any fault: her fifth
         # pause opened a ticket for the on-call about her pause (her
         # boundary). It is recorded, never counted.
-        counted = not rate_limited and failure_code != "worker_paused"
+        #
+        # Nor is the on-call's own failed turn counted here. The ceiling opens
+        # a ticket that holds the session's task, and the engineer's task is
+        # only its anchor - a context it never executes. The engineer has a
+        # bound of its own, per ticket (``lost_engineers``): two lost on one
+        # ticket send it to her as RECOVERY_EXHAUSTED.
+        engineer = str(session.get("kind") or "") == "pipeline_engineer"
+        counted = not rate_limited and failure_code != "worker_paused" and not engineer
         attempts = int(state.failure_signature_attempts.get(failure_code, 0))
         if counted:
             attempts += 1
@@ -293,6 +300,38 @@ def record_desktop_failure(
                 session["automatic_dispatch_pid"] = None
                 session["automatic_dispatch_connection_pid"] = None
             session["failure_reason"] = reason
+            # The on-call's failed turn touches no task. Its session is
+            # created WITHOUT moving its anchor into an active state (as
+            # ``resilience.reconcile_running_work`` already knows), and the
+            # anchor is never its to change: since the engineer works next to
+            # the run, the anchor is a ticket's held task (READY, IMPLEMENTED
+            # or BLOCKED) or its context task - which may be RUNNING under a
+            # worker of its own at this very moment.
+            #
+            # Measured on the fakes before this branch: a ticket with
+            # context_task_id=A reserved [engineer A, implementation A]; the
+            # engineer's definitive failure sent A from RUNNING to RETRY_WAIT
+            # and emptied active_task_ids while A's worker was still being
+            # created - the neighbour's completion then met a forbidden
+            # transition. With A held in READY by the ticket, the same failure
+            # raised IllegalTaskTransition READY -> RETRY_WAIT, the dispatcher
+            # died, and the engineer's session stayed ACTIVE until a sweep.
+            #
+            # Now only the session is retired and the lane is free. A turn
+            # that failed on the engineer's side is marked as a lost engineer,
+            # so the per-ticket bound sends the ticket to her after the
+            # second; her pause and the account's limit are nobody's fault
+            # and count for nothing.
+            if engineer:
+                from .engineer_reservation import LOST_ENGINEER_TURN_REASON
+
+                if not rate_limited and failure_code != "worker_paused":
+                    session["failure_reason"] = (
+                        f"{LOST_ENGINEER_TURN_REASON} ({failure_code}): {reason}"
+                    )[:2000]
+                _append_event(
+                    state, "pipeline_engineer_turn_failed", session, timestamp, detail=reason
+                )
             # A repeated failure of an already waiting task is not a new
             # state. A second failure record for the same task used to raise
             # IllegalTaskTransition: RETRY_WAIT -> RETRY_WAIT, the relay died,
@@ -324,7 +363,9 @@ def record_desktop_failure(
                 str(session.get("kind") or "") == "verifier"
                 and state.task_states.get(task_id) == TaskState.VERIFYING.value
             )
-            if verifier_lost_mid_flight:
+            if engineer:
+                pass
+            elif verifier_lost_mid_flight:
                 state.task_states = transition_task(
                     plan, state.task_states, task_id, TaskState.IMPLEMENTED
                 )
@@ -339,13 +380,16 @@ def record_desktop_failure(
                 state.task_states = transition_task(
                     plan, state.task_states, task_id, TaskState.RETRY_WAIT
                 )
-            state.active_task_ids = [item for item in state.active_task_ids if item != task_id]
-            release_resources_in_state(
-                state,
-                str(session["resource_ownership_token"]),
-                reason="definitive Desktop worker failure",
-                now=timestamp,
-            )
+            if not engineer:
+                state.active_task_ids = [
+                    item for item in state.active_task_ids if item != task_id
+                ]
+                release_resources_in_state(
+                    state,
+                    str(session["resource_ownership_token"]),
+                    reason="definitive Desktop worker failure",
+                    now=timestamp,
+                )
             delay = min(
                 cfg.retry.maximum_seconds,
                 cfg.retry.initial_seconds * (2 ** max(0, int(session["attempt"]) - 1)),
@@ -355,7 +399,8 @@ def record_desktop_failure(
                 if isinstance(reset_at, bool) or not isinstance(reset_at, int) or reset_at < 0:
                     raise DesktopLifecycleError("rate-limit reset_at must be a non-negative epoch")
                 retry_at = max(retry_at, reset_at + 5)
-            state.task_retry_at[task_id] = retry_at
+            if not engineer:
+                state.task_retry_at[task_id] = retry_at
             if rate_limited:
                 state.rate_limit_until = max(int(state.rate_limit_until or 0), retry_at)
                 append_resilience_event(
@@ -365,16 +410,17 @@ def record_desktop_failure(
                     task_id=task_id,
                     detail={"retry_at": retry_at, "reset_at": reset_at},
                 )
-            _append_event(
-                state,
-                "retry_scheduled",
-                session,
-                timestamp,
-                detail=json.dumps(
-                    {"retry_at": retry_at, "rate_limited": rate_limited},
-                    sort_keys=True,
-                ),
-            )
+            if not engineer:
+                _append_event(
+                    state,
+                    "retry_scheduled",
+                    session,
+                    timestamp,
+                    detail=json.dumps(
+                        {"retry_at": retry_at, "rate_limited": rate_limited},
+                        sort_keys=True,
+                    ),
+                )
             descriptors = (
                 _reserve_in_state(
                     cfg,
