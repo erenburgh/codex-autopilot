@@ -523,7 +523,12 @@ class WorkerReasonCodeTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "src/codex_autopilot/lifecycle_completion.py"
         ).read_text(encoding="utf-8")
+        # The record is now written by the one door every stop goes through,
+        # so the code travels as the reason it is given rather than as a
+        # direct assignment. What R13 asks - that the record names the code,
+        # not a retelling of the status - is unchanged.
         self.assertIn(
-            'state.last_error = f"{task_id} {kind} {worker_status} {reason_code}"',
+            'reason=f"{task_id} {kind} {worker_status} {reason_code}".strip(),',
             source,
         )
+        self.assertIn("phase=\"BLOCKED\",", source)

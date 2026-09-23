@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any, Callable
 
+from .blocked_runs import stop_run as _stop_run
 from .ai_studio import AIStudioRuntime, ContextBoundaryError
 from .artifact_staging_lifecycle import (
     audit_completed_task_scope,
@@ -542,6 +543,7 @@ def complete_desktop_worker(
                 state,
                 descriptors,
                 paused=store.pause_requested(),
+                cfg=cfg,
             )
             store.save(state)
             _materialize(descriptors)
@@ -652,7 +654,22 @@ def complete_desktop_worker(
             # R13: the stop reason is a code from the closed list, not a
             # retelling of the status. The old line "M9 worker returned
             # BLOCKED" said nothing beyond the status itself.
-            state.last_error = f"{task_id} {kind} {worker_status} {reason_code}".strip()
+            _stop_run(
+                cfg,
+                state,
+                phase="BLOCKED",
+                reason=f"{task_id} {kind} {worker_status} {reason_code}".strip(),
+                summary=(
+                    f"{task_id} stopped its own {kind} and named {reason_code}. "
+                    "A worker stops when the answer is not its to give."
+                ),
+                at=timestamp,
+                task_ids=(task_id,),
+                system_state={"reason_code": reason_code, "kind": kind},
+                # A worker stopping its own task leaves the rest of the graph
+                # runnable; calling the on-call here would halt them too.
+                route=False,
+            )
             current["reason_code"] = reason_code
             if reason_code == "UNSPECIFIED":
                 record_violation(
@@ -705,6 +722,7 @@ def complete_desktop_worker(
             state,
             descriptors,
             paused=store.pause_requested(),
+            cfg=cfg,
         )
         store.save(state)
         done = state.status == "DONE"
@@ -911,17 +929,21 @@ def _complete_pipeline_engineer(
             # PIPELINE_ENGINEER: the store believed the engineer was working,
             # the task hung paused, and neither it nor the user had anything
             # to close the ticket with.
-            PipelineIncidentStore(cfg.state_dir).escalate_incident_to_user(
-                incident_id,
-                reason_code=escalation_code,
+            _stop_run(
+                cfg,
+                state,
+                phase="PIPELINE_ENGINEER_ESCALATED",
+                reason=(
+                    f"the on-call engineer handed incident {incident_id} to the "
+                    f"user: {escalation_code}"
+                ),
+                summary=(
+                    "The on-call engineer looked at this and says the call is "
+                    f"not theirs to make: {escalation_code}."
+                ),
                 at=timestamp,
-                detail="Pipeline Engineer handed the incident to the user",
-            )
-            state.status = "BLOCKED"
-            state.phase = "PIPELINE_ENGINEER_ESCALATED"
-            state.last_error = (
-                f"the on-call engineer handed incident {incident_id} to the user: "
-                f"{escalation_code}"
+                incident_id=incident_id,
+                escalation_code=escalation_code,
             )
         else:
             state.status = "READY"
@@ -968,11 +990,17 @@ def _complete_pipeline_engineer(
                 # An exception here would lose the very record of the
                 # engineer's completion, so the run stops loudly rather than
                 # crashing: the task is ready, but nobody can be assigned.
-                state.status = "BLOCKED"
-                state.phase = "PIPELINE_ENGINEER_NO_SUCCESSOR"
-                state.last_error = (
-                    f"the engineer closed incident {incident_id}, but no successor was assigned: "
-                    "there is a ready task and not one active session"
+                _stop_run(
+                    cfg,
+                    state,
+                    phase="PIPELINE_ENGINEER_NO_SUCCESSOR",
+                    reason=(
+                        f"the engineer closed incident {incident_id}, but no successor "
+                        "was assigned: there is a ready task and not one active session"
+                    ),
+                    summary="A task is ready and no session can be assigned to it.",
+                    at=timestamp,
+                    incident_id=incident_id,
                 )
                 _append_event(
                     state,
@@ -990,6 +1018,8 @@ def _complete_pipeline_engineer(
 # If the model missed the schema three times, it is no accident, and the
 # next turn would burn limits for nothing - the run must stop loudly and
 # name the reason to the human, not spin silently.
+
+
 MAX_PLAN_CHANGE_REJECTIONS = 2
 
 
@@ -1081,10 +1111,40 @@ def _reject_replanner_result(
             # The budget is exhausted. A silent wait here is precisely the
             # hole that leaves a run standing unexplained: a stop must name
             # its reason in the status.
+            #
+            # It must also reach the on-call. This is the one path that ends
+            # a run without a human deciding anything, and it was the one
+            # path that filed no incident: a real run stood at BLOCKED for an
+            # hour with an empty incident journal, and the question it
+            # produced was "why did nobody come?". Nobody was called.
+            #
+            # The record is all this does. No runbook matches the code, and
+            # the store executes nothing, so the engineer gains no authority
+            # to rewrite a plan - that stays with the replanner and the
+            # owner. What changes is that the failure is visible where
+            # failures are read.
             change["status"] = "REJECTED"
             state.active_plan_change_id = None
-            state.status = "BLOCKED"
-            state.phase = "PLAN_CHANGE_REJECTED"
+            _stop_run(
+                cfg,
+                state,
+                phase="PLAN_CHANGE_REJECTED",
+                reason=reason,
+                summary=(
+                    f"The replanner used every attempt on {change.get('id')} for "
+                    f"{change.get('requester_task_id') or 'an unnamed task'}."
+                ),
+                at=timestamp,
+                task_ids=(str(change.get("requester_task_id") or ""),),
+                system_state={
+                    "plan_change_id": str(change.get("id") or ""),
+                    "attempts": len(rejections),
+                },
+                recent_events=tuple(
+                    {"at": str(i.get("at") or ""), "reason": str(i.get("reason") or "")}
+                    for i in rejections
+                ),
+            )
             if dispatcher_authorized:
                 current["automatic_successor_tokens"] = []
                 current["automatic_dispatch_state"] = "COMPLETED"
@@ -1112,6 +1172,7 @@ def _reject_replanner_result(
             state,
             descriptors,
             paused=store.pause_requested(),
+            cfg=cfg,
         )
         store.save(state)
     _materialize(descriptors)
@@ -1194,10 +1255,17 @@ def _reject_verifier_result(
             # Three unreadable verdicts in a row are no accident. Burning
             # more turns is pointless: the run stops loudly and names the
             # reason instead of spinning silently.
-            state.status = "BLOCKED"
-            state.phase = "VERIFICATION_PROTOCOL_BLOCKED"
-            state.last_error = (
-                f"the verifier of {task_id} returned an unreadable verdict three times: {reason}"
+            _stop_run(
+                cfg,
+                state,
+                phase="VERIFICATION_PROTOCOL_BLOCKED",
+                reason=(
+                    f"the verifier of {task_id} returned an unreadable verdict "
+                    f"three times: {reason}"
+                ),
+                summary=f"The verifier of {task_id} could not be read three times running.",
+                at=timestamp,
+                task_ids=(task_id,),
             )
             if dispatcher_authorized:
                 current["automatic_successor_tokens"] = []
@@ -1221,7 +1289,8 @@ def _reject_verifier_result(
                 "ADVANCING" if descriptors else "COMPLETED"
             )
         _finish_global_state(
-            plan, state, descriptors, paused=store.pause_requested()
+            plan, state, descriptors, paused=store.pause_requested(),
+            cfg=cfg,
         )
         store.save(state)
     _materialize(descriptors)
@@ -1393,6 +1462,7 @@ def _complete_replanner(
             state,
             descriptors,
             paused=store.pause_requested(),
+            cfg=cfg,
         )
         store.save(state)
         done = False

@@ -15,6 +15,7 @@ from .config import Config
 from .lifecycle_base import DesktopLifecycleError
 from .language import is_russian
 from .memory import ProjectMemory
+from .department_acceptance import DEPARTMENT_FIELDS, RUBRIC_REFERENCE_FIELDS
 from .plan import GRAPH_PLAN_FIELDS, Plan, Task, plan_to_dict
 from .resilience import PLAN_CHANGE_RESULT_PREFIX
 from .rules import rules_for_prompt
@@ -81,6 +82,15 @@ def _replanner_prompt(
             "existing_task_ids_must_remain": True,
             "next_graph_version": plan.graph_version + 1,
             "allowed_plan_fields": sorted(GRAPH_PLAN_FIELDS),
+            # Naming the top-level fields and stopping there sent a real
+            # replanner guessing at a nested object it had never seen: the
+            # plan carried no departments, the skill does not describe one,
+            # and `lead_role_id` appears nowhere a model could read. It wrote
+            # `lead_role`, was refused, and the run spent its whole budget of
+            # three attempts on a misspelling. A nested field set is cheap to
+            # state and impossible to derive.
+            "allowed_department_fields": sorted(DEPARTMENT_FIELDS),
+            "allowed_rubric_reference_fields": sorted(RUBRIC_REFERENCE_FIELDS),
         },
     }
     if rejections:

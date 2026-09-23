@@ -384,6 +384,7 @@ def record_desktop_failure(
                 state,
                 descriptors,
                 paused=store.pause_requested(),
+                cfg=cfg,
             )
             store.save(state)
     if exhausted:

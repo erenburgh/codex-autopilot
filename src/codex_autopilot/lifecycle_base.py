@@ -12,6 +12,8 @@ import time
 import uuid
 from typing import Any, Callable, Mapping
 
+from .blocked_runs import route_pending_stops
+from .revision_budget import block_on_exhausted_ladder
 from .config import Config, DESKTOP_OWNED_SURFACE
 from .language import is_russian
 from .memory import ProjectMemory
@@ -665,6 +667,7 @@ def task_effort(plan: Plan, state: RunState, task_id: str) -> str:
 
 
 def _rehire_or_block_on_revision_limit(
+    cfg: Any,
     plan: Plan,
     state: RunState,
     task_id: str,
@@ -721,28 +724,19 @@ def _rehire_or_block_on_revision_limit(
         )
         return False
 
-    if state.task_states[task_id] == TaskState.REVISION_REQUIRED.value:
-        state.task_states = transition_task(
-            plan, state.task_states, task_id, TaskState.BLOCKED
-        )
-    state.last_error = (
-        f"{task_id} exhausted the hiring ladder: {hires + 1} hire(s) up to "
-        f"effort {current}, {used} revision attempt(s)"
-    )
-    _append_event(
+    block_on_exhausted_ladder(
+        cfg,
+        plan,
         state,
-        "hiring_ladder_exhausted",
-        session,
-        at,
-        detail=json.dumps(
-            {
-                "revision_attempts": used,
-                "max_revision_attempts": maximum,
-                "hires": hires + 1,
-                "effort": current,
-            },
-            sort_keys=True,
-        ),
+        task_id,
+        session=session,
+        at=at,
+        hires=hires + 1,
+        effort=current,
+        used=used,
+        maximum=maximum,
+        transition=transition_task,
+        append_event=_append_event,
     )
     return True
 
@@ -1001,6 +995,7 @@ def _finish_global_state(
     descriptors: tuple[LaunchDescriptor, ...],
     *,
     paused: bool = False,
+    cfg: Any = None,
 ) -> None:
     if all(value == TaskState.VERIFIED.value for value in state.task_states.values()):
         state.status = "DONE"
@@ -1043,6 +1038,10 @@ def _finish_global_state(
         state.status = "WAITING"
         state.phase = "WAITING_RATE_LIMIT"
     elif any(value == TaskState.BLOCKED.value for value in state.task_states.values()):
+        # Derived, not decided: the ticket was opened when the task blocked.
+        # Nothing is left to run, so it need wait no longer - call the on-call.
+        if cfg is not None:
+            route_pending_stops(cfg)
         state.status = "BLOCKED"
         state.phase = "BLOCKED"
     else:
@@ -1248,6 +1247,7 @@ def reconcile_desktop_runtime(
             state,
             (),
             paused=store.pause_requested(),
+            cfg=cfg,
         )
         store.save(state)
     return result

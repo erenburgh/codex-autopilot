@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.13.0-beta
+
+Every stop opens a ticket, and a rule out of scope no longer stops anything.
+
+Both of these came out of one real run: 18 tasks to build a 3D model, 75
+minutes, blocked on the first one with nothing on the incident journal at all.
+
+**A rule the runtime does not apply must not read as one that it does.**
+
+R30 - acceptance by the department lead against a versioned rubric - is
+written unconditionally and carries mode ENFORCED. The runtime activates it
+only when the task declares both the `department-binding` and `rubric-binding`
+logical resources; without them `task_department_binding` returns None and
+nothing asks for a lead or a rubric.
+
+The prompt block sent the statement and dropped the gate. A verifier read
+R30, looked for a department and a rubric the plan never declared, and
+withheld acceptance of finished work. The worker asked for a prerequisite,
+the replanner tried to invent a department, and the run blocked - 23 minutes
+of model time, a third of the whole run, on a rule that did not apply.
+
+A rule with a conditional activation now carries `scope` when the task is
+known, saying whether it is in force here and what to do instead. The block
+is still never truncated and the mode still reads ENFORCED: scope says where
+a rule applies, not that it is optional where it does.
+
+**The replanner is told the nested schema, and refusals name what is accepted.**
+
+A department has exactly four fields, and `lead_role_id` is one of them. The
+replanner wrote `lead_role`. It could not have known: it is given the
+top-level plan fields and nothing else, the plan carried no departments to
+copy, and the name appears nowhere it can read. The refusal said "unknown
+fields: ['lead_role']" without naming the accepted set - against R31, which
+requires a refusal to name what IS accepted.
+
+Both field sets are now named once, stated in the replanner's constraints and
+enforced by the parser from the same constant, and the refusal lists them.
+
+**Every stop opens a ticket and the ticket reaches somebody.**
+
+A run stops in six different places. Five of them set BLOCKED, wrote a reason
+into run state and went quiet; only the engineer's own escalation told
+anyone. From outside that reads as a run standing still next to an empty
+incident journal, and the owner's question was why nobody came. Nobody was
+called.
+
+All six now go through one door. It opens a RUNTIME incident - infrastructure,
+never PRODUCTION, because accepting work stays the owner's call - and routes
+it to the on-call, who inspects and either repairs or hands the decision to
+the owner with the reason attached.
+
+One exception, and it is deliberate: a single task stopping while its
+neighbours can still run does not call the on-call, because an incident in
+the engineer's lane outranks every task and would halt work that was never
+stuck. That ticket waits, and is routed the moment the run itself has nothing
+left to run.
+
 ## 0.12.3-beta
 
 The wake-up agent stops writing 55 MB about nothing.

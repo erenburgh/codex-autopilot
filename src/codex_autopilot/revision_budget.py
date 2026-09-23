@@ -54,3 +54,75 @@ def premises_changed(basis: Any, depends_on: Iterable[str]) -> bool:
     if before is None:
         return False
     return before != [str(item) for item in depends_on]
+
+
+def block_on_exhausted_ladder(
+    cfg,
+    plan,
+    state,
+    task_id: str,
+    *,
+    session,
+    at: str,
+    hires: int,
+    effort: str,
+    used: int,
+    maximum: int,
+    transition,
+    append_event,
+) -> None:
+    """The ladder is spent: stop the task, and tell someone.
+
+    Re-hiring at the next reasoning step is the answer to a task that keeps
+    coming back revised. When even the top of the ladder cannot close it, the
+    task stops - and that stop is a decision for the owner, because what is
+    left is a judgement about the work, which no automaton may make for them.
+
+    It used to stop in silence: a state on disk, a line in run state, and
+    nothing in the incident journal. `stop_run` opens the ticket and hands it
+    over with the reason attached.
+    """
+
+    import json
+
+    from .blocked_runs import stop_run
+    from .task_state import TaskState
+
+    if state.task_states[task_id] == TaskState.REVISION_REQUIRED.value:
+        state.task_states = transition(plan, state.task_states, task_id, TaskState.BLOCKED)
+    append_event(
+        state,
+        "hiring_ladder_exhausted",
+        session,
+        at,
+        detail=json.dumps(
+            {
+                "revision_attempts": used,
+                "max_revision_attempts": maximum,
+                "hires": hires,
+                "effort": effort,
+            },
+            sort_keys=True,
+        ),
+    )
+    stop_run(
+        cfg,
+        state,
+        phase="BLOCKED",
+        reason=(
+            f"{task_id} exhausted the hiring ladder: {hires} hire(s) up to "
+            f"effort {effort}, {used} revision attempt(s)"
+        ),
+        summary=(
+            f"{task_id} was re-hired up to effort {effort} and still came back "
+            "revised. Whether the work is good enough is yours to judge."
+        ),
+        at=at,
+        task_ids=(task_id,),
+        system_state={"hires": hires, "effort": effort, "revision_attempts": used},
+        # One task at the top of its ladder is not a stalled run: the
+        # neighbours that do not depend on it keep going, and the engineer
+        # would take the dispatcher away from them. The ticket waits for the
+        # moment the run itself has nothing left to do.
+        route=False,
+    )

@@ -32,6 +32,14 @@ class DepartmentAcceptanceError(ValueError):
     """A department, lead, rubric, or verifier attestation failed closed."""
 
 
+# The two nested field sets a replanner has to produce exactly, named once so
+# the prompt that states them and the parser that enforces them cannot drift.
+# They were only enforced, never stated, and a real run lost its whole replan
+# budget writing `lead_role` for `lead_role_id`.
+RUBRIC_REFERENCE_FIELDS = ("record_id", "version", "sha256")
+DEPARTMENT_FIELDS = ("id", "name", "lead_role_id", "rubric")
+
+
 @dataclass(frozen=True, slots=True)
 class RubricReference:
     record_id: str
@@ -159,7 +167,7 @@ class LoadedDepartmentAcceptance:
 
 def rubric_reference_from_raw(raw: object, label: str = "rubric") -> RubricReference:
     data = _mapping(raw, label)
-    _exact_keys(data, {"record_id", "version", "sha256"}, label)
+    _exact_keys(data, set(RUBRIC_REFERENCE_FIELDS), label)
     digest = _required_text(data.get("sha256"), f"{label}.sha256", 64)
     if not _SHA256.fullmatch(digest):
         raise DepartmentAcceptanceError(f"{label}.sha256 must be a lowercase SHA-256 digest")
@@ -172,7 +180,7 @@ def rubric_reference_from_raw(raw: object, label: str = "rubric") -> RubricRefer
 
 def department_contract_from_raw(raw: object, label: str) -> DepartmentContract:
     data = _mapping(raw, label)
-    _exact_keys(data, {"id", "name", "lead_role_id", "rubric"}, label)
+    _exact_keys(data, set(DEPARTMENT_FIELDS), label)
     return DepartmentContract(
         id=_identifier(data.get("id"), f"{label}.id"),
         name=_required_text(data.get("name"), f"{label}.name", 256),
@@ -851,7 +859,14 @@ def _exact_keys(data: Mapping[str, object], allowed: set[str], label: str) -> No
     unknown = sorted(set(data) - allowed)
     missing = sorted(allowed - set(data))
     if unknown:
-        raise DepartmentAcceptanceError(f"{label} has unknown fields: {unknown}")
+        # R31: a refusal names what IS accepted. Naming only the rejected key
+        # cost a real run its whole replan budget - the replanner wrote
+        # `lead_role`, the field is `lead_role_id`, and nothing it could read
+        # said so.
+        raise DepartmentAcceptanceError(
+            f"{label} has unknown fields: {unknown}; accepted fields are "
+            f"{sorted(allowed)}"
+        )
     if missing:
         raise DepartmentAcceptanceError(f"{label} is missing required fields: {missing}")
 

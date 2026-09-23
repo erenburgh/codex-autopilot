@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .blocked_runs import stop_run as _stop_run
 from .bootstrap import mark_roadmap, select_milestone
 from .config import Config
 from .lifecycle_base import (
@@ -117,6 +118,7 @@ def apply_legacy_plan_change_without_goal_contract(
             state,
             descriptors,
             paused=store.pause_requested(),
+            cfg=cfg,
         )
         commit_plan_change(
             cfg.state_dir,
@@ -206,9 +208,18 @@ def reject_plan_verifier_result(
             change["status"] = "REJECTED"
             change["completed_at"] = timestamp
             state.active_plan_change_id = None
-            state.status = "BLOCKED"
-            state.phase = "PLAN_VERIFICATION_PROTOCOL_REJECTED"
-            state.last_error = reason
+            _stop_run(
+                cfg,
+                state,
+                phase="PLAN_VERIFICATION_PROTOCOL_REJECTED",
+                reason=reason,
+                summary=(
+                    "The plan verifier's answer could not be read every time it "
+                    "was asked."
+                ),
+                at=timestamp,
+                system_state={"plan_change_id": str(change.get("id") or "")},
+            )
             descriptors = ()
         else:
             change["status"] = "PLAN_VERIFICATION_REQUIRED"
@@ -226,6 +237,7 @@ def reject_plan_verifier_result(
             state,
             descriptors,
             paused=store.pause_requested(),
+            cfg=cfg,
         )
         store.save(state)
     _materialize(descriptors)
@@ -390,9 +402,15 @@ def complete_plan_verifier(
                 change["status"] = "REJECTED"
                 change["completed_at"] = timestamp
                 state.active_plan_change_id = None
-                state.status = "BLOCKED"
-                state.phase = "PLAN_VERIFICATION_REJECTED"
-                state.last_error = issue_payload
+                _stop_run(
+                    cfg,
+                    state,
+                    phase="PLAN_VERIFICATION_REJECTED",
+                    reason=issue_payload,
+                    summary="The plan verifier refused the proposed plan every time.",
+                    at=timestamp,
+                    system_state={"plan_change_id": str(change.get("id") or "")},
+                )
                 descriptors = ()
             else:
                 change["status"] = "DRAINING"
@@ -417,6 +435,7 @@ def complete_plan_verifier(
                 state,
                 descriptors,
                 paused=store.pause_requested(),
+                cfg=cfg,
             )
             store.save(state)
             done = False
@@ -479,6 +498,7 @@ def complete_plan_verifier(
                 state,
                 descriptors,
                 paused=store.pause_requested(),
+                cfg=cfg,
             )
             commit_plan_change(
                 cfg.state_dir,

@@ -896,6 +896,7 @@ def _reserve_followup_sessions_in_state(
                 continue
         elif raw_state == TaskState.REVISION_REQUIRED.value:
             if _rehire_or_block_on_revision_limit(
+                cfg,
                 plan,
                 state,
                 task.id,

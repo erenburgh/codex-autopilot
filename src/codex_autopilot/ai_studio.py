@@ -217,7 +217,7 @@ class AIStudioRuntime:
         installed_omitted = len(machine_skills) - len(shown)
         envelope = {
             # R17: the rules stand before the specification they judge.
-            "rules": rules_for_prompt(self.state_dir),
+            "rules": rules_for_prompt(self.state_dir, task=task),
             **(
                 {"goal_contract": self.plan.goal_contract.to_dict()}
                 if self.plan.goal_contract is not None
@@ -692,7 +692,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             # and is never truncated. If the context budget cannot hold the
             # rules plus a minimal specification, the task is not launched -
             # a context-planning defect, not a reason to drop the rules.
-            "rules": rules_for_prompt(self.state_dir),
+            "rules": rules_for_prompt(self.state_dir, task=task),
             **(
                 {"goal_contract": self.plan.goal_contract.to_dict()}
                 if self.plan.goal_contract is not None
