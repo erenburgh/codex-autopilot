@@ -564,18 +564,21 @@ class PipelineIncidentStore:
         event: str,
         entry: Mapping[str, Any],
         at: str,
+        holder_only: bool = True,
     ) -> dict[str, Any]:
         """Record what the on-call did to a stopped task on the ticket itself.
 
         A return or a plan change requested by the engineer is part of the
         ticket's story: the next engineer, her status card and the R23
         bound all read it from here. Only the engineer holding the ticket
-        records it.
+        records it - except what the runtime itself records afterwards
+        (``holder_only=False``): a fresh hire revoked because its patch was
+        never installed belongs next to the return that granted it.
         """
 
         with self._transaction() as state:
             incident = _incident(state, incident_id)
-            if IncidentPhase(str(incident["phase"])) is not IncidentPhase.PIPELINE_ENGINEER:
+            if holder_only and IncidentPhase(str(incident["phase"])) is not IncidentPhase.PIPELINE_ENGINEER:
                 raise PipelineIncidentError(
                     f"incident {incident_id} is in phase {incident['phase']}: only the "
                     "engineer holding it acts on its tasks"

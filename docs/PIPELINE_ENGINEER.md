@@ -187,12 +187,24 @@ Two actions act on the task itself (`engineer_stop_actions`):
 Both run only from the thread of the on-call session reserved for that very
 incident (`CODEX_THREAD_ID` must be its thread), only as far as the means table
 in `engineer_authority.STOP_MEANS` allows - which the engineer cannot edit - and
-never on a stop that is hers (`PRODUCT_DECISION`, `ARCHITECTURE_DECISION`). A
-task at the top of its hiring ladder returns only after a runtime patch on the
-ticket that changed a module on the acceptance path
-(`LADDER_RESET_MODULES`, one grant per patch) or through a plan change (R23:
-the cause must change); the grant is a fresh hire at the effort the task
-already reached, not the whole ladder again. A return that does not hold comes
+never on a stop that is hers (`PRODUCT_DECISION`, `ARCHITECTURE_DECISION`,
+`DANGEROUS_PERMISSION`, and a worker's own `RECOVERY_EXHAUSTED`: their means
+are empty - a diagnosis and an escalation with the same code). A task at the
+top of its hiring ladder - judged by its ladder, whatever ticket holds it -
+returns only after a runtime patch on the ticket that changed the acceptance
+path, or through a plan change (R23: the cause must change). The acceptance
+path is an explicit list in `engineer_authority`: the modules
+`verification.py`, `acceptance.py`, `acceptance_floor.py`,
+`department_acceptance.py`, and the verifier's own parts of the prompt
+builders (`LADDER_RESET_DEFINITIONS`: whole verifier-only definitions, and in
+the shared builders only the body of an `if phase == "verification"` branch).
+What a patch changed is read from the staged pair of texts, compared as syntax
+trees, never from the ticket's record (`ladder_grants`). One patch is good for
+one grant, and only while it stands: a patch withdrawn, refused at install or
+reverted buys nothing, and a grant it already bought is revoked in the same
+transaction - the tally goes back, a task that has not started goes back to
+`BLOCKED`, and a ticket holds it. The grant is a fresh hire at the effort the
+task already reached, not the whole ladder again. A return that does not hold comes
 back as the same stop, and the door's R23 bound sends the third to her with
 what each return did.
 
@@ -213,7 +225,12 @@ session does not count.
 
 A runtime patch is proven inside the project and staged there, the run
 drains, and the wake-up installs it atomically outside the sandbox when no
-dispatcher is alive (`runtime_install`, see `docs/SECURITY.md`).
+dispatcher is alive (`runtime_install`, see `docs/SECURITY.md`). The drain is
+not a stop: while a patch is staged no task counts as reservable work, so the
+on-call's completion files no `NO_SUCCESSOR` over the tasks it just returned.
+`devops-repair-runtime` and `devops-revert-runtime-patch --incident-id <id>`
+answer only to the engineer of that ticket, from its own thread, within the
+means table; a staged patch is withdrawn only by the ticket that staged it.
 
 ## Advisory tickets and permission requests
 

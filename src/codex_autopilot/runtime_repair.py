@@ -89,6 +89,20 @@ GUARDED_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("engineer_stop_actions.py", "return_stopped_task"),
     ("engineer_stop_actions.py", "require_stop_ticket_closable"),
     ("engineer_stop_actions.py", "acceptance_patches"),
+    # Which patch changed the acceptance path, whether it still stands, and
+    # taking back what it bought: the fresh hire past her ladder rests on
+    # these, and so does the binding of the patch commands themselves.
+    ("engineer_stop_actions.py", "require_patch_holder"),
+    ("engineer_stop_actions.py", "take_back_patch"),
+    ("engineer_stop_actions.py", "_consumed_patch_ids"),
+    ("ladder_grants.py", "acceptance_path_changes"),
+    ("ladder_grants.py", "_entry"),
+    ("ladder_grants.py", "_shape"),
+    ("ladder_grants.py", "_tests_phase"),
+    ("ladder_grants.py", "patch_is_live"),
+    ("ladder_grants.py", "revoke_grants"),
+    ("runtime_install.py", "patch_status"),
+    ("revision_budget.py", "at_top_of_ladder"),
     ("stop_diagnosis.py", "means_for"),
     ("engineer_escalation.py", "parse_engineer_escalation"),
     ("revision_budget.py", "premises_changed"),

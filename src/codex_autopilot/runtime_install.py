@@ -86,6 +86,13 @@ def stage_proven_patch(state_dir: Path, proven: Any) -> Path:
     (scratch / "modules").mkdir(parents=True)
     for module, source in proven.sources.items():
         (scratch / "modules" / module).write_text(source, encoding="utf-8")
+    # The text each module was proven against, kept next to the new one:
+    # what a patch changed on the acceptance path is read from the pair
+    # (``ladder_grants``), never from what the ticket says about it.
+    (scratch / "originals").mkdir()
+    for module, source in proven.originals.items():
+        if source is not None:
+            (scratch / "originals" / module).write_text(source, encoding="utf-8")
     (scratch / "test.py").write_text(proven.test_source, encoding="utf-8")
     manifest = {
         "kind": "patch",
@@ -131,6 +138,26 @@ def withdraw_staged(state_dir: Path, patch_id: str) -> bool:
     target.parent.mkdir(parents=True, exist_ok=True)
     os.replace(source, target)
     return True
+
+
+def patch_status(state_dir: Path, patch_id: str) -> str:
+    """Where a staged patch is now: pending, installed, reverted, withdrawn, refused or absent.
+
+    A revert staged or installed for it makes it "reverted": the change is
+    being taken back, and nothing that rested on it still does.
+    """
+
+    root = patch_root(state_dir)
+
+    def there(where: str, name: str) -> bool:
+        return (root / where / name / "patch.json").is_file()
+
+    if there(PENDING, f"revert-{patch_id}") or there(INSTALLED, f"revert-{patch_id}"):
+        return "reverted"
+    for where in (PENDING, INSTALLED, WITHDRAWN, REFUSED):
+        if there(where, patch_id):
+            return where
+    return "absent"
 
 
 def pending_entries(state_dir: Path) -> list[Path]:

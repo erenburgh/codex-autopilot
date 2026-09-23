@@ -75,9 +75,12 @@ module is the one case where whole content is supplied, and the gateway refuses
 it if a file of that name already exists. Every
 accepted set is written to `runtime/patches/<patch-id>` with each module's
 previous text and a manifest of before/after hashes, and
-`devops-revert-runtime-patch` takes the set back together with its test - a
-set still staged is withdrawn (kept aside, never deleted), an installed one is
-staged as a revert and installed the same atomic way; the
+`devops-revert-runtime-patch --incident-id <id>` takes the set back together
+with its test - a set still staged is withdrawn (kept aside, never deleted,
+and only by the ticket that staged it), an installed one is staged as a revert
+and installed the same atomic way, and any fresh hire the set bought a task at
+the top of its ladder is revoked in the same transaction. Both patch commands
+answer only to the on-call of that ticket, from its own `CODEX_THREAD_ID`; the
 revert refuses when a module changed after the patch was applied. Reinstalling
 a version whose `runtime/patches` is not empty renames that installation to
 `<version>.repaired-<UTC timestamp>`, prints the path, and leaves it in place;

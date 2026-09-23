@@ -28,9 +28,16 @@ Both are bounded the way her rules bound everything the engineer does:
   (``engineer_authority.STOP_MEANS``, which the engineer cannot edit), and
   never a stop that is hers (PRODUCT_DECISION, ARCHITECTURE_DECISION);
 - a task at the top of its hiring ladder returns only after a change that
-  touched the cause (R23): a runtime patch on this ticket that changed a
-  module on the acceptance path (``LADDER_RESET_MODULES``), each patch good
-  for one grant - or through a plan change;
+  touched the cause (R23): a runtime patch on this ticket that is staged or
+  installed and changed the acceptance path (``ladder_grants``: read from
+  the staged texts over the explicit list in ``engineer_authority``), each
+  patch good for one grant - or through a plan change. The gate is the
+  task's ladder, not the ticket's kind, and a grant whose patch is later
+  withdrawn, refused or reverted is revoked (``ladder_grants.revoke_grants``);
+- the runtime patch commands are bound the same way (``require_patch_holder``,
+  ``take_back_patch``): a patch buys a fresh hire and drains the whole run,
+  and the independent check found both doors open to any thread of the run
+  - a worker of the very task being judged included;
 - the same task returned from the same stop twice, and back again, is not
   returned a third time. That counter is the door's own R23 bound
   (``stop_repeats``), per task and stop signature: a return is followed by
@@ -97,21 +104,27 @@ def _allowed(incident: Mapping[str, Any], action: str) -> bool:
     return not _is_stop(incident) or action in means_for(incident)
 
 
-def acceptance_patches(incident: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Runtime patches on this ticket that changed the acceptance path."""
+def acceptance_patches(incident: Mapping[str, Any], state_dir: Any) -> list[dict[str, Any]]:
+    """Runtime patches on this ticket that are live and changed the acceptance path.
 
-    from .engineer_authority import LADDER_RESET_MODULES
+    The ticket only says which patches are this engineer's; whether one is
+    still staged or installed, and what it changed, is read from the staged
+    entry itself (``ladder_grants``). The ticket's record is written at
+    staging, and a patch withdrawn or refused afterwards used to count.
+    """
 
-    return [
-        dict(patch)
-        for patch in incident.get("runtime_patches") or ()
-        if isinstance(patch, Mapping)
-        and any(
-            str((change or {}).get("module") or "") in LADDER_RESET_MODULES
-            for change in patch.get("changes") or ()
-            if isinstance(change, Mapping)
-        )
-    ]
+    from pathlib import Path
+
+    from .ladder_grants import acceptance_path_changes
+
+    found = []
+    for patch in incident.get("runtime_patches") or ():
+        if not isinstance(patch, Mapping):
+            continue
+        changes = acceptance_path_changes(Path(state_dir), str(patch.get("patch_id") or ""))
+        if changes:
+            found.append({**dict(patch), "acceptance_changes": changes})
+    return found
 
 
 def _consumed_patch_ids(loaded: Mapping[str, Any]) -> set[str]:
@@ -133,7 +146,7 @@ def return_stopped_task(
     from .pipeline_engineer import PipelineIncidentStore
     from .plan import load_plan
     from .resources import ResourceLockCoordinator
-    from .revision_budget import grant_fresh_hire
+    from .revision_budget import at_top_of_ladder, grant_fresh_hire
     from .stop_diagnosis import means_for
 
     timestamp = at or utc_now()
@@ -164,11 +177,13 @@ def return_stopped_task(
             )
         grounds: dict[str, Any] = {}
         grant: dict[str, Any] | None = None
-        if kind == "ladder_exhausted":
+        # The ladder, not the ticket's kind: a task whose revoked grant sent
+        # it back comes under a runtime_patch_refused ticket, still spent.
+        if kind == "ladder_exhausted" or at_top_of_ladder(plan, state, task_id):
             consumed = _consumed_patch_ids(loaded)
             fresh = [
                 str(patch.get("patch_id"))
-                for patch in acceptance_patches(incident)
+                for patch in acceptance_patches(incident, cfg.state_dir)
                 if str(patch.get("patch_id")) not in consumed
             ]
             if not fresh:
@@ -191,6 +206,12 @@ def return_stopped_task(
             "thread_id": str(session.get("thread_id") or ""),
             "at": timestamp,
         }
+        if grant:
+            # Kept so the grant can be taken back exactly if its patch is.
+            entry["grant"] = {
+                "rehires_before": grant["rehires_before"],
+                "rehires_now": grant["rehires_now"],
+            }
         PipelineIncidentStore(cfg.state_dir).record_engineer_action(
             incident_id, field="returns", event="stopped_task_returned", entry=entry, at=timestamp
         )
@@ -346,3 +367,90 @@ def require_stop_ticket_closable(
             "(devops-return-task), ask the replanner (devops-request-plan-change), or escalate "
             "to the owner - closing it would leave the task waiting for nobody"
         )
+
+
+def require_patch_holder(cfg: Any, incident_id: str, thread_id: str) -> dict[str, Any]:
+    """The runtime patch commands answer to the engineer of this ticket only.
+
+    ``devops-repair-runtime`` used to check that the ticket was in the
+    engineer's phase and accept any CODEX_THREAD_ID of the run. Since a
+    patch on the acceptance path buys a task a fresh hire, and a staged
+    patch drains the whole run, that let the worker of the very task being
+    judged stage one. Now the same binding as a return: the pending on-call
+    session of this ticket, from its own thread - and within the means
+    table: a stop that is hers (the empty rows) is diagnosed, not patched.
+    """
+
+    _, incident = _loaded_incident(cfg, incident_id)
+    require_engineer_thread(StateStore(cfg.state_dir).load(), incident_id, thread_id)
+    if not _allowed(incident, "repair_runtime_code"):
+        raise EngineerStopActionError(
+            "this kind of stop is not repaired in code by the on-call; see stop_context.means"
+        )
+    return incident
+
+
+def take_back_patch(
+    cfg: Any, *, incident_id: str, patch_id: str, thread_id: str, at: str | None = None
+) -> dict[str, Any]:
+    """Withdraw a staged patch of this ticket, or stage the revert of an installed one.
+
+    Bound like every other door of the on-call (``require_patch_holder``):
+    the command used to check neither the ticket nor the thread. A staged
+    patch may be withdrawn only by the engineer whose ticket staged it. In
+    the same transaction every fresh hire that rested on the patch is
+    revoked (``ladder_grants``), and a task sent back to BLOCKED is held by
+    a ticket - otherwise a withdrawn patch still bought the hire, measured.
+    """
+
+    from .ladder_grants import hold_revoked, revoke_grants
+    from .plan import load_plan
+    from .resources import ResourceLockCoordinator
+    from .runtime_install import INSTALLED, PENDING, patch_status, stage_revert, withdraw_staged
+
+    timestamp = at or utc_now()
+    store = StateStore(cfg.state_dir)
+    with ResourceLockCoordinator(store, cfg.root).transaction():
+        state = store.load()
+        _, incident = _loaded_incident(cfg, incident_id)
+        require_engineer_thread(state, incident_id, thread_id)
+        status = patch_status(cfg.state_dir, patch_id)
+        if status == PENDING:
+            own = {
+                str(item.get("patch_id") or "")
+                for item in incident.get("runtime_patches") or ()
+                if isinstance(item, Mapping)
+            }
+            if patch_id not in own:
+                raise EngineerStopActionError(
+                    f"staged patch {patch_id} is not this ticket's; only the engineer who "
+                    "staged it may withdraw it"
+                )
+            withdraw_staged(cfg.state_dir, patch_id)
+            outcome: dict[str, Any] = {"patch_id": patch_id, "withdrawn": True}
+        elif status == INSTALLED:
+            stage_revert(cfg.state_dir, patch_id, at=timestamp)
+            outcome = {"patch_id": patch_id, "revert_staged": True}
+        else:
+            raise EngineerStopActionError(
+                f"patch {patch_id} is {status}: nothing to withdraw or revert"
+            )
+        plan = load_plan(cfg.state_dir, cfg.profile)
+        blocked = revoke_grants(
+            cfg,
+            plan,
+            state,
+            (patch_id,),
+            reason="withdrawn" if outcome.get("withdrawn") else "reverted",
+            at=timestamp,
+        )
+        ticket = hold_revoked(
+            cfg,
+            state,
+            blocked,
+            stop_kind="runtime_patch_taken_back",
+            reason=f"runtime patch {patch_id} was taken back; the fresh hire it bought is revoked",
+            at=timestamp,
+        )
+        store.save(state)
+    return {**outcome, "blocked_again": blocked, "ticket": ticket}

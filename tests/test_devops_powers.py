@@ -220,16 +220,48 @@ class TheTopOfTheLadderTests(_Stopped):
         self.store.save(state)
         return maximum
 
-    def _record_patch(self, incident_id: str, module: str, patch_id: str) -> None:
-        PipelineIncidentStore(self.cfg.state_dir).record_runtime_patch(
-            incident_id,
-            patch={
-                "patch_id": patch_id,
-                "test_name": "test_repro",
-                "at": AT,
-                "changes": [{"module": module, "sha256_before": "a", "sha256_after": "b"}],
-            },
+    def _stage_patch(
+        self,
+        incident_id: str,
+        module: str,
+        patch_id: str,
+        *,
+        old: str = "from __future__ import annotations\n",
+        new: str = "from __future__ import annotations\n\nPATCHED_BY_THE_ON_CALL = True\n",
+    ) -> None:
+        """What devops-repair-runtime does once the gateway proved a set.
+
+        The same two calls as the command: stage the proven texts in the
+        project, then record the patch on the ticket. The texts are the real
+        module and the real module with one edit - whether the edit touched
+        the acceptance path is read from that pair, not from the record.
+        """
+
+        import codex_autopilot
+        from codex_autopilot.runtime_install import stage_proven_patch
+        from codex_autopilot.runtime_repair import ModuleChange, PatchRecord, ProvenPatch, _sha256
+
+        original = (Path(codex_autopilot.__file__).parent / module).read_text(encoding="utf-8")
+        self.assertEqual(original.count(old), 1, f"the edit must name one place in {module}")
+        source = original.replace(old, new)
+        record = PatchRecord(
+            patch_id=patch_id,
+            changes=(ModuleChange(module=module, sha256_before=_sha256(original), sha256_after=_sha256(source)),),
+            test_name="test_repro",
             at=AT,
+        )
+        stage_proven_patch(
+            self.cfg.state_dir,
+            ProvenPatch(
+                record=record,
+                sources={module: source},
+                originals={module: original},
+                test_name="test_repro",
+                test_source="import unittest\n",
+            ),
+        )
+        PipelineIncidentStore(self.cfg.state_dir).record_runtime_patch(
+            incident_id, patch={**record.to_dict(), "staged": True}, at=AT
         )
 
     def _revise_again_blocks(self) -> bool:
@@ -246,15 +278,18 @@ class TheTopOfTheLadderTests(_Stopped):
         incident_id, _ = self.stopped(kind="ladder_exhausted", reason_code="")
         with self.assertRaisesRegex(EngineerStopActionError, "acceptance path"):
             return_stopped_task(self.cfg, incident_id=incident_id, task_id="A", thread_id="eng-1")
-        self._record_patch(incident_id, "status.py", "patch-harmless")
-        with self.assertRaisesRegex(EngineerStopActionError, "acceptance path"):
-            return_stopped_task(self.cfg, incident_id=incident_id, task_id="A", thread_id="eng-1")
+        # status.py, and the three the first list wrongly held: none of
+        # them is where a refusal comes from.
+        for module in ("status.py", "lifecycle_completion.py", "models.py", "rules.py"):
+            self._stage_patch(incident_id, module, f"patch-{module}")
+            with self.assertRaisesRegex(EngineerStopActionError, "acceptance path"):
+                return_stopped_task(self.cfg, incident_id=incident_id, task_id="A", thread_id="eng-1")
 
     def test_a_patch_on_the_acceptance_path_returns_the_task_with_a_fresh_hire(self) -> None:
         self._at_the_top()
         self.assertTrue(self._revise_again_blocks(), "the fixture must start at the top")
         incident_id, _ = self.stopped(kind="ladder_exhausted", reason_code="")
-        self._record_patch(incident_id, "department_acceptance.py", "patch-rubric")
+        self._stage_patch(incident_id, "department_acceptance.py", "patch-rubric")
 
         result = return_stopped_task(self.cfg, incident_id=incident_id, task_id="A", thread_id="eng-1")
 
@@ -265,7 +300,7 @@ class TheTopOfTheLadderTests(_Stopped):
     def test_one_patch_is_good_for_one_grant(self) -> None:
         self._at_the_top()
         incident_id, _ = self.stopped(kind="ladder_exhausted", reason_code="")
-        self._record_patch(incident_id, "verification.py", "patch-once")
+        self._stage_patch(incident_id, "verification.py", "patch-once")
         return_stopped_task(self.cfg, incident_id=incident_id, task_id="A", thread_id="eng-1")
         state = self.store.load()
         state.task_states["A"] = "BLOCKED"

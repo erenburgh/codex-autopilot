@@ -613,7 +613,19 @@ class RepairCommandTests(unittest.TestCase):
         self.applied: list[dict] = []
         self.mock = mock
 
-    def run_command(self):
+    def engineer_on_duty(self, thread_id: str = "owner") -> None:
+        """The ticket's on-call, reserved and active by the production path."""
+
+        from _appserver_fakes import activate_via_app_server
+        from _relay import reserve_ready_frontier
+
+        self.store.ensure_pipeline_engineer(self.incident_id, at="t2")
+        engineer = next(
+            item for item in reserve_ready_frontier(self.cfg) if item.kind == "pipeline_engineer"
+        )
+        activate_via_app_server(self.cfg, self.tmp, engineer, thread_id)
+
+    def run_command(self, thread_id: str = "owner"):
         from codex_autopilot import cli
         from codex_autopilot.runtime_repair import ModuleChange, PatchRecord, ProvenPatch
 
@@ -637,7 +649,7 @@ class RepairCommandTests(unittest.TestCase):
         def live_write(*args, **kwargs):
             raise AssertionError("the command wrote the live installation")
 
-        with self.mock.patch.object(cli, "_relay_executor_thread_id", return_value="owner"), \
+        with self.mock.patch.object(cli, "_relay_executor_thread_id", return_value=thread_id), \
              self.mock.patch("codex_autopilot.runtime_repair.install_proven_patch", side_effect=live_write), \
              self.mock.patch("codex_autopilot.runtime_repair.prove_runtime_patch", side_effect=fake_prove):
             return cli.main([
@@ -649,7 +661,7 @@ class RepairCommandTests(unittest.TestCase):
             ])
 
     def test_the_patch_file_becomes_edits_with_their_fragments(self) -> None:
-        self.store.ensure_pipeline_engineer(self.incident_id, at="t2")
+        self.engineer_on_duty()
         self.assertEqual(self.run_command(), 0)
         self.assertEqual(len(self.applied), 1)
         edits = {edit.module: edit for edit in self.applied[0]["edits"]}
@@ -674,6 +686,19 @@ class RepairCommandTests(unittest.TestCase):
         # main turns a refusal into exit code 2 and a line on stderr, not an exception.
         self.assertEqual(self.run_command(), 2)
         self.assertEqual(self.applied, [], "edit applied before the ticket check")
+
+    def test_another_thread_of_the_run_cannot_stage_a_patch(self) -> None:
+        """Only the on-call of this ticket, from its own thread.
+
+        Any CODEX_THREAD_ID of the run used to pass once the ticket was in
+        the engineer's phase - the worker of the very task being judged
+        included, and a patch buys a fresh hire and drains the run.
+        """
+
+        self.engineer_on_duty("owner")
+        self.assertEqual(self.run_command(thread_id="worker-A"), 2)
+        self.assertEqual(self.applied, [], "a foreign thread reached the gateway")
+        self.assertFalse((self.cfg.state_dir / "runtime-patches" / "pending").exists())
 
 
 if __name__ == "__main__":

@@ -142,10 +142,13 @@ STOP_MEANS: dict[str, tuple[str, ...]] = {
     "worker_blocked:ENVIRONMENT_FAILURE": _RETURN,
     "worker_blocked:UNSPECIFIED": _RETURN,
     "worker_blocked:": _RETURN,
-    "worker_blocked:RECOVERY_EXHAUSTED": _RETURN,
     "worker_blocked:DEPENDENCY_DEFECT": _REPLAN,
     "worker_blocked:CONTRADICTORY_CONTRACT": _REPLAN,
     "worker_blocked:DANGEROUS_PERMISSION": _HERS,
+    # The worker said recovery is spent. It used to get the full return
+    # means, so the on-call could lift a stop whose own claim was that
+    # nothing more could be tried - the spec's table puts it with hers.
+    "worker_blocked:RECOVERY_EXHAUSTED": _HERS,
     "worker_blocked:PRODUCT_DECISION": _HERS,
     "worker_blocked:ARCHITECTURE_DECISION": _HERS,
     "verification_protocol": _RETURN,
@@ -166,30 +169,47 @@ STOP_MEANS: dict[str, tuple[str, ...]] = {
     "approval_required": ("repair_runtime_code",),
 }
 # Reason codes whose stop is hers to lift. The engineer diagnoses and hands
-# it up with the same code; ``return_stopped_task`` refuses these.
-OWNER_STOP_REASONS = frozenset({"PRODUCT_DECISION", "ARCHITECTURE_DECISION"})
+# it up with the same code; ``return_stopped_task`` refuses these - the same
+# four the means table gives nothing but a diagnosis.
+OWNER_STOP_REASONS = frozenset(
+    {"PRODUCT_DECISION", "ARCHITECTURE_DECISION", "DANGEROUS_PERMISSION", "RECOVERY_EXHAUSTED"}
+)
 
-# The modules on the acceptance path (R29, R30): the gate, the rubric, the
-# verifier's prompt and verdict handling, the staged-output check and the
-# rules' scope. A runtime patch returns a task from the top of its hiring
-# ladder only when it changed one of these - R23 allows a reset "only after
-# a change that touches the cause of the refusal", and a harmless patch
-# elsewhere must not buy a fresh budget past her judgement of the work.
+# The acceptance path (R29, R30), named explicitly: the gate, the rubric,
+# the verifier and the verifier's prompt. A runtime patch returns a task from
+# the top of its hiring ladder only when it changed one of these - R23 allows
+# a reset "only after a change that touches the cause of the refusal", and a
+# patch elsewhere must not buy a fresh budget past her judgement of the work.
+#
+# The first list was wider, and the independent check named why that is a
+# hole: lifecycle_completion.py (the on-call's own completion, the stops,
+# NO_SUCCESSOR), models.py (model routing) and rules.py are not where a
+# refusal comes from, and a patch there bought a fresh hire all the same.
+#
+# Whole modules - every change in them is a change of acceptance:
 LADDER_RESET_MODULES = frozenset(
     {
+        "verification.py",
         "acceptance.py",
         "acceptance_floor.py",
         "department_acceptance.py",
-        "verification.py",
-        "lifecycle_prompts.py",
-        "lifecycle_completion.py",
-        "artifact_staging.py",
-        "artifact_staging_lifecycle.py",
-        "memory_verification.py",
-        "models.py",
-        "rules.py",
-        "lifecycle_rule_audit.py",
     }
+)
+# The verifier's prompt shares its modules with the worker's and the
+# on-call's, so only its own parts count: whole definitions that only the
+# verifier reads, and in the shared builders only the body of an
+# ``if phase == "verification"`` branch (the third field names that branch;
+# None is the whole definition). Compared as syntax trees, so comments and
+# layout change nothing.
+LADDER_RESET_DEFINITIONS: tuple[tuple[str, str, str | None], ...] = (
+    ("ai_studio.py", "_acceptance_gate", None),
+    ("ai_studio.py", "_department_acceptance", None),
+    ("ai_studio.py", "_verification_contract", None),
+    ("ai_studio.py", "_verifier_definition_of_done", None),
+    ("ai_studio.py", "build_prompt", "verification"),
+    ("ai_studio.py", "_render_prompt", "verification"),
+    ("lifecycle_prompts.py", "_verification_contract", None),
+    ("lifecycle_prompts.py", "_worker_prompt", "verification"),
 )
 
 # How many identical successful resolutions of one signature it takes for

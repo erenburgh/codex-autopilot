@@ -279,17 +279,23 @@ def _install_staged_patch(cfg: Config, store: StateStore) -> str | None:
 
     from .runtime_install import install_when_quiet
 
-    try:
-        outcome = install_when_quiet(cfg)
-    except Exception as exc:  # noqa: BLE001 - the attempt is recorded; the run is not stopped by it
-        outcome = {"deferred": f"the staged patch could not be installed: {exc}"}
+    # One transaction around the install and what a refusal revokes: once a
+    # refused patch leaves `pending` the drain is over, and a fresh hire it
+    # bought must be gone before any reservation can see the task READY.
+    with ResourceLockCoordinator(store, cfg.root).transaction():
+        try:
+            outcome = install_when_quiet(cfg)
+        except Exception as exc:  # noqa: BLE001 - the attempt is recorded; the run is not stopped by it
+            outcome = {"deferred": f"the staged patch could not be installed: {exc}"}
+        if outcome is not None and outcome.get("refused"):
+            state = store.load()
+            _file_refused_patches(cfg, state, outcome["refused"])
+            store.save(state)
     if outcome is None:
         return None
     if outcome.get("deferred"):
         _finish(cfg, store, "wake_skipped", detail={"why": "runtime patch deferred", "reason": outcome["deferred"]})
         return "deferred"
-    if outcome.get("refused"):
-        _file_refused_patches(cfg, store, outcome["refused"])
     if outcome.get("installed"):
         _finish(
             cfg,
@@ -301,23 +307,41 @@ def _install_staged_patch(cfg: Config, store: StateStore) -> str | None:
     return None
 
 
-def _file_refused_patches(cfg: Config, store: StateStore, refused: list[dict[str, Any]]) -> None:
-    from .blocked_runs import stop_run
+def _file_refused_patches(cfg: Config, state: Any, refused: list[dict[str, Any]]) -> None:
+    """A refused patch is a stop for the on-call, and takes back what it bought.
 
-    with ResourceLockCoordinator(store, cfg.root).transaction():
-        state = store.load()
-        for item in refused:
-            stop_run(
-                cfg,
-                state,
-                stop_kind="runtime_patch_refused",
-                phase="RUNTIME_PATCH_REFUSED",
-                reason=f"staged runtime patch {item['entry']} was not installed: {item['reason']}",
-                summary="A proven runtime patch could not be installed and was set aside.",
-                at=utc_now(),
-                system_state={"entry": item["entry"]},
-            )
-        store.save(state)
+    A task returned from the top of its ladder on this patch got a fresh
+    hire while the patch was only staged. Measured by the independent check:
+    the refusal filed a ticket and revoked nothing, so the task ran its fresh
+    budget on the old code. Now the grant is revoked here (``ladder_grants``)
+    and the ticket holds the task it sent back to BLOCKED. A refused revert
+    leaves its patch installed, so it revokes nothing.
+    """
+
+    from .blocked_runs import stop_run
+    from .ladder_grants import revoke_grants
+    from .plan import load_plan
+
+    plan = load_plan(cfg.state_dir, cfg.profile)
+    for item in refused:
+        at = utc_now()
+        entry = str(item["entry"])
+        blocked = (
+            []
+            if entry.startswith("revert-")
+            else revoke_grants(cfg, plan, state, (entry,), reason="refused at install", at=at)
+        )
+        stop_run(
+            cfg,
+            state,
+            stop_kind="runtime_patch_refused",
+            phase="RUNTIME_PATCH_REFUSED",
+            reason=f"staged runtime patch {entry} was not installed: {item['reason']}",
+            summary="A proven runtime patch could not be installed and was set aside.",
+            at=at,
+            task_ids=tuple(blocked),
+            system_state={"entry": entry, "revoked_fresh_hires": list(blocked)},
+        )
 
 
 def _finish(cfg: Config, store: StateStore, event: str, *, detail: dict[str, Any]) -> None:

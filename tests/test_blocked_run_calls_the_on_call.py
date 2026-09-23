@@ -442,6 +442,11 @@ class NoStopBypassesTheDoorTests(unittest.TestCase):
         # a plan change the on-call asked for on a stopped task's behalf: the
         # requester waits for the replanner, like a worker's own request
         ("engineer_stop_actions.py", "request_plan_change"): 1,
+        # a fresh hire whose runtime patch was withdrawn, refused or
+        # reverted is revoked: the task goes back to the stop it came from,
+        # held by its open stop ticket or by a new one (door: hold_revoked /
+        # runtime_patch_refused)
+        ("ladder_grants.py", "revoke_grants"): 1,
         # her answer "replan": the same plan-change wait, on her decision
         ("owner_answers.py", "_owner_plan_change"): 1,
         # v0.8 migrations: the run was already BLOCKED before this runtime;

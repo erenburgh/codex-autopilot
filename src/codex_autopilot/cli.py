@@ -134,6 +134,7 @@ def parser() -> argparse.ArgumentParser:
     devops_repair.add_argument("--test-name", required=True)
     devops_revert = sub.add_parser("devops-revert-runtime-patch")
     devops_revert.add_argument("--project", type=Path, default=Path.cwd())
+    devops_revert.add_argument("--incident-id", required=True)
     devops_revert.add_argument("--patch-id", required=True)
     # A hired skill bundle is a side effect on the project, so it has a named
     # reversal. Listing is separate from removing: nobody should have to guess
@@ -696,14 +697,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "devops-repair-runtime":
             # The engineer edits the runtime's code - but the gateway accepts
-            # the edit, not the engineer. The requirements are those of every
-            # recovery command: the owning thread and its own ticket.
+            # the edit, not the engineer. The requirements are those of a
+            # return: the engineer of THIS ticket, from its own thread, within
+            # the means table (require_patch_holder). Any thread of the run
+            # used to pass - a patch buys a fresh hire and drains the run.
+            from .engineer_stop_actions import require_patch_holder
             from .pipeline_engineer import PipelineIncidentStore
             from .run_state import utc_now
             from .runtime_install import stage_proven_patch, staging_parent
             from .runtime_repair import Edit, prove_runtime_patch
 
-            _relay_executor_thread_id()
             cfg = load_config(args.project)
             timestamp = utc_now()
             # The ticket is checked before the edit, not after: otherwise a
@@ -711,7 +714,7 @@ def main(argv: list[str] | None = None) -> int:
             # live installation and recorded nowhere - non-existent for next
             # time.
             incidents = PipelineIncidentStore(cfg.state_dir)
-            incidents.require_engineer_incident(args.incident_id)
+            require_patch_holder(cfg, args.incident_id, _relay_executor_thread_id())
             raw = json.loads(args.patch_file.read_text(encoding="utf-8"))
             if not isinstance(raw, dict) or not isinstance(raw.get("edits"), list):
                 raise RuntimeRepairError(
@@ -770,19 +773,20 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(dict(removed), ensure_ascii=False))
             return 0
         if args.command == "devops-revert-runtime-patch":
-            from .run_state import utc_now
-            from .runtime_install import stage_revert, withdraw_staged
-
-            _relay_executor_thread_id()
-            cfg = load_config(args.project)
             # A patch still staged is withdrawn (kept aside, never deleted);
             # an installed one is taken back the way it came - staged, and
-            # installed atomically outside the sandbox.
-            if withdraw_staged(cfg.state_dir, args.patch_id):
-                print(json.dumps({"patch_id": args.patch_id, "withdrawn": True}, ensure_ascii=False))
-                return 0
-            stage_revert(cfg.state_dir, args.patch_id, at=utc_now())
-            print(json.dumps({"patch_id": args.patch_id, "revert_staged": True}, ensure_ascii=False))
+            # installed atomically outside the sandbox. Either way the fresh
+            # hires it bought are revoked in the same transaction, and only
+            # the engineer of this ticket may do it (take_back_patch).
+            from .engineer_stop_actions import take_back_patch
+
+            result = take_back_patch(
+                load_config(args.project),
+                incident_id=args.incident_id,
+                patch_id=args.patch_id,
+                thread_id=_relay_executor_thread_id(),
+            )
+            print(json.dumps(result, ensure_ascii=False))
             return 0
         if args.command == "devops-resolve-incident":
             # The on-call engineer closes its own ticket, but only with a

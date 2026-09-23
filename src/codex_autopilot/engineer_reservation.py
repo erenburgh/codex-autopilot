@@ -331,10 +331,22 @@ def waiting_for_owner(cfg: Any, state: Any) -> bool:
 
 
 def reservable_work(cfg: Any, state: Any, states: frozenset[str] = RESERVABLE_TASK_STATES) -> bool:
-    """A task the frontier could take right now, not held by any ticket."""
+    """A task the frontier could take right now, not held by any ticket.
+
+    Not while a proven runtime patch is staged: the frontier reserves nothing
+    then (the run drains for the install), so no task is takeable. Measured
+    by the independent check: the on-call staged a patch, returned its task
+    and closed the ticket; its completion saw a READY task and no session,
+    took the drain for a dead reservation and filed NO_SUCCESSOR - a false
+    ticket that would raise an engineer with nothing to repair.
+    """
 
     import time
 
+    from .runtime_install import runtime_patch_pending
+
+    if runtime_patch_pending(cfg):
+        return False
     barrier = getattr(state, "rate_limit_until", None)
     if isinstance(barrier, int) and barrier > time.time():
         return False  # the account's limit holds every task alike

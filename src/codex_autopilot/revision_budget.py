@@ -171,3 +171,29 @@ def grant_fresh_hire(plan, state, task_id: str, *, grounds: Mapping[str, Any]) -
         "effort": state.task_effort.get(task_id),
         "grounds": dict(grounds),
     }
+
+
+def at_top_of_ladder(plan, state, task_id: str) -> bool:
+    """Whether the next REVISE of this task would stop it: the ladder is spent.
+
+    The same test as ``_rehire_or_block_on_revision_limit``: the budget of
+    the current hire is used up and there is no higher effort step. A return
+    of such a task needs a change of cause (R23) whatever ticket holds it.
+    The gate used to look only at the ticket's kind (ladder_exhausted), and a
+    task whose fresh hire was revoked - its patch refused at install - comes
+    back under a runtime_patch_refused ticket, where a bare return would have
+    given it one more attempt on the old code.
+    """
+
+    from .lifecycle_base import task_effort
+    from .models import next_effort_step
+
+    task = plan.task_map.get(task_id)
+    if task is None:
+        return False
+    maximum = int(task.verification.max_revision_attempts)
+    used = int((state.task_revisions or {}).get(task_id, 0))
+    hires = int((state.task_rehires or {}).get(task_id, 0))
+    if used < maximum * (hires + 1):
+        return False
+    return next_effort_step(task_effort(plan, state, task_id)) is None
