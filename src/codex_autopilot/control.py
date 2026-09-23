@@ -1261,14 +1261,9 @@ def _reconcile_before_resume(cfg) -> tuple[str, ...]:
 
 
 def _answer_escalation(cfg, state) -> tuple[str, ...]:
-    """Resuming is the user's answer to what was handed to her.
-
-    R13 allows turning to the user as an exception, but an appeal with no
-    way back is a dead end. The body lives in ``owner_answers``: tickets
-    handed to her are closed AND the tasks they held leave BLOCKED (a Resume
-    used to close the tickets and leave the tasks stopped); tickets the
-    on-call never looked at are routed to its lane, never closed.
-    """
+    """Resuming is her answer to what was handed to her (R13); the body and
+    its rules - tickets closed, tasks lifted, the lane's routed, one retry
+    per permission request - live in ``owner_answers.answer_escalations``."""
 
     from .owner_answers import answer_escalations
 
@@ -1302,12 +1297,13 @@ def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
         answered_ids: tuple[str, ...] = ()
         if state.status == "BLOCKED":
             answered_ids = _answer_escalation(cfg, state)
+            held = " ".join(getattr(answered_ids, "held", ()))
             if not answered_ids:
                 return {
                     "decision": "block",
                     "reason": (
                         f"Codex Autopilot is BLOCKED: "
-                        f"{state.last_error or 'review BLOCKED.json'}"
+                        f"{held or state.last_error or 'review BLOCKED.json'}"
                     ),
                 }
         store.clear_pause()
@@ -1335,7 +1331,7 @@ def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:
         # the causal owner and launches the automatic dispatcher.
         note = "Codex Autopilot resume is armed for this turn's Stop hook."
         if answered_ids:
-            note += f" Escalation closed by the user: {', '.join(answered_ids)}."
+            note += f" Escalation closed by the user: {', '.join(answered_ids)}. {held}".rstrip()
         if recovered:
             note += f" Returned to retry after a dead worker: {', '.join(recovered)}."
         return {"systemMessage": note}

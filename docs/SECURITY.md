@@ -57,8 +57,9 @@ that tree is outside the project, and a write there would stop the turn on a
 permission request nobody answers. The set is staged in the project
 (`.codex-autopilot/runtime-patches/pending/<patch-id>`), the run drains - the
 frontier reserves nothing new while a patch waits - and the wake-up, which
-launchd runs outside the sandbox, installs it only when no registered run has
-a live automatic dispatcher: it copies the current version to
+launchd runs outside the sandbox, installs it only when this run has no live
+dispatcher, scheduled or running (a drain that outlasts a dispatcher's own
+turn and reconcile bounds refuses the patch and tickets it): it copies the current version to
 `<version>.repaired-<UTC timestamp>`, checks each module still has the text the
 set was proven against (otherwise the patch is refused, set aside and ticketed
 for the on-call), writes the set there, and switches `current` with one rename

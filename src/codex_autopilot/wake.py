@@ -89,6 +89,12 @@ def is_stranded(cfg: Config, state: Any) -> bool:
         return False
     if StateStore(cfg.state_dir).pause_requested():
         return False
+    if _patch_drain_overdue(cfg):
+        # A staged patch past its drain deadline is a stop even beside a
+        # live dispatcher: that dispatcher is past its own bounds, and
+        # without a wake-up nobody would ever refuse the patch and file the
+        # ticket - the run would stand drained with nobody told.
+        return True
     if _dispatcher_alive(state):
         return False
     try:
@@ -179,15 +185,17 @@ def run_wake(
         if remaining > 0:
             sleep(min(remaining, MAX_NAP_SECONDS))
             continue
-        if _dispatcher_alive(state):
+        if _dispatcher_alive(state) and not _patch_drain_overdue(cfg):
             _finish(cfg, store, "wake_skipped", detail={"why": "a dispatcher is already running"})
             return 0
         break
 
     # A proven runtime patch is installed here, outside the engineer's
-    # sandbox, and only when no dispatcher of any registered run is alive
-    # (runtime_install). This process then leaves: it imported the old tree,
-    # and the next sweep raises the run on the new one.
+    # sandbox, and only when no dispatcher of this run is alive, scheduled
+    # or running (runtime_install). This process then leaves: it imported
+    # the old tree, and the next sweep raises the run on the new one. Past
+    # the drain deadline the patch is refused and ticketed instead, and the
+    # wake-up goes on to raise the on-call for that ticket.
     patched = _install_staged_patch(cfg, store)
     if patched is not None:
         return 0
@@ -499,6 +507,12 @@ def _dispatcher_alive(state: Any) -> bool:
         and _pid_alive(item.get("automatic_dispatch_pid"))
         for item in getattr(state, "worker_sessions", None) or []
     )
+
+
+def _patch_drain_overdue(cfg: Config) -> bool:
+    from .runtime_install import drain_overdue
+
+    return drain_overdue(cfg)
 
 
 def _pid_alive(pid: Any) -> bool:

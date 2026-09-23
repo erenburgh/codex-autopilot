@@ -331,6 +331,8 @@ def require_stop_ticket_closable(
       without one repairing action.
     - A task the ticket holds may not be left BLOCKED, unless the plan
       change this ticket asked for is active - the replanner returns it.
+    - A permission request closes only as a runtime defect repaired: a live
+      runtime patch of this ticket (staged or installed).
     Other tickets close as before.
     """
 
@@ -347,6 +349,25 @@ def require_stop_ticket_closable(
             "task (return_stopped_task), ask the replanner (request_plan_change), or "
             "escalate with your diagnosis"
         )
+    if str((incident.get("system_state") or {}).get("stop_kind") or "") == "approval_required":
+        # Its task is held, not BLOCKED, so the BLOCKED test below never
+        # stops this closure: named repair_runtime_code with nothing staged,
+        # it sent the task straight back into the same request - the loop
+        # her answer is built to break, run by the on-call instead.
+        from pathlib import Path
+
+        from .ladder_grants import patch_is_live
+
+        if not any(
+            isinstance(patch, Mapping)
+            and patch_is_live(Path(cfg.state_dir), str(patch.get("patch_id") or ""))
+            for patch in incident.get("runtime_patches") or ()
+        ):
+            raise EngineerStopActionError(
+                "a permission request closes only with a runtime patch of this ticket that "
+                "removes the request (staged or installed); if the task itself needs the "
+                "operation, escalate DANGEROUS_PERMISSION with your recommendation"
+            )
     state = StateStore(cfg.state_dir).load()
     replanning = set()
     if state.active_plan_change_id is not None:

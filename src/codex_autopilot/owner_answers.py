@@ -143,14 +143,7 @@ def answer_task(
                     "a permission request is answered with --option replan (change the plan "
                     "so the task does not need it) or --option retry (you granted it yourself)"
                 )
-            if choice == "retry" and any(
-                isinstance(item, dict)
-                and item.get("task_id") == task_id
-                and item.get("option") == "retry"
-                and signature
-                and item.get("approval_signature") == signature
-                for item in state.user_unblocks or ()
-            ):
+            if choice == "retry" and retried_before(state, task_id, signature):
                 raise OwnerAnswerError(
                     "the same permission request came back after your earlier retry: the grant "
                     "did not cover it. Answer with --option replan, or change the permission "
@@ -172,7 +165,7 @@ def answer_task(
         if choice == "replan":
             moved_to = _owner_plan_change(plan, state, task_id, decision, closed, timestamp)
         elif blocked:
-            if "ladder_exhausted" in kinds or _at_ladder_top(state, task_id):
+            if owes_fresh_hire(plan, state, task_id, kinds):
                 grant = grant_fresh_hire(
                     plan, state, task_id, grounds={"user_unblock": timestamp}
                 )
@@ -201,6 +194,45 @@ def answer_task(
         "grant": grant,
         **raised,
     }
+
+
+def retried_before(state: Any, task_id: str, signature: str) -> bool:
+    """Her retry of this very permission request was already spent.
+
+    One retry per request, whichever door she answered through. Only
+    ``unblock`` used to check it: a Resume lifted the same approval stop and
+    recorded no option and no signature, so the rule never saw it and the
+    loop "Resume, the same approval, Resume" had no bound - measured by the
+    independent check, three rounds in a row, each costing an on-call turn.
+    """
+
+    return bool(signature) and any(
+        isinstance(item, dict)
+        and item.get("task_id") == task_id
+        and item.get("option") == "retry"
+        and item.get("approval_signature") == signature
+        for item in getattr(state, "user_unblocks", None) or ()
+    )
+
+
+def owes_fresh_hire(plan: Any, state: Any, task_id: str, kinds: Any) -> bool:
+    """Her answer about a task at the top of its hiring ladder buys a fresh hire.
+
+    By the task's ladder, not only the ticket's kind - the same test as the
+    on-call's return (``revision_budget.at_top_of_ladder``). A task whose
+    grant was revoked comes back under a runtime_patch_refused or
+    runtime_patch_taken_back ticket; ``unblock`` granted it a hire, Resume
+    looked at the kind alone and sent it back spent, to stop again on its
+    first REVISE. Both doors ask this one question now.
+    """
+
+    from .revision_budget import at_top_of_ladder
+
+    return (
+        "ladder_exhausted" in kinds
+        or _at_ladder_top(state, task_id)
+        or at_top_of_ladder(plan, state, task_id)
+    )
 
 
 def _at_ladder_top(state: Any, task_id: str) -> bool:
@@ -293,13 +325,34 @@ def render_answer(result: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def answer_escalations(cfg: Any) -> tuple[str, ...]:
+class ResumeAnswers(tuple):
+    """The tickets a Resume closed, and what it would not do and why.
+
+    A tuple, so every caller that joined or compared the closed ids still
+    does; ``held`` carries a sentence per stop the Resume left for her
+    explicit answer.
+    """
+
+    held: tuple[str, ...] = ()
+
+
+def answer_escalations(cfg: Any) -> ResumeAnswers:
     """Her Resume on a BLOCKED run: the answer to what was handed to her.
 
     Tickets handed to her are closed as answered, and the tasks they held
-    leave BLOCKED by the same transition as ``answer_task``, recorded in
-    ``user_unblocks`` - a Resume used to close the tickets and leave the
-    tasks BLOCKED, so the next reservation found nothing to do.
+    leave BLOCKED by the same transition as ``answer_task`` - the same
+    target, the same fresh hire at the top of the ladder
+    (``owes_fresh_hire``) - recorded in ``user_unblocks``. A Resume used to
+    close the tickets and leave the tasks BLOCKED, so the next reservation
+    found nothing to do.
+
+    A permission request is answered by a Resume as ``retry`` - she lets
+    the task try once more - with the request's signature recorded, so the
+    one-retry-per-request rule sees it (``retried_before``). When the same
+    request is back after her retry, the Resume does not lift it again: the
+    ticket stays with her and the Resume says what answers it (replan, or a
+    permission that covers the request). That is what breaks "Resume, the
+    same approval, Resume".
 
     A ticket the on-call has not looked at is never closed here. Tickets in
     DEGRADED or AUTO_RECOVERY_FAILED are routed to its lane instead - closing
@@ -313,12 +366,16 @@ def answer_escalations(cfg: Any) -> tuple[str, ...]:
     from .pipeline_engineer import IncidentPhase, PipelineIncidentStore
     from .plan import load_plan
     from .resources import ResourceLockCoordinator
+    from .revision_budget import grant_fresh_hire
     from .run_state import StateStore, utc_now
+    from .stop_diagnosis import owner_answer
 
     incidents = PipelineIncidentStore(cfg.state_dir)
     store = StateStore(cfg.state_dir)
     at = utc_now()
     closed: list[str] = []
+    held: list[str] = []
+    note = "the user resumed the run, answering the escalation"
     with ResourceLockCoordinator(store, cfg.root).transaction():
         state = store.load()
         plan = load_plan(cfg.state_dir, cfg.profile)
@@ -343,18 +400,29 @@ def answer_escalations(cfg: Any) -> tuple[str, ...]:
                 and incident_id not in escalated_in_lane
             ):
                 continue
-            incidents.resolve_escalation_by_user(
-                incident_id, at=at, note="the user resumed the run, answering the escalation"
-            )
+            system = item.get("system_state") or {}
+            kind = str(system.get("stop_kind") or "")
+            signature = str(system.get("approval_signature") or "")
+            tasks = [
+                str(task)
+                for task in item.get("affected_task_ids") or ()
+                if state.task_states.get(str(task)) == TaskState.BLOCKED.value
+                and str(task) in plan.task_map
+            ]
+            if kind == "approval_required" and any(
+                retried_before(state, task_id, signature) for task_id in tasks
+            ):
+                held.append(
+                    f"{', '.join(tasks)}: the same permission request ({signature}) came back "
+                    "after your earlier retry, so Resume does not retry it again. Answer with "
+                    "--option replan, or grant a permission that covers the request: "
+                    + owner_answer(cfg, item)
+                )
+                continue
+            incidents.resolve_escalation_by_user(incident_id, at=at, note=note)
             closed.append(incident_id)
-            for task_id in (str(task) for task in item.get("affected_task_ids") or ()):
-                if state.task_states.get(task_id) != TaskState.BLOCKED.value:
-                    continue
-                if task_id not in plan.task_map:
-                    continue
-                if str((item.get("system_state") or {}).get("stop_kind")) == "ladder_exhausted":
-                    from .revision_budget import grant_fresh_hire
-
+            for task_id in tasks:
+                if owes_fresh_hire(plan, state, task_id, {kind}):
                     grant_fresh_hire(plan, state, task_id, grounds={"user_unblock": at})
                 state.task_states = transition_task(
                     plan, state.task_states, task_id, unblock_target(state, task_id)
@@ -362,10 +430,19 @@ def answer_escalations(cfg: Any) -> tuple[str, ...]:
                 state.user_unblocks.append(
                     {
                         "task_id": task_id,
-                        "reason": "the user resumed the run, answering the escalation",
+                        "reason": note,
                         "at": at,
                         "incident_ids": [incident_id],
+                        **(
+                            {"option": "retry", "approval_signature": signature}
+                            if kind == "approval_required"
+                            else {}
+                        ),
                     }
                 )
+        if held:
+            state.last_error = " ".join(held)[:2000]
         store.save(state)
-    return tuple(closed)
+    answers = ResumeAnswers(closed)
+    answers.held = tuple(held)
+    return answers

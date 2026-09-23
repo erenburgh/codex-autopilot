@@ -24,8 +24,8 @@ So the repair is split at the sandbox line:
    new (``runtime_patch_pending``), so the sessions in flight finish on the
    code they started with;
 3. a process outside the sandbox - the wake-up, which launchd runs from the
-   installation's own launcher - installs it only when no run registered
-   for the sweep has a live automatic dispatcher (``install_when_quiet``):
+   installation's own launcher - installs it only when this run has no live
+   dispatcher, scheduled or running (``install_when_quiet``):
    it copies the current version to a new ``<version>.repaired-<stamp>``
    directory (the name the installer already preserves), checks each module
    still matches the text the patch was proven against, writes the set and
@@ -38,6 +38,28 @@ So the repair is split at the sandbox line:
 A patch that no longer fits the tree (the installation changed under it) is
 refused, not forced, and the refusal files a ticket so the on-call proves it
 again: a staged patch never waits in silence.
+
+Two defects the independent check measured in the waiting itself:
+
+- the quiet check asked every registered project, while the drain is this
+  run's alone. A neighbour run that was always busy kept this one drained
+  for good, each wake-up writing only "runtime patch deferred". Other runs
+  do not need the check: every dispatcher and wake-up puts the source root
+  it resolved at start first on PYTHONPATH (``control`` and ``wake``), the
+  old version directory is never removed, and the switch is one rename - a
+  neighbour's process in flight finishes on the tree it started with, as it
+  would across an upgrade between turns;
+- the check counted a dispatcher only in RUNNING. One spawned just before
+  the patch was staged sits in SCHEDULED with a live pid and is about to
+  import from ``current``; it counts now (``dispatchers_in_flight``).
+
+And the drain is bounded (``drain_deadline``): a turn is cut by its own
+dispatcher after ``turn_timeout_seconds``, and reconciliation after
+``reconcile_timeout_seconds``, so a dispatcher still alive a margin past
+both since the patch was staged is not finishing a turn. The patch is then
+refused like any patch that cannot be installed - set aside, what it bought
+revoked, and a ticket for the on-call naming the live pids - instead of the
+run standing drained with no ticket and no signal.
 """
 
 from __future__ import annotations
@@ -55,6 +77,8 @@ INSTALLED = "installed"
 REFUSED = "refused"
 WITHDRAWN = "withdrawn"
 STAGING = ".staging"
+# Past both of a dispatcher's own bounds, a little longer for its exit.
+DRAIN_MARGIN_SECONDS = 600
 
 
 class RuntimeInstallError(RuntimeError):
@@ -96,6 +120,7 @@ def stage_proven_patch(state_dir: Path, proven: Any) -> Path:
     (scratch / "test.py").write_text(proven.test_source, encoding="utf-8")
     manifest = {
         "kind": "patch",
+        "staged_at": int(time.time()),
         "record": record.to_dict(),
         "test_name": proven.test_name,
         "originals_sha256": {
@@ -120,7 +145,10 @@ def stage_revert(state_dir: Path, patch_id: str, *, at: str) -> Path:
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
     (scratch / "patch.json").write_text(
-        json.dumps({"kind": "revert", "patch_id": patch_id, "at": at}, sort_keys=True),
+        json.dumps(
+            {"kind": "revert", "patch_id": patch_id, "at": at, "staged_at": int(time.time())},
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -281,22 +309,82 @@ def _file(state_dir: Path, name: str, where: str, note: dict[str, Any]) -> None:
     (target / f"{where}.json").write_text(json.dumps(note, sort_keys=True), encoding="utf-8")
 
 
+def dispatchers_in_flight(state: Any) -> list[int]:
+    """Live pids of this run's dispatchers: the run's own, and every session's.
+
+    SCHEDULED counts as much as RUNNING - the pid is alive and about to read
+    ``current``. The same pair the relay test for "nobody's reservation"
+    uses (``engineer_escalation._relayable_descriptors_without_a_thread``).
+    """
+
+    from .wake import _pid_alive
+
+    found: list[int] = []
+    run_pid = getattr(state, "dispatcher_pid", None)
+    if _pid_alive(run_pid):
+        found.append(int(run_pid))
+    for item in getattr(state, "worker_sessions", None) or ():
+        pid = item.get("automatic_dispatch_pid")
+        if item.get("automatic_dispatch_state") in {"SCHEDULED", "RUNNING"} and _pid_alive(pid):
+            found.append(int(pid))
+    return found
+
+
+def staged_since(state_dir: Path) -> int | None:
+    """When the oldest staged entry was staged (epoch), or None when none is.
+
+    Read from the manifest; an entry staged before the field existed falls
+    back to its directory's modification time.
+    """
+
+    times = []
+    for entry in pending_entries(Path(state_dir)):
+        try:
+            manifest = json.loads((entry / "patch.json").read_text(encoding="utf-8"))
+            times.append(int(manifest["staged_at"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            times.append(int(entry.stat().st_mtime))
+    return min(times) if times else None
+
+
+def drain_deadline(cfg: Any) -> int | None:
+    """The epoch after which a staged patch that could not be installed is refused."""
+
+    since = staged_since(Path(cfg.state_dir))
+    if since is None:
+        return None
+    desktop = getattr(cfg, "desktop", None)
+    turn = int(getattr(desktop, "turn_timeout_seconds", 14_400) or 14_400)
+    reconcile = int(getattr(desktop, "reconcile_timeout_seconds", 300) or 300)
+    return since + turn + reconcile + DRAIN_MARGIN_SECONDS
+
+
+def drain_overdue(cfg: Any, *, now: Callable[[], float] = time.time) -> bool:
+    """A staged patch has waited past its deadline. Never raises."""
+
+    try:
+        deadline = drain_deadline(cfg)
+    except Exception:  # noqa: BLE001 - an unreadable directory drains nothing
+        return False
+    return deadline is not None and now() >= deadline
+
+
 def install_when_quiet(
     cfg: Any,
     *,
     install_root: Path | None = None,
-    roots: Iterable[str] | None = None,
+    now: Callable[[], float] = time.time,
 ) -> dict[str, Any] | None:
-    """Install this project's staged patches if no registered run is alive.
+    """Install this run's staged patches once this run has no dispatcher alive.
 
     Called by the wake-up (outside the sandbox). Returns None when nothing
-    is staged; otherwise what happened, including "deferred" with the run
-    that is still alive. The installation is shared by every registered
-    project, so every one of them is asked.
+    is staged; otherwise what happened: installed, refused, or "deferred"
+    with the reason - and a deferral past the drain deadline becomes a
+    refusal, so the caller files a ticket and the run is not drained for
+    good.
     """
 
     from .run_state import StateStore
-    from .wake import _dispatcher_alive, registered_projects
 
     if not runtime_patch_pending(cfg):
         return None
@@ -311,21 +399,23 @@ def install_when_quiet(
             "this runtime is not an installation with a `current` version symlink; "
             "a staged patch has nowhere to be installed",
         )}
-    state_dirs = [Path(cfg.state_dir)]
-    for raw in roots if roots is not None else registered_projects():
-        candidate = Path(raw) / ".codex-autopilot"
-        if candidate.resolve() != Path(cfg.state_dir).resolve() and candidate.is_dir():
-            state_dirs.append(candidate)
-    for state_dir in state_dirs:
-        try:
-            if _dispatcher_alive(StateStore(state_dir).load()):
-                return {"deferred": f"a dispatcher is alive in {state_dir.parent}"}
-        except Exception:  # noqa: BLE001 - an unreadable run is not proof of a quiet one
-            return {"deferred": f"the run in {state_dir.parent} could not be read"}
     try:
-        return install_pending(root, [Path(cfg.state_dir)])
-    except RuntimeInstallError as exc:
-        return {"deferred": str(exc)}
+        alive = dispatchers_in_flight(StateStore(Path(cfg.state_dir)).load())
+        why = f"a dispatcher is alive in this run (pids {alive})" if alive else ""
+    except Exception as exc:  # noqa: BLE001 - an unreadable run is not proof of a quiet one
+        why = f"the run could not be read: {exc}"
+    if not why:
+        try:
+            return install_pending(root, [Path(cfg.state_dir)], now=now)
+        except Exception as exc:  # noqa: BLE001 - the live tree is untouched; the wait is bounded below
+            why = f"the staged patch could not be installed: {exc}"
+    if drain_overdue(cfg, now=now):
+        return {"installed": [], "refused": _refuse_all(
+            Path(cfg.state_dir),
+            f"the run did not go quiet within its drain deadline ({why}); a dispatcher alive "
+            "past its own turn and reconcile bounds is not finishing a turn",
+        )}
+    return {"deferred": why}
 
 
 def _refuse_all(state_dir: Path, reason: str) -> list[dict[str, Any]]:

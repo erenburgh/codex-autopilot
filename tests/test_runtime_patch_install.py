@@ -145,7 +145,7 @@ class OnlyWhenNoDispatcherIsAliveTests(_Installation):
         self.store.save(state)
         stage_proven_patch(self.cfg.state_dir, proven())
 
-        outcome = install_when_quiet(self.cfg, install_root=self.install, roots=[])
+        outcome = install_when_quiet(self.cfg, install_root=self.install)
 
         self.assertIn("dispatcher is alive", outcome["deferred"])
         self.assertEqual(self.live_status(), OLD)
@@ -153,7 +153,7 @@ class OnlyWhenNoDispatcherIsAliveTests(_Installation):
 
     def test_a_quiet_run_is_patched(self) -> None:
         stage_proven_patch(self.cfg.state_dir, proven())
-        outcome = install_when_quiet(self.cfg, install_root=self.install, roots=[])
+        outcome = install_when_quiet(self.cfg, install_root=self.install)
         self.assertEqual(outcome["installed"][0]["entry"], "patch-demo")
         self.assertEqual(self.live_status(), NEW)
 

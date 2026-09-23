@@ -64,7 +64,7 @@ Earlier installations are not left standing beside the new one. Once the new ver
 
 One directory escapes this. An installation that carries accepted runtime repairs - a non-empty `runtime/patches` - is renamed to `<version>.repaired-<stamp>` beside itself before the new install replaces it, the installer prints that path, and the archive loop skips it. Nothing in it is deleted or zipped.
 
-The same name is how a repair is installed in the first place. The on-call proves a runtime patch inside the project and stages it under `.codex-autopilot/runtime-patches/`; the wake-up, once no registered run has a live dispatcher, copies the current version to `<version>.repaired-<stamp>`, writes the patch there and switches `current` to it with one rename. The version it was copied from is left as it was.
+The same name is how a repair is installed in the first place. The on-call proves a runtime patch inside the project and stages it under `.codex-autopilot/runtime-patches/`; the wake-up, once that run has no live dispatcher (other runs keep the version they started from), copies the current version to `<version>.repaired-<stamp>`, writes the patch there and switches `current` to it with one rename. The version it was copied from is left as it was.
 
 ## Project footprint
 

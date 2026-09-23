@@ -225,9 +225,15 @@ session does not count.
 
 A runtime patch is proven inside the project and staged there, the run
 drains, and the wake-up installs it atomically outside the sandbox when no
-dispatcher is alive (`runtime_install`, see `docs/SECURITY.md`). The drain is
-not a stop: while a patch is staged no task counts as reservable work, so the
-on-call's completion files no `NO_SUCCESSOR` over the tasks it just returned.
+dispatcher of this run is alive, scheduled or running (`runtime_install`, see
+`docs/SECURITY.md`). Other runs are not waited for: their processes keep the
+tree they started from. The drain is not a stop: while a patch is staged no
+task counts as reservable work, so the on-call's completion files no
+`NO_SUCCESSOR` over the tasks it just returned. The drain is bounded: past
+`turn_timeout_seconds + reconcile_timeout_seconds` and a margin since staging,
+a dispatcher still alive is not finishing a turn, so the patch is refused,
+what it bought revoked, and a `runtime_patch_refused` ticket naming the live
+pids goes to the on-call - the run never stands drained with nobody told.
 `devops-repair-runtime` and `devops-revert-runtime-patch --incident-id <id>`
 answer only to the engineer of that ticket, from its own thread, within the
 means table; a staged patch is withdrawn only by the ticket that staged it.
@@ -246,11 +252,18 @@ A permission request inside a turn (`ApprovalRequired`) is never answered and
 never retried. It is its own failure code, `approval_required`, not counted
 towards the retry ceiling; a stop ticket holds the task with the request in
 it and goes to the on-call, which compares it with what the run is authorized
-for and the run's permission profile. A runtime defect it repairs; otherwise it
-hands the ticket up as `DANGEROUS_PERMISSION`. Her answer is applied without a
+for and the run's permission profile (`stop_context.approval`; the on-call's
+prompt carries its own paragraph for this kind of stop). A runtime that asked
+for more than the run needs is a defect it repairs, and such a ticket closes
+only with a live runtime patch of that ticket - without one the same request
+would come straight back. Otherwise it hands the ticket up as
+`DANGEROUS_PERMISSION` with a recommendation. Her answer is applied without a
 loop: `--option replan` changes the plan so the task does not need the
 operation, `--option retry` (she granted it herself) runs it once more, and the
-same request after her retry is not retried again.
+same request after her retry is not retried again. Resume counts as `retry`
+with the request's signature recorded, so the same rule holds on that door: a
+Resume after the same request came back leaves the ticket with her and says
+which answer closes it.
 
 ## Her answer
 
@@ -261,8 +274,10 @@ of the ladder grants a fresh hire, the decision and its option are recorded in
 `user_unblocks` where the next worker reads them, and the run is raised the way
 the wake-up raises it (`derive_owner`, `ensure_wake`, the same hook-trust gate).
 It never asks for Resume. Resume on a `BLOCKED` run still answers what was
-handed to her and now also lifts the stops of those tickets' tasks; tickets
-the on-call never looked at are routed to its lane, never closed.
+handed to her and now also lifts the stops of those tickets' tasks by the same
+transition, a fresh hire at the top of the ladder included (by the task's
+ladder, not the ticket's kind); tickets the on-call never looked at are routed
+to its lane, never closed.
 
 The status card shows every ticket handed to her with the on-call's diagnosis,
 the decision needed, its recommendation, the options and the answer command.

@@ -20,12 +20,17 @@ So a permission request is its own failure code, ``approval_required``:
   request with what the run is authorized for (R4) and the permission profile
   the run uses (``stop_diagnosis``). A runtime that asked for more than the run
   needs - a wrong profile, a command it should not have issued - is a defect
-  it repairs. Otherwise it hands the ticket to her as DANGEROUS_PERMISSION with
-  a recommendation;
+  it repairs, and the ticket closes only with that live patch on it
+  (``engineer_stop_actions.require_stop_ticket_closable``). Otherwise it hands
+  the ticket to her as DANGEROUS_PERMISSION with a recommendation. The
+  ticket's ``reason_code`` is that hand-up code, not a worker's own stop: the
+  on-call's prompt has a paragraph of its own for this kind
+  (``engineer_escalation.APPROVAL_TICKET_BRIEF``);
 - her answer is applied without the loop (``owner_answers``): ``replan``
   changes the plan so the task no longer needs the operation; ``retry`` - she
   granted it herself - runs the task once more, and the same request after her
-  retry is not retried a second time.
+  retry is not retried a second time. Resume is a ``retry`` recorded with the
+  request's signature, so the rule holds on that door too.
 
 An on-call's own request holds no task: its ticket is anchored to the task as
 context only.
