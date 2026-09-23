@@ -174,6 +174,21 @@ def parser() -> argparse.ArgumentParser:
     unblock.add_argument("--project", type=Path, default=Path.cwd())
     unblock.add_argument("--task", required=True)
     unblock.add_argument("--reason", required=True)
+    # Her answer as a choice among the on-call's options (the status card
+    # lists them); ``replan`` asks the replanner instead of returning the task.
+    unblock.add_argument("--option", default="")
+    # The on-call's two actions on a stopped task (engineer_stop_actions).
+    returned = sub.add_parser("devops-return-task")
+    returned.add_argument("--project", type=Path, default=Path.cwd())
+    returned.add_argument("--incident-id", required=True)
+    returned.add_argument("--task", required=True)
+    replan = sub.add_parser("devops-request-plan-change")
+    replan.add_argument("--project", type=Path, default=Path.cwd())
+    replan.add_argument("--incident-id", required=True)
+    replan.add_argument("--task", required=True)
+    replan.add_argument("--reason", required=True)
+    replan.add_argument("--kind", default="prerequisite")
+    replan.add_argument("--change-json", default="")
     authorize_root = sub.add_parser(
         "authorize-project-root",
         help="authorize Autopilot to add this project's canonical root to the saved Codex project",
@@ -565,7 +580,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Initialized {len(plan.milestones)} milestones ({profile}).{armed_text}{done_text}")
             return 0
         if args.command == "arm":
-            arm(args.project)
+            # The calling thread's own session (the on-call re-arming after a
+            # repair) is not "a live neighbour" (run_arming).
+            arm(args.project, caller_thread=str(os.environ.get("CODEX_THREAD_ID") or ""))
             print("Desktop reservation armed for this turn's Stop hook; the causal task performs the fixed relay.")
             return 0
         if args.command == "resume":
@@ -636,54 +653,46 @@ def main(argv: list[str] | None = None) -> int:
             # Running this command is the human's decision: it does not
             # check whether they are right, it records what they decided.
             # Without a reason it does nothing - a record without a reason
-            # is no better than a silent lift.
-            from .plan import load_plan
-            from .run_state import utc_now
-            from .task_state import TaskState, transition_task
+            # is no better than a silent lift. It used to end by asking her
+            # to write Resume; the answer now raises the run itself
+            # (owner_answers).
+            from .owner_answers import OwnerAnswerError, answer_task, render_answer
 
-            cfg = load_config(args.project)
-            store = StateStore(cfg.state_dir)
-            state = store.load()
-            plan = load_plan(cfg.state_dir, cfg.profile)
-            task_id = str(args.task).strip()
-            if task_id not in plan.task_map:
-                raise SystemExit(f"the plan has no task {task_id!r}")
-            if state.task_states.get(task_id) != TaskState.BLOCKED.value:
-                raise SystemExit(
-                    f"{task_id} is not stopped: it is now "
-                    f"{state.task_states.get(task_id)}"
+            try:
+                result = answer_task(
+                    load_config(args.project),
+                    str(args.task).strip(),
+                    str(args.reason),
+                    option=str(args.option or ""),
                 )
-            reason = str(args.reason).strip()
-            if not reason:
-                raise SystemExit("a reason is required: --reason")
-            # A stop is not always about the work. When the task already had
-            # a verdict - it has revision history - the implementation exists
-            # and only acceptance was in dispute, so it goes back to waiting
-            # for a verifier, not back to the start.
-            #
-            # Sending done work to READY was not merely wasteful: the re-run
-            # touched the staged workspace and the runtime then refused the
-            # result, "staged output changed after verification". Redoing it
-            # invalidated the very thing that was waiting to be accepted.
-            done_before = int(state.task_revisions.get(task_id, 0)) > 0
-            state.task_states = transition_task(
-                plan,
-                state.task_states,
-                task_id,
-                TaskState.IMPLEMENTED if done_before else TaskState.READY,
+            except OwnerAnswerError as exc:
+                raise SystemExit(str(exc)) from exc
+            print(render_answer(result))
+            return 0
+        if args.command == "devops-return-task":
+            from .engineer_stop_actions import return_stopped_task
+
+            result = return_stopped_task(
+                load_config(args.project),
+                incident_id=args.incident_id,
+                task_id=str(args.task).strip(),
+                thread_id=_relay_executor_thread_id(),
             )
-            state.user_unblocks.append(
-                {"task_id": task_id, "reason": reason, "at": utc_now()}
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        if args.command == "devops-request-plan-change":
+            from .engineer_stop_actions import request_plan_change
+
+            result = request_plan_change(
+                load_config(args.project),
+                incident_id=args.incident_id,
+                task_id=str(args.task).strip(),
+                reason=str(args.reason),
+                thread_id=_relay_executor_thread_id(),
+                kind=str(args.kind),
+                change=json.loads(args.change_json) if args.change_json else None,
             )
-            if state.status == "BLOCKED":
-                state.status = "READY"
-                state.phase = "PREPARING"
-                state.last_error = None
-            store.save(state)
-            print(
-                f"{task_id}: the stop was lifted by the user's decision — {reason}\n"
-                "Continue the run with the phrase «Resume Codex Autopilot.» in a Codex task."
-            )
+            print(json.dumps(result, ensure_ascii=False))
             return 0
         if args.command == "devops-repair-runtime":
             # The engineer edits the runtime's code - but the gateway accepts
@@ -691,7 +700,8 @@ def main(argv: list[str] | None = None) -> int:
             # recovery command: the owning thread and its own ticket.
             from .pipeline_engineer import PipelineIncidentStore
             from .run_state import utc_now
-            from .runtime_repair import Edit, apply_runtime_patch
+            from .runtime_install import stage_proven_patch, staging_parent
+            from .runtime_repair import Edit, prove_runtime_patch
 
             _relay_executor_thread_id()
             cfg = load_config(args.project)
@@ -721,14 +731,22 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 for item in raw["edits"]
             )
-            record = apply_runtime_patch(
+            # Proven in a copy inside the project and staged there: the
+            # installed runtime is outside the engineer's sandbox and shared
+            # by every live dispatcher. The wake-up installs it atomically
+            # once no dispatcher is alive (runtime_install); the run drains
+            # for it meanwhile.
+            proven = prove_runtime_patch(
                 edits=edits,
                 test_name=args.test_name,
                 test_source=args.test_file.read_text(encoding="utf-8"),
                 at=timestamp,
+                staging_parent=staging_parent(cfg.state_dir),
             )
-            incidents.record_runtime_patch(args.incident_id, patch=record.to_dict(), at=timestamp)
-            print(json.dumps(record.to_dict(), ensure_ascii=False))
+            stage_proven_patch(cfg.state_dir, proven)
+            record = {**proven.record.to_dict(), "staged": True}
+            incidents.record_runtime_patch(args.incident_id, patch=record, at=timestamp)
+            print(json.dumps(record, ensure_ascii=False))
             return 0
         if args.command == "skills":
             from .hired_skills import hired_skill_records
@@ -752,11 +770,19 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(dict(removed), ensure_ascii=False))
             return 0
         if args.command == "devops-revert-runtime-patch":
-            from .runtime_repair import revert_runtime_patch
+            from .run_state import utc_now
+            from .runtime_install import stage_revert, withdraw_staged
 
             _relay_executor_thread_id()
-            record = revert_runtime_patch(args.patch_id)
-            print(json.dumps(record.to_dict(), ensure_ascii=False))
+            cfg = load_config(args.project)
+            # A patch still staged is withdrawn (kept aside, never deleted);
+            # an installed one is taken back the way it came - staged, and
+            # installed atomically outside the sandbox.
+            if withdraw_staged(cfg.state_dir, args.patch_id):
+                print(json.dumps({"patch_id": args.patch_id, "withdrawn": True}, ensure_ascii=False))
+                return 0
+            stage_revert(cfg.state_dir, args.patch_id, at=utc_now())
+            print(json.dumps({"patch_id": args.patch_id, "revert_staged": True}, ensure_ascii=False))
             return 0
         if args.command == "devops-resolve-incident":
             # The on-call engineer closes its own ticket, but only with a
@@ -766,8 +792,13 @@ def main(argv: list[str] | None = None) -> int:
             from .pipeline_engineer import HealthcheckResult, PipelineIncidentStore
             from .run_state import utc_now
 
+            from .engineer_stop_actions import require_stop_ticket_closable
+
             _relay_executor_thread_id()
             cfg = load_config(args.project)
+            # A stop ticket closes only when its stop is dealt with: not on
+            # diagnostics alone, not with a held task left BLOCKED.
+            require_stop_ticket_closable(cfg, args.incident_id, tuple(args.action))
             healthcheck = HealthcheckResult(
                 name=args.healthcheck_name,
                 passed=True,

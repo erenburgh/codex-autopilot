@@ -18,6 +18,8 @@ frontier has reserved what it could:
 - RUNNING while any session is pending: a worker, a screening, the on-call
   (an engineer at work with no task slot used to derive as BLOCKED);
 - WAITING for a rate limit or a retry time;
+- WAITING (RUNTIME_PATCH_PENDING) while a proven runtime patch waits to be
+  installed - the run drains for it (runtime_install);
 - WAITING (PIPELINE_ENGINEER_PENDING) when a ticket needs the on-call and no
   engineer is reserved yet - the wake-up raises it; never BLOCKED;
 - BLOCKED (AWAITING_OWNER) only when nothing can be taken and a stopped
@@ -93,6 +95,11 @@ def _finish_global_state(
     ):
         state.status = "WAITING"
         state.phase = "WAITING_RATE_LIMIT"
+    elif _patch_pending(cfg):
+        # The run drained for a proven runtime patch; the wake-up installs
+        # it once no dispatcher is alive, and the run then continues.
+        state.status = "WAITING"
+        state.phase = "RUNTIME_PATCH_PENDING"
     elif _engineer_needed(cfg, state):
         state.status = "WAITING"
         state.phase = "PIPELINE_ENGINEER_PENDING"
@@ -137,3 +144,11 @@ def _reservable(cfg: Any, state: Any) -> bool:
         return reservable_work(cfg, state)
     except Exception:  # noqa: BLE001
         return False
+
+
+def _patch_pending(cfg: Any) -> bool:
+    if cfg is None:
+        return False
+    from .runtime_install import runtime_patch_pending
+
+    return runtime_patch_pending(cfg)

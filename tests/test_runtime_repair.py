@@ -17,7 +17,8 @@ from codex_autopilot.runtime_repair import (
     Edit,
     RuntimeRepairError,
     RuntimeTree,
-    apply_runtime_patch,
+    install_proven_patch,
+    prove_runtime_patch,
     guard_hashes,
     resolve_runtime_tree,
     revert_runtime_patch,
@@ -129,6 +130,19 @@ class RuntimeRepairTests(unittest.TestCase):
         (package / "pipeline_engineer.py").write_text(ENGINEER, encoding="utf-8")
         (package / "engineer_authority.py").write_text("", encoding="utf-8")
         (package / "hook_trust.py").write_text("", encoding="utf-8")
+        # Every other guarded definition gets a stub too: the list grew with
+        # the on-call's limits over stopped tasks, and the gateway demands
+        # each guard exist exactly once in the tree it proves against.
+        from codex_autopilot.runtime_repair import GUARDED_DEFINITIONS
+
+        for module, name in GUARDED_DEFINITIONS:
+            target = package / module
+            text = target.read_text(encoding="utf-8") if target.is_file() else ""
+            if f"def {name}(" not in text:
+                target.write_text(
+                    text + f"\n\ndef {name}(*args, **kwargs):\n    return None\n",
+                    encoding="utf-8",
+                )
         tests = self.tmp / "tests"
         tests.mkdir()
         (tests / "test_baseline.py").write_text(BASELINE, encoding="utf-8")
@@ -158,7 +172,9 @@ class RuntimeRepairTests(unittest.TestCase):
             "tree": self.tree,
         }
         kwargs.update(overrides)
-        return apply_runtime_patch(**kwargs)
+        # Proven in a copy, then installed into the tree whole - the
+        # installer's own call (runtime_install) on a fresh version copy.
+        return install_proven_patch(kwargs["tree"], prove_runtime_patch(**kwargs))
 
     # --- what the gateway admits --------------------------------------
 
@@ -599,19 +615,31 @@ class RepairCommandTests(unittest.TestCase):
 
     def run_command(self):
         from codex_autopilot import cli
-        from codex_autopilot.runtime_repair import ModuleChange, PatchRecord
+        from codex_autopilot.runtime_repair import ModuleChange, PatchRecord, ProvenPatch
 
-        def fake_apply(**kwargs):
+        # The command proves and STAGES; it never writes the live tree. The
+        # live writer is patched to fail loudly if the command ever calls it.
+        def fake_prove(**kwargs):
             self.applied.append(kwargs)
-            return PatchRecord(
-                patch_id="patch-test",
-                changes=(ModuleChange(module="status.py", sha256_before="a", sha256_after="b"),),
+            return ProvenPatch(
+                record=PatchRecord(
+                    patch_id="patch-test",
+                    changes=(ModuleChange(module="status.py", sha256_before="a", sha256_after="b"),),
+                    test_name=kwargs["test_name"],
+                    at=kwargs["at"],
+                ),
+                sources={"status.py": "NEW STATUS\n"},
+                originals={"status.py": "OLD STATUS\n"},
                 test_name=kwargs["test_name"],
-                at=kwargs["at"],
+                test_source=kwargs["test_source"],
             )
 
+        def live_write(*args, **kwargs):
+            raise AssertionError("the command wrote the live installation")
+
         with self.mock.patch.object(cli, "_relay_executor_thread_id", return_value="owner"), \
-             self.mock.patch("codex_autopilot.runtime_repair.apply_runtime_patch", side_effect=fake_apply):
+             self.mock.patch("codex_autopilot.runtime_repair.install_proven_patch", side_effect=live_write), \
+             self.mock.patch("codex_autopilot.runtime_repair.prove_runtime_patch", side_effect=fake_prove):
             return cli.main([
                 "devops-repair-runtime", "--project", str(self.tmp),
                 "--incident-id", self.incident_id,
@@ -631,6 +659,14 @@ class RepairCommandTests(unittest.TestCase):
         self.assertEqual(edits["fresh_module.py"].new, "X = 1\n")
         incident = next(item for item in self.store.load()["incidents"] if item["incident_id"] == self.incident_id)
         self.assertEqual(incident["runtime_patches"][0]["patch_id"], "patch-test")
+        self.assertTrue(incident["runtime_patches"][0]["staged"])
+        # Proven inside the project (the engineer's sandbox writes only there)
+        # and staged there, waiting for the atomic install outside it.
+        self.assertTrue(
+            str(self.applied[0]["staging_parent"]).startswith(str(self.cfg.state_dir))
+        )
+        staged = self.cfg.state_dir / "runtime-patches" / "pending" / "patch-test"
+        self.assertEqual((staged / "modules" / "status.py").read_text(encoding="utf-8"), "NEW STATUS\n")
 
     def test_a_ticket_not_held_by_the_engineer_stops_the_repair_before_it_is_applied(self) -> None:
         """The ticket is checked first: a foreign ticket changes nothing."""

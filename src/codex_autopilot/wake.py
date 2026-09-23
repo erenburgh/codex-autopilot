@@ -184,6 +184,14 @@ def run_wake(
             return 0
         break
 
+    # A proven runtime patch is installed here, outside the engineer's
+    # sandbox, and only when no dispatcher of any registered run is alive
+    # (runtime_install). This process then leaves: it imported the old tree,
+    # and the next sweep raises the run on the new one.
+    patched = _install_staged_patch(cfg, store)
+    if patched is not None:
+        return 0
+
     if reserve is None:
         from .lifecycle import reserve_ready_frontier as reserve
     if spawn_relay is None:
@@ -258,6 +266,58 @@ def run_wake(
         },
     )
     return 0
+
+
+def _install_staged_patch(cfg: Config, store: StateStore) -> str | None:
+    """Install the run's staged runtime patch; None when there is nothing to do.
+
+    A refused patch (the tree moved under it, or this runtime is not an
+    installation) is filed as a stop for the on-call - a staged patch that
+    nobody installs would drain the run in silence - and the wake-up goes on
+    to raise the run.
+    """
+
+    from .runtime_install import install_when_quiet
+
+    try:
+        outcome = install_when_quiet(cfg)
+    except Exception as exc:  # noqa: BLE001 - the attempt is recorded; the run is not stopped by it
+        outcome = {"deferred": f"the staged patch could not be installed: {exc}"}
+    if outcome is None:
+        return None
+    if outcome.get("deferred"):
+        _finish(cfg, store, "wake_skipped", detail={"why": "runtime patch deferred", "reason": outcome["deferred"]})
+        return "deferred"
+    if outcome.get("refused"):
+        _file_refused_patches(cfg, store, outcome["refused"])
+    if outcome.get("installed"):
+        _finish(
+            cfg,
+            store,
+            "runtime_patch_installed",
+            detail={"tree": outcome.get("tree"), "entries": [item["entry"] for item in outcome["installed"]]},
+        )
+        return "installed"
+    return None
+
+
+def _file_refused_patches(cfg: Config, store: StateStore, refused: list[dict[str, Any]]) -> None:
+    from .blocked_runs import stop_run
+
+    with ResourceLockCoordinator(store, cfg.root).transaction():
+        state = store.load()
+        for item in refused:
+            stop_run(
+                cfg,
+                state,
+                stop_kind="runtime_patch_refused",
+                phase="RUNTIME_PATCH_REFUSED",
+                reason=f"staged runtime patch {item['entry']} was not installed: {item['reason']}",
+                summary="A proven runtime patch could not be installed and was set aside.",
+                at=utc_now(),
+                system_state={"entry": item["entry"]},
+            )
+        store.save(state)
 
 
 def _finish(cfg: Config, store: StateStore, event: str, *, detail: dict[str, Any]) -> None:

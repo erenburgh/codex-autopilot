@@ -103,6 +103,134 @@ def parse_engineer_escalation(message: str) -> dict[str, Any]:
     return result
 
 
+ESCALATION_FORMAT = (
+    'AUTOPILOT_ESCALATION: {"diagnosis": "<what happened and why>", "repaired": '
+    '["<what you already repaired>"], "decision_needed": "<the one question for the owner>", '
+    '"recommendation": "<what you recommend and why>", "options": [{"code": "<short code>", '
+    '"means": "<what choosing it does>"}], "scope": "task"}'
+)
+
+STOP_TICKET_BRIEF = f"""This ticket is a stopped task (its code starts with run_stopped:). `stop_context` in the package is the stop's own diagnosis material: the kind of stop, the worker's reason code, the verifier's last issues, how far the hiring ladder went, the replanner's refusals, the end of the stopped session's final message, and `means` - what you may do about THIS kind of stop. Work it through yourself. Repair what is within your means; then either return the task to work with `scripts/codex-autopilot devops-return-task --project <root> --incident-id <id> --task <task>` or ask the replanner with `scripts/codex-autopilot devops-request-plan-change --project <root> --incident-id <id> --task <task> --reason <text>`, and close the ticket with devops-resolve-incident naming return_stopped_task or request_plan_change. A stop ticket is not closed with diagnostics alone, nor while a task it holds is still BLOCKED without the plan change you requested. A task at the top of its hiring ladder returns only after a runtime patch on this ticket that changed a module on the acceptance path, or through a plan change - a harmless patch buys no fresh budget. A task stopped with PRODUCT_DECISION or ARCHITECTURE_DECISION is never returned by you. Only when the decision is truly the owner's, write exactly one line before your status line:
+{ESCALATION_FORMAT}
+When `stop_context.owner_options` lists codes, offer those: the runtime acts on them. Use "scope": "run" only when the whole run must wait (revoked hook trust, a global setting). The owner answers with `owner_answer` from the package, and the run continues by itself - never ask her to write Resume."""
+
+ADVISORY_TICKET_BRIEF = f"""This ticket's class is PRODUCTION, POLICY or AMBIGUOUS_SIDE_EFFECT: it passes through you so the owner gets a diagnosis, not a bare code, but it is not yours to repair or to close - your allowed_actions are diagnostics only, and RESOLVED is refused for this class. Read `server_view` (the App Server's own thread/read of the affected task), the package and the journal; never repeat an ambiguous create or send. Then hand it up with PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER and a code from the list, preceded by exactly one line:
+{ESCALATION_FORMAT}"""
+
+
+def engineer_brief(package: Mapping[str, Any]) -> str:
+    """The part of the on-call's prompt that depends on what kind of ticket it holds."""
+
+    from .engineer_authority import ADVISORY_INCIDENT_CLASSES
+    from .pipeline_engineer import STOP_CODE_PREFIX
+
+    incident = package.get("incident") or {}
+    if str(incident.get("classification") or "") in {
+        item.value for item in ADVISORY_INCIDENT_CLASSES
+    }:
+        return ADVISORY_TICKET_BRIEF
+    if str(incident.get("code") or "").startswith(STOP_CODE_PREFIX):
+        return STOP_TICKET_BRIEF
+    return ""
+
+
+def engineer_prompt_refusal(package: Mapping[str, Any]) -> str:
+    """Why this package may not become an on-call prompt - or "" when it may.
+
+    Every class of the lane is accepted now, the advisory ones included:
+    route_incident sends them to the on-call first. Ordinary tasks still
+    cannot manufacture a privileged specialist - the ticket must be in the
+    engineer's phase, and the forbidden list must be complete.
+    """
+
+    from .engineer_authority import ENGINEER_LANE_CLASSES, FORBIDDEN_ACTIONS, IncidentClass
+    from .pipeline_engineer import IncidentPhase
+
+    incident = package.get("incident")
+    if not isinstance(incident, Mapping):
+        return "Pipeline Engineer requires a structured incident"
+    try:
+        classification = IncidentClass(str(incident.get("classification") or ""))
+        phase = IncidentPhase(str(incident.get("phase") or ""))
+    except ValueError:
+        return "Pipeline Engineer incident classification is invalid"
+    if classification not in ENGINEER_LANE_CLASSES:
+        return "Pipeline Engineer does not know this incident class"
+    if phase is not IncidentPhase.PIPELINE_ENGINEER:
+        return "Pipeline Engineer is available only for a routed incident"
+    forbidden = tuple(str(item) for item in package.get("forbidden_actions") or ())
+    if not set(FORBIDDEN_ACTIONS).issubset(forbidden):
+        return "Pipeline Engineer package omitted mandatory forbidden actions"
+    return ""
+
+
+def read_engineer_outcome(cfg: Any, incident_id: str, final_message: str) -> tuple[str, str, str]:
+    """The engineer's outcome as ``(status, code, refusal)``; never raises.
+
+    An unreadable status line, RESOLVED on a ticket still open, a ticket
+    that is gone - each used to raise DesktopLifecycleError before the
+    completion's transaction. The dispatcher catches only
+    WorkerProtocolError, so it died, the session stayed pending, and one
+    engineer per run kept the lane shut until a sweep settled it by the
+    server's word. Now the refusal is returned, and the completion records
+    it as a protocol error (``record_engineer_protocol_error``): the session
+    completes, the lane is free, and the per-ticket bound sends the ticket
+    to her after the second such engineer.
+    """
+
+    from .pipeline_engineer import IncidentPhase, PipelineIncidentStore
+
+    try:
+        status, code = parse_pipeline_engineer_status(final_message)
+    except DesktopLifecycleError as exc:
+        return "PROTOCOL_ERROR", "", str(exc)
+    incident = next(
+        (
+            item
+            for item in PipelineIncidentStore(cfg.state_dir).load().get("incidents", [])
+            if str(item.get("incident_id")) == incident_id
+        ),
+        None,
+    )
+    if incident is None:
+        return "PROTOCOL_ERROR", "", f"the on-call engineer's incident {incident_id} was not found"
+    if status == "RESOLVED" and str(incident.get("phase")) != IncidentPhase.RESOLVED.value:
+        return (
+            "PROTOCOL_ERROR",
+            "",
+            f"the engineer declared RESOLVED, but ticket {incident_id} stayed in phase "
+            f"{incident.get('phase')}: closing is done by devops-resolve-incident "
+            "with a passing healthcheck",
+        )
+    return status, code, ""
+
+
+def record_engineer_protocol_error(
+    cfg: Any, state: Any, session: dict[str, Any], *, error: str, final_message: str, at: str
+) -> None:
+    """A refused on-call outcome: the session ends, the ticket stays in the lane.
+
+    Marked as a lost engineer, so ``hand_lost_engineers_to_owner`` sends the
+    ticket to her as RECOVERY_EXHAUSTED after the second, with the end of
+    each engineer's own message as the diagnosis. R13: the engineer's exit
+    is a closed protocol, and breaking it is recorded.
+    """
+
+    from .engineer_reservation import LOST_ENGINEER_PROTOCOL_REASON
+    from .rules import record_violation
+
+    session["final_status"] = "PROTOCOL_ERROR"
+    session["failure_reason"] = f"{LOST_ENGINEER_PROTOCOL_REASON}: {error}"[:2000]
+    session["final_message_tail"] = (final_message or "")[-MAX_DIAGNOSIS_CHARS:]
+    record_violation(
+        cfg.state_dir,
+        "R13",
+        detail=f"the on-call for {session.get('incident_id')} ended outside its protocol: {error}"[:2000],
+    )
+    _append_event(state, "pipeline_engineer_protocol_error", session, at, detail=error[:2000])
+    state.last_error = f"the on-call engineer's answer was refused: {error}"[:2000]
+
+
 def escalate_engineer_ticket(
     cfg: Any,
     state: Any,
@@ -118,6 +246,17 @@ def escalate_engineer_ticket(
     from .blocked_runs import escalate_to_owner
 
     escalation = parse_engineer_escalation(final_message)
+    if not escalation.get("declared"):
+        # The signal still goes: a rough diagnosis beats a refused one. But
+        # an escalation without its report breaks R13's contract - she was
+        # to receive what she decides with - and that is recorded.
+        from .rules import record_violation
+
+        record_violation(
+            cfg.state_dir,
+            "R13",
+            detail=f"the on-call escalated {incident_id} ({code}) without an AUTOPILOT_ESCALATION line",
+        )
     outcome = escalate_to_owner(
         cfg,
         incident_id,

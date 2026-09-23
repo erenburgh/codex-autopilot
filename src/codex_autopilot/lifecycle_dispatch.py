@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping
 from .appserver import (
     AppServerClient,
     AppServerRpcError,
+    ApprovalRequired,
     PauseRequested,
     ProjectRootDrift,
     final_agent_message,
@@ -937,6 +938,21 @@ def run_automatic_app_server_turn(
             relay_executor_thread_id=owner,
         )
         raise
+    except ApprovalRequired as exc:
+        # Never answered, never retried: its own failure code, and a stop
+        # ticket that holds the task and goes to the on-call (approval_stops).
+        from .approval_stops import record_approval_required
+
+        record_approval_required(
+            cfg,
+            reservation_token,
+            exc.payload,
+            thread_id=thread_id,
+            turn_id=turn_id or None,
+            owner=owner,
+            now_epoch=now_epoch,
+        )
+        raise DesktopLifecycleError(str(exc)) from exc
     except Exception as exc:
         state = StateStore(cfg.state_dir).load()
         current = _session_by_token(state, reservation_token)

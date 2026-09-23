@@ -33,10 +33,11 @@ the user, change global settings, delete project state, or repeat ambiguous
 transport. Legacy Codex App incidents remain readable only for migration.
 
 Since 0.10 Pipeline Engineer may also rewrite the runtime's own installed
-Python source on this machine. The entry point is `apply_runtime_patch` in
+Python source on this machine. The entry point is `prove_runtime_patch` in
 `src/codex_autopilot/runtime_repair.py`, reached through the
 `devops-repair-runtime` command. The engineer does not declare a repair; a
-gateway proves it. The whole runtime tree is copied to a temporary directory,
+gateway proves it. The whole runtime tree is copied to a directory inside the
+project's state (the only place the engineer's `:workspace` thread may write),
 the edits are applied only in that copy, and the tests run there with every
 `CODEX_*` variable removed from the environment. The result reaches the
 installation only when all four hold: the reproduction test fails on the
@@ -44,9 +45,25 @@ current code, the same test passes with the whole set applied, the rest of the
 test suite stays green, and every guarded definition is byte-identical before
 and after. `GUARDED_DEFINITIONS` covers desktop ownership, relay executor
 identity, dispatcher reservation ownership, incident classification, incident
-signature, escalation, the named-action check, and the mandatory healthcheck;
+signature, escalation, the named-action check, and the mandatory healthcheck,
+and the on-call's own limits over a stopped task: who may return it and when,
+when a stop ticket may close, which patch buys a fresh hire, what an
+escalation carries, where advisory tickets go, the owner's answer, and arming;
 the hash spans decorators, so a wrapper around a guard counts as a change. If
 any of this does not hold, the installation is not touched at all.
+
+A proven set is not written into the installation from the engineer's thread:
+that tree is outside the project, and a write there would stop the turn on a
+permission request nobody answers. The set is staged in the project
+(`.codex-autopilot/runtime-patches/pending/<patch-id>`), the run drains - the
+frontier reserves nothing new while a patch waits - and the wake-up, which
+launchd runs outside the sandbox, installs it only when no registered run has
+a live automatic dispatcher: it copies the current version to
+`<version>.repaired-<UTC timestamp>`, checks each module still has the text the
+set was proven against (otherwise the patch is refused, set aside and ticketed
+for the on-call), writes the set there, and switches `current` with one rename
+of a fresh symlink. A process started before the switch keeps the tree it
+started from; every later process reads the new one; nobody sees half a set.
 
 `UNPATCHABLE_MODULES` is never patched: `engineer_authority.py`,
 `runtime_repair.py`, `hook_trust.py`. Authority, this gateway, and hook trust
@@ -58,15 +75,13 @@ module is the one case where whole content is supplied, and the gateway refuses
 it if a file of that name already exists. Every
 accepted set is written to `runtime/patches/<patch-id>` with each module's
 previous text and a manifest of before/after hashes, and
-`devops-revert-runtime-patch` takes the set back together with its test; the
+`devops-revert-runtime-patch` takes the set back together with its test - a
+set still staged is withdrawn (kept aside, never deleted), an installed one is
+staged as a revert and installed the same atomic way; the
 revert refuses when a module changed after the patch was applied. Reinstalling
 a version whose `runtime/patches` is not empty renames that installation to
 `<version>.repaired-<UTC timestamp>`, prints the path, and leaves it in place;
-the archive step skips such directories. An accepted repair takes effect on the
-next dispatched turn, because each turn is a fresh process. A turn already
-running keeps the code it imported, except where the runtime imports a module
-lazily inside a call; the command does not check for live processes, so a
-repair during a turn is not promised to be invisible to it. The repair reaches only the runtime's own
+the archive step skips such directories. The repair reaches only the runtime's own
 package: the project's code is the workers' work, and repairing production
 quality is on the forbidden list.
 

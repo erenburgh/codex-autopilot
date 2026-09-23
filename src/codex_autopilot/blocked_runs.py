@@ -252,16 +252,32 @@ def escalate_to_owner(
 
 
 def _tell_owner(cfg: Any, message: str) -> None:
-    """A banner, when she turned banners on. Never raises, never waits."""
+    """A banner about a decision that waits for her, when she turned banners on.
+
+    Every call here is such a decision (an escalation, a refused one, a
+    stop nobody could record, revoked hook trust), so it is shown with
+    ``desktop_notifications`` or with ``escalation_notifications`` alone.
+    Both are off by default - whether to turn the second on by default is
+    hers to decide. Never raises, never waits.
+    """
 
     runtime = getattr(cfg, "runtime", None)
     # `is True`, not truthiness: a stand-in config answers every attribute.
-    if getattr(runtime, "desktop_notifications", False) is not True:
+    if (
+        getattr(runtime, "desktop_notifications", False) is not True
+        and getattr(runtime, "escalation_notifications", False) is not True
+    ):
         return
     try:
         from .notify import notify
 
-        notify(cfg, "Codex Autopilot", getattr(getattr(cfg, "root", None), "name", ""), message)
+        notify(
+            cfg,
+            "Codex Autopilot",
+            getattr(getattr(cfg, "root", None), "name", ""),
+            message,
+            decision=True,
+        )
     except Exception:  # noqa: BLE001 - a banner may never fail the run
         return
 

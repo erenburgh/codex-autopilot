@@ -126,3 +126,48 @@ def block_on_exhausted_ladder(
         task_ids=(task_id,),
         system_state={"hires": hires, "effort": effort, "revision_attempts": used},
     )
+
+
+def grant_fresh_hire(plan, state, task_id: str, *, grounds: Mapping[str, Any]) -> dict[str, Any]:
+    """One more hire at the top of the ladder, on grounds that changed the cause.
+
+    R23 allows a reset "only after a change that touches the cause of the
+    refusal". Two such changes reach a task at the top of its ladder: her
+    own answer (an unblock - her judgement, and she may attach a note the
+    next worker reads) and a runtime patch that changed the acceptance path
+    (the gate, the rubric, the verifier). Either one used to leave the tally
+    where it was: the unblocked task went back, the first REVISE found the
+    ladder spent, and it stopped again at once.
+
+    What is granted is a fresh budget at the effort the task already
+    reached - not the whole ladder again. ``_reset_revision_budget_if_
+    premises_changed`` pops the effort and starts from the base step; that
+    is right for a task on new prerequisites (a different problem), and
+    wrong here: the same problem already proved it needs the top step.
+    The revision counter stays continuous (R{n} numbering), and the grant
+    is expressed as hires: the ladder is exhausted when
+    ``used >= maximum * (hires + 1)``, so ``hires = used // maximum`` gives
+    between one and ``maximum`` more attempts - a full budget when the task
+    stopped exactly at its ceiling, which is how the ladder stops.
+
+    The grounds are recorded with the tally's basis for the journal. The
+    basis is rewritten at every revision reservation, so what makes the
+    grant one-time lives outside it: her ``user_unblocks`` and the ticket's
+    ``returns`` (the patch ids a grant consumed).
+    """
+
+    maximum = max(1, int(plan.task_map[task_id].verification.max_revision_attempts))
+    used = int(state.task_revisions.get(task_id, 0))
+    before = int(state.task_rehires.get(task_id, 0))
+    state.task_rehires[task_id] = max(before, used // maximum)
+    basis = dict((state.task_revision_basis or {}).get(task_id) or {})
+    basis["granted_on"] = dict(grounds)
+    state.task_revision_basis[task_id] = basis
+    return {
+        "task_id": task_id,
+        "revision_attempts": used,
+        "rehires_before": before,
+        "rehires_now": state.task_rehires[task_id],
+        "effort": state.task_effort.get(task_id),
+        "grounds": dict(grounds),
+    }

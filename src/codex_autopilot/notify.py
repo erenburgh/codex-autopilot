@@ -41,15 +41,23 @@ end run"""
 _MAX_FIELD_CHARS = 200
 
 
-def notify(cfg, title: str, subtitle: str, message: str) -> bool:
+def notify(cfg, title: str, subtitle: str, message: str, *, decision: bool = False) -> bool:
     """Show a system banner. Never raises and never waits.
 
     Returns True only if the banner was really sent. A notification may
     neither delay the pipeline nor fail it: a failure here means only that
     the human did not see the hint.
+
+    ``decision`` marks a banner about something that waits for her answer:
+    it is shown when ``desktop_notifications`` is on, or when she turned on
+    only ``escalation_notifications``. Both are off by default.
     """
 
-    if not getattr(getattr(cfg, "runtime", None), "desktop_notifications", False):
+    runtime = getattr(cfg, "runtime", None)
+    enabled = getattr(runtime, "desktop_notifications", False) is True or (
+        decision and getattr(runtime, "escalation_notifications", False) is True
+    )
+    if not enabled:
         return False
     binary = shutil.which("osascript")
     if not binary:

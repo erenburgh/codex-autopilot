@@ -231,7 +231,15 @@ def record_desktop_failure(
         # bound of its own, per ticket (``lost_engineers``): two lost on one
         # ticket send it to her as RECOVERY_EXHAUSTED.
         engineer = str(session.get("kind") or "") == "pipeline_engineer"
-        counted = not rate_limited and failure_code != "worker_paused" and not engineer
+        #
+        # A permission request is not retried either: nothing a retry does
+        # changes the answer, which only she may give. Its stop ticket holds
+        # the task instead (approval_stops).
+        counted = (
+            not rate_limited
+            and failure_code not in {"worker_paused", "approval_required"}
+            and not engineer
+        )
         attempts = int(state.failure_signature_attempts.get(failure_code, 0))
         if counted:
             attempts += 1
@@ -325,6 +333,9 @@ def record_desktop_failure(
             if engineer:
                 from .engineer_reservation import LOST_ENGINEER_TURN_REASON
 
+                # A permission request counts: an on-call that keeps asking
+                # for one would otherwise be raised again and again on the
+                # same ticket.
                 if not rate_limited and failure_code != "worker_paused":
                     session["failure_reason"] = (
                         f"{LOST_ENGINEER_TURN_REASON} ({failure_code}): {reason}"

@@ -75,7 +75,11 @@ below answers a question users actually asked.
    Codex limits resumes by itself when the window resets. The user is asked
    only for the things listed in point 1 and for decisions that are genuinely
    theirs: an unknown side effect on the Codex side, a product or architecture
-   choice, a dangerous permission.
+   choice, a dangerous permission. Even those pass through the on-call first:
+   the status card shows its diagnosis, its recommendation, the options and
+   the exact `codex-autopilot unblock --project <root> --task <id> --reason
+   <decision>` command, and answering it continues the run by itself - there
+   is no Resume phrase to send afterwards.
 6. **Where to read more.** `GETTING_STARTED.md` in the installed runtime, and
    `docs/` next to it, hold the same explanations at length.
 
@@ -315,14 +319,20 @@ The user does not choose the repair (R13). It never performs destination
 causal predecessor, so that predecessor performs its own reserved transport
 under the already granted run authorization.
 
-It is reserved before any other work — a broken pipeline outranks new tasks —
-and it deliberately holds none of the affected task's resources: those may still
-be held by the session that failed, and the repairer must not be blocked by the
-thing it came to repair.
+It is reserved next to the work, never instead of it: one engineer per run,
+outside the worker slots, while independent tasks go on. It deliberately holds
+none of the affected task's resources: those may still be held by the session
+that failed, and the repairer must not be blocked by the thing it came to
+repair.
 
 Its tools are the helper commands, resolved relative to this `SKILL.md`:
 `relay-status`, `relay-complete`, `relay-fail --failure-code <kind> --definitive`,
-`devops-rearm-relay-owner`, `arm`, and `devops-resolve-incident`.
+`devops-rearm-relay-owner`, `arm`, `devops-repair-runtime`,
+`devops-return-task` (return a stopped task this ticket holds to work),
+`devops-request-plan-change` (ask the replanner on the task's behalf), and
+`devops-resolve-incident`. The last three act only from the engineer's own
+thread and only as far as the stop's `means` allow; a stop ticket is not closed
+with diagnostics alone or with its task still stopped.
 
 Three rules bind it:
 
@@ -339,7 +349,13 @@ It finishes with exactly one line: `PIPELINE_ENGINEER_STATUS: RESOLVED`, or —
 only when repair is genuinely outside its authority — `ESCALATE_TO_USER` with
 one code from the closed list: `DANGEROUS_PERMISSION`, `GLOBAL_CONFIG_CHANGE`,
 `PROJECT_DAMAGE_RISK`, `RECOVERY_EXHAUSTED`, `PRODUCT_DECISION`,
-`ARCHITECTURE_DECISION`. A bare escalation is refused.
+`ARCHITECTURE_DECISION`. A bare escalation is refused. The status line is
+preceded by one `AUTOPILOT_ESCALATION: {...}` line
+with its diagnosis, what it repaired, the decision needed, its recommendation
+and the options. An escalation without that line still reaches the user, with
+the end of the message as the diagnosis, and is recorded as an R13 violation.
+Production, policy and ambiguous side-effect tickets pass through the engineer
+too, with diagnostics only: it cannot close them, it hands them up.
 
 ## Status protocol
 

@@ -18,12 +18,8 @@ from .department_acceptance import (
 from .language import is_russian
 from .memory import MemoryValidationError, ProjectMemory
 from .models import MODEL_IDS, MODEL_LABELS, logical_model
-from .pipeline_engineer import (
-    FORBIDDEN_ACTIONS,
-    INFRASTRUCTURE_INCIDENT_CLASSES,
-    IncidentClass,
-    IncidentPhase,
-)
+from .engineer_escalation import engineer_brief, engineer_prompt_refusal
+from .pipeline_engineer import RECOVERY_ACTIONS
 from .rules import rules_for_prompt
 from .plan import Plan, RoleProfile, Task
 from .skill_packs import SkillPack, SkillPackError, resolve_skill_stack
@@ -479,30 +475,18 @@ End your turn with exactly one final line:
         *,
         reservation_token: str,
     ) -> str:
-        """Build a fresh, infrastructure-only on-call prompt.
+        """Build a fresh on-call prompt for a ticket already in the engineer's lane.
 
         The deterministic supervisor must first transition an incident to
-        PIPELINE_ENGINEER. Ordinary tasks and production-quality failures cannot
-        use this entry point to manufacture a privileged specialist.
+        PIPELINE_ENGINEER; ordinary tasks cannot use this entry point to
+        manufacture a privileged specialist. Advisory classes (production,
+        policy, an ambiguous side effect) pass through too, with diagnostics
+        only and a brief that says so (``engineer_escalation``).
         """
 
-        incident = incident_package.get("incident")
-        if not isinstance(incident, Mapping):
-            raise ContextBoundaryError("Pipeline Engineer requires a structured incident")
-        try:
-            classification = IncidentClass(str(incident.get("classification") or ""))
-            phase = IncidentPhase(str(incident.get("phase") or ""))
-        except ValueError as exc:
-            raise ContextBoundaryError("Pipeline Engineer incident classification is invalid") from exc
-        if classification not in INFRASTRUCTURE_INCIDENT_CLASSES:
-            raise ContextBoundaryError("Pipeline Engineer cannot fix production or policy failures")
-        if phase is not IncidentPhase.PIPELINE_ENGINEER:
-            raise ContextBoundaryError(
-                "Pipeline Engineer is available only for a routed infrastructure incident"
-            )
-        forbidden = tuple(str(item) for item in incident_package.get("forbidden_actions") or ())
-        if not set(FORBIDDEN_ACTIONS).issubset(forbidden):
-            raise ContextBoundaryError("Pipeline Engineer package omitted mandatory forbidden actions")
+        refusal = engineer_prompt_refusal(incident_package)
+        if refusal:
+            raise ContextBoundaryError(refusal)
         # The rules block reaches the engineer exactly as it reaches workers.
         # Without it the line "the same rules apply to you" would be a promise
         # without delivery: the incident package holds no rules.
@@ -536,11 +520,13 @@ Your tools, resolved relative to the skill above:
 - `scripts/codex-autopilot arm --project <root>` — re-arm the run after repair, so the next Stop event lets the causal predecessor perform its own reserved transport.
 - `scripts/codex-autopilot devops-repair-runtime --project <root> --incident-id <id> --patch-file <path> --test-file <path> --test-name test_<name>` — repair the runtime's own code when the task is blocked by a defect in Autopilot itself, not in the project. You do not declare the repair: the gateway proves it. The patch file is JSON — `{{"edits": [{{"module": "<file.py>", "old_file": "<path>", "new_file": "<path>"}}]}}` — where `old_file` holds the exact fragment to replace (it must occur exactly once in that module) and `new_file` its replacement. One repair may carry several edits and they are applied together: a fix that spans three modules cannot be split into three patches, because the suite is red in between. Omit `old_file` to add a new module, with `new_file` as its whole content — sometimes the repair is to move code out of a file that has grown too large. The gateway copies the runtime aside and requires all of: the reproduction test FAILS on the current code, PASSES with the whole set applied, the whole suite stays green, and the guarded ownership, trust and classification definitions stay byte-identical. Anything else and the installation is untouched. An accepted patch takes effect on the next dispatched turn — nothing is reinstalled under a running dispatcher. Report it as `--action repair_runtime_code`. Never use this on the project's own code: fixing the product is the workers' job, not yours.
 - `scripts/codex-autopilot devops-revert-runtime-patch --project <root> --patch-id <id>` — take back a runtime repair together with its test, when the patch turned out to be wrong.
-- `scripts/codex-autopilot devops-resolve-incident --project <root> --incident-id <id> --healthcheck-name <name> --check <observation> --action <named action> [--note <prose>]` — close this ticket. Repeat --check and --action as needed. `--action` is required and takes identifiers, never prose: inspect_bounded_system_state, inspect_recent_events, reconcile_durable_journal, run_declared_healthcheck, rearm_relay_owner, rearm_run, reconcile_thread_identity, recreate_archived_retry, record_definitive_transport_failure, record_completed_worker_turn, repair_runtime_code. A repair described in prose teaches the runtime nothing: the same named repair, recorded twice, becomes a runbook and the next occurrence of that signature never reaches you. Circumstances belong in `--note`.
+- `scripts/codex-autopilot devops-resolve-incident --project <root> --incident-id <id> --healthcheck-name <name> --check <observation> --action <named action> [--note <prose>]` — close this ticket. Repeat --check and --action as needed. `--action` is required and takes identifiers, never prose: {", ".join(RECOVERY_ACTIONS)}. A repair described in prose teaches the runtime nothing: the same named repair, recorded twice, becomes a runbook and the next occurrence of that signature never reaches you. Circumstances belong in `--note`.
 - `scripts/codex-autopilot reconcile-thread-identity --project <root> --token <reservation> --task-id <task> --previous-thread-id <old> --current-thread-id <new>` — bind a reservation to the thread that actually carries the work when the two drifted apart.
 - `scripts/codex-autopilot recreate-archived-retry --project <root> --reservation-token <token> --archived-thread-id <archived> --predecessor-thread-id <completed predecessor>` — the user archived a wrong task and a fresh attempt is due; the predecessor must be a completed ROTATE/DONE owner.
 
 The answer you need first is already in the package: `server_view` carries the App Server's own record of every thread of the affected task — gathered by the dispatcher over its open connection. Read it instead of probing. Run state records what Autopilot believed; `server_view` records what occurred, and they differ exactly when a dispatcher died mid-flight. Do not run anything outside the project working directory: that needs a permission Autopilot never answers, and it would strand you rather than help. An unknown side effect is the one case where stopping is correct: never replace an AMBIGUOUS task and never guess.
+
+{engineer_brief(incident_package)}
 
 Close the ticket with devops-resolve-incident before you finish. RESOLVED is accepted only when the ticket is actually closed; the word alone is a claim, not an observation.
 

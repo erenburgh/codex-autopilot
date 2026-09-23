@@ -165,6 +165,96 @@ mode is unknown or whose requester is not `READY` (`inconsistent_state`,
 holding the requester). Under a refused graph the engineer's descriptor takes
 no model or effort from that graph - it runs on the owner's Codex settings.
 
+## What the on-call may do about a stopped task
+
+An infrastructure ticket's package lists the whole vocabulary
+(`RECOVERY_ACTIONS`), not only the diagnostics. A stop ticket also carries
+`stop_context` (`stop_diagnosis`): the kind of stop, the worker's reason code,
+the verifier's last issues, hires and effort, the replanner's refusals, the
+bounded end of the stopped session's final message, `means` for this kind of
+stop, and, for a permission request, the request next to what the run is
+authorized for (R4) and its permission profile. `owner_answer` is the exact
+`unblock` command that would be her answer.
+
+Two actions act on the task itself (`engineer_stop_actions`):
+
+- `devops-return-task --incident-id <id> --task <task>` returns a task the
+  ticket holds from `BLOCKED` to `READY`, or to `IMPLEMENTED` when a verdict was
+  ever given - the same rule as her unblock. `VERIFIED` is unreachable.
+- `devops-request-plan-change --incident-id <id> --task <task> --reason <text>`
+  asks the replanner on the task's behalf, exactly as its worker would.
+
+Both run only from the thread of the on-call session reserved for that very
+incident (`CODEX_THREAD_ID` must be its thread), only as far as the means table
+in `engineer_authority.STOP_MEANS` allows - which the engineer cannot edit - and
+never on a stop that is hers (`PRODUCT_DECISION`, `ARCHITECTURE_DECISION`). A
+task at the top of its hiring ladder returns only after a runtime patch on the
+ticket that changed a module on the acceptance path
+(`LADDER_RESET_MODULES`, one grant per patch) or through a plan change (R23:
+the cause must change); the grant is a fresh hire at the effort the task
+already reached, not the whole ladder again. A return that does not hold comes
+back as the same stop, and the door's R23 bound sends the third to her with
+what each return did.
+
+A stop ticket is not closed with diagnostics alone, nor while a task it holds
+is still `BLOCKED` without the plan change it asked for: that closure used to
+leave the task waiting for nobody.
+
+An on-call whose answer the runtime refuses - no readable status line,
+`RESOLVED` on a ticket still open - no longer raises before its transaction.
+The session completes as a protocol error (an R13 violation is recorded), the
+lane is free at once, and the second such engineer on one ticket sends it to
+her as `RECOVERY_EXHAUSTED` with the end of its own message. A failed turn of
+the on-call retires only its session; its anchor task is never touched.
+
+`arm` runs under the run's transaction and refuses while any other session is
+pending or has a live dispatcher (`run_arming`); the calling engineer's own
+session does not count.
+
+A runtime patch is proven inside the project and staged there, the run
+drains, and the wake-up installs it atomically outside the sandbox when no
+dispatcher is alive (`runtime_install`, see `docs/SECURITY.md`).
+
+## Advisory tickets and permission requests
+
+Production, policy and an ambiguous side effect no longer go to the owner
+directly: `route_incident` puts them in the on-call's lane like every other
+ticket. There they get diagnostics only - `thread/read` through `server_view`
+and the journal - and the brief says so: the engineer cannot close them
+(`RESOLVE_FORBIDDEN_CLASSES`) and hands them up with its diagnosis and
+recommendation. `FORBIDDEN_ACTIONS` are unchanged; an ambiguous create or send
+is never repeated.
+
+A permission request inside a turn (`ApprovalRequired`) is never answered and
+never retried. It is its own failure code, `approval_required`, not counted
+towards the retry ceiling; a stop ticket holds the task with the request in
+it and goes to the on-call, which compares it with what the run is authorized
+for and the run's permission profile. A runtime defect it repairs; otherwise it
+hands the ticket up as `DANGEROUS_PERMISSION`. Her answer is applied without a
+loop: `--option replan` changes the plan so the task does not need the
+operation, `--option retry` (she granted it herself) runs it once more, and the
+same request after her retry is not retried again.
+
+## Her answer
+
+`codex-autopilot unblock --project <root> --task <id> [--option <code>] --reason <text>`
+(`owner_answers.answer_task`) is one transaction: the task leaves `BLOCKED`, the
+open tickets that hold it are closed as answered by her, an answer at the top
+of the ladder grants a fresh hire, the decision and its option are recorded in
+`user_unblocks` where the next worker reads them, and the run is raised the way
+the wake-up raises it (`derive_owner`, `ensure_wake`, the same hook-trust gate).
+It never asks for Resume. Resume on a `BLOCKED` run still answers what was
+handed to her and now also lifts the stops of those tickets' tasks; tickets
+the on-call never looked at are routed to its lane, never closed.
+
+The status card shows every ticket handed to her with the on-call's diagnosis,
+the decision needed, its recommendation, the options and the answer command.
+Revoked hook trust is the one signal that goes to her without the on-call -
+raising the engineer passes the same trust gate, and going around it is her
+boundary - so the wake-up records the refusal with its diagnosis and
+recommendation, and the card shows it. A system banner for her decisions
+exists (`runtime.escalation_notifications`), off by default like every banner.
+
 ## Bounded recovery
 
 Automatic recovery has its own file lock, one logical recovery slot, ownership
@@ -185,7 +275,8 @@ budget; it never resumes affected tasks optimistically.
 
 AI Studio always exposes the system role `Pipeline Engineer · On call`, separate
 from planner-defined temporary roles. It can build a fresh prompt only for an
-infrastructure incident already in `PIPELINE_ENGINEER`. The package is bounded
+incident already in `PIPELINE_ENGINEER` - infrastructure, or advisory with
+diagnostics only. The package is bounded
 and contains:
 
 - structured incident identity, classification, affected tasks, and phase;
@@ -224,7 +315,8 @@ reuses the same incident and reservation; DevOps does not perform destination
 The on-call hands a ticket to the user for a dangerous permission, global Codex
 configuration, potentially destructive repair, production/product or
 architecture choice, ambiguous create/turn outcome that cannot be reconciled,
-or a failed Pipeline Engineer recovery after the bounded automatic attempts.
+or a failed Pipeline Engineer recovery after the bounded automatic attempts -
+always after looking at it first, with a diagnosis and a recommendation.
 
 The deterministic regression coverage is in
 `tests/test_pipeline_engineer.py`, with transport CLI enforcement and Stop-hook

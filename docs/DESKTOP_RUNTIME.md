@@ -236,6 +236,13 @@ per event. The first of them (`_notify_start`, `lifecycle_dispatch.py`) fires on
 every launch, so on a twenty-five-task run turning this key on is twenty-five
 start banners plus the rest.
 
+`escalation_notifications = true` shows a banner only when a decision waits
+for you - the on-call handed a ticket up, a repeated stop exhausted its
+repairs, hook trust was revoked - without the per-task banners. It is off by
+default as well; until you turn one of the two on, the signal is the status
+card (with the on-call's diagnosis, recommendation and your answer command),
+the on-call's final message in its own thread, and the run journal.
+
 ### When a thread becomes visible
 
 Measured by a controlled experiment, not deduced:

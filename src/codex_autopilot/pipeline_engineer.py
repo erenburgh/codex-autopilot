@@ -15,7 +15,10 @@ from typing import Any, Iterator, Mapping, Sequence
 # a repair: it fixes the runtime but does not redraw the bounds of what it
 # may do.
 from .engineer_authority import (
+    ADVISORY_INCIDENT_CLASSES,
     AUTO_REPLAYABLE_ACTIONS,
+    ENGINEER_LANE_CLASSES,
+    RESOLVE_FORBIDDEN_CLASSES,
     FORBIDDEN_ACTIONS,
     INFRASTRUCTURE_INCIDENT_CLASSES,
     MUTATING_TRANSPORT_OPERATIONS,
@@ -325,24 +328,24 @@ class PipelineIncidentStore:
             if phase is not IncidentPhase.DEGRADED:
                 return phase
             classification = IncidentClass(str(incident["classification"]))
-            if classification not in INFRASTRUCTURE_INCIDENT_CLASSES:
-                escalate_to_user(
-                    incident,
-                    EscalationReason.PRODUCT_DECISION
-                    if classification is IncidentClass.PRODUCTION
-                    else EscalationReason.ARCHITECTURE_DECISION,
-                    at=at,
-                    detail="outside Pipeline Engineer authority",
-                )
+            if classification in ADVISORY_INCIDENT_CLASSES:
+                # Production, policy and an ambiguous side effect used to go
+                # straight to the owner here - the one road to her that
+                # skipped DevOps. Her requirement has no exceptions: the
+                # on-call looks first. It reads, diagnoses and hands the
+                # decision up with a recommendation; it cannot close these
+                # (RESOLVE_FORBIDDEN_CLASSES) and repairs nothing - its
+                # package holds only diagnostics.
+                incident["phase"] = IncidentPhase.PIPELINE_ENGINEER.value
                 incident["updated_at"] = at
                 _append_event(
                     state,
-                    "incident_routed_to_user",
+                    "pipeline_engineer_requested",
                     at,
                     incident=incident,
-                    detail="production, policy, and ambiguous side effects are outside Pipeline Engineer authority",
+                    detail="advisory: diagnosis and a recommendation for the owner",
                 )
-                return IncidentPhase.ESCALATE_TO_USER
+                return IncidentPhase.PIPELINE_ENGINEER
             if incident.get("runbook_id") is None:
                 incident["phase"] = IncidentPhase.AUTO_RECOVERY_FAILED.value
                 incident["updated_at"] = at
@@ -553,6 +556,43 @@ class PipelineIncidentStore:
             )
             return _copy(incident)
 
+    def record_engineer_action(
+        self,
+        incident_id: str,
+        *,
+        field: str,
+        event: str,
+        entry: Mapping[str, Any],
+        at: str,
+    ) -> dict[str, Any]:
+        """Record what the on-call did to a stopped task on the ticket itself.
+
+        A return or a plan change requested by the engineer is part of the
+        ticket's story: the next engineer, her status card and the R23
+        bound all read it from here. Only the engineer holding the ticket
+        records it.
+        """
+
+        with self._transaction() as state:
+            incident = _incident(state, incident_id)
+            if IncidentPhase(str(incident["phase"])) is not IncidentPhase.PIPELINE_ENGINEER:
+                raise PipelineIncidentError(
+                    f"incident {incident_id} is in phase {incident['phase']}: only the "
+                    "engineer holding it acts on its tasks"
+                )
+            incident.setdefault(field, []).append(_copy(dict(entry)))
+            incident["updated_at"] = at
+            _append_event(
+                state,
+                event,
+                at,
+                incident=incident,
+                detail=_bounded(
+                    json.dumps(dict(entry), ensure_ascii=False, sort_keys=True), MAX_EVENT_CHARS
+                ),
+            )
+            return _copy(incident)
+
     def ensure_pipeline_engineer(self, incident_id: str, *, at: str) -> dict[str, Any]:
         """Idempotently route an infrastructure incident to one engineer lane.
 
@@ -566,14 +606,15 @@ class PipelineIncidentStore:
             incident = _incident(state, incident_id)
             phase = IncidentPhase(str(incident["phase"]))
             classification = IncidentClass(str(incident["classification"]))
-            if classification not in INFRASTRUCTURE_INCIDENT_CLASSES:
+            if classification not in ENGINEER_LANE_CLASSES:
                 raise PipelineIncidentError(
-                    "Pipeline Engineer activation is infrastructure-only"
+                    f"Pipeline Engineer activation does not know class {classification.value}"
                 )
             if phase in {IncidentPhase.PIPELINE_ENGINEER, IncidentPhase.RESOLVED}:
                 return self._incident_package(state, incident)
             if phase is IncidentPhase.DEGRADED and (
-                incident.get("runbook_id") is None
+                classification in ADVISORY_INCIDENT_CLASSES
+                or incident.get("runbook_id") is None
                 or str(incident.get("code") or "").startswith(STOP_CODE_PREFIX)
             ):
                 incident["phase"] = IncidentPhase.AUTO_RECOVERY_FAILED.value
@@ -610,6 +651,14 @@ class PipelineIncidentStore:
             incident = _incident(state, incident_id)
             if IncidentPhase(str(incident["phase"])) is not IncidentPhase.PIPELINE_ENGINEER:
                 raise PipelineIncidentError("Pipeline Engineer completion requires PIPELINE_ENGINEER")
+            if success and IncidentClass(str(incident["classification"])) in (
+                RESOLVE_FORBIDDEN_CLASSES
+            ):
+                raise PipelineIncidentError(
+                    f"a {incident['classification']} ticket is not the on-call's to close: "
+                    "diagnose it and hand it to the owner with ESCALATE_TO_USER and a "
+                    "recommendation"
+                )
             if success:
                 _require_named_actions(actions)
                 _require_passing_healthcheck(
@@ -877,12 +926,22 @@ class PipelineIncidentStore:
         incident: Mapping[str, Any],
     ) -> dict[str, Any]:
         classification = IncidentClass(str(incident["classification"]))
-        if classification not in INFRASTRUCTURE_INCIDENT_CLASSES:
-            raise PipelineIncidentError("Pipeline Engineer packages are infrastructure-only")
-        runbook = _runbook(str(incident.get("runbook_id") or ""))
-        allowed = list(READ_ONLY_DIAGNOSTIC_ACTIONS)
-        if runbook:
-            allowed.extend(action for action in runbook.actions if action not in allowed)
+        if classification not in ENGINEER_LANE_CLASSES:
+            raise PipelineIncidentError(
+                f"Pipeline Engineer packages do not know class {classification.value}"
+            )
+        # An infrastructure ticket gets the whole vocabulary. It used to get
+        # only the diagnostics (plus a runbook's actions), while the prompt
+        # said "execute only actions listed in allowed_actions": the
+        # engineer was asked to repair and allowed to look. An advisory
+        # ticket gets exactly the diagnostics - nothing there is its to fix.
+        if classification in ADVISORY_INCIDENT_CLASSES:
+            allowed = list(READ_ONLY_DIAGNOSTIC_ACTIONS)
+        else:
+            allowed = list(RECOVERY_ACTIONS)
+            runbook = _runbook(str(incident.get("runbook_id") or ""))
+            if runbook:
+                allowed.extend(action for action in runbook.actions if action not in allowed)
         recent = [
             _copy(item)
             for item in state["journal"]

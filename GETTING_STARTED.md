@@ -213,7 +213,8 @@ send the resume phrase in a Codex task, because launching belongs to the trusted
 Stop hook. The Pipeline Engineer recovery set - `relay-status`, `relay-complete`,
 `relay-fail`, `reconcile-thread-identity`, `recreate-archived-retry`, `arm`,
 `devops-rearm-relay-owner`, `devops-repair-runtime`, `devops-revert-runtime-patch`,
-and `devops-resolve-incident` - and the internal entry points are kept out of
+`devops-return-task`, `devops-request-plan-change` and `devops-resolve-incident` -
+and the internal entry points are kept out of
 `--help`: the on-call engineer runs them, not you.
 
 ## Watching a run
@@ -288,14 +289,18 @@ To set one project's Autopilot state aside too (it is moved to a sibling `.codex
 
 ## A task stopped by a rule
 
-Autopilot does not lift such a stop by itself: a rule violation is reviewed
-by a human, and «resume» deliberately does not erase it. When you have looked
-into it and decided the work may go on, lift the stop by your own decision with
-`codex-autopilot unblock` — the reason is recorded in the run state:
+Autopilot does not lift such a stop by itself: the on-call engineer looks
+first, repairs what it can and returns the task; only a decision that is yours
+reaches you - on the status card, with the engineer's diagnosis, its
+recommendation, the options it offers and the exact command to answer. Answer
+with `codex-autopilot unblock` — the reason (and the option you chose, if any)
+is recorded in the run state and reaches the task's next worker:
 
 ```bash
-"$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" unblock --project /absolute/path/to/project --task <ID> --reason "<why this is acceptable>"
+"$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" unblock --project /absolute/path/to/project --task <ID> [--option <code>] --reason "<your decision>"
 ```
 
-After that, continue the run with the usual phrase «Resume Codex Autopilot.»
-in a Codex task.
+That is all: the answer closes the task's tickets, lifts the stop and raises
+the run the way the wake-up does. There is no second step and no Resume
+phrase to send. `--option replan` asks the replanner to change the plan for the
+task instead of returning it.

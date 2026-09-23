@@ -19,10 +19,15 @@ the first the suite is red, and the gateway would rightly refuse. For the
 same reason a new module may be added: removing the v0.8 format required
 moving code into a separate file because the old one hit the size limit.
 
-Why this works without a restart: every dispatcher turn is a separate
-`python -m codex_autopilot.cli` process that reads the sources anew. The
-edit takes effect on the next turn, and nothing is reinstalled over a
-running one.
+How a proven set reaches the runtime changed. It used to be written from
+the engineer's own thread straight into the installed tree - outside the
+project, beyond the thread's ``:workspace`` sandbox (a permission request
+nobody answers), and file by file under every live dispatcher, which imports
+modules lazily. Now ``prove_runtime_patch`` proves the set in a copy inside
+the project and returns it; ``runtime_install`` stages it there, drains the
+run, and installs it with ``install_proven_patch`` into a fresh copy of the
+current version before switching ``current`` with one rename - only when no
+dispatcher is alive.
 """
 
 from __future__ import annotations
@@ -73,6 +78,25 @@ GUARDED_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("pipeline_engineer.py", "escalate_to_user"),
     ("pipeline_engineer.py", "_require_named_actions"),
     ("pipeline_engineer.py", "_require_passing_healthcheck"),
+    # The on-call's own limits over a stopped task. They live in patchable
+    # modules (the table itself is in engineer_authority), so a repair
+    # could otherwise rewrite the very checks that bound it - and a green
+    # suite would not stop it if the patch changed the test too: who may
+    # return a task and when, when a stop ticket may close, which patch
+    # buys a fresh hire, what an escalation carries, where advisory tickets
+    # go, and her own answer.
+    ("engineer_stop_actions.py", "require_engineer_thread"),
+    ("engineer_stop_actions.py", "return_stopped_task"),
+    ("engineer_stop_actions.py", "require_stop_ticket_closable"),
+    ("engineer_stop_actions.py", "acceptance_patches"),
+    ("stop_diagnosis.py", "means_for"),
+    ("engineer_escalation.py", "parse_engineer_escalation"),
+    ("revision_budget.py", "premises_changed"),
+    ("revision_budget.py", "grant_fresh_hire"),
+    ("pipeline_engineer.py", "route_incident"),
+    ("pipeline_engineer.py", "complete_pipeline_engineer"),
+    ("owner_answers.py", "answer_task"),
+    ("run_arming.py", "arm_run"),
 )
 
 TEST_TIMEOUT_SECONDS = 900
@@ -277,15 +301,66 @@ def _git() -> str:
     return found
 
 
-def apply_runtime_patch(
+@dataclass(frozen=True, slots=True)
+class ProvenPatch:
+    """A set of edits the gateway proved, not yet installed anywhere.
+
+    ``sources`` is the whole text of every changed module after the set;
+    ``originals`` the text before (None for a new module) - the installer
+    checks the live tree still matches it before writing anything.
+    """
+
+    record: PatchRecord
+    sources: dict[str, str]
+    originals: dict[str, str | None]
+    test_name: str
+    test_source: str
+
+
+def install_proven_patch(tree: RuntimeTree, proven: ProvenPatch) -> PatchRecord:
+    """Write a proven set into a tree whole, with its backup and its test.
+
+    The on-call's command used to do this from inside its thread, into the
+    live installation. That tree is outside the project, beyond the
+    ``:workspace`` sandbox the thread runs in, and it is shared with every
+    dispatcher of every run - written file by file, non-atomically. Now the
+    command only proves and stages (``runtime_install.stage_proven_patch``),
+    and this is called by the installer on a fresh copy of the current
+    version, which then replaces ``current`` with one rename.
+
+    Every module must still read as it did when the set was proven: a tree
+    that moved underneath is refused, never overwritten.
+    """
+
+    for change in proven.record.changes:
+        target = tree.package / change.module
+        now = _sha256(target.read_text(encoding="utf-8")) if target.is_file() else None
+        if now != change.sha256_before:
+            raise RuntimeRepairError(
+                f"{change.module} changed since the patch was proven; prove it again"
+            )
+    _store_backup(tree, proven.record)
+    for module, source in proven.sources.items():
+        (tree.package / module).write_text(source, encoding="utf-8")
+    (tree.tests / f"{proven.test_name}.py").write_text(proven.test_source, encoding="utf-8")
+    return proven.record
+
+
+def prove_runtime_patch(
     *,
     edits: Sequence[Edit],
     test_name: str,
     test_source: str,
     at: str,
     tree: RuntimeTree | None = None,
-) -> PatchRecord:
-    """Take a set of edits through the gateway and apply it whole."""
+    staging_parent: Path | None = None,
+) -> ProvenPatch:
+    """Take a set of edits through the gateway; return it proven, write nothing live.
+
+    ``staging_parent`` puts the gateway's copy inside a directory the
+    caller can write - the project, for a thread in the ``:workspace``
+    sandbox - instead of the system temp directory.
+    """
 
     tree = tree or resolve_runtime_tree()
     if not edits:
@@ -299,7 +374,11 @@ def apply_runtime_patch(
     for edit in edits:
         _check_module_name(edit.module)
 
-    staging = Path(tempfile.mkdtemp(prefix="codex-autopilot-repair-")) / "tree"
+    if staging_parent is not None:
+        Path(staging_parent).mkdir(parents=True, exist_ok=True)
+    staging = (
+        Path(tempfile.mkdtemp(prefix="codex-autopilot-repair-", dir=staging_parent)) / "tree"
+    )
     try:
         _copy_runtime(tree, staging)
         (staging / "tests" / f"{test_name}.py").write_text(test_source, encoding="utf-8")
@@ -340,14 +419,25 @@ def apply_runtime_patch(
             test_name=test_name,
             at=at,
         )
-        _store_backup(tree, record)
-        for change in changes:
-            source = (staging / "src" / "codex_autopilot" / change.module).read_text(
-                encoding="utf-8"
-            )
-            (tree.package / change.module).write_text(source, encoding="utf-8")
-        (tree.tests / f"{test_name}.py").write_text(test_source, encoding="utf-8")
-        return record
+        return ProvenPatch(
+            record=record,
+            sources={
+                change.module: (staging / "src" / "codex_autopilot" / change.module).read_text(
+                    encoding="utf-8"
+                )
+                for change in changes
+            },
+            originals={
+                change.module: (
+                    None
+                    if change.sha256_before is None
+                    else (tree.package / change.module).read_text(encoding="utf-8")
+                )
+                for change in changes
+            },
+            test_name=test_name,
+            test_source=test_source,
+        )
     finally:
         shutil.rmtree(staging.parent, ignore_errors=True)
 

@@ -244,6 +244,12 @@ _CARD_WORDS = {
         "screening_threads": "threads spent",
         "screening_hired": "hired",
         "more": "Details: say «detailed status».",
+        "diagnosis": "Diagnosis",
+        "decision": "Your decision",
+        "recommendation": "Recommendation",
+        "options": "Options",
+        "answer": "Answer (the run continues by itself)",
+        "hook": "Hook trust",
     },
     "ru": {
         "verified": "проверено",
@@ -257,6 +263,12 @@ _CARD_WORDS = {
         "screening_threads": "веток потрачено",
         "screening_hired": "нанято",
         "more": "Подробно: скажи «подробный статус».",
+        "diagnosis": "Диагноз",
+        "decision": "Ваше решение",
+        "recommendation": "Рекомендация",
+        "options": "Варианты",
+        "answer": "Ответ (прогон продолжит сам)",
+        "hook": "Доверие хуку",
     },
 }
 
@@ -309,6 +321,11 @@ def render_short_status(
             f"{words['ticket']} {incident['incident_id']}: {incident['phase']} — "
             f"{_clip(incident['summary'], 120)}"
         )
+        if incident["phase"] == "ESCALATE_TO_USER":
+            lines.extend(_owner_decision_lines(cfg, incident, words))
+    hook_signal = _hook_trust_signal(state)
+    if hook_signal:
+        lines.append(f"{words['hook']}: {_clip(hook_signal, 240)}")
     if snapshot["pause"]["requested"]:
         lines.append(words["paused"])
     # Hiring is on by default and spends a Codex thread per task out of the
@@ -345,6 +362,56 @@ def render_short_status(
         )
     lines.append(words["more"])
     return "\n".join(lines)
+
+
+def _owner_decision_lines(cfg: Config, incident: dict, words: dict[str, str]) -> list[str]:
+    """What she decides with: the on-call's diagnosis, its advice, and her command.
+
+    A ticket handed to her used to show a phase and a summary - the code
+    and nothing else. The engineer's diagnosis and recommendation were kept
+    in its thread, which nobody opens, and the card offered no way to answer
+    but "Resume", which answered every ticket at once.
+    """
+
+    from .stop_diagnosis import owner_answer
+
+    escalation = incident.get("escalation") or {}
+    lines = []
+    for key, value in (
+        ("diagnosis", escalation.get("diagnosis") or incident.get("escalation_detail")),
+        ("decision", escalation.get("decision_needed")),
+        ("recommendation", escalation.get("recommendation")),
+    ):
+        if value:
+            lines.append(f"  {words[key]}: {_clip(value, 240)}")
+    options = [
+        f"{item.get('code')} — {item.get('means') or ''}".strip(" —")
+        for item in escalation.get("options") or ()
+        if isinstance(item, dict) and item.get("code")
+    ]
+    if options:
+        lines.append(f"  {words['options']}: " + "; ".join(_clip(item, 120) for item in options[:4]))
+    lines.append(f"  {words['answer']}: {owner_answer(cfg, incident)}")
+    return lines
+
+
+def _hook_trust_signal(state: RunState) -> str:
+    """The one signal that goes to her without the on-call: revoked hook trust.
+
+    Raising the engineer passes the same trust gate, and going around it is
+    her boundary - so the wake-up records the refusal with its diagnosis and
+    recommendation (``wake.run_wake``), and the card shows it until a later
+    wake-up gets through.
+    """
+
+    for item in reversed(list(state.resilience_journal or ())):
+        event = str(item.get("event") or "")
+        detail = item.get("detail") or {}
+        if event == "wake_dispatched":
+            return ""
+        if event == "wake_skipped" and detail.get("why") == "hook trust is not in place":
+            return f"{detail.get('diagnosis')}; {detail.get('recommendation')}"
+    return ""
 
 
 def _clip(text: str, limit: int) -> str:

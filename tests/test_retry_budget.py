@@ -254,11 +254,14 @@ class RetryBudgetTests(unittest.TestCase):
                 with self.subTest(code=code, definitive=definitive):
                     before = self.attempts(code)
                     self.fail_once("A", code, definitive=definitive)
-                    # Her own pause is the one code that is recorded and
-                    # never counted: see test_her_pause_never_spends_the_cap.
+                    # Two codes are recorded and never counted: her own
+                    # pause (test_her_pause_never_spends_the_cap) and a
+                    # permission request - no retry changes an answer only
+                    # she may give; its stop ticket holds the task instead
+                    # (test_approval_required_is_its_own_road).
                     self.assertEqual(
                         self.attempts(code),
-                        before if code == "worker_paused" else before + 1,
+                        before if code in {"worker_paused", "approval_required"} else before + 1,
                         f"{code} with definitive={definitive} was counted wrongly",
                     )
 

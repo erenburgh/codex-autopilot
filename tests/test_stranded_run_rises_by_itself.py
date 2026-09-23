@@ -411,12 +411,16 @@ class LiftingAStopDoesNotRedoDoneWorkTests(unittest.TestCase):
         self.assertIn(TaskState.IMPLEMENTED, TASK_TRANSITIONS[TaskState.BLOCKED])
 
     def test_unblock_chooses_by_whether_a_verdict_ever_happened(self) -> None:
-        source = (
-            Path(__file__).resolve().parents[1] / "src/codex_autopilot/cli.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn(
-            "TaskState.IMPLEMENTED if done_before else TaskState.READY", source
-        )
-        self.assertIn(
-            'done_before = int(state.task_revisions.get(task_id, 0)) > 0', source
-        )
+        """The rule moved from cli.py to owner_answers, shared with the on-call's
+        return. It used to be checked by searching cli.py for its text; now
+        it is checked by what it returns."""
+
+        from types import SimpleNamespace
+
+        from codex_autopilot.owner_answers import unblock_target
+        from codex_autopilot.task_state import TaskState
+
+        judged = SimpleNamespace(task_revisions={"A": 2})
+        fresh = SimpleNamespace(task_revisions={})
+        self.assertIs(unblock_target(judged, "A"), TaskState.IMPLEMENTED)
+        self.assertIs(unblock_target(fresh, "A"), TaskState.READY)

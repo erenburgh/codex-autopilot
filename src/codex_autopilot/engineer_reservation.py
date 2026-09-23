@@ -131,16 +131,52 @@ def pipeline_engineer_package(
         raise DesktopLifecycleError(
             "the on-call engineer is requested without an incident in phase PIPELINE_ENGINEER"
         )
-    return PipelineIncidentStore(cfg.state_dir).incident_package(
+    package = PipelineIncidentStore(cfg.state_dir).incident_package(
         str(incident["incident_id"])
     )
+    return with_stop_context(cfg, state, package)
+
+
+def with_stop_context(cfg: Any, state: Any, package: dict[str, Any]) -> dict[str, Any]:
+    """A stop ticket's package carries the stop's diagnosis and her answer.
+
+    Housekeeping on top of the store's package: a failure to read the plan
+    leaves the package as the store built it, never without one.
+    """
+
+    from .pipeline_engineer import STOP_CODE_PREFIX
+
+    incident = package.get("incident") or {}
+    if not str(incident.get("code") or "").startswith(STOP_CODE_PREFIX):
+        return package
+    try:
+        from .plan import load_plan
+        from .stop_diagnosis import owner_answer, stop_context
+
+        plan = load_plan(cfg.state_dir, cfg.profile)
+        package["stop_context"] = stop_context(cfg, plan, state, incident)
+        package["owner_answer"] = owner_answer(cfg, incident)
+    except Exception as exc:  # noqa: BLE001 - the package without it still reaches the engineer
+        package["stop_context"] = {"unavailable": str(exc)[:300]}
+    return package
 
 
 def _infrastructure(item: dict[str, Any]) -> bool:
-    from .engineer_authority import INFRASTRUCTURE_INCIDENT_CLASSES, IncidentClass
+    """A ticket whose class passes through the lane - advisory ones included."""
+
+    from .engineer_authority import ENGINEER_LANE_CLASSES, IncidentClass
 
     try:
-        return IncidentClass(str(item.get("classification"))) in INFRASTRUCTURE_INCIDENT_CLASSES
+        return IncidentClass(str(item.get("classification"))) in ENGINEER_LANE_CLASSES
+    except ValueError:
+        return False
+
+
+def _advisory(item: dict[str, Any]) -> bool:
+    from .engineer_authority import ADVISORY_INCIDENT_CLASSES, IncidentClass
+
+    try:
+        return IncidentClass(str(item.get("classification"))) in ADVISORY_INCIDENT_CLASSES
     except ValueError:
         return False
 
@@ -157,6 +193,7 @@ def _needs_lane(item: dict[str, Any]) -> bool:
         return True
     return phase == IncidentPhase.DEGRADED.value and (
         item.get("runbook_id") is None
+        or _advisory(item)
         or str(item.get("code") or "").startswith(STOP_CODE_PREFIX)
     )
 
@@ -393,6 +430,10 @@ def stranded_reason(cfg: Any, state: Any) -> str | None:
     The caller has already checked that no dispatcher is alive.
     """
 
+    from .runtime_install import runtime_patch_pending
+
+    if runtime_patch_pending(cfg):
+        return "a proven runtime patch waits to be installed"
     if engineer_needed(cfg, state):
         return "on-call ticket without an engineer"
     pending = any(item.get("status") in PENDING_SESSION_STATUSES for item in state.worker_sessions)
@@ -709,6 +750,9 @@ LOST_ENGINEER_CREATE_REASON = "lost pipeline engineer: create in doubt, dispatch
 # Written by ``lifecycle_failures.record_desktop_failure`` when the engineer's
 # own turn failed definitively (not her pause, not the account's limit).
 LOST_ENGINEER_TURN_REASON = "lost pipeline engineer: its turn failed"
+# Written by ``engineer_escalation.record_engineer_protocol_error`` when the
+# engineer's final answer was refused (status line, RESOLVED not closed).
+LOST_ENGINEER_PROTOCOL_REASON = "lost pipeline engineer: its answer was refused"
 
 
 def lost_engineers(state: Any, incident_id: str) -> list[dict[str, Any]]:
@@ -720,7 +764,12 @@ def lost_engineers(state: Any, incident_id: str) -> list[dict[str, Any]]:
         if item.get("kind") == "pipeline_engineer"
         and str(item.get("incident_id") or "") == incident_id
         and str(item.get("failure_reason") or "").startswith(
-            (LOST_ENGINEER_REASON, LOST_ENGINEER_CREATE_REASON, LOST_ENGINEER_TURN_REASON)
+            (
+                LOST_ENGINEER_REASON,
+                LOST_ENGINEER_CREATE_REASON,
+                LOST_ENGINEER_TURN_REASON,
+                LOST_ENGINEER_PROTOCOL_REASON,
+            )
         )
     ]
 
@@ -748,9 +797,16 @@ def hand_lost_engineers_to_owner(cfg: Any, state: Any, incident: dict[str, Any])
     at = utc_now()
     diagnosis = (
         f"{len(lost)} on-call engineers for ticket {incident_id} ended without an "
-        "answer the runtime could take: their turns failed, or their dispatcher "
-        "died and the server showed the turn over. A third would meet the same end."
+        "answer the runtime could take: their turns failed, their answers were "
+        "refused, or their dispatcher died and the server showed the turn over. A "
+        "third would meet the same end."
     )
+    tail = next(
+        (str(item["final_message_tail"]) for item in reversed(lost) if item.get("final_message_tail")),
+        "",
+    )
+    if tail:
+        diagnosis += f" The last engineer's own words: {tail[-800:]}"
     outcome = escalate_to_owner(
         cfg,
         incident_id,
@@ -764,6 +820,11 @@ def hand_lost_engineers_to_owner(cfg: Any, state: Any, incident: dict[str, Any])
                     "session": item.get("reservation_token"),
                     "thread_id": item.get("thread_id"),
                     "failure": str(item.get("failure_reason") or "")[:600],
+                    **(
+                        {"final_message_tail": str(item["final_message_tail"])[-600:]}
+                        if item.get("final_message_tail")
+                        else {}
+                    ),
                 }
                 for item in lost
             ],

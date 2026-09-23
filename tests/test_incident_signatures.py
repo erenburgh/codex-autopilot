@@ -308,11 +308,28 @@ class KnownRecoveryTests(TwoLevelRecoveryTests):
             ),
             at="t20",
         )
-        # An ambiguous side effect is a separate class, not infrastructure.
+        # An ambiguous side effect is a separate class, not infrastructure:
+        # the learned runbook is never replayed on it. It used to go straight
+        # to the owner; now the on-call reads it first (her requirement: every
+        # stop through DevOps) - with diagnostics only, and it cannot close it.
+        from codex_autopilot.engineer_authority import READ_ONLY_DIAGNOSTIC_ACTIONS
+        from codex_autopilot.pipeline_engineer import PipelineIncidentError
+
         self.assertEqual(
             self.store.route_incident(ambiguous["incident_id"], at="t21"),
-            IncidentPhase.ESCALATE_TO_USER,
+            IncidentPhase.PIPELINE_ENGINEER,
         )
+        events = [item["event"] for item in self.store.load()["journal"]]
+        self.assertNotIn("auto_recovery_started", events[-3:])
+        package = self.store.incident_package(ambiguous["incident_id"])
+        self.assertEqual(package["allowed_actions"], list(READ_ONLY_DIAGNOSTIC_ACTIONS))
+        with self.assertRaisesRegex(PipelineIncidentError, "not the on-call's to close"):
+            self.store.complete_pipeline_engineer(
+                ambiguous["incident_id"],
+                success=True,
+                at="t22",
+                actions=("reconcile_durable_journal",),
+            )
 
     def test_the_slot_is_released_on_a_failed_attempt_too(self) -> None:
         """Invariant: the slot never stays taken, whatever the outcome."""

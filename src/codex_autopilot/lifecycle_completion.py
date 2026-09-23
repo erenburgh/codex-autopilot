@@ -97,6 +97,8 @@ from .engineer_escalation import (  # noqa: F401 - re-exported for existing impo
     _would_idle_forever,
     escalate_engineer_ticket,
     parse_pipeline_engineer_status,
+    read_engineer_outcome,
+    record_engineer_protocol_error,
 )
 from .lifecycle_failures import reconcile_desktop_thread_identity
 from .lifecycle_reservations import _reserve_in_state
@@ -674,6 +676,7 @@ def complete_desktop_worker(
                 system_state={"reason_code": reason_code, "kind": kind, "held": held},
             )
             current["reason_code"] = reason_code
+            current["final_message_tail"] = (final_message or "")[-1_200:]  # stop_diagnosis
             if reason_code == "UNSPECIFIED":
                 record_violation(
                     cfg.state_dir,
@@ -777,38 +780,15 @@ def _complete_pipeline_engineer(
 ) -> CompletionOutcome:
     """Accept the engineer's outcome, taking nothing on its word.
 
-    RESOLVED counts only if the ticket is really closed - through
-    devops-resolve-incident, with a passing healthcheck. The word in the
-    final line is not a statement of repair: exactly that substitution of a
-    claim for an observation cost the run a night.
+    RESOLVED counts only if the ticket is really closed (devops-resolve-
+    incident, passing healthcheck). A refused outcome no longer raises before
+    the transaction and strands the lane: it is a protocol error that
+    completes the session (``engineer_escalation.read_engineer_outcome``).
     """
 
-    from .pipeline_engineer import IncidentPhase, PipelineIncidentStore
-
-    status, escalation_code = parse_pipeline_engineer_status(final_message)
     timestamp = at or utc_now()
     incident_id = str(session.get("incident_id") or "")
-    incidents = PipelineIncidentStore(cfg.state_dir).load()
-    incident = next(
-        (
-            item
-            for item in incidents.get("incidents", [])
-            if str(item.get("incident_id")) == incident_id
-        ),
-        None,
-    )
-    if incident is None:
-        raise DesktopLifecycleError(
-            f"the on-call engineer's incident {incident_id} was not found"
-        )
-    resolved = str(incident.get("phase")) == IncidentPhase.RESOLVED.value
-    if status == "RESOLVED" and not resolved:
-        raise DesktopLifecycleError(
-            f"the engineer declared RESOLVED, but ticket {incident_id} stayed in phase "
-            f"{incident.get('phase')}: closing is done by devops-resolve-incident "
-            "with a passing healthcheck"
-        )
-
+    status, escalation_code, refused = read_engineer_outcome(cfg, incident_id, final_message)
     store = StateStore(cfg.state_dir)
     coordinator = ResourceLockCoordinator(store, cfg.root)
     with coordinator.transaction():
@@ -843,7 +823,11 @@ def _complete_pipeline_engineer(
         _record_rule_conflicts(
             cfg, state, current, final_message, timestamp, ProjectMemory(cfg.root)
         )
-        if status == "ESCALATE_TO_USER":
+        if refused:
+            record_engineer_protocol_error(
+                cfg, state, current, error=refused, final_message=final_message, at=timestamp
+            )
+        elif status == "ESCALATE_TO_USER":
             # One ticket goes up; the run does not. This used to stop the
             # whole run through the door, without a reservation: tasks the
             # ticket never named froze with it. Now its own tasks stay held

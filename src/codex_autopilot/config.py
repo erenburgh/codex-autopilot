@@ -86,6 +86,13 @@ class RuntimeConfig:
     # that there is no other way - App Server declares no unread API at
     # all, and thread/metadata/update accepts only projectId. See notify.py.
     desktop_notifications: bool = False
+    # A banner only when a decision waits for her (the on-call handed a
+    # ticket up, a stop exhausted its repairs, hook trust was revoked) -
+    # without the per-task banners. Off by default, like every banner: it is
+    # a side effect on her machine, and turning it on is her decision. Until
+    # then her signal is the status card, the on-call's final message in its
+    # thread and the run journal.
+    escalation_notifications: bool = False
     full_plan_revalidation_patches: int = DEFAULT_FULL_REVALIDATION_PATCHES
     # Whether a task is screened for skills before it gets a worker.
     # On by default: a worker that carries the right skill is the point of
@@ -260,6 +267,10 @@ def load_config(root_or_path: Path) -> Config:
             desktop_notifications=_bool(
                 runtime.get("desktop_notifications", False),
                 "runtime.desktop_notifications",
+            ),
+            escalation_notifications=_bool(
+                runtime.get("escalation_notifications", False),
+                "runtime.escalation_notifications",
             ),
             skill_screening=_skill_screening(
                 runtime.get("skill_screening", DEFAULT_SKILL_SCREENING)

@@ -439,6 +439,11 @@ class NoStopBypassesTheDoorTests(unittest.TestCase):
         ("plan_verification_lifecycle.py", "complete_plan_verifier"): 1,
         # the top of the hiring ladder -> door: ladder_exhausted
         ("revision_budget.py", "block_on_exhausted_ladder"): 1,
+        # a plan change the on-call asked for on a stopped task's behalf: the
+        # requester waits for the replanner, like a worker's own request
+        ("engineer_stop_actions.py", "request_plan_change"): 1,
+        # her answer "replan": the same plan-change wait, on her decision
+        ("owner_answers.py", "_owner_plan_change"): 1,
         # v0.8 migrations: the run was already BLOCKED before this runtime;
         # the orphan sweep gives such a task its ticket
         ("run_state.py", "_migrate_v08_payload"): 1,

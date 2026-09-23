@@ -276,6 +276,9 @@ def _write_config(
         # done. Off: a side effect on someone else's machine must not be
         # enabled unasked. See docs/DESKTOP_RUNTIME.md.
         "desktop_notifications = false",
+        # A banner only when a decision waits for her (an escalation). Off
+        # until she turns it on; see docs/PIPELINE_ENGINEER.md.
+        "escalation_notifications = false",
         f"max_parallel_workers = {plan.max_parallel_workers}",
         f"computer_use_slots = {plan.computer_use_slots}",
         f"full_plan_revalidation_patches = {DEFAULT_FULL_REVALIDATION_PATCHES}",

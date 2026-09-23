@@ -53,6 +53,27 @@ INFRASTRUCTURE_INCIDENT_CLASSES = frozenset(
     }
 )
 
+# The classes that are not the engineer's to repair, but still pass through
+# its lane. route_incident used to hand them to the owner directly, the one
+# road to her that skipped DevOps - her requirement is that every stop is
+# looked at first. So the on-call reads them, writes the diagnosis and the
+# recommendation, and escalates: product quality is the workers' and hers,
+# a policy is hers, and an ambiguous side effect may never be repeated. It
+# cannot close them (RESOLVE_FORBIDDEN_CLASSES) and gets only diagnostics.
+ADVISORY_INCIDENT_CLASSES = frozenset(
+    {
+        IncidentClass.PRODUCTION,
+        IncidentClass.POLICY,
+        IncidentClass.AMBIGUOUS_SIDE_EFFECT,
+    }
+)
+ENGINEER_LANE_CLASSES = INFRASTRUCTURE_INCIDENT_CLASSES | ADVISORY_INCIDENT_CLASSES
+# An ambiguous create has no thread the engineer could reconcile to, and a
+# definitive failure may be recorded only by the reservation's own relay
+# owner - a guard that is her boundary. So "resolved" would be a promise the
+# engineer has no means to keep: every advisory ticket ends in a diagnosis.
+RESOLVE_FORBIDDEN_CLASSES = ADVISORY_INCIDENT_CLASSES
+
 READ_ONLY_DIAGNOSTIC_ACTIONS = (
     "inspect_bounded_system_state",
     "inspect_recent_events",
@@ -72,6 +93,11 @@ REPAIR_ACTIONS = (
     "record_definitive_transport_failure",
     "record_completed_worker_turn",
     "repair_runtime_code",
+    # The two the on-call lacked for a stopped task. Without them a repair
+    # closed its ticket and left the task BLOCKED for good: nothing but her
+    # unblock could return it, and nothing could ask the replanner.
+    "request_plan_change",
+    "return_stopped_task",
 )
 
 # The whole vocabulary: what the engineer may report a repair with.
@@ -98,6 +124,72 @@ FORBIDDEN_ACTIONS = (
     "perform_destructive_or_unbounded_repairs",
     "repeat_ambiguous_create_thread_or_send_message_to_thread",
     "create_or_message_codex_tasks_without_real_user_authority_or_an_official_platform_capability",
+)
+
+# What the on-call may do about each kind of stop. A return without a
+# change of cause is the loop R23 forbids, and a decision that is hers
+# (PRODUCT_DECISION, ARCHITECTURE_DECISION) is never lifted by it: those
+# kinds list no return at all, and ``engineer_stop_actions`` refuses one.
+#
+# Keys are the stop kind, or ``worker_blocked:<reason code>`` for a worker's
+# own stop. A kind not listed gets DEFAULT_STOP_MEANS.
+_RETURN = ("repair_runtime_code", "rearm_relay_owner", "rearm_run", "return_stopped_task")
+_REPLAN = ("request_plan_change", "repair_runtime_code")
+_HERS = ()  # a diagnosis and ESCALATE with the same code
+DEFAULT_STOP_MEANS = _RETURN + ("request_plan_change",)
+STOP_MEANS: dict[str, tuple[str, ...]] = {
+    "worker_blocked:MISSING_RESOURCE": _RETURN,
+    "worker_blocked:ENVIRONMENT_FAILURE": _RETURN,
+    "worker_blocked:UNSPECIFIED": _RETURN,
+    "worker_blocked:": _RETURN,
+    "worker_blocked:RECOVERY_EXHAUSTED": _RETURN,
+    "worker_blocked:DEPENDENCY_DEFECT": _REPLAN,
+    "worker_blocked:CONTRADICTORY_CONTRACT": _REPLAN,
+    "worker_blocked:DANGEROUS_PERMISSION": _HERS,
+    "worker_blocked:PRODUCT_DECISION": _HERS,
+    "worker_blocked:ARCHITECTURE_DECISION": _HERS,
+    "verification_protocol": _RETURN,
+    "verifier_routing": _RETURN,
+    # No successor is a defect of the reservation itself, not of a task.
+    "no_successor": ("repair_runtime_code",),
+    "plan_change_rejected": _REPLAN,
+    "plan_verification_rejected": _REPLAN,
+    "plan_verification_protocol": _REPLAN,
+    # The top of the hiring ladder: a defect of the gate, rubric or verifier
+    # is repaired in code (and only such a repair returns the task, see
+    # LADDER_RESET_MODULES); a task too big for one hire is re-planned. Only
+    # a judgement about the work itself is hers.
+    "ladder_exhausted": ("repair_runtime_code", "request_plan_change", "return_stopped_task"),
+    # A permission the run does not hold: a runtime that asked for more than
+    # the run is authorized for is repaired; otherwise it is hers
+    # (DANGEROUS_PERMISSION) and never answered by anyone else.
+    "approval_required": ("repair_runtime_code",),
+}
+# Reason codes whose stop is hers to lift. The engineer diagnoses and hands
+# it up with the same code; ``return_stopped_task`` refuses these.
+OWNER_STOP_REASONS = frozenset({"PRODUCT_DECISION", "ARCHITECTURE_DECISION"})
+
+# The modules on the acceptance path (R29, R30): the gate, the rubric, the
+# verifier's prompt and verdict handling, the staged-output check and the
+# rules' scope. A runtime patch returns a task from the top of its hiring
+# ladder only when it changed one of these - R23 allows a reset "only after
+# a change that touches the cause of the refusal", and a harmless patch
+# elsewhere must not buy a fresh budget past her judgement of the work.
+LADDER_RESET_MODULES = frozenset(
+    {
+        "acceptance.py",
+        "acceptance_floor.py",
+        "department_acceptance.py",
+        "verification.py",
+        "lifecycle_prompts.py",
+        "lifecycle_completion.py",
+        "artifact_staging.py",
+        "artifact_staging_lifecycle.py",
+        "memory_verification.py",
+        "models.py",
+        "rules.py",
+        "lifecycle_rule_audit.py",
+    }
 )
 
 # How many identical successful resolutions of one signature it takes for

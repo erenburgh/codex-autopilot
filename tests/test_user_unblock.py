@@ -78,10 +78,15 @@ class UserUnblockTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         state = self.store.load()
         self.assertEqual(state.task_states["A"], "READY")
-        self.assertEqual(state.status, "READY")
+        # The status is derived now (run_status), not written by the answer:
+        # what matters is that the run no longer waits for her. It used to
+        # be set to READY/PREPARING by hand and then wait for her Resume.
+        self.assertNotEqual(state.status, "BLOCKED")
         self.assertIsNone(state.last_error)
         self.assertEqual(state.user_unblocks[-1]["task_id"], "A")
         self.assertIn("оператором", state.user_unblocks[-1]["reason"])
+        self.assertIn("continues by itself", result.stdout)
+        self.assertNotIn("Resume", result.stdout)
 
     def test_a_blank_reason_is_refused(self) -> None:
         """A blank instead of a reason is the absence of a reason.

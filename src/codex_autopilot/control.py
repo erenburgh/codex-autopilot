@@ -118,28 +118,15 @@ def _register_for_wake(root: Path) -> None:
         return
 
 
-def arm(root: Path) -> None:
-    cfg = load_config(root)
-    store = StateStore(cfg.state_dir)
-    state = store.load()
-    if state.status == "RUNNING" and pid_alive(state.dispatcher_pid):
-        raise RuntimeError(f"dispatcher is already running with pid {state.dispatcher_pid}")
-    if state.status == "DONE":
-        raise RuntimeError("the migrated or initialized roadmap is already DONE")
-    payload = {
-        "project_root": str(cfg.root),
-        "armed_at": utc_now(),
-        "run_id": state.run_id,
-    }
-    request_id = LaunchRegistry().add(payload)
-    payload["request_id"] = request_id
-    store.arm(payload)
-    # The project joins the wake agent's sweep: from now on a due retry is
-    # raised even after a reboot.
-    _register_for_wake(cfg.root)
-    state.status = "READY"
-    state.phase = "ARMED"
-    store.save(state)
+def arm(root: Path, *, caller_thread: str = "") -> None:
+    """Arm the run - under the run's transaction, never beside live sessions.
+
+    The body lives in ``run_arming`` (control.py stands at the size limit).
+    """
+
+    from .run_arming import arm_run
+
+    arm_run(root, register=_register_for_wake, caller_thread=caller_thread)
 
 
 def spawn_automatic_app_server_relay(
@@ -1274,39 +1261,18 @@ def _reconcile_before_resume(cfg) -> tuple[str, ...]:
 
 
 def _answer_escalation(cfg, state) -> tuple[str, ...]:
-    """Resuming is the user's answer to an escalation.
+    """Resuming is the user's answer to what was handed to her.
 
     R13 allows turning to the user as an exception, but an appeal with no
-    way back is a dead end, not an exception. The engineer declared
-    ESCALATE_TO_USER, the run went to BLOCKED, and resuming refused precisely
-    because the run was BLOCKED. A person who had already fixed everything
-    had no way to say so.
-
-    The tickets closed are those waiting for a human: the ones that declared
-    ESCALATE_TO_USER and the ones stuck in PIPELINE_ENGINEER - the second had
-    nobody left to close it, neither the engineer nor the human, and it is
-    exactly those that unblocked the run on 16 Sep (the authority is
-    incident_ids_awaiting_the_user). BLOCKED for any other reason remains a
-    refusal: "resume" must not be a button that erases an unexamined fault.
+    way back is a dead end. The body lives in ``owner_answers``: tickets
+    handed to her are closed AND the tasks they held leave BLOCKED (a Resume
+    used to close the tickets and leave the tasks stopped); tickets the
+    on-call never looked at are routed to its lane, never closed.
     """
 
+    from .owner_answers import answer_escalations
 
-    # The run phase is not the authority here. Only the engineer's completion
-    # sets it; an incident escalated by routing - like any
-    # AMBIGUOUS_SIDE_EFFECT - left the run in its previous phase, and
-    # resuming silently closed nothing. The ticket waited for a human, the
-    # human answered, and the answer was lost. The authority is the incident
-    # store itself: exactly the tickets awaiting the user are closed.
-    store = PipelineIncidentStore(cfg.state_dir)
-    closed: list[str] = []
-    for incident_id in store.incident_ids_awaiting_the_user():
-        store.resolve_escalation_by_user(
-            incident_id,
-            at=utc_now(),
-            note="the user resumed the run, answering the escalation",
-        )
-        closed.append(incident_id)
-    return tuple(closed)
+    return answer_escalations(cfg)
 
 
 def handle_prompt_hook(payload: dict[str, Any]) -> dict[str, Any]:

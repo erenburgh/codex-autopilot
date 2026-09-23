@@ -133,6 +133,9 @@ def _what_each_closure_did(loaded: Mapping[str, Any], closed: list[dict[str, Any
                 "actions": list(resolution.get("actions") or ()),
                 "note": str(resolution.get("note") or "")[:MAX_NOTE_CHARS],
                 "healthcheck": list((item.get("healthcheck") or {}).get("checks") or ()),
+                # What the on-call returned to work, and on what grounds: the
+                # lift that did not hold is the heart of this report.
+                "returns": [dict(entry) for entry in item.get("returns") or ()][-3:],
             }
         )
     return report

@@ -255,6 +255,9 @@ class EveryCommandHasAConsumerTests(unittest.TestCase):
                 self.ROOT / "README.md",
                 self.ROOT / "GETTING_STARTED.md",
                 self.ROOT / "src/codex_autopilot/ai_studio.py",
+                # The on-call's brief for a stopped task is written here and
+                # interpolated into its prompt by ai_studio.
+                self.ROOT / "src/codex_autopilot/engineer_escalation.py",
                 *(self.ROOT / "plugins").rglob("SKILL.md"),
             )
         )

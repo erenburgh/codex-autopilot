@@ -58,6 +58,7 @@ from .plan_change_reservation import (  # noqa: F401 - re-exported for existing 
 )
 from .scope import scope_baseline
 from .run_state import RunState, StateStore, utc_now
+from .runtime_install import runtime_patch_pending
 from .scheduler import effective_worker_limit, schedule
 from .task_state import (
     TaskState,
@@ -255,21 +256,21 @@ def _reserve_in_state(
         raise DesktopLifecycleError(
             "Desktop reservation requires a bound relay owner thread"
         )
-    # This frontier also owns revision, verifier, replanner, and incident
-    # sessions before the normal scheduler call below.  Gate the shared entry
-    # point so none of those branches can reserve work from an unverified
-    # canonical graph.  Persisted pre-v1 plans remain explicitly exempt in
-    # require_plan_verified. The gate used to raise before the on-call's
-    # reservation too, so the engineer for an open ticket could never come
-    # while it failed; the failure is now held until the ownership and
-    # external-dispatcher guards below have passed, and then only the
-    # engineer may pass it - see the invariant at `unverified`.
+    # The gate covers every branch of this frontier (revision, verifier,
+    # replanner, incident): nothing is reserved from an unverified canonical
+    # graph (pre-v1 plans are exempt in require_plan_verified). Its failure
+    # is held until the ownership and external-dispatcher guards below have
+    # passed, and then only the engineer may pass it - see `unverified`.
     try:
         require_plan_verified(plan, state)
         unverified: PlanVerificationError | None = None
     except PlanVerificationError as exc:
         unverified = exc
-    if state.status == "DONE" or StateStore(cfg.state_dir).pause_requested():
+    # A staged runtime patch drains the run until it is installed atomically
+    # outside the sandbox (runtime_install): nothing new starts on old code.
+    if state.status == "DONE" or StateStore(cfg.state_dir).pause_requested() or (
+        runtime_patch_pending(cfg)
+    ):
         return ()
     if not state.prep_app_server_exited_at:
         raise DesktopLifecycleError(
@@ -300,10 +301,9 @@ def _reserve_in_state(
     route_waiting_tickets(cfg, plan, state)
 
     def finish(work: tuple[LaunchDescriptor, ...]) -> tuple[LaunchDescriptor, ...]:
-        # The on-call comes last in the pass - a ticket filed by this very
-        # pass (the ladder, a routing failure) gets its engineer now - and
-        # NEXT TO the work, never instead of it: the early return here is
-        # what froze the neighbours of a stopped task.
+        # The on-call comes last in the pass (a ticket filed by this pass gets
+        # its engineer now) and NEXT TO the work, never instead of it: the
+        # early return here is what froze the neighbours of a stopped task.
         found = _reserve_pipeline_engineer_in_state(
             cfg,
             plan,
