@@ -280,7 +280,7 @@ class AIStudioAcceptanceShapeTests(unittest.TestCase):
                 language="en",
                 skill_path=Path(__file__),
             )
-        self.assertEqual(runtime.route("code").model_id, "gpt-5.6-sol")
+        self.assertEqual(runtime.route("code").model_id, "gpt-6-sol")
         self.assertEqual(runtime.route("gui-a").model_id, "gpt-6-astra")
         self.assertEqual(
             runtime.route("gui-a", phase="verification").role_id,

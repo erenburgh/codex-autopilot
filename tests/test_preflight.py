@@ -199,7 +199,7 @@ class PreflightClient:
         self.model_calls += 1
         efforts = [{"reasoningEffort": item} for item in ("medium", "high", "xhigh", "max")]
         return [
-            {"id": MODEL_IDS["sol"], "model": MODEL_IDS["sol"], "displayName": "GPT-5.6 Sol", "supportedReasoningEfforts": efforts},
+            {"id": MODEL_IDS["sol"], "model": MODEL_IDS["sol"], "displayName": "GPT-6 Sol", "supportedReasoningEfforts": efforts},
             {"id": MODEL_IDS["astra"], "model": MODEL_IDS["astra"], "displayName": "GPT-6 Astra", "supportedReasoningEfforts": efforts},
         ]
 
@@ -414,7 +414,7 @@ class PreflightTests(unittest.TestCase):
         root = project()
         result = run_preflight(root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo", client_factory=PreflightClient, desktop_project_id=DESKTOP_PROJECT, emit=None)
         self.assertEqual(result.project, root.resolve())
-        self.assertEqual(result.next_model, "GPT-5.6 Sol")
+        self.assertEqual(result.next_model, "GPT-6 Sol")
         client = PreflightClient.instances[-1]
         memory_args, verifier_args = client.thread_args_history
         self.assertEqual(memory_args["cwd"], root.resolve())
@@ -876,7 +876,7 @@ class TrustProbeTests(unittest.TestCase):
                 return super().wait_for_turn(thread_id, turn_id, **kwargs)
 
         result = self.run_preflight(FlakyProbeClient)
-        self.assertEqual(result.next_model, "GPT-5.6 Sol")
+        self.assertEqual(result.next_model, "GPT-6 Sol")
         client = FlakyProbeClient.instances[-1]
         self.assertEqual(client.attempts, 3)
         self.assertEqual(len(client.plain_turns), 3)

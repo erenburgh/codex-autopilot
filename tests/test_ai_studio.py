@@ -247,8 +247,8 @@ class AIStudioRuntimeTests(unittest.TestCase):
         )
         states = {"code-a": "READY", "code-b": "READY", "gui": "READY"}
 
-        self.assertEqual(runtime.route("code-a").model_id, "gpt-5.6-sol")
-        self.assertEqual(runtime.route("code-b").model_id, "gpt-5.6-sol")
+        self.assertEqual(runtime.route("code-a").model_id, "gpt-6-sol")
+        self.assertEqual(runtime.route("code-b").model_id, "gpt-6-sol")
         self.assertEqual(runtime.route("gui").model_id, "gpt-6-astra")
         payload = context_payload(
             runtime.build_prompt(
@@ -683,8 +683,8 @@ class AIStudioRuntimeTests(unittest.TestCase):
                 ),
             ]
         )
-        self.assertEqual(runtime.route("integration").model_id, "gpt-5.6-sol")
-        self.assertEqual(runtime.route("facts").model_id, "gpt-5.6-sol")
+        self.assertEqual(runtime.route("integration").model_id, "gpt-6-sol")
+        self.assertEqual(runtime.route("facts").model_id, "gpt-6-sol")
         self.assertEqual(runtime.route("desktop").model_id, "gpt-6-astra")
         self.assertEqual(runtime.plan.task_map["facts"].required_capabilities, ("research",))
         self.assertEqual(runtime.plan.task_map["desktop"].execution_mode, "computer_use")

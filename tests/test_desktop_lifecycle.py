@@ -1331,7 +1331,7 @@ class DesktopLifecycleTests(unittest.TestCase):
         descriptors = reserve_ready_frontier(self.cfg)
         self.hook_gate_mock.assert_called_once_with(self.cfg)
         self.assertEqual([item.task_id for item in descriptors], ["A", "B"])
-        self.assertEqual({item.model for item in descriptors}, {"gpt-5.6-sol"})
+        self.assertEqual({item.model for item in descriptors}, {"gpt-6-sol"})
         self.assertTrue(all(item.surface == DESKTOP_OWNED_SURFACE for item in descriptors))
         self.assertEqual(
             [item.title for item in descriptors],

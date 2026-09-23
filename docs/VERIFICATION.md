@@ -1,6 +1,6 @@
 # Verification status
 
-Development target: macOS 26.6.2 arm64, Codex CLI/App Server 0.153.4, ChatGPT Desktop 26.901.51231, Python 3.14.7, GPT-5.6 Sol, and GPT-6 Astra.
+Development target: macOS 26.6.2 arm64, Codex CLI/App Server 0.153.4, ChatGPT Desktop 26.901.51231, Python 3.14.7, GPT-6 Sol, and GPT-6 Astra.
 
 ## Deterministic suite
 

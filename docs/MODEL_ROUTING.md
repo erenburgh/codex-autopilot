@@ -6,7 +6,7 @@ Adaptive supports three strategies:
 
 | Strategy | Code milestone | Computer Use milestone |
 | --- | --- | --- |
-| `auto` | GPT-5.6 Sol (`gpt-5.6-sol`) | GPT-6 Astra (`gpt-6-astra`) |
+| `auto` | GPT-6 Sol (`gpt-6-sol`) | GPT-6 Astra (`gpt-6-astra`) |
 | `sol-only` | Sol | Blocks because the required capability is unavailable |
 | `astra-only` | Astra | Astra |
 
@@ -43,7 +43,7 @@ creates, not just a line added to the tuple.
 
 ## When a newer model appears
 
-The Adaptive profile asks App Server for an exact id - `gpt-5.6-sol`,
+The Adaptive profile asks App Server for an exact id - `gpt-6-sol`,
 `gpt-6-astra` - and accepts nothing else. That strictness is deliberate: a
 silent substitution would swap the declared capability rather than the
 diligence, which is the one thing the hiring ladder is built not to do.

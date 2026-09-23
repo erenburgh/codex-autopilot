@@ -79,7 +79,7 @@ Break it into independently verifiable milestones and continue until DONE.
 
 The Adaptive profile uses `auto` by default:
 
-- GPT-5.6 Sol handles milestones verifiable with code, files, shell tools, logs, tests, and builds.
+- GPT-6 Sol handles milestones verifiable with code, files, shell tools, logs, tests, and builds.
 - GPT-6 Astra handles milestones whose Definition of Done requires real browser or desktop GUI interaction through Computer Use.
 - Reasoning is independent: `medium`, `high`, `xhigh`, or `max`.
 

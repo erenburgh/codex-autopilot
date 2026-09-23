@@ -38,35 +38,35 @@ class VerdictTests(unittest.TestCase):
         return next(v for v in catalog_verdicts(catalog) if v.key == key)
 
     def test_today_s_catalog_is_simply_present(self) -> None:
-        verdict = self._for("sol", _catalog("gpt-5.6-sol", "gpt-6-astra"))
+        verdict = self._for("sol", _catalog("gpt-6-sol", "gpt-6-astra"))
         self.assertEqual(verdict.state, "present")
 
     def test_a_newer_sibling_is_named_and_changes_nothing(self) -> None:
-        verdict = self._for("sol", _catalog("gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra"))
+        verdict = self._for("sol", _catalog("gpt-6-sol", "gpt-7-sol", "gpt-6-astra"))
         self.assertEqual(verdict.state, "superseded")
-        self.assertEqual(verdict.newer, "gpt-6-sol")
+        self.assertEqual(verdict.newer, "gpt-7-sol")
         self.assertIn("still works", verdict.message)
         self.assertIn("until you say otherwise", verdict.message)
 
     def test_the_newest_of_several_is_the_one_named(self) -> None:
         verdict = self._for(
-            "sol", _catalog("gpt-5.6-sol", "gpt-6-sol", "gpt-7-sol", "gpt-6-astra")
+            "sol", _catalog("gpt-6-sol", "gpt-7-sol", "gpt-8-sol", "gpt-6-astra")
         )
-        self.assertEqual(verdict.newer, "gpt-7-sol")
+        self.assertEqual(verdict.newer, "gpt-8-sol")
 
     def test_a_retired_pin_names_what_is_served_instead(self) -> None:
         """R31: a refusal names what IS accepted."""
 
-        verdict = self._for("sol", _catalog("gpt-6-sol", "gpt-6-astra"))
+        verdict = self._for("sol", _catalog("gpt-7-sol", "gpt-6-astra"))
         self.assertEqual(verdict.state, "missing")
-        self.assertEqual(verdict.available, ("gpt-6-sol",))
-        self.assertIn("gpt-6-sol", verdict.message)
+        self.assertEqual(verdict.available, ("gpt-7-sol",))
+        self.assertIn("gpt-7-sol", verdict.message)
         self.assertIn("Nothing is substituted", verdict.message)
 
     def test_families_do_not_bleed_into_each_other(self) -> None:
         """A newer Astra must never be offered as a newer Sol."""
 
-        verdict = self._for("sol", _catalog("gpt-5.6-sol", "gpt-9-astra"))
+        verdict = self._for("sol", _catalog("gpt-6-sol", "gpt-9-astra"))
         self.assertEqual(verdict.state, "present")
         self.assertIsNone(verdict.newer)
 
@@ -90,15 +90,15 @@ class TheRefusalExplainsItselfTests(unittest.TestCase):
     def test_resolve_selection_names_the_alternative_it_will_not_take(self) -> None:
         with self.assertRaises(ModelRoutingError) as caught:
             resolve_selection(
-                _catalog("gpt-6-sol"),
+                _catalog("gpt-7-sol"),
                 strategy="auto",
                 execution_mode="code",
                 requested_reasoning="medium",
                 execution_reason="Repository files are sufficient.",
             )
         message = str(caught.exception)
-        self.assertIn("gpt-5.6-sol", message)
         self.assertIn("gpt-6-sol", message)
+        self.assertIn("gpt-7-sol", message)
         self.assertIn("no fallback", message)
 
     def test_it_still_refuses_rather_than_substituting(self) -> None:
@@ -106,7 +106,7 @@ class TheRefusalExplainsItselfTests(unittest.TestCase):
 
         with self.assertRaises(ModelRoutingError):
             resolve_selection(
-                _catalog("gpt-6-sol", "gpt-6-astra"),
+                _catalog("gpt-7-sol", "gpt-6-astra"),
                 strategy="sol-only",
                 execution_mode="code",
                 requested_reasoning="high",

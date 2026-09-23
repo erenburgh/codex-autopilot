@@ -71,9 +71,9 @@ class AppServerTests(unittest.TestCase):
 
     def test_adaptive_thread_start_sends_only_resolved_model(self):
         client = CaptureClient()
-        client.start_thread(cwd=Path("/project"), permission_profile=":workspace", project_id=None, model="gpt-5.6-sol", plugin_root=PLUGIN_ROOT)
+        client.start_thread(cwd=Path("/project"), permission_profile=":workspace", project_id=None, model="gpt-6-sol", plugin_root=PLUGIN_ROOT)
         params = client.calls[-1][1]
-        self.assertEqual(params["model"], "gpt-5.6-sol")
+        self.assertEqual(params["model"], "gpt-6-sol")
         self.assertEqual(set(params), {"cwd", "permissions", "ephemeral", "runtimeWorkspaceRoots", "model"})
 
     def test_preflight_thread_is_ephemeral_and_project_scoped(self):
@@ -305,13 +305,13 @@ class AppServerTests(unittest.TestCase):
             skill_path=Path("/skill/SKILL.md"),
             cwd=Path("/target"),
             permission_profile=":workspace",
-            model="gpt-5.6-sol",
+            model="gpt-6-sol",
         )
         params = client.calls[-1][1]
         self.assertEqual(params["cwd"], "/target")
         self.assertEqual(params["runtimeWorkspaceRoots"], ["/target"])
         self.assertEqual(params["permissions"], ":workspace")
-        self.assertEqual(params["model"], "gpt-5.6-sol")
+        self.assertEqual(params["model"], "gpt-6-sol")
 
 
 if __name__ == "__main__": unittest.main()

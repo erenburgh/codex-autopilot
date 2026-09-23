@@ -91,11 +91,11 @@ class ReleaseTests(unittest.TestCase):
             self.assertNotIn('"low"', path.read_text(encoding="utf-8"), str(path))
 
     def test_model_registry_is_exactly_sol_and_astra(self):
-        self.assertEqual(MODEL_IDS, {"sol": "gpt-5.6-sol", "astra": "gpt-6-astra"})
+        self.assertEqual(MODEL_IDS, {"sol": "gpt-6-sol", "astra": "gpt-6-astra"})
         for path in (ROOT / "src/codex_autopilot").glob("*.py"):
             if path.name != "models.py":
                 text = path.read_text(encoding="utf-8")
-                self.assertNotIn("gpt-5.6-sol", text, str(path))
+                self.assertNotIn("gpt-6-sol", text, str(path))
                 self.assertNotIn("gpt-6-astra", text, str(path))
 
 

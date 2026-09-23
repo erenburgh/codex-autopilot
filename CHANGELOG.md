@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.12.0-beta
+
+GPT-6 Sol. The Adaptive profile now pins `gpt-6-sol` and `gpt-6-astra`.
+
+The catalog check added in 0.11.8 earned itself on the first day a new model
+appeared: it reported `gpt-5.6-sol still works, and gpt-6-sol is newer. Runs
+stay on gpt-5.6-sol until you say otherwise.` - and it reported nothing at all
+until the channel could see the model, which turned out to be the whole story.
+
+Codex Desktop offered GPT-6 Sol while the runtime's own `model/list` did not.
+The two speak to different binaries: Desktop carries its own inside the app
+bundle (0.155), and a separately installed CLI had stayed at 0.154. An announced
+model is not a served one, and a served one is not one your client can see. The
+check never guessed - it said only what its own channel was given, which is why
+the discrepancy was findable at all.
+
+`runtime.desktop.binary` in a project's config is what chooses that channel. A
+project can point at the binary Desktop itself uses instead of a separately
+installed CLI.
+
+This release is a minor bump rather than a patch because the pinned model is
+what every worker runs on: nothing is substituted silently, so moving the pin is
+a decision, and it is this one.
+
 ## 0.11.13-beta
 
 A task rebuilt on new prerequisites no longer pays for the old attempts.

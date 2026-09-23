@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 
 
-MODEL_IDS = {"sol": "gpt-5.6-sol", "astra": "gpt-6-astra"}
-MODEL_LABELS = {"sol": "GPT-5.6 Sol", "astra": "GPT-6 Astra"}
+MODEL_IDS = {"sol": "gpt-6-sol", "astra": "gpt-6-astra"}
+MODEL_LABELS = {"sol": "GPT-6 Sol", "astra": "GPT-6 Astra"}
 STRATEGIES = {"auto", "sol-only", "astra-only", "host-settings"}
 EXECUTION_MODES = {"code", "computer_use"}
 # The ladder stops at max ON PURPOSE. App Server offers one more rung
