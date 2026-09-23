@@ -18,9 +18,14 @@ So a permission request is its own failure code, ``approval_required``:
   open;
 - the ticket goes to the on-call first, like every stop. It compares the
   request with what the run is authorized for (R4) and the permission profile
-  the run uses (``stop_diagnosis``). A runtime that asked for more than the run
-  needs - a wrong profile, a command it should not have issued - is a defect
-  it repairs, and the ticket closes only with that live patch on it
+  the run uses (``stop_diagnosis``). What the run is authorized for is the
+  durable authorization in run-state (``run_authorization``, R4): a request
+  that falls under one of its operations is recorded as an R4 violation and
+  marked ``covered_by`` - a runtime defect by rule, which may not be sent to
+  her as a confirmation request (``read_engineer_outcome`` refuses that). A
+  runtime that asked for more than the run needs - a wrong profile, a command
+  it should not have issued - is a defect it repairs, and the ticket closes
+  only with that live patch on it
   (``engineer_stop_actions.require_stop_ticket_closable``). Otherwise it hands
   the ticket to her as DANGEROUS_PERMISSION with a recommendation. The
   ticket's ``reason_code`` is that hand-up code, not a worker's own stop: the
@@ -109,12 +114,37 @@ def record_approval_required(
         # Already reconciled by someone else: the ticket below is still due -
         # a request nobody looked at may not vanish with the session.
         pass
+    from .run_authorization import covering_operation, ensure_recorded
+
     store = StateStore(cfg.state_dir)
     with ResourceLockCoordinator(store, cfg.root).transaction():
         state = store.load()
         session = _session_by_token(state, reservation_token)
         task_id = str(session.get("task_id") or "")
         engineer = session.get("kind") == "pipeline_engineer"
+        now = utc_now()
+        # R4: the request is read against the durable authorization in
+        # run-state. A run armed before the list was recorded gets it now -
+        # it was authorized all along, only the record was missing.
+        authorization = ensure_recorded(cfg, state, at=now, granted_by="backfill_at_first_request")
+        covered = covering_operation(authorization, payload)
+        covered_by = (
+            {"operation": covered, "version": authorization.get("version")} if covered else None
+        )
+        if covered_by:
+            # The run already holds this permission: asking for it again is
+            # what R4 forbids, and the asker is the runtime - a defect for
+            # the on-call to repair, never a question for her.
+            from .rules import record_violation
+
+            record_violation(
+                cfg.state_dir,
+                "R4",
+                detail=(
+                    f"{task_id} {session.get('kind')} asked for {signature}, covered by "
+                    f"{covered} (durable authorization v{authorization.get('version')})"
+                ),
+            )
         incident_id = stop_run(
             cfg,
             state,
@@ -128,7 +158,7 @@ def record_approval_required(
                 f"A {session.get('kind')} turn of {task_id} stopped on a permission request. "
                 "The on-call compares it with what the run is authorized for."
             ),
-            at=utc_now(),
+            at=now,
             task_ids=() if engineer else (task_id,),
             context_task_id=task_id if engineer else "",
             system_state={
@@ -136,6 +166,7 @@ def record_approval_required(
                 "reason_code": "DANGEROUS_PERMISSION",
                 "approval": bounded_request(payload),
                 "approval_signature": signature,
+                "covered_by": covered_by,
                 "session_kind": str(session.get("kind") or ""),
                 "reservation_token": reservation_token,
             },

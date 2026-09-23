@@ -142,6 +142,9 @@ class RunState:
     last_error: str | None = None
     last_final_message: str | None = None
     permission_profile: str | None = None
+    # R4: her durable authorization for the run - the versioned list of
+    # covered operations, written when she arms it (run_authorization).
+    durable_authorization: dict[str, Any] | None = None
     project_id: str | None = None
     desktop_project_id: str | None = None
     dispatcher_pid: int | None = None

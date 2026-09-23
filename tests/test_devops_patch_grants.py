@@ -162,18 +162,71 @@ class APatchThatNeverLandsBuysNothingTests(_Ladder):
 
 
 class RecoveryExhaustedIsHersTests(_Stopped):
+    """A worker's RECOVERY_EXHAUSTED on the production path: held, and never lifted by the on-call.
+
+    The first version of this test stopped the task by hand as BLOCKED
+    (``stopped(block=True)``), which production never does: the worker's
+    completion only HOLDS it (R3, stop_holds), and the check reproduced the
+    hole that hid - the on-call closed the ticket naming rearm_run, the hold
+    lifted and the task went back to work past the table's "hers".
+    """
+
+    def _worker_declares_recovery_spent(self) -> str:
+        from _appserver_fakes import activate_via_app_server
+        from _handoff import bump_task_checkpoint
+
+        worker = next(item for item in reserve_ready_frontier(self.cfg) if item.task_id == "A")
+        activate_via_app_server(self.cfg, self.root, worker, "worker-A")
+        bump_task_checkpoint(self.root, "A", "Stopped: RECOVERY_EXHAUSTED.")
+        outcome = complete_desktop_worker(
+            self.cfg,
+            thread_id="worker-A",
+            turn_id="turn-A",
+            final_message="nothing more to try\nAUTOPILOT_STATUS: BLOCKED RECOVERY_EXHAUSTED",
+        )
+        engineer = next(item for item in outcome.descriptors if item.kind == "pipeline_engineer")
+        activate_via_app_server(self.cfg, self.root, engineer, "eng-1")
+        return str(self._session(engineer.reservation_token)["incident_id"])
+
     def test_a_worker_that_declared_recovery_exhausted_is_not_returned_or_patched(self) -> None:
-        incident_id, _ = self.stopped(reason_code="RECOVERY_EXHAUSTED")
+        from codex_autopilot.engineer_reservation import tasks_paused_by_incidents
+        from codex_autopilot.engineer_stop_actions import require_patch_holder
+        from codex_autopilot.plan import load_plan
+
+        incident_id = self._worker_declares_recovery_spent()
         ticket = self.ticket(incident_id)
+        # Production holds it: READY under the ticket's pause, not BLOCKED.
+        self.assertTrue(ticket["system_state"]["held"])
+        self.assertEqual(self.store.load().task_states["A"], "READY")
         self.assertEqual(means_for(ticket), ())
         with self.assertRaisesRegex(EngineerStopActionError, "owner's"):
             return_stopped_task(self.cfg, incident_id=incident_id, task_id="A", thread_id="eng-1")
         with self.assertRaisesRegex(EngineerStopActionError, "not re-planned"):
             request_plan_change(self.cfg, incident_id=incident_id, task_id="A", reason="r", thread_id="eng-1")
-        from codex_autopilot.engineer_stop_actions import require_patch_holder
-
         with self.assertRaisesRegex(EngineerStopActionError, "not repaired in code"):
             require_patch_holder(self.cfg, incident_id, "eng-1")
+
+        # The door the check found open: the closure lifts the hold.
+        code, err = self.resolve(incident_id, "rearm_run")
+
+        self.assertEqual(code, 2)
+        self.assertIn("is the owner's", err)
+        self.assertEqual(self.ticket(incident_id)["phase"], IncidentPhase.PIPELINE_ENGINEER.value)
+        plan = load_plan(self.cfg.state_dir, self.cfg.profile)
+        self.assertIn("A", tasks_paused_by_incidents(self.cfg, plan))
+
+        # The only way on is the escalation, and only it blocks the task.
+        complete_desktop_worker(
+            self.cfg,
+            thread_id="eng-1",
+            turn_id="eng-1-turn",
+            final_message=(
+                'AUTOPILOT_ESCALATION: {"diagnosis":"the worker tried everything","decision_needed":"how on?",'
+                '"recommendation":"replan","options":[],"scope":"task"}\n'
+                "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER RECOVERY_EXHAUSTED"
+            ),
+        )
+        self.assertEqual(self.ticket(incident_id)["phase"], IncidentPhase.ESCALATE_TO_USER.value)
         self.assertEqual(self.store.load().task_states["A"], "BLOCKED")
 
 

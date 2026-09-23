@@ -79,7 +79,9 @@ below answers a question users actually asked.
    the status card shows its diagnosis, its recommendation, the options and
    the exact `codex-autopilot unblock --project <root> --task <id> --reason
    <decision>` command, and answering it continues the run by itself - there
-   is no Resume phrase to send afterwards.
+   is no Resume phrase to send afterwards. The one exception the command
+   names itself: a run with no completed turn yet is started once with its
+   phrase.
 6. **Where to read more.** `GETTING_STARTED.md` in the installed runtime, and
    `docs/` next to it, hold the same explanations at length.
 
@@ -332,7 +334,10 @@ Its tools are the helper commands, resolved relative to this `SKILL.md`:
 `devops-request-plan-change` (ask the replanner on the task's behalf), and
 `devops-resolve-incident`. The last three act only from the engineer's own
 thread and only as far as the stop's `means` allow; a stop ticket is not closed
-with diagnostics alone or with its task still stopped.
+with diagnostics alone, with its task still stopped, or naming a repair that
+did not happen (a runtime patch of the ticket, a plan change it asked for). A
+permission request the run's durable authorization covers (R4) is a runtime
+defect to repair, never a question for the user.
 
 Three rules bind it:
 

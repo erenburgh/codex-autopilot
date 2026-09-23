@@ -123,7 +123,7 @@ When `stop_context.owner_options` lists codes, offer those: the runtime acts on 
 # was told to escalate what it was supposed to compare. So a ticket of this
 # kind gets its own paragraph (``engineer_brief``), naming the fields it
 # compares and the one road to a closure.
-APPROVAL_TICKET_BRIEF = """This stop is a permission request (`stop_context.stop_kind` is approval_required): a turn asked for an approval, and nobody answers it for the owner - not you, not the runtime, never. Its reason code DANGEROUS_PERMISSION is the code it goes up with if it is hers; it does not make it hers before you look, and its `means` include repair_runtime_code. Compare `stop_context.approval.request` with `stop_context.approval.run_authorization` (what starting the run authorized, R4) and `stop_context.approval.permission_profile` (the profile the run's turns use). If the runtime asked for more than the run needs - a wrong permission profile, a command the runtime itself issued that the task never needed - it is a runtime defect: repair it with devops-repair-runtime (above) so the request is not raised again, and close the ticket naming repair_runtime_code; the held task then resumes on the patched code. Such a ticket closes only with a live runtime patch of yours on it: without one the same request would simply come back. If the task itself needs the operation, the decision is hers: escalate with DANGEROUS_PERMISSION, say what the request is and what it would reach, recommend one of `stop_context.owner_options` (replan: the task changes so it does not need it; retry: she grants the permission herself and the task runs once more). `stop_context.approval.answered_before` lists her earlier answers to this very request: if she already retried it, the same request came back, and a second retry is refused - recommend replan."""
+APPROVAL_TICKET_BRIEF = """This stop is a permission request (`stop_context.stop_kind` is approval_required): a turn asked for an approval, and nobody answers it for the owner - not you, not the runtime, never. Its reason code DANGEROUS_PERMISSION is the code it goes up with if it is hers; it does not make it hers before you look, and its `means` include repair_runtime_code. Compare `stop_context.approval.request` with `stop_context.approval.run_authorization` (the durable authorization run-state holds for this run, R4: a versioned list of covered operations) and `stop_context.approval.permission_profile` (the profile the run's turns use). When `stop_context.approval.covered_by` names an operation, the run already holds this permission: asking again is what R4 forbids, so it is a runtime defect by rule - repair it; an escalation with DANGEROUS_PERMISSION is refused for it, and if you cannot repair it, escalate RECOVERY_EXHAUSTED with your diagnosis. If the runtime asked for more than the run needs - a wrong permission profile, a command the runtime itself issued that the task never needed - it is a runtime defect: repair it with devops-repair-runtime (above) so the request is not raised again, and close the ticket naming repair_runtime_code; the held task then resumes on the patched code. Such a ticket closes only with a live runtime patch of yours on it: without one the same request would simply come back. If the task itself needs the operation, the decision is hers: escalate with DANGEROUS_PERMISSION, say what the request is and what it would reach, recommend one of `stop_context.owner_options` (replan: the task changes so it does not need it; retry: she grants the permission herself and the task runs once more). `stop_context.approval.answered_before` lists her earlier answers to this very request: if she already retried it, the same request came back, and a second retry is refused - recommend replan."""
 
 ADVISORY_TICKET_BRIEF = f"""This ticket's class is PRODUCTION, POLICY or AMBIGUOUS_SIDE_EFFECT: it passes through you so the owner gets a diagnosis, not a bare code, but it is not yours to repair or to close - your allowed_actions are diagnostics only, and RESOLVED is refused for this class. Read `server_view` (the App Server's own thread/read of the affected task), the package and the journal; never repeat an ambiguous create or send. Then hand it up with PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER and a code from the list, preceded by exactly one line:
 {ESCALATION_FORMAT}"""
@@ -216,6 +216,20 @@ def read_engineer_outcome(cfg: Any, incident_id: str, final_message: str) -> tup
             f"{incident.get('phase')}: closing is done by devops-resolve-incident "
             "with a passing healthcheck",
         )
+    covered = (incident.get("system_state") or {}).get("covered_by")
+    if status == "ESCALATE_TO_USER" and code == "DANGEROUS_PERMISSION" and isinstance(covered, Mapping):
+        # R4: a confirmation request for an operation the run's durable
+        # authorization covers is refused. The on-call's DANGEROUS_PERMISSION
+        # is exactly that request, carried to her by another hand; before the
+        # list was recorded nothing could tell this apart from a real one.
+        return (
+            "PROTOCOL_ERROR",
+            "",
+            f"R4: the request falls under {covered.get('operation')} of the run's durable "
+            f"authorization (v{covered.get('version')}); asking her to confirm it is refused. "
+            "It is a runtime defect: repair it (devops-repair-runtime) so it is not asked again, "
+            "or escalate RECOVERY_EXHAUSTED with your diagnosis if you cannot",
+        )
     return status, code, ""
 
 
@@ -233,6 +247,12 @@ def record_engineer_protocol_error(
     from .engineer_reservation import LOST_ENGINEER_PROTOCOL_REASON
     from .rules import record_violation
 
+    if error.startswith("R4:"):
+        record_violation(
+            cfg.state_dir,
+            "R4",
+            detail=f"the on-call for {session.get('incident_id')} escalated a covered permission request"[:2000],
+        )
     session["final_status"] = "PROTOCOL_ERROR"
     session["failure_reason"] = f"{LOST_ENGINEER_PROTOCOL_REASON}: {error}"[:2000]
     session["final_message_tail"] = (final_message or "")[-MAX_DIAGNOSIS_CHARS:]

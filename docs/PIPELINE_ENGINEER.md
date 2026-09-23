@@ -172,8 +172,10 @@ An infrastructure ticket's package lists the whole vocabulary
 `stop_context` (`stop_diagnosis`): the kind of stop, the worker's reason code,
 the verifier's last issues, hires and effort, the replanner's refusals, the
 bounded end of the stopped session's final message, `means` for this kind of
-stop, and, for a permission request, the request next to what the run is
-authorized for (R4) and its permission profile. `owner_answer` is the exact
+stop, and, for a permission request, the request next to the durable
+authorization run-state holds for the run (R4: a versioned list of covered
+operations), the operation of it that covers the request if one does, and the
+permission profile. `owner_answer` is the exact
 `unblock` command that would be her answer.
 
 Two actions act on the task itself (`engineer_stop_actions`):
@@ -208,9 +210,18 @@ task already reached, not the whole ladder again. A return that does not hold co
 back as the same stop, and the door's R23 bound sends the third to her with
 what each return did.
 
-A stop ticket is not closed with diagnostics alone, nor while a task it holds
-is still `BLOCKED` without the plan change it asked for: that closure used to
-leave the task waiting for nobody.
+An infrastructure stop only holds its task, so closing its ticket is the
+task's return, and `devops-resolve-incident` on a stop ticket is bound like
+one: only the on-call of that ticket from its own thread (`CODEX_THREAD_ID`);
+every repairing action it names must be among the means for that stop - a
+stop whose means are empty (hers, a worker's `RECOVERY_EXHAUSTED` included)
+is not closed at all, only escalated; and each named repair must have
+happened: `repair_runtime_code` needs a live runtime patch of the ticket,
+`request_plan_change` a plan change it asked for, `return_stopped_task` a
+return or a held task the closure itself returns. Nor is a stop ticket closed
+with diagnostics alone, or while a task it holds is still `BLOCKED` without the
+plan change it asked for: that closure used to leave the task waiting for
+nobody.
 
 An on-call whose answer the runtime refuses - no readable status line,
 `RESOLVED` on a ticket still open - no longer raises before its transaction.
@@ -251,9 +262,19 @@ is never repeated.
 A permission request inside a turn (`ApprovalRequired`) is never answered and
 never retried. It is its own failure code, `approval_required`, not counted
 towards the retry ceiling; a stop ticket holds the task with the request in
-it and goes to the on-call, which compares it with what the run is authorized
-for and the run's permission profile (`stop_context.approval`; the on-call's
-prompt carries its own paragraph for this kind of stop). A runtime that asked
+it and goes to the on-call, which compares it with the run's durable
+authorization and permission profile (`stop_context.approval`; the on-call's
+prompt carries its own paragraph for this kind of stop). The authorization is
+R4's record in run-state (`durable_authorization`): written when she arms the
+run - backfilled at the first request for a run armed earlier - with the
+version and the covered operations of `engineer_authority`, which the engineer
+cannot edit. `run_authorization.covering_operation` reads from the request
+itself whether an operation covers it: a file change whose targets lie inside
+the project, or the plugin's own `codex-autopilot` command with no shell around
+it, run inside the project; what it cannot prove is not covered. A covered
+request is an R4 violation - the runtime asked for what the run already holds -
+and an escalation of it as `DANGEROUS_PERMISSION` is refused as a protocol
+error: that would be the very confirmation request R4 forbids. A runtime that asked
 for more than the run needs is a defect it repairs, and such a ticket closes
 only with a live runtime patch of that ticket - without one the same request
 would come straight back. Otherwise it hands the ticket up as
@@ -273,7 +294,10 @@ open tickets that hold it are closed as answered by her, an answer at the top
 of the ladder grants a fresh hire, the decision and its option are recorded in
 `user_unblocks` where the next worker reads them, and the run is raised the way
 the wake-up raises it (`derive_owner`, `ensure_wake`, the same hook-trust gate).
-It never asks for Resume. Resume on a `BLOCKED` run still answers what was
+It never asks for Resume, and it says "the run continues by itself" only when
+that is so: with no completed turn to continue from, nothing raises the run -
+the sweep only signals such a run - and she is told to start it once with its
+phrase. Resume on a `BLOCKED` run still answers what was
 handed to her and now also lifts the stops of those tickets' tasks by the same
 transition, a fresh hire at the top of the ladder included (by the task's
 ladder, not the ticket's kind); tickets the on-call never looked at are routed

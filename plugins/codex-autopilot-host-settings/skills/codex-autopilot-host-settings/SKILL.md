@@ -80,7 +80,9 @@ below answers a question users actually asked.
    the status card shows its diagnosis, its recommendation, the options and
    the exact `codex-autopilot unblock --project <root> --task <id> --reason
    <decision>` command, and answering it continues the run by itself - there
-   is no Resume phrase to send afterwards.
+   is no Resume phrase to send afterwards. The one exception the command
+   names itself: a run with no completed turn yet is started once with its
+   phrase.
 6. **Where to read more.** `GETTING_STARTED.md` in the installed runtime, and
    `docs/` next to it, hold the same explanations at length.
 

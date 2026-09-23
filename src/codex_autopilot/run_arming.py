@@ -52,6 +52,7 @@ def arm_run(
     from .control import pid_alive
     from .launch_registry import LaunchRegistry
     from .resources import ResourceLockCoordinator
+    from .run_authorization import ensure_recorded
     from .run_state import StateStore, utc_now
 
     cfg = load_config(root)
@@ -77,6 +78,10 @@ def arm_run(
         request_id = LaunchRegistry().add(payload)
         payload["request_id"] = request_id
         store.arm(payload)
+        # Arming is her start of the run, and so her durable authorization
+        # for it (R4): recorded here, with its versioned list of covered
+        # operations, in the same transaction.
+        ensure_recorded(cfg, state, at=payload["armed_at"], granted_by="arm")
         state.status = "READY"
         state.phase = "ARMED"
         store.save(state)

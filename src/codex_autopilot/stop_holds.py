@@ -51,6 +51,16 @@ from .task_state import IllegalTaskTransition, TaskState, transition_task
 # change or a runtime repair, not with her decision (sweep line, item 9:
 # class B). Naming what is HERS, not what is infrastructure, also holds a
 # code added to the closed list later until someone shows it is hers.
+#
+# A worker's RECOVERY_EXHAUSTED is held too, although the means table gives
+# the on-call nothing for it but a diagnosis (``engineer_authority``). The
+# two answer different questions: R3 says when a task may be BLOCKED (not
+# before DevOps is exhausted - and a worker's word is not DevOps'), the
+# table says what the on-call may do while it holds the task. The table is
+# enforced at every door, the closure of the ticket included
+# (``engineer_stop_actions.require_stop_ticket_closable``): the check found
+# that a closure returned such a task to work, the one door the table did
+# not bind. So the only way on is the on-call's escalation, which blocks it.
 OWNER_WORKER_REASONS = frozenset(
     {"PRODUCT_DECISION", "ARCHITECTURE_DECISION", "DANGEROUS_PERMISSION"}
 )

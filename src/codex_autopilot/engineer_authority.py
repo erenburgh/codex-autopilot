@@ -212,6 +212,37 @@ LADDER_RESET_DEFINITIONS: tuple[tuple[str, str, str | None], ...] = (
     ("lifecycle_prompts.py", "_worker_prompt", "verification"),
 )
 
+# R4: what starting the run authorized - the list of covered operations,
+# fixed and versioned. Her rule: run-state holds the durable authorization
+# with this list, and a confirmation request for a covered operation is
+# refused, citing R4. It used to be three lines of prose in stop_diagnosis
+# (a patchable module), and the independent check named why that is no
+# basis: "a repeated request for a covered operation is a runtime defect"
+# could not be decided by a machine. Here, out of the engineer's reach, each
+# operation names the approval-request methods it answers for; which request
+# falls under it is decided by ``run_authorization.covering_operation``
+# (guarded). An operation with no methods is the runtime's own transport:
+# it is never asked for. A change to this list is a new version - a run
+# keeps the version it was armed with in run-state.
+RUN_AUTHORIZATION_VERSION = 1
+RUN_AUTHORIZED_OPERATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    (
+        "task_transport",
+        (),
+        "App Server thread/start and turn/start for the scheduler-selected tasks of this run",
+    ),
+    (
+        "file_change_in_project",
+        ("item/fileChange/requestApproval", "applyPatchApproval"),
+        "reads and writes inside the project working directory under the run's permission profile",
+    ),
+    (
+        "autopilot_cli_in_project",
+        ("item/commandExecution/requestApproval", "execCommandApproval"),
+        "the plugin's own codex-autopilot commands, run inside the project",
+    ),
+)
+
 # How many identical successful resolutions of one signature it takes for
 # the repair to stop requiring the engineer and become a deterministic
 # runbook.

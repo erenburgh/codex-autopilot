@@ -111,6 +111,15 @@ GUARDED_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("pipeline_engineer.py", "complete_pipeline_engineer"),
     ("owner_answers.py", "answer_task"),
     ("run_arming.py", "arm_run"),
+    # R4: which request the run's durable authorization covers, how it is
+    # recorded, and the refusal to send a covered one to her. The list
+    # itself is in engineer_authority; these read it, so a repair could
+    # otherwise narrow "covered" to nothing and escalate at will.
+    ("run_authorization.py", "authorization_record"),
+    ("run_authorization.py", "ensure_recorded"),
+    ("run_authorization.py", "covering_operation"),
+    ("approval_stops.py", "record_approval_required"),
+    ("engineer_escalation.py", "read_engineer_outcome"),
 )
 
 TEST_TIMEOUT_SECONDS = 900

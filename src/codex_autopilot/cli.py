@@ -798,11 +798,12 @@ def main(argv: list[str] | None = None) -> int:
 
             from .engineer_stop_actions import require_stop_ticket_closable
 
-            _relay_executor_thread_id()
+            thread = _relay_executor_thread_id()
             cfg = load_config(args.project)
-            # A stop ticket closes only when its stop is dealt with: not on
-            # diagnostics alone, not with a held task left BLOCKED.
-            require_stop_ticket_closable(cfg, args.incident_id, tuple(args.action))
+            # A stop ticket closes only when its stop is dealt with, and only
+            # by its own on-call: closing it returns the tasks it holds, so
+            # it is bound like a return (thread, means table, evidence).
+            require_stop_ticket_closable(cfg, args.incident_id, tuple(args.action), thread)
             healthcheck = HealthcheckResult(
                 name=args.healthcheck_name,
                 passed=True,

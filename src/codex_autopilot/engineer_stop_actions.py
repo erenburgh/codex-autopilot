@@ -49,7 +49,10 @@ And the ticket of a stop may not be closed as if the stop were gone:
 ``require_stop_ticket_closable`` refuses a closure named with diagnostics
 only, and one that leaves a task it holds BLOCKED with no plan change this
 ticket asked for. Such a closure used to leave the task waiting for her in
-silence - BLOCKED, no open ticket, nobody told.
+silence - BLOCKED, no open ticket, nobody told. Since an infrastructure stop
+only holds its task, closing its ticket IS the return, so the closure is
+bound like one: this ticket's on-call from its own thread, only the means
+of the table, and each repair it names must have happened.
 """
 
 from __future__ import annotations
@@ -323,25 +326,51 @@ def request_plan_change(
 
 
 def require_stop_ticket_closable(
-    cfg: Any, incident_id: str, actions: Sequence[str]
+    cfg: Any, incident_id: str, actions: Sequence[str], thread_id: str
 ) -> None:
-    """A stop ticket closes only when its stop is really dealt with.
+    """A stop ticket closes only when its stop is really dealt with, by its on-call.
 
-    - Diagnostics alone repair nothing: a stopped task cannot "resolve"
-      without one repairing action.
-    - A task the ticket holds may not be left BLOCKED, unless the plan
-      change this ticket asked for is active - the replanner returns it.
-    - A permission request closes only as a runtime defect repaired: a live
-      runtime patch of this ticket (staged or installed).
+    Closing a stop ticket lifts the hold on its tasks (R3, ``stop_holds``):
+    a held task takes up its work again. For an infrastructure stop that is
+    the main road back to work - so this door is bound exactly like the
+    return it amounts to. The independent check reproduced the hole on the
+    real CLI: a DEPENDENCY_DEFECT ticket (means: a plan change or a runtime
+    repair) closed from a worker's thread naming return_stopped_task, and
+    the held task went back to READY with the same defect - no replan, no
+    patch, no return, and nobody bound to the ticket. Now:
+
+    - only the on-call holding THIS ticket, from its own thread
+      (``require_engineer_thread``, the same binding as every other door);
+    - every repairing action named must be in the means table for this stop
+      (``means_for``). A stop whose row is empty is hers (PRODUCT_DECISION,
+      ARCHITECTURE_DECISION, DANGEROUS_PERMISSION, RECOVERY_EXHAUSTED): no
+      closure at all, only a diagnosis and an escalation - a worker that
+      declared recovery spent is held (R3: BLOCKED only once DevOps hands
+      it up), and a closure used to send it straight back to work;
+    - what is named must have happened: repair_runtime_code needs a live
+      runtime patch of this ticket (staged or installed), request_plan_change
+      a plan change this ticket asked for, return_stopped_task a return of
+      this ticket or a held task the closure itself returns;
+    - diagnostics alone repair nothing;
+    - a task the ticket holds may not be left BLOCKED, unless the plan change
+      this ticket asked for is active - the replanner returns it;
+    - a permission request closes only as a runtime defect repaired: its
+      means are the runtime patch alone, and that patch must be live.
     Other tickets close as before.
     """
 
+    from pathlib import Path
+
     from .engineer_authority import READ_ONLY_DIAGNOSTIC_ACTIONS
+    from .ladder_grants import patch_is_live
     from .pipeline_engineer import PipelineIncidentStore
+    from .stop_diagnosis import means_for, means_key
 
     incident = PipelineIncidentStore(cfg.state_dir).require_engineer_incident(incident_id)
     if not _is_stop(incident):
         return
+    state = StateStore(cfg.state_dir).load()
+    require_engineer_thread(state, incident_id, thread_id)
     named = {str(item).strip() for item in actions if str(item).strip()}
     if named and named.issubset(READ_ONLY_DIAGNOSTIC_ACTIONS):
         raise EngineerStopActionError(
@@ -349,26 +378,56 @@ def require_stop_ticket_closable(
             "task (return_stopped_task), ask the replanner (request_plan_change), or "
             "escalate with your diagnosis"
         )
-    if str((incident.get("system_state") or {}).get("stop_kind") or "") == "approval_required":
+    means = means_for(incident)
+    outside = sorted(named - set(READ_ONLY_DIAGNOSTIC_ACTIONS) - set(means))
+    if outside:
+        if not means:
+            raise EngineerStopActionError(
+                f"this stop ({means_key(incident)}) is the owner's: it is not closed by the "
+                "on-call - diagnose it and escalate with the same code"
+            )
+        raise EngineerStopActionError(
+            f"{', '.join(outside)} is not among the means for this stop "
+            f"({means_key(incident)}): {', '.join(means)}"
+        )
+    kind = str((incident.get("system_state") or {}).get("stop_kind") or "")
+    live_patch = any(
+        isinstance(patch, Mapping)
+        and patch_is_live(Path(cfg.state_dir), str(patch.get("patch_id") or ""))
+        for patch in incident.get("runtime_patches") or ()
+    )
+    if kind == "approval_required" and not live_patch:
         # Its task is held, not BLOCKED, so the BLOCKED test below never
         # stops this closure: named repair_runtime_code with nothing staged,
         # it sent the task straight back into the same request - the loop
         # her answer is built to break, run by the on-call instead.
-        from pathlib import Path
-
-        from .ladder_grants import patch_is_live
-
-        if not any(
-            isinstance(patch, Mapping)
-            and patch_is_live(Path(cfg.state_dir), str(patch.get("patch_id") or ""))
-            for patch in incident.get("runtime_patches") or ()
-        ):
-            raise EngineerStopActionError(
-                "a permission request closes only with a runtime patch of this ticket that "
-                "removes the request (staged or installed); if the task itself needs the "
-                "operation, escalate DANGEROUS_PERMISSION with your recommendation"
-            )
-    state = StateStore(cfg.state_dir).load()
+        raise EngineerStopActionError(
+            "a permission request closes only with a runtime patch of this ticket that "
+            "removes the request (staged or installed); if the task itself needs the "
+            "operation, escalate DANGEROUS_PERMISSION with your recommendation"
+        )
+    if "repair_runtime_code" in named and not live_patch:
+        raise EngineerStopActionError(
+            "repair_runtime_code is named, but this ticket has no live runtime patch (staged "
+            "or installed): stage it with devops-repair-runtime first"
+        )
+    if "request_plan_change" in named and not incident.get("plan_change_requests"):
+        raise EngineerStopActionError(
+            "request_plan_change is named, but this ticket asked the replanner for nothing: "
+            "use devops-request-plan-change first"
+        )
+    affected = [str(task) for task in incident.get("affected_task_ids") or ()]
+    released = [
+        task
+        for task in affected
+        if state.task_states.get(task)
+        not in {TaskState.BLOCKED.value, TaskState.VERIFIED.value, TaskState.CANCELLED.value, None}
+    ]
+    if "return_stopped_task" in named and not (incident.get("returns") or released):
+        raise EngineerStopActionError(
+            "return_stopped_task is named, but this ticket returned nothing and holds no task "
+            "its closure would return"
+        )
     replanning = set()
     if state.active_plan_change_id is not None:
         for record in state.plan_changes or ():
@@ -378,9 +437,9 @@ def require_stop_ticket_closable(
             ):
                 replanning.add(str(record.get("requester_task_id") or ""))
     still = [
-        str(task)
-        for task in incident.get("affected_task_ids") or ()
-        if state.task_states.get(str(task)) == TaskState.BLOCKED.value and str(task) not in replanning
+        task
+        for task in affected
+        if state.task_states.get(task) == TaskState.BLOCKED.value and task not in replanning
     ]
     if still:
         raise EngineerStopActionError(

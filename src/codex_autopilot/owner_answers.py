@@ -185,7 +185,11 @@ def answer_task(
         state.last_error = None
         _finish_global_state(plan, state, (), paused=store.pause_requested(), cfg=cfg)
         store.save(state)
-    raised = _raise_the_run(cfg, spawn=spawn) if raise_run else {"raised": False, "why": "not asked"}
+    raised = (
+        _raise_the_run(cfg, spawn=spawn)
+        if raise_run
+        else {"raised": False, "continues": False, "why": "not asked"}
+    )
     return {
         "task_id": task_id,
         "state": moved_to,
@@ -279,7 +283,16 @@ def _owner_plan_change(
 
 
 def _raise_the_run(cfg: Any, *, spawn: Any = None) -> dict[str, Any]:
-    """Raise the run on the causal owner's behalf, as the sweep would."""
+    """Raise the run on the causal owner's behalf, as the sweep would.
+
+    ``continues`` says whether the run really goes on without her. It used
+    to be implied for every outcome: with no completed turn to continue from
+    she read "The run continues by itself: ... the wake-up sweep raises the
+    run once there is one" - and the sweep never raises such a run (wake.
+    sweep with no derivable owner only signals her), and a completed turn
+    does not appear by itself. The independent check caught the sentence
+    contradicting the sweep. So each outcome now says what will happen.
+    """
 
     from .run_state import StateStore
     from .wake import derive_owner, ensure_wake
@@ -290,21 +303,39 @@ def _raise_the_run(cfg: Any, *, spawn: Any = None) -> dict[str, Any]:
         if owner is None:
             return {
                 "raised": False,
+                "continues": False,
                 "why": (
-                    "no completed turn to continue from yet; the wake-up sweep raises the run "
-                    "once there is one, or start it once with its phrase"
+                    "there is no completed turn to continue from, and neither this answer nor "
+                    "the wake-up sweep raises a run on nobody's behalf (the ownership guard "
+                    "refuses it). Start the run once with its phrase; from there it continues "
+                    "by itself"
                 ),
             }
         pid = ensure_wake(cfg, owner=owner[0], owner_turn=owner[1], spawn=spawn)
     except Exception as exc:  # noqa: BLE001 - her answer is recorded either way
-        return {"raised": False, "why": f"the wake-up could not be armed: {exc}"}
+        return {
+            "raised": False,
+            "continues": False,
+            "why": (
+                f"the wake-up could not be armed ({exc}); the wake-up sweep tries again on its "
+                "next pass, and `codex-autopilot status` shows why if it keeps failing"
+            ),
+        }
     if pid is None:
-        return {"raised": False, "why": "nothing waits for the runtime right now"}
-    return {"raised": True, "wake_pid": pid}
+        return {
+            "raised": False,
+            "continues": True,
+            "why": (
+                "nothing is due right now, so no wake-up was armed; the sessions still running "
+                "carry the run on by their own completions, and the wake-up sweep raises it "
+                "when work comes due"
+            ),
+        }
+    return {"raised": True, "continues": True, "wake_pid": pid}
 
 
 def render_answer(result: Mapping[str, Any]) -> str:
-    """What she reads after answering: what changed, and that the run goes on."""
+    """What she reads after answering: what changed, and whether the run goes on."""
 
     lines = [
         f"{result['task_id']}: your decision is recorded"
@@ -320,8 +351,10 @@ def render_answer(result: Mapping[str, Any]) -> str:
         )
     if result.get("raised"):
         lines.append("The run continues by itself.")
-    else:
+    elif result.get("continues"):
         lines.append(f"The run continues by itself: {result.get('why')}.")
+    else:
+        lines.append(f"The run does not continue by itself yet: {result.get('why')}.")
     return "\n".join(lines)
 
 

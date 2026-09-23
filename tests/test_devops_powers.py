@@ -326,8 +326,11 @@ class ClosingAStopTicketTests(_Stopped):
         self.assertEqual(self.ticket(incident_id)["phase"], IncidentPhase.PIPELINE_ENGINEER.value)
 
     def test_a_held_task_left_blocked_does_not_close_it(self) -> None:
+        # rearm_run: among this stop's means and not refused for want of a
+        # trace (repair_runtime_code now needs a live patch of the ticket),
+        # so the closure reaches the BLOCKED check this test is about.
         incident_id, _ = self.stopped()
-        code, err = self.resolve(incident_id, "repair_runtime_code")
+        code, err = self.resolve(incident_id, "rearm_run")
         self.assertEqual(code, 2)
         self.assertIn("still holds A in BLOCKED", err)
         return_stopped_task(self.cfg, incident_id=incident_id, task_id="A", thread_id="eng-1")
@@ -348,7 +351,7 @@ class ClosingAStopTicketTests(_Stopped):
         record = state.plan_changes[-1]
         self.assertEqual(record["requested_by_incident"], incident_id)
         self.assertEqual(record["requester_task_id"], "A")
-        require_stop_ticket_closable(self.cfg, incident_id, ("request_plan_change",))
+        require_stop_ticket_closable(self.cfg, incident_id, ("request_plan_change",), "eng-1")
         self.assertEqual(self.resolve(incident_id, "request_plan_change")[0], 0)
 
     def test_a_plan_change_is_refused_where_the_means_table_has_none(self) -> None:
@@ -449,10 +452,24 @@ class HerAnswerTests(_Stopped):
         self.assertEqual(spawned[0]["owner_turn"], "owner-turn")
 
     def test_without_a_causal_owner_it_says_who_raises_the_run(self) -> None:
+        """Honest when nothing can raise the run: no "continues by itself".
+
+        It used to print "The run continues by itself: ... the wake-up
+        sweep raises the run once there is one" - but the sweep never raises
+        a run with no derivable owner (it only signals her), and a completed
+        turn does not appear by itself. The check caught the contradiction.
+        """
+
+        from codex_autopilot.owner_answers import render_answer
+
         self._hand_up()
         result = answer_task(self.cfg, "A", "go on", option="issued", spawn=lambda cfg, **kw: 1)
         self.assertFalse(result["raised"])
-        self.assertIn("sweep raises the run", result["why"])
+        self.assertFalse(result["continues"])
+        text = render_answer(result)
+        self.assertIn("does not continue by itself yet", text)
+        self.assertIn("Start the run once with its phrase", text)
+        self.assertNotIn("The run continues by itself", text)
 
     def test_an_option_outside_the_offer_is_refused(self) -> None:
         self._hand_up()

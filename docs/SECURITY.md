@@ -48,8 +48,11 @@ identity, dispatcher reservation ownership, incident classification, incident
 signature, escalation, the named-action check, and the mandatory healthcheck,
 and the on-call's own limits over a stopped task: who may return it and when,
 when a stop ticket may close, which patch buys a fresh hire, what an
-escalation carries, where advisory tickets go, the owner's answer, and arming;
-the hash spans decorators, so a wrapper around a guard counts as a change. If
+escalation carries, where advisory tickets go, the owner's answer, and arming,
+and R4: how the run's durable authorization is recorded, which permission
+request it covers, and the refusal to send a covered one to her (the list of
+covered operations itself is versioned in `engineer_authority`, which is never
+patched); the hash spans decorators, so a wrapper around a guard counts as a change. If
 any of this does not hold, the installation is not touched at all.
 
 A proven set is not written into the installation from the engineer's thread:
@@ -81,8 +84,9 @@ with its test - a set still staged is withdrawn (kept aside, never deleted,
 and only by the ticket that staged it), an installed one is staged as a revert
 and installed the same atomic way, and any fresh hire the set bought a task at
 the top of its ladder is revoked in the same transaction. Both patch commands
-answer only to the on-call of that ticket, from its own `CODEX_THREAD_ID`; the
-revert refuses when a module changed after the patch was applied. Reinstalling
+answer only to the on-call of that ticket, from its own `CODEX_THREAD_ID`, and
+so does closing a stop ticket (`devops-resolve-incident`), since the closure
+returns the tasks the ticket holds; the revert refuses when a module changed after the patch was applied. Reinstalling
 a version whose `runtime/patches` is not empty renames that installation to
 `<version>.repaired-<UTC timestamp>`, prints the path, and leaves it in place;
 the archive step skips such directories. The repair reaches only the runtime's own

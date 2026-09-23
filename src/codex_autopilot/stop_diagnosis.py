@@ -14,8 +14,10 @@ So a stop ticket's package now carries its own diagnosis material, bounded:
 - the bounded end of the stopped session's final message;
 - the means for this kind of stop - from the table in ``engineer_authority``,
   which the engineer cannot edit;
-- for a permission request, the request itself next to what the run is
-  authorized for (R4) and the permission profile the run uses;
+- for a permission request, the request itself next to the durable
+  authorization run-state holds for the run (R4, ``run_authorization``), the
+  operation of it that covers the request if one does, and the permission
+  profile the run uses;
 - and the command that is the owner's answer, ready to run.
 
 Read-only: nothing here writes state.
@@ -29,16 +31,6 @@ from typing import Any, Mapping
 MAX_TAIL_CHARS = 1_200
 MAX_ISSUES = 8
 MAX_REJECTIONS = 3
-
-# What the run is authorized for (R4), as the engineer compares a permission
-# request with it. The run carries no list of covered operations of its own;
-# this is the fixed statement of what starting the run authorized, in the
-# words of the durable authorization the workers receive.
-RUN_AUTHORIZATION = (
-    "App Server thread/start and turn/start for the scheduler-selected tasks of this run",
-    "reads and writes inside the project working directory under the run's permission profile",
-    "the plugin's own codex-autopilot commands inside the project",
-)
 
 # The answers the runtime itself acts on, by stop kind. Any other option code
 # returns the task to work with her choice recorded where its next worker
@@ -123,7 +115,11 @@ def stop_context(cfg: Any, plan: Any, state: Any, incident: Mapping[str, Any]) -
         context["approval"] = {
             "request": system.get("approval") or {},
             "signature": system.get("approval_signature") or "",
-            "run_authorization": list(RUN_AUTHORIZATION),
+            # R4: the durable authorization run-state holds, versioned - the
+            # on-call compares with it, not with prose. A module constant of
+            # three sentences stood here; the run carried no list of its own.
+            "run_authorization": _run_authorization(cfg, state),
+            "covered_by": system.get("covered_by"),
             "permission_profile": str(
                 getattr(getattr(cfg, "desktop", None), "permission_profile", "") or ""
             ),
@@ -136,6 +132,16 @@ def stop_context(cfg: Any, plan: Any, state: Any, incident: Mapping[str, Any]) -
             ][-3:],
         }
     return context
+
+
+def _run_authorization(cfg: Any, state: Any) -> dict[str, Any]:
+    recorded = getattr(state, "durable_authorization", None)
+    if isinstance(recorded, Mapping):
+        return dict(recorded)
+    from .run_authorization import authorization_record
+
+    # Read-only here: shown as what arming would record, marked unrecorded.
+    return authorization_record(cfg, at="", granted_by="unrecorded")
 
 
 def _task_view(plan: Any, state: Any, task_id: str) -> dict[str, Any]:
