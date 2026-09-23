@@ -7,6 +7,7 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 
+from .codex_binaries import newest_codex_binary
 from .config import (
     DEFAULT_SKILL_SCREENING,
     DESKTOP_OWNED_SURFACE,
@@ -237,7 +238,16 @@ def _write_config(
         f"root = {_toml_string(str(root))}",
         "",
         "[desktop]",
-        'binary = "codex"',
+        # Explicit, and chosen at creation: Desktop carries its own Codex
+        # and a separately installed CLI is a different file on a different
+        # schedule, serving a different model catalog. Resolving this from
+        # PATH by accident is how a project pinned to a current model was
+        # told its account no longer had it. See codex_binaries.
+        "# The Codex this project talks to, chosen at creation as the newest",
+        "# on the machine. Desktop carries its own inside the app bundle and a",
+        "# separately installed CLI is a different file - they do not serve the",
+        "# same models. Change this line to move the project to another one.",
+        f"binary = {_toml_string(newest_codex_binary())}",
         'permission_profile = ":workspace"',
         f"skill_path = {_toml_string(str(durable_skill_path(skill_path)))}",
     ]

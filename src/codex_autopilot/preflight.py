@@ -442,6 +442,29 @@ def run_preflight(
             for verdict in catalog_verdicts(list(models)):
                 if verdict.state == "superseded":
                     report(f"Model {verdict.key}", "WARN", verdict.message)
+                elif verdict.state == "missing":
+                    # "Not served to this account" is what it looks like
+                    # from here, and it may instead be "not visible through
+                    # THIS client". Desktop carries its own Codex; a
+                    # separately installed CLI can be versions behind and
+                    # list a different catalog. Say which it is before the
+                    # reader goes looking for a billing problem.
+                    from .codex_binaries import binaries_serving
+
+                    elsewhere = [
+                        item
+                        for item in binaries_serving(verdict.pinned)
+                        if item != str(codex_binary)
+                    ]
+                    if elsewhere:
+                        report(
+                            f"Model {verdict.key}",
+                            "FAIL",
+                            f"{verdict.pinned} is not listed by this project's "
+                            f"Codex ({codex_binary}), but it IS listed by "
+                            f"{', '.join(elsewhere)}. Set desktop.binary to that "
+                            f"one, or pin a model this client serves.",
+                        )
             selection = resolve_selection(
                 models,
                 strategy=plan.model_strategy,

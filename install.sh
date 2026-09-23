@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="0.12.1-beta"
+version="0.12.2-beta"
 profile="adaptive"
 install_deps=0
 while [ "$#" -gt 0 ]; do

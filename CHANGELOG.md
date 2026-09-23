@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.12.2-beta
+
+A new project picks the newest Codex on the machine, and writes it down.
+
+There is more than one `codex` on a Mac that runs Desktop. Desktop carries its
+own inside the application bundle and updates it with itself; a separately
+installed CLI - Homebrew, npm - is a different file on its own schedule. They
+serve different model catalogs, and `bootstrap` wrote `binary = "codex"` into
+every new project's config, which means it resolved through PATH to whichever
+one happened to be there.
+
+That is how 0.12.1 came to exist: the PATH CLI had stayed at 0.154 while
+Desktop's was at 0.155, so a project pinned to a model released that week
+refused to start. The refusal was correct and unreadable - it said the model
+was not served, when the truth was that the client being spoken through could
+not see it.
+
+Two changes, both about making the channel visible rather than accidental:
+
+New projects now look at every Codex the installer can find, take the newest,
+and write that path into the config as an explicit line. The choice is made
+once, where it can be read and changed. Nothing re-derives it on a later run:
+switching the channel under a running project would change what a run is served
+without anyone asking for it, and that stays a decision the owner makes.
+
+A missing-model refusal now names the binary that does serve the model. If the
+pinned model is absent from this project's Codex but present in another one on
+the same machine, preflight says so and says which line to change, instead of
+leaving the reader to conclude their account lost the model.
+
+Existing projects are untouched - an installed config keeps the binary it has.
+
 ## 0.12.1-beta
 
 `doctor` asks the channel the run actually uses.
