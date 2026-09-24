@@ -184,9 +184,10 @@ STOP_MEANS: dict[str, tuple[str, ...]] = {
     # the run is authorized for is repaired; otherwise it is hers
     # (DANGEROUS_PERMISSION) and never answered by anyone else.
     "approval_required": ("repair_runtime_code",),
-    # R5: a thread Desktop files outside the project. Nothing is held. A
-    # runtime that filed it with the wrong cwd is repaired; a Desktop project
-    # root or the isolation trade-off is hers, with the listed threads.
+    # R5: a thread Desktop files outside the project, or one filed at the
+    # root whose isolation did not hold. Nothing is held. A runtime that filed
+    # it with the wrong cwd, or a staged profile that did not keep the root
+    # read-only, is repaired; a Desktop project root (R6) is hers.
     "placement_defect": ("repair_runtime_code",),
 }
 # Reason codes whose stop is hers to lift. The engineer diagnoses and hands

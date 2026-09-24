@@ -6,14 +6,20 @@ files a thread only when its cwd EQUALS a project root, so all of them were
 in no project, while the placement check said INSIDE by projectId alone.
 Contract 2 (placement_contract) sends ``cwd = root`` and
 ``runtimeWorkspaceRoots = [workspace]`` on thread/start and on every
-turn/start - once the isolation probe proved the root stays read-only.
-Without that proof the old placement stays, and each such thread is an R5
-defect with a ticket: never a silent fallback, never a stop.
+turn/start, under the task's own staged permission profile - once the
+isolation probe proved that profile keeps the root read-only. Without that
+proof the old placement stays, and each such thread is an R5 defect with a
+ticket: never a silent fallback, never a stop.
 
-The run below goes through the production dispatcher
-(``run_automatic_app_server_turn``) with one fake App Server connection
-that models the sandbox on disk: a ``touch`` succeeds inside the runtime
-roots, and inside the root only when the fake is told the root is writable.
+The fake App Server below models what the real protocol gives and nothing
+more (the second independent check found the first fake tying
+``command/exec`` to a thread's roots, which codex 0.154.0 does not do):
+``command/exec`` knows no thread and no runtime roots; it runs under a named
+profile. ``:workspace`` writes its ``:workspace_roots``, which default to the
+cwd; a staged profile, defined by the ``-c`` overrides the process was
+launched with, resolves its filesystem table by the most specific entry, a
+tie going to write. Both are what ``codex sandbox`` measured on 0.154.0
+(isolation_probe).
 """
 
 from __future__ import annotations
@@ -21,57 +27,89 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
 import test_artifact_staging as _staging
 from _appserver_fakes import FakeAppServerCreateClient
 from _desktop_state import desktop_home
-from codex_autopilot.appserver import ApprovalRequired, TurnResult
+from codex_autopilot.appserver import AppServerRpcError, ApprovalRequired, TurnResult
 
 OWNER, OWNER_TURN = "owner-thread", "owner-turn"
 
 
 class SandboxedDispatcher(FakeAppServerCreateClient):
-    """One connection: create, isolation probe, placement, production turn."""
+    """One App Server process, as launched: its ``-c`` overrides define profiles."""
 
     def __init__(self, root: Path, events: list[str], *, home: Path, thread_id: str = "worker-thread",
-                 root_writable: bool = False, widen: bool = False, approval: bool = False,
-                 on_complete=lambda: None) -> None:
+                 config_overrides=(), filesystem_honored: bool = True, widen: bool = False,
+                 approval: bool = False, environments=None, on_complete=lambda: None) -> None:
         super().__init__(root, events, thread_id=thread_id, project_id=None)
         self.codex_home = str(home)
-        self.root_writable, self.widen, self.approval = root_writable, widen, approval
+        self.launch(config_overrides)
+        # False: a binary that accepts the profile and ignores its filesystem
+        # table - the staged profile then acts as its base, ``:workspace``.
+        self.filesystem_honored = filesystem_honored
+        self.widen, self.approval, self.environments = widen, approval, environments
         self.on_complete = on_complete
-        self.probe_roots: list[Path] = []
         self.threads: list[dict] = []
         self.execs: list[dict] = []
         self.terminated: list[str] = []
         self.responded: list[object] = []
         self.turn_kwargs: dict = {}
 
+    def launch(self, config_overrides=()):
+        """The process's ``-c`` overrides: the profiles it defines."""
+
+        self.config_overrides = tuple(config_overrides)
+        self.profiles = tomllib.loads("\n".join(self.config_overrides)).get("permissions", {})
+        return self
+
+    def list_permission_profiles(self, cwd):
+        return [{"id": ":workspace", "allowed": True}, *({"id": key, "allowed": True} for key in self.profiles)]
+
+    def _known(self, profile):
+        if profile != ":workspace" and profile not in self.profiles:
+            raise AppServerRpcError("thread/start", {"message": f"unknown permissions profile {profile}"})
+
     def start_thread(self, **kwargs):
+        self._known(kwargs["permission_profile"])
         self.threads.append(kwargs)
         roots = [Path(item) for item in kwargs.get("workspace_roots") or [kwargs["cwd"]]]
+        answer_roots = [str(self.canonical_cwd)] if self.widen else [str(item) for item in roots]
         if kwargs.get("ephemeral"):
-            self.probe_roots = roots
             return {
                 "thread": {"id": "probe-thread", "cwd": str(kwargs["cwd"])},
-                "runtimeWorkspaceRoots": [str(item) for item in roots],
+                "runtimeWorkspaceRoots": answer_roots,
+                "activePermissionProfile": {"id": kwargs["permission_profile"]},
                 "sandbox": {"type": "workspaceWrite", "writableRoots": []},
             }
         started = super().start_thread(**kwargs)
-        started["runtimeWorkspaceRoots"] = [str(self.canonical_cwd)] if self.widen else [str(item) for item in roots]
+        started["runtimeWorkspaceRoots"] = answer_roots
+        started["activePermissionProfile"] = {"id": kwargs["permission_profile"]}
         return started
 
-    def exec_command(self, command, *, cwd, process_id, sandbox_policy=None, permission_profile=None, timeout_ms=10_000):
-        self.execs.append({"command": list(command), "cwd": Path(cwd), "process_id": process_id, "sandbox": sandbox_policy})
+    def _writable(self, target: Path, cwd: Path, profile: str) -> bool:
+        if profile == ":workspace" or not self.filesystem_honored:
+            return _within(target, cwd)
+        table = self.profiles[profile].get("filesystem") or {}
+        matches = [] if ":workspace_roots" in table or not _within(target, cwd) else [(_depth(cwd), "write")]
+        for key, mode in table.items():
+            base = cwd if key == ":workspace_roots" else Path(key)
+            if _within(target, base):
+                matches.append((_depth(base), mode))
+        return bool(matches) and max(matches)[1] == "write"
+
+    def exec_command(self, command, *, cwd, process_id, permission_profile, timeout_ms=10_000):
+        self.execs.append({"command": list(command), "cwd": Path(cwd), "process_id": process_id,
+                           "permission_profile": permission_profile})
         if self.approval:
             raise ApprovalRequired({"id": 7, "method": "item/commandExecution/requestApproval", "params": {}})
+        self._known(permission_profile)
         target = Path(command[-1])
-        allowed = any(_within(target, item) for item in self.probe_roots) or (
-            self.root_writable and _within(target, self.canonical_cwd)
-        )
-        if allowed:
+        if self._writable(target, Path(cwd), permission_profile):
             target.touch()
             return {"exitCode": 0}
         return {"exitCode": 1, "stderr": "Operation not permitted"}
@@ -85,7 +123,11 @@ class SandboxedDispatcher(FakeAppServerCreateClient):
     def read_thread(self, thread_id):
         if thread_id == OWNER:
             return {"id": thread_id, "turns": [{"id": OWNER_TURN, "status": "completed", "items": []}]}
-        return super().read_thread(thread_id)
+        thread = super().read_thread(thread_id)
+        if self.environments is not None:
+            thread["environments"] = [{"environmentId": "local", "cwd": str(self.thread_cwd),
+                                       "runtimeWorkspaceRoots": [str(item) for item in self.environments]}]
+        return thread
 
     def start_turn(self, **kwargs):
         self.turn_kwargs = kwargs
@@ -104,6 +146,10 @@ def _within(target: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _depth(path: Path) -> int:
+    return len(Path(path).resolve().parts)
 
 
 class StagedRun(unittest.TestCase):
@@ -130,6 +176,33 @@ class StagedRun(unittest.TestCase):
         state = state or StateStore(self.cfg.state_dir).load()
         return next(item for item in state.worker_sessions if item["reservation_token"] == token)
 
+    def factory(self, **kwargs):
+        """A client_factory in production's call shape: (binary, log, config_overrides=...)."""
+
+        made: list[SandboxedDispatcher] = []
+        kwargs.setdefault("home", self.home)
+
+        def build(*_args, **factory_kwargs):
+            made.append(SandboxedDispatcher(
+                self.root, [], config_overrides=factory_kwargs.get("config_overrides", ()), **kwargs
+            ))
+            return made[-1]
+
+        build.made = made
+        # isolation_probe's own call shape: open_client(overrides).
+        build.open = lambda overrides: build("codex", Path(os.devnull), config_overrides=overrides)
+        return build
+
+    def launched(self, descriptor, *, probe=None, **kwargs):
+        """The dispatcher's client, launched as the cli relay loop launches it."""
+
+        from codex_autopilot.isolation_probe import dispatcher_overrides
+
+        probe = probe or self.factory()
+        overrides = dispatcher_overrides(self.cfg, descriptor.reservation_token, client_factory=probe)
+        kwargs.setdefault("home", self.home)
+        return SandboxedDispatcher(self.root, [], config_overrides=overrides, **kwargs)
+
     def dispatch(self, client, descriptor):
         from codex_autopilot.lifecycle import run_automatic_app_server_turn
 
@@ -151,73 +224,90 @@ class StagedRun(unittest.TestCase):
             if (item.get("system_state") or {}).get("stop_kind") == kind
         ]
 
-    def prove_isolation(self):
-        from codex_autopilot.isolation_probe import binary_identity, write_record
+    def prove_isolation(self, **kwargs):
+        """A real measurement on the fake server, as the dispatcher makes it."""
 
-        write_record(self.cfg.state_dir, {
-            "root": str(self.cfg.root), "permission_profile": self.cfg.desktop.permission_profile,
-            "codex_binary": binary_identity(self.cfg.desktop.binary), "outcome": "PASS",
-        })
+        from codex_autopilot.isolation_probe import ensure_measured
+
+        return ensure_measured(self.cfg, self.factory(**kwargs).open)
 
 
 class ContractTwoTests(StagedRun):
-    def test_a_proven_run_files_the_worker_at_the_root_and_it_writes_only_its_workspace(self) -> None:
-        """No record yet: the dispatcher measures on its own connection, then uses contract 2.
+    def test_a_proven_run_files_the_worker_at_the_root_under_its_staged_profile(self) -> None:
+        """No record yet: the dispatcher measures on a server of its own, then uses contract 2.
 
-        Mutations, each fails here: ``thread_placement`` ignoring the proof
-        (always contract 1 - cwd is the workspace, Desktop OUTSIDE); the
-        production turn's cwd back to the workspace; the turn without
-        ``workspace_roots``; ``ensure_measured`` not called in the create
-        path (no record, contract 1).
+        Mutations, each fails here: ``server_overrides`` returning nothing
+        (the dispatcher's server has no staged profile - contract 1, cwd the
+        workspace, Desktop OUTSIDE); the production turn naming the run's
+        profile instead of the session's; ``thread_placement`` ignoring the
+        proof; the turn's cwd back to the workspace or without
+        ``workspace_roots``.
         """
+
+        from codex_autopilot.isolation_probe import staged_profile_id
 
         descriptor = self.reserve()
         workspace = Path(descriptor.cwd)
-        client = SandboxedDispatcher(self.root, [], home=self.home)
+        probe = self.factory()
+        client = self.launched(descriptor, probe=probe)
         outcome = self.dispatch(client, descriptor)
         self.assertEqual(outcome.worker_status, "ROTATE")
         record = json.loads((self.cfg.state_dir / "isolation-probe.json").read_text())
         self.assertEqual(record["outcome"], "PASS")
-        probe, worker = client.threads
-        self.assertTrue(probe["ephemeral"])
-        self.assertEqual(Path(probe["cwd"]), self.root)
-        self.assertEqual((Path(worker["cwd"]), worker["workspace_roots"]), (self.root, (workspace,)))
-        self.assertEqual((Path(client.turn_kwargs["cwd"]), client.turn_kwargs["workspace_roots"]), (self.root, [workspace]))
+        (probe_server,) = probe.made
+        self.assertTrue(probe_server.threads[0]["ephemeral"])
+        staged = staged_profile_id(workspace)
+        (worker,) = client.threads
+        self.assertEqual(
+            (Path(worker["cwd"]), worker["workspace_roots"], worker["permission_profile"]),
+            (self.root, (workspace,), staged),
+        )
+        self.assertEqual(
+            (Path(client.turn_kwargs["cwd"]), client.turn_kwargs["workspace_roots"], client.turn_kwargs["permission_profile"]),
+            (self.root, [workspace], staged),
+        )
         session = self.session(descriptor.reservation_token)
-        self.assertEqual(session["placement_contract"], 2)
+        self.assertEqual((session["placement_contract"], session["permission_profile"]), (2, staged))
         self.assertEqual(Path(session["actual_cwd"]), self.root)
         self.assertEqual(Path(session["actual_workspace_root"]), workspace)
+        self.assertEqual(session["app_server_creation_contract"]["params"]["permissions"], staged)
         self.assertEqual(session["desktop_placement"], "INSIDE")
         self.assertEqual(session["desktop_placement_after_first_turn"], "INSIDE")
         self.assertEqual(self.tickets(), [])
         self.assertEqual(client.responded, [])
         self.assertFalse(any(self.root.glob(".codex-autopilot-isolation-probe-*")))
 
-    def test_a_writable_root_keeps_the_old_placement_and_says_so(self) -> None:
-        """Measured mid-run: the root is writable. No silent fallback, no stop.
+    def test_a_root_the_staged_profile_does_not_hold_is_the_on_calls_not_her_choice(self) -> None:
+        """Measured mid-run: the staged profile left the root writable. No stop, no fork for her.
 
         The thread keeps its workspace as cwd (contract 1), Desktop files it
         in no project, and that is an R5 defect with one ticket that holds
-        nothing - the turn still runs. Mutations: contract 2 regardless of
-        the proof (cwd = root here); ``record_placement_defect`` not called
-        (no ticket).
+        nothing - the turn still runs. The ticket is a runtime defect: the
+        first version told her to choose between isolated tasks outside the
+        project and a deny profile (ARCHITECTURE_DECISION). Mutations:
+        contract 2 regardless of the proof; ``record_placement_defect`` not
+        called (no ticket); the old diagnosis back (her code, her choice).
         """
 
         descriptor = self.reserve()
         workspace = Path(descriptor.cwd)
-        client = SandboxedDispatcher(self.root, [], home=self.home, root_writable=True)
+        client = self.launched(descriptor, probe=self.factory(filesystem_honored=False))
+        self.assertEqual(client.config_overrides, ())
         outcome = self.dispatch(client, descriptor)
         self.assertEqual(outcome.worker_status, "ROTATE")
         record = json.loads((self.cfg.state_dir / "isolation-probe.json").read_text())
         self.assertEqual(record["outcome"], "ROOT_WRITABLE")
         session = self.session(descriptor.reservation_token)
         self.assertEqual((session["placement_contract"], Path(session["actual_cwd"])), (1, workspace))
+        self.assertEqual(session["permission_profile"], self.cfg.desktop.permission_profile)
         self.assertEqual(session["desktop_placement"], "OUTSIDE")
         self.assertEqual(session["r5_placement_defect"]["cause"], "isolation_not_proven")
         (ticket,) = self.tickets()
+        system = ticket["system_state"]
         self.assertEqual(ticket["affected_task_ids"], [])
-        self.assertEqual(ticket["system_state"]["reason_code"], "ARCHITECTURE_DECISION")
-        self.assertIn(str(session["thread_id"]), json.dumps(ticket["system_state"]["outside_threads"]))
+        self.assertEqual(system["reason_code"], "RECOVERY_EXHAUSTED")
+        self.assertIn("not hers to choose", system["recommendation"])
+        self.assertIn(str(session["thread_id"]), json.dumps(system["outside_threads"]))
 
     def test_a_server_that_widens_the_roots_is_refused_before_prepared(self) -> None:
         """Mutation: drop the ``roots_within`` check - the session becomes PREPARED."""
@@ -226,14 +316,16 @@ class ContractTwoTests(StagedRun):
 
         self.prove_isolation()
         descriptor = self.reserve()
-        client = SandboxedDispatcher(self.root, [], home=self.home, widen=True)
+        factory = self.factory(widen=True)
         with mock.patch("codex_autopilot.lifecycle_dispatch.installed_plugin_root", return_value=self.root):
             with self.assertRaisesRegex(DesktopLifecycleError, "widened"):
                 create_desktop_thread_via_app_server(
-                    self.cfg, descriptor.reservation_token, client_factory=lambda *_a: client,
+                    self.cfg, descriptor.reservation_token, client_factory=factory,
                     relay_executor_thread_id=OWNER,
                 )
         self.assertNotEqual(self.session(descriptor.reservation_token)["status"], "PREPARED")
+        # The server this function launched itself defined the staged profile.
+        self.assertTrue(factory.made[0].config_overrides)
 
     def test_a_session_from_before_the_contract_is_checked_the_old_way(self) -> None:
         """A paused run's PREPARED session: actual_cwd = workspace, no placement_contract.
@@ -248,27 +340,82 @@ class ContractTwoTests(StagedRun):
 
         self.prove_isolation()
         descriptor = self.reserve()
-        client = SandboxedDispatcher(self.root, [], home=self.home)
         with mock.patch("codex_autopilot.lifecycle_dispatch.installed_plugin_root", return_value=self.root):
             create_desktop_thread_via_app_server(
-                self.cfg, descriptor.reservation_token, client_factory=lambda *_a: client,
+                self.cfg, descriptor.reservation_token, client_factory=self.factory(),
                 relay_executor_thread_id=OWNER,
             )
         store = StateStore(self.cfg.state_dir)
         state = store.load()
         old = json.loads(json.dumps(self.session(descriptor.reservation_token, state)))
+        self.assertEqual(old["placement_contract"], 2)
         claim_automatic_app_server_turn(self.cfg, descriptor.reservation_token, relay_executor_thread_id=OWNER)
         # The same session as the code before contract 2 left it.
         state = store.load()
         session = self.session(descriptor.reservation_token, state)
         session.update(old, status="PREPARED", actual_cwd=descriptor.cwd)
         session.pop("placement_contract")
+        session.pop("permission_profile")
         store.save(state)
         claim_automatic_app_server_turn(self.cfg, descriptor.reservation_token, relay_executor_thread_id=OWNER)
         self.assertEqual(self.session(descriptor.reservation_token)["status"], "SEND_RELAYING")
+        # Its turn names the profile it was created with - the run's.
+        from codex_autopilot.placement_contract import session_profile
+
+        self.assertEqual(session_profile(self.cfg, self.session(descriptor.reservation_token)), ":workspace")
+
+    def test_roots_that_came_back_wider_are_signalled_and_the_turn_narrows_them(self) -> None:
+        """Desktop rebuilds a thread's roots when she opens it (isolation_guard).
+
+        The thread reports roots wider than its workspace before the turn:
+        recorded on the session, one ticket that holds nothing, and the turn
+        still goes out with the workspace and the staged profile. Mutation:
+        ``check_thread_roots`` not called - no record, no ticket.
+        """
+
+        descriptor = self.reserve()
+        workspace = Path(descriptor.cwd)
+        client = self.launched(descriptor, environments=[self.root, workspace])
+        self.assertEqual(self.dispatch(client, descriptor).worker_status, "ROTATE")
+        session = self.session(descriptor.reservation_token)
+        (widened,) = session["runtime_roots_widened"]
+        self.assertEqual(widened["widened"], [str(self.root)])
+        (ticket,) = self.tickets()
+        self.assertEqual((ticket["system_state"]["cause"], ticket["affected_task_ids"]), ("runtime_roots_widened", []))
+        self.assertEqual(client.turn_kwargs["workspace_roots"], [workspace])
+        self.assertEqual(client.turn_kwargs["permission_profile"], session["permission_profile"])
 
 
 class IsolationProbeTests(StagedRun):
+    def test_the_probe_measures_the_staged_profile_on_the_root_never_a_legacy_sandbox(self) -> None:
+        """What the second independent check asked for, on the protocol as it is.
+
+        ``command/exec`` runs with cwd = the root and the task's staged
+        profile; nothing of the thread/start answer's legacy sandbox is sent;
+        the ephemeral thread is started as a worker's; the workspace is under
+        the state directory. Mutations: exec under the run's profile
+        (``:workspace`` - its roots are the cwd, the root: ROOT_WRITABLE);
+        exec with cwd = the workspace (cwd assertion); a temporary workspace
+        (location assertion).
+        """
+
+        from codex_autopilot.isolation_probe import ensure_measured, probe_workspace, staged_profile_id
+
+        probe = self.factory()
+        record = ensure_measured(self.cfg, probe.open)
+        self.assertEqual(record["outcome"], "PASS", record)
+        (server,) = probe.made
+        workspace = probe_workspace(self.cfg.state_dir).resolve()
+        staged = staged_profile_id(workspace)
+        self.assertEqual(Path(record["workspace"]), workspace)
+        self.assertIn(staged, "\n".join(server.config_overrides))
+        (thread,) = server.threads
+        self.assertEqual((thread["ephemeral"], Path(thread["cwd"]), thread["workspace_roots"], thread["permission_profile"]),
+                         (True, self.root, [workspace], staged))
+        self.assertEqual({(item["cwd"], item["permission_profile"]) for item in server.execs}, {(self.root, staged)})
+        self.assertNotIn("sandbox", json.dumps(server.execs, default=str))
+        self.assertFalse(any(self.root.glob(".codex-autopilot-isolation-probe-*")))
+
     def test_a_permission_request_is_never_answered_and_proves_nothing(self) -> None:
         """Her boundary: the command is terminated, the request stays unanswered.
 
@@ -278,35 +425,69 @@ class IsolationProbeTests(StagedRun):
 
         from codex_autopilot.isolation_probe import NOT_PROVEN, ensure_measured
 
-        client = SandboxedDispatcher(self.root, [], home=self.home, approval=True)
-        record = ensure_measured(self.cfg, client)
+        probe = self.factory(approval=True)
+        record = ensure_measured(self.cfg, probe.open)
         self.assertEqual(record["outcome"], NOT_PROVEN)
         self.assertIn("never answered", record["reason"])
-        self.assertEqual(client.responded, [])
-        self.assertEqual(len(client.terminated), 2)
+        (server,) = probe.made
+        self.assertEqual(server.responded, [])
+        self.assertEqual(len(server.terminated), 2)
 
-    def test_a_writable_root_fails_preflight_with_an_isolation_finding(self) -> None:
-        """Mutation: report a writable root as NOT PROVEN (a quiet fallback) - no FAIL."""
+    def test_a_record_of_another_shape_is_measured_again(self) -> None:
+        """Only a record of the real shape counts; one of the first probe's does not.
 
-        from codex_autopilot.preflight import PreflightError, _measure_isolation
+        The first probe measured with a system temp directory as workspace
+        and wrote version 1. Mutation: ``record_matches`` without the
+        workspace-location check - the temp-directory record is taken, and
+        nothing is measured.
+        """
 
+        from codex_autopilot.isolation_probe import RECORD_VERSION, binary_identity, ensure_measured, write_record
+
+        base = {
+            "root": str(self.cfg.root), "base_profile": self.cfg.desktop.permission_profile,
+            "codex_binary": binary_identity(self.cfg.desktop.binary), "outcome": "PASS",
+        }
+        for stale in ({**base, "version": RECORD_VERSION, "workspace": tempfile.gettempdir() + "/codex-autopilot-isolation-x"},
+                      {**base, "version": 1, "workspace": str(self.cfg.state_dir / "isolation-probe" / "workspace")}):
+            write_record(self.cfg.state_dir, stale)
+            probe = self.factory(filesystem_honored=False)
+            self.assertEqual(ensure_measured(self.cfg, probe.open)["outcome"], "ROOT_WRITABLE")
+            self.assertEqual(len(probe.made), 1)
+        probe = self.factory()
+        self.assertEqual(ensure_measured(self.cfg, probe.open)["outcome"], "ROOT_WRITABLE")
+        self.assertEqual(probe.made, [])
+
+    def test_preflight_measures_the_runs_profile_in_the_state_dir_and_never_stops(self) -> None:
+        """Preflight: the configured profile, a workspace under the state dir, a finding, no stop.
+
+        Mutations: the profile hard-coded to ``:workspace`` (base_profile
+        assertion); the workspace in a temporary directory (location
+        assertion); a writable root raising PreflightError again - a stop
+        no on-call would see.
+        """
+
+        from dataclasses import replace
+
+        from codex_autopilot.preflight import _measure_isolation
+
+        # Config admits only ``:workspace`` today (config.py); the probe must
+        # still take the run's profile from the run's config, not a literal.
+        configured = replace(self.cfg, desktop=replace(self.cfg.desktop, permission_profile="autopilot-run"))
         checks: list = []
-        client = SandboxedDispatcher(self.root, [], home=self.home, root_writable=True)
-        with self.assertRaisesRegex(PreflightError, "ISOLATION"):
-            _measure_isolation(client, self.root, "codex", {}, lambda *item: checks.append(item))
-        self.assertEqual(checks[-1][:2], ("Isolation", "FAIL"))
-        self.assertFalse(any(self.root.glob(".codex-autopilot-isolation-probe-*")))
-        client = SandboxedDispatcher(self.root, [], home=self.home)
-        record = _measure_isolation(client, self.root, "codex", {}, lambda *item: checks.append(item))
+        probe = self.factory()
+        with mock.patch("codex_autopilot.config.load_config", return_value=configured):
+            record = _measure_isolation(probe, self.root, "codex", {}, lambda *item: checks.append(item))
         self.assertEqual((record["outcome"], checks[-1][:2]), ("PASS", ("Isolation", "OK")))
-
-    def test_a_record_of_this_root_profile_and_binary_is_not_measured_again(self) -> None:
-        from codex_autopilot.isolation_probe import ensure_measured
-
-        self.prove_isolation()
-        client = SandboxedDispatcher(self.root, [], home=self.home)
-        self.assertEqual(ensure_measured(self.cfg, client)["outcome"], "PASS")
-        self.assertEqual(client.threads, [])
+        self.assertEqual(record["base_profile"], "autopilot-run")
+        self.assertIn('extends="autopilot-run"', "\n".join(probe.made[0].config_overrides))
+        self.assertTrue(Path(record["workspace"]).is_relative_to(self.cfg.state_dir))
+        self.assertFalse((self.cfg.state_dir / "isolation-probe").exists())
+        record = _measure_isolation(self.factory(filesystem_honored=False), self.root, "codex", {},
+                                    lambda *item: checks.append(item))
+        self.assertEqual((record["outcome"], checks[-1][:2]), ("ROOT_WRITABLE", ("Isolation", "FAIL")))
+        self.assertIn("ISOLATION", checks[-1][2])
+        self.assertFalse(any(self.root.glob(".codex-autopilot-isolation-probe-*")))
 
 
 class PlacementDefectTests(StagedRun):
@@ -324,7 +505,8 @@ class PlacementDefectTests(StagedRun):
         descriptor = self.reserve()
         with mock.patch("codex_autopilot.lifecycle_dispatch.installed_plugin_root", return_value=self.root):
             create_desktop_thread_via_app_server(
-                self.cfg, descriptor.reservation_token, client_factory=lambda *_a: client,
+                self.cfg, descriptor.reservation_token,
+                client_factory=lambda *_a, config_overrides=(): client.launch(config_overrides),
                 relay_executor_thread_id=OWNER,
             )
         return descriptor
@@ -435,6 +617,88 @@ class PlacementDefectTests(StagedRun):
         self.assertEqual([(item["thread_id"], item["title"]) for item in listed], [("01a0ce87", "A · Implementation (old)")])
 
 
+    def test_two_causes_of_one_run_are_two_tickets(self) -> None:
+        """The second independent check's reproduction: a contract-1 thread and older outside threads.
+
+        Isolation not proven (no record: contract 1) and a thread of this
+        run created outside the project before the honest check are two
+        causes; each gets its own ticket with its own diagnosis, although
+        the first is still open. Mutation: the ticket's signal id without
+        the cause (blocked_runs, ``signal_key``) - the second cause gets the
+        first cause's ticket back, and the older threads are never named.
+        """
+
+        from codex_autopilot.lifecycle import create_desktop_thread_via_app_server
+        from codex_autopilot.lifecycle_dispatch import _require_thread_placement
+        from codex_autopilot.run_state import StateStore
+
+        descriptor = self.reserve()
+        client = SandboxedDispatcher(self.root, [], home=self.home)
+        with mock.patch("codex_autopilot.lifecycle_dispatch.installed_plugin_root", return_value=self.root):
+            create_desktop_thread_via_app_server(
+                self.cfg, descriptor.reservation_token,
+                client_factory=lambda *_a, config_overrides=(): client.launch(config_overrides),
+                relay_executor_thread_id=OWNER,
+            )
+        store = StateStore(self.cfg.state_dir)
+        state = store.load()
+        old = json.loads(json.dumps(self.session(descriptor.reservation_token, state)))
+        old.update(
+            reservation_token="old-token", operation_id="old-operation", thread_id="01a0ce87",
+            actual_thread_name="A · Implementation (old)", desktop_placement="INSIDE", status="COMPLETED",
+        )
+        old.pop("placement_contract")
+        state.worker_sessions.insert(0, old)
+        store.save(state)
+        self.assertEqual(self.session(descriptor.reservation_token)["placement_contract"], 1)
+        _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=client, at=None)
+        causes = sorted(item["system_state"]["cause"] for item in self.tickets())
+        self.assertEqual(causes, ["created_before_the_honest_check", "isolation_not_proven"])
+        (earlier,) = [item for item in self.tickets() if item["system_state"]["cause"] == "created_before_the_honest_check"]
+        self.assertIn("01a0ce87", json.dumps(earlier["system_state"]["defect"]))
+
+
+class CanonicalAfterPromotionTests(StagedRun):
+    def test_a_canonical_change_no_promotion_explains_goes_to_the_on_call(self) -> None:
+        """After promotion, the root is compared with the manifest (isolation_guard).
+
+        Task A was filed at the root. While it worked, task B was promoted
+        (src/b.txt) and something else wrote src/leak.txt. Only the leak is
+        unexplained: it is recorded on the session and goes to the on-call
+        in a ticket that holds nothing. Mutations: the check not called in
+        the promotion gate - no record, no ticket; other tasks' promotions
+        not counted as explained - src/b.txt is reported too.
+        """
+
+        from codex_autopilot.artifact_staging import ArtifactStagingStore
+        from codex_autopilot.artifact_staging_lifecycle import CompletionArtifactGate
+        from codex_autopilot.run_state import StateStore, utc_now
+
+        descriptor = self.reserve()
+        store = ArtifactStagingStore(self.cfg.root, self.cfg.state_dir)
+        state_store = StateStore(self.cfg.state_dir)
+        state = state_store.load()
+        other = store.prepare(run_id=state.run_id, task_id="B", reservation_token="token-b")
+        (other.workspace / "src" / "b.txt").write_text("from B\n", encoding="utf-8")
+        store.seal("B")
+        store.mark_verified("B", verification_id="verify-b")
+        store.promote("B", expected_verification_id="verify-b")
+        (self.root / "src" / "leak.txt").write_text("written outside any manifest\n", encoding="utf-8")
+        workspace = Path(descriptor.cwd)
+        (workspace / "src" / "result.txt").write_text("staged A\n", encoding="utf-8")
+        store.seal("A")
+        session = self.session(descriptor.reservation_token, state)
+        session["placement_contract"] = 2
+        gate = CompletionArtifactGate(workspace=workspace, store=store, cfg=self.cfg)
+        gate.promote("A", "verify-a", state=state, session=session, at=utc_now())
+        state_store.save(state)
+        self.assertEqual(session["canonical_outside_manifest"]["paths"], ["src/leak.txt"])
+        (ticket,) = self.tickets()
+        self.assertEqual(ticket["system_state"]["cause"], "canonical_changed_outside_manifest")
+        self.assertEqual(ticket["affected_task_ids"], [])
+        self.assertEqual((self.root / "src" / "result.txt").read_text(encoding="utf-8"), "staged A\n")
+
+
 class WhatTheThreadAtTheRootSeesTests(StagedRun):
     def test_the_prompt_names_the_workdir_and_not_the_old_cwd_claim(self) -> None:
         """Mutation: the old text back - 'App Server cwd is the isolated workspace'."""
@@ -517,7 +781,7 @@ class ApprovalFrequencyTests(StagedRun):
         stop_run(self.cfg, state, stop_kind="approval_required", phase="APPROVAL_REQUIRED",
                  reason="earlier", summary="earlier", at=utc_now(), task_ids=(), context_task_id="A")
         store.save(state)
-        client = SandboxedDispatcher(self.root, [], home=self.home)
+        client = self.launched(descriptor)
 
         def asks(*_args, **_kwargs):
             raise ApprovalRequired({"id": 3, "method": "item/fileChange/requestApproval", "params": {"path": "out.txt"}})

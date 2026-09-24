@@ -75,8 +75,13 @@ def plan(profile: str = "adaptive"):
 
 class PreflightClient:
     instances: list["PreflightClient"] = []
+    # The isolation probe's own short-lived server (isolation_probe): launched
+    # with the staged profile's ``-c`` overrides, a process apart from the
+    # preflight connection the tests below inspect.
+    probe_instances: list["PreflightClient"] = []
 
-    def __init__(self, *_args, **_kwargs):
+    def __init__(self, *_args, **kwargs):
+        self.config_overrides = tuple(kwargs.get("config_overrides") or ())
         self.closed = False
         self.thread_args = None
         self.thread_args_history = []
@@ -87,7 +92,14 @@ class PreflightClient:
         self.thread_metadata = {}
         self.plain_turns = []
         self.approval_responses = []
-        self.__class__.instances.append(self)
+        (self.__class__.probe_instances if self.config_overrides else self.__class__.instances).append(self)
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
 
     def connect(self):
         return {"userAgent": "fake-app-server", "codexHome": "/tmp/fake-codex-home"}
@@ -118,9 +130,9 @@ class PreflightClient:
     def start_thread(self, **kwargs):
         if kwargs.get("ephemeral"):
             # The isolation probe's thread (isolation_probe): ephemeral, never
-            # a preflight task. This fake has no command/exec, so the probe
-            # reports NOT_PROVEN - the tests of that measurement are in
-            # test_placement_contract.py.
+            # a preflight task. This fake offers no staged profile and has no
+            # command/exec, so the probe reports NOT_PROVEN - the tests of
+            # that measurement are in test_placement_contract.py.
             self.ephemeral_threads = [*getattr(self, "ephemeral_threads", []), kwargs]
             return {"thread": {"id": "isolation-probe", "cwd": str(kwargs["cwd"])}}
         self.thread_args = kwargs
@@ -410,6 +422,7 @@ class PreflightTests(unittest.TestCase):
 
     def setUp(self):
         PreflightClient.instances.clear()
+        PreflightClient.probe_instances.clear()
 
     def test_the_printed_report_runs_end_to_end(self) -> None:
         """Printing the report is code too, and tests must execute it.

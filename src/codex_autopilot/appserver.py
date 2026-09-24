@@ -10,7 +10,7 @@ import queue
 import subprocess
 import threading
 import time
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Sequence
 
 from . import __version__
 
@@ -124,8 +124,13 @@ class AppServerClient:
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
         originator: str | None = DESKTOP_ORIGINATOR,
         popen_factory=subprocess.Popen,
+        config_overrides: Sequence[str] = (),
     ) -> None:
         self.binary = binary
+        # ``-c key=value`` for this server process only: how the runtime
+        # defines a staged task's permission profile (isolation_probe)
+        # without writing anyone's config.toml.
+        self.config_overrides = tuple(config_overrides)
         self.log_path = log_path
         self.event_sink = event_sink
         self.originator = originator
@@ -150,7 +155,13 @@ class AppServerClient:
             process_env = dict(os.environ)
             process_env["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] = self.originator
         self.proc = self.popen_factory(
-            [self.binary, "app-server", "--listen", "stdio://"],
+            [
+                self.binary,
+                "app-server",
+                *(part for item in self.config_overrides for part in ("-c", item)),
+                "--listen",
+                "stdio://",
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -394,22 +405,28 @@ class AppServerClient:
         *,
         cwd: Path,
         process_id: str,
-        sandbox_policy: Mapping[str, Any] | None = None,
-        permission_profile: str | None = None,
+        permission_profile: str,
         timeout_ms: int = 10_000,
     ) -> dict[str, Any]:
-        """Run one command through App Server's own sandbox, no model involved."""
+        """Run one command under a named permission profile, no model involved.
+
+        Only a profile, never a sandbox policy: the first isolation probe
+        copied the legacy ``sandbox`` of a thread/start answer into
+        ``sandboxPolicy``, and because the two exclude each other the
+        profile was then not sent at all. The legacy shape
+        (``workspaceWrite`` with no roots) makes the cwd writable, so the
+        probe measured that shape instead of the profile a turn runs with.
+        ``command/exec`` has no threadId and no runtime roots (codex
+        0.154.0 schema): the profile is the one input it shares with a turn.
+        """
 
         params: dict[str, Any] = {
             "command": list(command),
             "cwd": str(cwd),
             "processId": process_id,
             "timeoutMs": timeout_ms,
+            "permissionProfile": permission_profile,
         }
-        if sandbox_policy is not None:
-            params["sandboxPolicy"] = dict(sandbox_policy)
-        elif permission_profile is not None:
-            params["permissionProfile"] = permission_profile
         return self.request("command/exec", params, timeout=timeout_ms / 1000 + 15)
 
     def terminate_command(self, process_id: str) -> None:

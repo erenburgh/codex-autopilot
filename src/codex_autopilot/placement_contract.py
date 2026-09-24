@@ -8,12 +8,14 @@ staged task was invisible in her project, 65 threads of the beyondness run,
 while the screener, the replanner and the on-call (cwd = root) were visible.
 
 Contract 2 separates them: ``cwd = cfg.root`` - the thread is in the project
-- and ``runtimeWorkspaceRoots = [workspace]`` - the only place it may write.
-Every turn/start repeats both, because the server rewrites a thread's cwd on
-each turn. It is used only when the isolation probe PASSed for this root,
-profile and binary (isolation_probe); without that the thread keeps the old
-placement (contract 1) and its placement is an R5 defect with that cause,
-never a silent choice.
+- and ``runtimeWorkspaceRoots = [workspace]``, under the task's own staged
+permission profile, which keeps the root read-only whatever the roots are
+(isolation_probe: measured, not assumed). Every turn/start repeats cwd,
+roots and profile, because the server rewrites a thread's cwd on each turn.
+It is used only when the isolation probe PASSed for this root, profile and
+binary, and only on an App Server launched with that profile's definition;
+without either the thread keeps the old placement (contract 1) and its
+placement is an R5 defect with that cause, never a silent choice.
 
 ``descriptor.cwd`` keeps its meaning - the task's file workspace - so scope
 baselines, staging and the descriptor's state dir are untouched.
@@ -28,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 CONTRACT = 2
 
@@ -41,30 +43,56 @@ class Placement:
     workspace_roots: tuple[Path, ...] | None
     contract: int
     reason: str
+    # The profile thread/start and every turn/start name: the run's own, or
+    # under contract 2 with a staged workspace the task's staged profile.
+    permission_profile: str = ""
 
 
-def thread_placement(cfg: Any, workspace: Path, kind: str) -> Placement:
-    """The contract for a thread whose file workspace is ``workspace``."""
+def thread_placement(
+    cfg: Any, workspace: Path, kind: str, *, available_profiles: Collection[str] | None = None
+) -> Placement:
+    """The contract for a thread whose file workspace is ``workspace``.
 
-    from .isolation_probe import isolation_proven
+    ``available_profiles`` - what the connected server offers: a server not
+    launched with the task's staged profile cannot run contract 2.
+    """
+
+    from .isolation_probe import isolation_proven, staged_profile_id
 
     root = Path(cfg.root)
+    base = cfg.desktop.permission_profile
     roots: tuple[Path, ...] | None = None if kind == "plan_verifier" else (workspace,)
     if workspace == root:
-        return Placement(root, workspace, roots, CONTRACT, "the task works in the canonical root")
+        return Placement(root, workspace, roots, CONTRACT, "the task works in the canonical root", base)
+    staged = staged_profile_id(workspace)
     if isolation_proven(cfg):
-        return Placement(root, workspace, roots, CONTRACT, "filed at the root; writes only its staged workspace")
-    return Placement(
-        workspace, workspace, roots, 1,
-        "isolation of the root is not proven (isolation-probe.json): the thread keeps its "
-        "staged workspace as cwd and is outside the project in Desktop",
-    )
+        if available_profiles is None or staged in available_profiles:
+            return Placement(
+                root, workspace, roots, CONTRACT,
+                "filed at the root; its staged profile writes only its workspace", staged,
+            )
+        why = (
+            f"the App Server serving this task was not launched with its staged profile {staged}: "
+            "the thread keeps its staged workspace as cwd and is outside the project in Desktop"
+        )
+    else:
+        why = (
+            "isolation of the root is not proven (isolation-probe.json): the thread keeps its "
+            "staged workspace as cwd and is outside the project in Desktop"
+        )
+    return Placement(workspace, workspace, roots, 1, why, base)
 
 
 def session_cwd(cfg: Any, session: Mapping[str, Any], workspace: Path) -> Path:
     """The cwd a created session's thread must have: its contract's, or the old one."""
 
     return Path(cfg.root) if session.get("placement_contract") == CONTRACT else workspace
+
+
+def session_profile(cfg: Any, session: Mapping[str, Any]) -> str:
+    """The profile every turn of a created session names: the one it was created with."""
+
+    return str(session.get("permission_profile") or cfg.desktop.permission_profile)
 
 
 def roots_within(returned: Any, requested: Sequence[Path] | None) -> bool:
@@ -88,14 +116,21 @@ def repair_contract_ok(cfg: Any, descriptor: Any, params: Mapping[str, Any]) -> 
     [root]`` for every kind: under contract 2 a staged task's roots are its
     workspace, and the repair would be refused for every worker, verifier
     and revision (the independent check). Now: the roots are exactly the
-    task's authenticated workspace (none for the plan verifier), and the cwd
-    is the root - or, under contract 1, that staged workspace.
+    task's authenticated workspace (none for the plan verifier), the cwd is
+    the root - or, under contract 1, that staged workspace - and the profile
+    is the run's or that workspace's staged one.
     """
 
+    from .isolation_probe import staged_profile_id
     from .lifecycle_dispatch import _descriptor_workspace
 
     workspace = _descriptor_workspace(cfg, descriptor)
     cwd = Path(str(params.get("cwd") or "")).resolve()
     kind = str(getattr(descriptor, "kind", "") or "")
     expected_roots = None if kind == "plan_verifier" else [str(workspace)]
-    return params.get("runtimeWorkspaceRoots") == expected_roots and cwd in {Path(cfg.root), workspace}
+    profiles = {cfg.desktop.permission_profile, staged_profile_id(workspace)}
+    return (
+        params.get("runtimeWorkspaceRoots") == expected_roots
+        and cwd in {Path(cfg.root), workspace}
+        and params.get("permissions") in profiles
+    )

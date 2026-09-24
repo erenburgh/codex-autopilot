@@ -472,9 +472,15 @@ def _automatic_relay_loop(
         # whole feature was written to improve, not a dispatcher that dies
         # before its first turn.
         _sweep_finished_traces(cfg, dispatcher_log.parent)
+        from .isolation_probe import dispatcher_overrides
+
+        # A staged task filed at the root runs under its own permission
+        # profile, defined for this process only (isolation_probe).
+        overrides = dispatcher_overrides(cfg, token)
         client = AppServerClient(
             cfg.desktop.binary,
             dispatcher_log,
+            **({"config_overrides": overrides} if overrides else {}),
             # Limits arrive by themselves, as events, during the work.
             # Capacity used to be computed from what preflight read at the
             # start: a 24-task run could eat the window and not learn of it

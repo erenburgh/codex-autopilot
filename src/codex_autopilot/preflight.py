@@ -209,7 +209,7 @@ class PreflightResult:
     memory_preflight_thread_id: str | None = None
     plan_verification: PlanVerificationReceipt | None = None
     # The isolation measurement (isolation_probe); bootstrap writes it into
-    # the new run's state - preflight itself creates no state.
+    # the new run's state - preflight removes what its probe created.
     isolation: dict[str, Any] | None = None
 
     def add(self, name: str, status: str, detail: str) -> None:
@@ -238,49 +238,77 @@ def _looks_like_codex_home_denial(exc: BaseException) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _run_permission_profile(project: Path) -> str:
+    """The profile the run's threads will use: the project's config, or the default."""
+
+    from .config import DesktopConfig, load_config
+
+    try:
+        return load_config(project).desktop.permission_profile
+    except Exception:  # noqa: BLE001 - a project not initialized yet uses the default
+        return DesktopConfig().permission_profile
+
+
 def _measure_isolation(
-    client: Any, project: Path, binary: str, initialized: Any, report: Callable[..., None]
+    client_factory: Callable[..., Any],
+    project: Path,
+    binary: str,
+    initialized: Any,
+    report: Callable[..., None],
 ) -> dict[str, Any]:
     """Can a staged task's thread be filed at the root and still not write it (isolation_probe).
 
-    ROOT_WRITABLE fails preflight with an ISOLATION finding: the choice it
-    leaves - isolated tasks outside her project, or a profile that denies
-    the root - is not the runtime's. NOT_PROVEN keeps the old placement for
-    staged tasks and says so here; each such thread is then an R5 defect.
-    Preflight creates no project state, so the probe's workspace is a
-    temporary directory and the record is returned, not written.
+    Measured as the dispatcher will use it: the task's staged profile, on
+    this root, with a workspace under this project's state directory, on a
+    short-lived App Server launched with the profile's definition.
+
+    No outcome stops the launch. The first version failed preflight on a
+    writable root and handed her the choice between isolated tasks outside
+    the project and a profile that denies the root - a stop no on-call ever
+    saw, over a choice that is the runtime's. The deny profile is now the
+    runtime's own design; if it does not hold, that is a runtime defect: the
+    finding is reported here (FAIL or NOT PROVEN, never silent), staged
+    tasks keep their workspace as cwd, and the first such thread's R5 ticket
+    takes the record to the on-call (placement_defects).
+
+    What preflight creates for the probe it removes; bootstrap writes the
+    returned record into the run.
     """
 
-    from .isolation_probe import PASS, ROOT_WRITABLE, probe_isolation
+    from .isolation_probe import PASS, ROOT_WRITABLE, probe_isolation, probe_workspace
 
-    workspace = Path(tempfile.mkdtemp(prefix="codex-autopilot-isolation-"))
+    state_dir = project / STATE_DIR_NAME
+    created_state_dir = not state_dir.exists()
+    workspace = probe_workspace(state_dir)
+    log_path = Path(tempfile.gettempdir()) / f"codex-autopilot-isolation-{os.getpid()}.jsonl"
     try:
         record = probe_isolation(
-            client,
+            lambda overrides: client_factory(binary, log_path, config_overrides=overrides),
             root=project,
             workspace=workspace,
-            permission_profile=":workspace",
+            base_profile=_run_permission_profile(project),
             binary=binary,
             codex_version=str((initialized or {}).get("userAgent") or "") or None,
         )
     finally:
-        shutil.rmtree(workspace, ignore_errors=True)
-    if record["outcome"] == ROOT_WRITABLE:
-        detail = f"ISOLATION: {record['reason']} (cwd = {project}, runtime roots = [{record['workspace']}])"
-        report("Isolation", "FAIL", detail)
-        raise PreflightError(
-            f"{detail}. Filing staged tasks in the project would let them write the canonical "
-            "root; keeping them outside the project breaks R5. The choice is yours: a permission "
-            "profile that denies writes to the root, or staged tasks outside the project."
-        )
+        shutil.rmtree(workspace.parent, ignore_errors=True)
+        if created_state_dir:
+            try:
+                state_dir.rmdir()
+            except OSError:
+                pass
+        log_path.unlink(missing_ok=True)
+    where = f"cwd = {project}, profile {record['profile']}, workspace {record['workspace']}"
     if record["outcome"] == PASS:
-        report("Isolation", "OK", f"staged tasks are filed at {project} and write only their workspace")
+        report("Isolation", "OK", f"staged tasks are filed at {project} and write only their workspace ({where})")
     else:
+        status = "FAIL" if record["outcome"] == ROOT_WRITABLE else "NOT PROVEN"
         report(
             "Isolation",
-            "NOT PROVEN",
-            f"{record['reason']}. Staged tasks keep their workspace as cwd and are outside the "
-            "project in Desktop; each is recorded as an R5 defect",
+            status,
+            f"ISOLATION: {record['reason']} ({where}). Staged tasks keep their workspace as cwd, "
+            "isolated but outside the project in Desktop; each is an R5 defect whose ticket takes "
+            "this measurement to the on-call as a runtime defect",
         )
     return record
 
@@ -815,7 +843,7 @@ def run_preflight(
         else:
             report("Model metadata", "OK", "dispatcher will send neither model nor effort")
 
-        result.isolation = _measure_isolation(client, project, binary, initialized, report)
+        result.isolation = _measure_isolation(client_factory, project, codex_binary, initialized, report)
         if replace:
             retired = _archive_replaced_workers(project, client, exclude=set(probe_thread_ids))
             if retired:

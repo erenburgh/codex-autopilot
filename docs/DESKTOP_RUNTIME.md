@@ -69,10 +69,15 @@ for migration, but new reservations never use that path.
 Every App Server `thread/start` and every `turn/start` supplies the
 initialized target repository root as `cwd`: Desktop files a thread in the
 project only when its cwd equals a project root (`desktop_sidebar.py`). A task
-whose work is staged gets its staged workspace as `runtimeWorkspaceRoots` - the
-only place it may write - once the isolation probe proved the root stays
-read-only (placement contract 2); without that proof its thread keeps the
-workspace as cwd and is recorded as an R5 defect. There is no later model turn
+whose work is staged gets its staged workspace as `runtimeWorkspaceRoots` and
+runs under its own staged permission profile, which writes only that
+workspace (placement contract 2). The profile is defined for the task's App
+Server process by `-c` overrides at launch and used once the isolation probe
+proved it keeps the root read-only; without that proof the thread keeps the
+workspace as cwd and is recorded as an R5 defect (PROJECT_ASSOCIATION.md).
+Before each turn the thread's runtime roots are read back and widened roots
+are signalled; after promotion the canonical root is compared with the
+manifest (`isolation_guard.py`). There is no later model turn
 that tries to repair an initially wrong checkout. The saved App Server `projectId` is resolved independently: an
 explicitly configured matching project wins; otherwise Autopilot selects the
 unique saved project with the longest root that contains the target. An

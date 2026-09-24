@@ -24,7 +24,7 @@ from .project_association import (
     project_root_authorization_statement,
     project_root_mutation_authorized,
 )
-from .placement_contract import roots_within, session_cwd, thread_placement
+from .placement_contract import Placement, roots_within, session_cwd, session_profile, thread_placement
 from .resources import ResourceLockCoordinator
 from .run_state import RunState, StateStore, utc_now
 
@@ -55,17 +55,20 @@ from .lifecycle_failures import (
 def app_server_creation_contract(
     cfg: Config,
     descriptor: LaunchDescriptor,
+    placement: Placement | None = None,
 ) -> dict[str, Any]:
     """Return the exact project-scoped create contract (placement_contract).
 
     ``cwd`` is where Desktop files the thread, ``runtimeWorkspaceRoots``
-    where it may write: the root and the staged workspace under contract 2.
+    where it may write: the root and the staged workspace under contract 2,
+    with the task's staged profile. ``placement`` - the one actually used.
     """
 
-    placement = thread_placement(cfg, _descriptor_workspace(cfg, descriptor), descriptor.kind)
+    if placement is None:
+        placement = thread_placement(cfg, _descriptor_workspace(cfg, descriptor), descriptor.kind)
     params: dict[str, Any] = {
         "cwd": str(placement.cwd),
-        "permissions": cfg.desktop.permission_profile,
+        "permissions": placement.permission_profile,
         "ephemeral": False,
     }
     if placement.workspace_roots is not None:
@@ -184,8 +187,13 @@ def create_desktop_thread_via_app_server(
     actual_project_id: str | None = None
     log_path = cfg.state_dir / "logs" / f"app-server-create-{reservation_token}.jsonl"
     owns_client = connected_client is None
+    # A server this function launches itself defines the task's staged
+    # profile when the thread will run under it (isolation_probe).
+    from .isolation_probe import server_overrides
+
+    overrides = server_overrides(cfg, session) if owns_client else ()
     client_context = (
-        client_factory(cfg.desktop.binary, log_path)
+        client_factory(cfg.desktop.binary, log_path, **({"config_overrides": overrides} if overrides else {}))
         if owns_client
         else nullcontext(connected_client)
     )
@@ -232,20 +240,16 @@ def create_desktop_thread_via_app_server(
             # UNKNOWN and produced an AMBIGUOUS_SIDE_EFFECT ticket with no way
             # out - while the dispatcher log held not one `thread/start`.
             plugin_root = installed_plugin_root(cfg.skill_path)
-            if workspace != cfg.root:
-                # A run that has no isolation record for this root, profile
-                # and binary - one paused before contract 2 among them - is
-                # measured here, on this connection, before its first staged
-                # thread (isolation_probe).
-                from .isolation_probe import ensure_measured
-
-                ensure_measured(cfg, client)
-            placement = thread_placement(cfg, workspace, descriptor.kind)
+            # The isolation record is measured before this server was
+            # launched (isolation_probe.server_overrides, by the dispatcher):
+            # a staged profile must be defined at launch, so a probe on this
+            # connection could not have served its own verdict.
+            placement = thread_placement(cfg, workspace, descriptor.kind, available_profiles=allowed)
             create_invoked = True
             started = client.start_thread(
                 cwd=placement.cwd,
                 workspace_roots=placement.workspace_roots,
-                permission_profile=cfg.desktop.permission_profile,
+                permission_profile=placement.permission_profile,
                 # v0.7 invariant: create the task in the saved project, with a
                 # cwd that is already one of that project's durable roots.
                 project_id=cfg.desktop.project_id,
@@ -271,7 +275,7 @@ def create_desktop_thread_via_app_server(
                     f"{[str(item) for item in placement.workspace_roots or ()]!r} - isolation refused"
                 )
             active_profile = started.get("activePermissionProfile") or {}
-            if active_profile and active_profile.get("id") != cfg.desktop.permission_profile:
+            if active_profile and active_profile.get("id") != placement.permission_profile:
                 raise DesktopLifecycleError(
                     "App Server thread/start applied an unexpected permission profile"
                 )
@@ -348,7 +352,8 @@ def create_desktop_thread_via_app_server(
         session["actual_workspace_root"] = str(workspace)
         session["placement_contract"] = placement.contract
         session["placement_reason"] = placement.reason
-        session["app_server_creation_contract"] = app_server_creation_contract(cfg, descriptor)
+        session["permission_profile"] = placement.permission_profile
+        session["app_server_creation_contract"] = app_server_creation_contract(cfg, descriptor, placement)
         session["actual_thread_name"] = actual_name
         session["title_verification"] = "verified by App Server thread/read"
         session["actual_project_id"] = actual_project_id
@@ -901,8 +906,14 @@ def run_automatic_app_server_turn(
         cfg.state_dir / "logs" / f"app-server-production-{reservation_token}.jsonl"
     )
     client: Any = None
+    from .isolation_probe import server_overrides
+
+    production_overrides = server_overrides(cfg, session) if connected_client is None else ()
     production_context = (
-        client_factory(cfg.desktop.binary, production_log)
+        client_factory(
+            cfg.desktop.binary, production_log,
+            **({"config_overrides": production_overrides} if production_overrides else {}),
+        )
         if connected_client is None
         else nullcontext(connected_client)
     )
@@ -920,11 +931,23 @@ def run_automatic_app_server_turn(
             # resumes, and turn/start answers "thread not found". Reproduced
             # on a throwaway thread: create, close the creating process,
             # start a turn from a new one - the same refusal.
+            resumed: dict[str, Any] | None = None
             if thread_id in getattr(production_client, "subscribed_thread_ids", ()):
                 thread = production_client.read_thread(thread_id)
             else:
                 resumed = production_client.resume_thread(thread_id)
                 thread = resumed.get("thread") or {}
+            if session.get("placement_contract") == 2 and workspace != cfg.root:
+                # A thread she can open can come back with wider roots
+                # (isolation_guard): recorded and signalled; this turn
+                # replaces them with the workspace under the staged profile.
+                from .desktop_sidebar import codex_home_of
+                from .isolation_guard import check_thread_roots
+
+                check_thread_roots(
+                    cfg, reservation_token, thread=thread, response=resumed, workspace=workspace,
+                    codex_home=codex_home_of(production_client),
+                )
             expected_cwd = session_cwd(cfg, session, workspace)
             if _thread_cwd(thread) != expected_cwd:
                 raise DesktopLifecycleError(
@@ -950,7 +973,7 @@ def run_automatic_app_server_turn(
                 "client_user_message_id": str(session["client_user_message_id"]),
                 "cwd": expected_cwd,
                 "workspace_roots": [workspace],
-                "permission_profile": cfg.desktop.permission_profile,
+                "permission_profile": session_profile(cfg, session),
                 "model": descriptor.model if descriptor.model else None,
             }
             if str(session.get("kind") or "") == "plan_verifier":

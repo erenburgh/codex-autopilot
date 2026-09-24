@@ -129,15 +129,46 @@ class AppServerTests(unittest.TestCase):
                             model=None, project_memory=False)
         self.assertNotIn("runtimeWorkspaceRoots", client.calls[-1][1])
 
-    def test_command_exec_names_its_process_and_sandbox(self):
+    def test_command_exec_runs_under_a_named_profile_never_a_legacy_sandbox(self):
+        """The isolation probe's call (isolation_probe), the second independent check.
+
+        The first version sent the thread/start answer's legacy sandbox
+        (``workspaceWrite``, under which the cwd is writable) and therefore
+        no profile at all - the two exclude each other. Mutation: the
+        profile left out of the request - the assertion on it fails.
+        """
+
         client = CaptureClient()
         client.exec_command(["/usr/bin/touch", "/root/x"], cwd=Path("/root"), process_id="p-1",
-                            sandbox_policy={"type": "workspaceWrite"}, permission_profile=":workspace")
+                            permission_profile="codex-autopilot-staged-0123")
         method, params = client.calls[-1]
         self.assertEqual(method, "command/exec")
         self.assertEqual(params["processId"], "p-1")
-        self.assertEqual(params["sandboxPolicy"], {"type": "workspaceWrite"})
-        self.assertNotIn("permissionProfile", params)
+        self.assertEqual(params["permissionProfile"], "codex-autopilot-staged-0123")
+        self.assertNotIn("sandboxPolicy", params)
+
+    def test_config_overrides_reach_the_server_process_before_its_transport(self):
+        """A staged profile is defined for one process by ``-c`` (isolation_probe).
+
+        Mutation: the overrides not passed to Popen - the command line has
+        no ``-c``, and the server never knows the profile its turns name.
+        """
+
+        seen: list = []
+
+        def popen(command, **_kwargs):
+            seen.append(command)
+            raise RuntimeError("only the command line is needed")
+
+        overrides = ('permissions.p.extends=":workspace"', 'permissions.p.filesystem={"/w" = "write"}')
+        client = AppServerClient("codex", Path(tempfile.mktemp()), popen_factory=popen, config_overrides=overrides)
+        with self.assertRaises(RuntimeError):
+            client.connect()
+        client.log.close()
+        self.assertEqual(
+            seen[0],
+            ["codex", "app-server", "-c", overrides[0], "-c", overrides[1], "--listen", "stdio://"],
+        )
 
     def test_connect_keeps_the_codex_home_the_server_reported(self):
         """desktop_sidebar reads Desktop's state from there. Mutation: not stored - None."""

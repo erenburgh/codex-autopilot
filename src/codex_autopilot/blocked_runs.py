@@ -61,6 +61,7 @@ def stop_run(
     plan_change_id: str = "",
     system_state: dict[str, Any] | None = None,
     recent_events: Sequence[dict[str, str]] = (),
+    signal_key: str = "",
 ) -> str | None:
     """Stop a task through the one door: ticket, on-call, reason.
 
@@ -69,6 +70,13 @@ def stop_run(
     (its cwd and title) for a stop that holds nothing - a run-level stop, a
     reservation that found no successor. Mixing the two paused the very
     ready tasks a NO_SUCCESSOR ticket was about.
+
+    `signal_key` tells apart stops of one kind that hold the same tasks (or
+    none) but have different causes. Without it an R5 placement ticket of
+    one cause, still open, swallowed every other cause of the run: the
+    second cause's diagnosis was never filed (the independent check
+    reproduced it with an isolation ticket and older threads outside the
+    project - one ticket, the older threads unnamed).
 
     Returns the incident id, or None when the ticket could not be written.
     Recording a stop may never prevent one, but it may not be silent either:
@@ -92,6 +100,7 @@ def stop_run(
             plan_change_id=str(plan_change_id or ""),
             system_state=system_state or {},
             recent_events=recent_events,
+            signal_key=str(signal_key or ""),
         )
     except Exception as exc:  # noqa: BLE001 - recording a stop may never prevent one
         filed = None
@@ -121,6 +130,7 @@ def _file(
     plan_change_id: str,
     system_state: dict[str, Any],
     recent_events: Sequence[dict[str, str]],
+    signal_key: str = "",
 ) -> str:
     from .engineer_authority import IncidentClass, SideEffectOutcome
     from .pipeline_engineer import IncidentPhase, IncidentSignal, PipelineIncidentStore
@@ -135,6 +145,8 @@ def _file(
     # its own ticket; the same stop repeated while its ticket is still open
     # reuses it, so a replayed completion does not file twice.
     base = f"{run_id}:{stop_kind}:{plan_change_id or '-'}:{':'.join(affected) or 'run'}"
+    if signal_key:
+        base = f"{base}:{signal_key}"
     same = [
         item
         for item in store.load().get("incidents") or []

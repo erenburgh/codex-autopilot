@@ -37,6 +37,9 @@ from .scope import ScopeNotObservable, audit_declared_scope, observe_changed_pat
 class CompletionArtifactGate:
     workspace: Path
     store: ArtifactStagingStore | None
+    # The run's config: a promotion of a task filed at the root is followed
+    # by the canonical check of isolation_guard, whose ticket needs it.
+    cfg: Any = None
 
     @property
     def staged(self) -> bool:
@@ -160,6 +163,20 @@ class CompletionArtifactGate:
                 sort_keys=True,
             ),
         )
+        if self.cfg is not None and any(
+            item.get("placement_contract") == 2
+            for item in state.worker_sessions
+            if item.get("task_id") == task_id
+        ):
+            # The task's threads were filed at the root, where she can open
+            # them and Desktop can widen their roots: was the canonical root
+            # changed outside what was promoted (isolation_guard)?
+            from .isolation_guard import canonical_outside_manifest, record_outside_manifest
+
+            record_outside_manifest(
+                self.cfg, state, session, task_id,
+                canonical_outside_manifest(self.store, task_id), at,
+            )
         return promotion
 
 
@@ -193,7 +210,7 @@ def bind_completion_artifact_gate(
         store.publish_checkpoint(task_id)
     except ArtifactStagingError as exc:
         raise DesktopLifecycleError(str(exc)) from exc
-    return CompletionArtifactGate(workspace=workspace, store=store)
+    return CompletionArtifactGate(workspace=workspace, store=store, cfg=cfg)
 
 
 def audit_completed_task_scope(

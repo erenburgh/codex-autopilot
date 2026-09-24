@@ -384,10 +384,16 @@ class RearmAStagedDestinationTests(RearmRelayOwnerCommandTests):
             super().setUp()
 
     def _prove_isolation(self) -> None:
-        from codex_autopilot.isolation_probe import binary_identity, write_record
+        # A PASS record of the shape the probe writes (isolation_probe): the
+        # probe itself is exercised in test_placement_contract.
+        from codex_autopilot.isolation_probe import (
+            RECORD_VERSION, binary_identity, probe_workspace, write_record,
+        )
 
         write_record(self.cfg.state_dir, {
-            "root": str(self.cfg.root), "permission_profile": self.cfg.desktop.permission_profile,
+            "version": RECORD_VERSION, "root": str(self.cfg.root),
+            "base_profile": self.cfg.desktop.permission_profile,
+            "workspace": str(probe_workspace(self.cfg.state_dir)),
             "codex_binary": binary_identity(self.cfg.desktop.binary), "outcome": "PASS",
         })
 
@@ -404,6 +410,8 @@ class RearmAStagedDestinationTests(RearmRelayOwnerCommandTests):
 
         self._prove_isolation()
         params = app_server_creation_contract(self.cfg, self.reservation)["params"]
-        self.assertEqual((Path(params["cwd"]), params["runtimeWorkspaceRoots"]),
-                         (self.cfg.root, [self.reservation.cwd]))
+        from codex_autopilot.isolation_probe import staged_profile_id
+
+        self.assertEqual((Path(params["cwd"]), params["runtimeWorkspaceRoots"], params["permissions"]),
+                         (self.cfg.root, [self.reservation.cwd], staged_profile_id(Path(self.reservation.cwd))))
         self.assertEqual(self.rearm(CONFIRMED)["status"], "REARMED")
