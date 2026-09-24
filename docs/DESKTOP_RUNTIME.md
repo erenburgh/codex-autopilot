@@ -74,7 +74,11 @@ runs under its own staged permission profile, which writes only that
 workspace (placement contract 2). The profile is defined for the task's App
 Server process by `-c` overrides at launch and used once the isolation probe
 proved it keeps the root read-only; without that proof the thread keeps the
-workspace as cwd and is recorded as an R5 defect (PROJECT_ASSOCIATION.md).
+workspace as cwd and is recorded as an R5 defect (PROJECT_ASSOCIATION.md). A
+failed proof is measured again: NOT PROVEN after ten minutes, any outcome once
+the runtime code or the Codex binary changes. Sessions created before contract
+2 keep their old cwd and profile; an ACTIVE one of a paused run is retired by
+resume reconciliation, never resumed (PROJECT_ASSOCIATION.md).
 Before each turn the thread's runtime roots are read back and widened roots
 are signalled; after promotion the canonical root is compared with the
 manifest (`isolation_guard.py`). There is no later model turn

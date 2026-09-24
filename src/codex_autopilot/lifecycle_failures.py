@@ -237,7 +237,7 @@ def record_desktop_failure(
         # the task instead (approval_stops).
         counted = (
             not rate_limited
-            and failure_code not in {"worker_paused", "approval_required"}
+            and failure_code not in {"worker_paused", "approval_required", "approval_root_write"}
             and not engineer
         )
         attempts = int(state.failure_signature_attempts.get(failure_code, 0))

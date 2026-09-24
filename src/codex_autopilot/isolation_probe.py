@@ -61,15 +61,40 @@ Neither of the last two stops anything or asks her: staged tasks keep their
 workspace as cwd (contract 1, isolated but outside the project), and each
 such thread is an R5 defect whose ticket reaches the on-call with the record
 (placement_defects). Every outcome is written to
-``<state_dir>/isolation-probe.json`` with the Codex binary identity and the
-Desktop version; the dispatcher measures before it launches a task's App
-Server when there is no record of this shape - which is how a run paused
-before this change is measured when it resumes.
+``<state_dir>/isolation-probe.json`` with the Codex binary identity, the
+runtime code that measured and the Desktop version; the dispatcher measures
+before it launches a task's App Server when there is no record of this
+shape - which is how a run paused before this change is measured when it
+resumes.
+
+A failed measurement is measured again (the third independent check). The
+record used to count by its shape alone - version, root, profile, binary,
+workspace - never by its outcome, so one NOT_PROVEN (a probe timeout, an App
+Server that did not start) kept every staged task of the run on contract 1
+to its end, and the on-call's ticket sent it down a road that did not exist:
+"repair it and let the dispatcher measure again" - a runtime patch changes
+none of the four. Now:
+
+- the record names the runtime code that measured it
+  (``runtime_code_identity``: a digest of the package's modules as this
+  process loaded them). A devops-repair-runtime patch, once installed,
+  changes that digest, and the next staged thread is measured again on the
+  repaired code - whatever the outcome was;
+- NOT_PROVEN says only that nothing was proven; it stands for
+  ``NOT_PROVEN_RETRY_SECONDS`` and is then measured again, so a transient
+  failure costs one interval, not the run;
+- ROOT_WRITABLE is a measurement, deterministic on one binary and one code:
+  it stands until either changes (a new binary, an installed repair). The
+  probe writes into her root to measure; repeating a known result every few
+  minutes would only write there more often;
+- PASS stands for the same binary and code.
 """
 
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
+from datetime import datetime, timezone
+import functools
 import hashlib
 import json
 import os
@@ -87,6 +112,10 @@ PASS = "PASS"
 ROOT_WRITABLE = "ROOT_WRITABLE"
 NOT_PROVEN = "NOT_PROVEN"
 STAGED_PROFILE_PREFIX = "codex-autopilot-staged-"
+# How long a NOT_PROVEN record stands before the dispatcher measures again.
+# Ten minutes: a dispatcher is launched per staged task, so a run with a
+# transient probe failure retries at most once per interval, never per task.
+NOT_PROVEN_RETRY_SECONDS = 600
 
 # (overrides) -> a context manager yielding a connected App Server client
 # launched with those ``-c`` overrides.
@@ -136,6 +165,28 @@ def binary_identity(binary: str) -> str | None:
     return f"{resolved}:{stat.st_size}:{stat.st_mtime_ns}"
 
 
+@functools.lru_cache(maxsize=1)
+def runtime_code_identity() -> str:
+    """The runtime code this process runs: a digest of the package's modules.
+
+    Taken once per process, at first use - the code a process runs is the
+    code it loaded, even if a repair is installed under it meanwhile. An
+    installed devops-repair-runtime patch changes it for every process
+    started after the install, and a record measured by other code is
+    measured again (record_matches).
+    """
+
+    package = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for module in sorted(package.glob("*.py")):
+        try:
+            content = module.read_bytes()
+        except OSError:
+            continue
+        digest.update(module.name.encode("utf-8") + b"\0" + content + b"\0")
+    return digest.hexdigest()[:16]
+
+
 def load_record(state_dir: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(record_path(state_dir).read_text(encoding="utf-8"))
@@ -154,12 +205,14 @@ def _inside(path: Any, parent: Path) -> bool:
 
 
 def record_matches(record: Mapping[str, Any] | None, cfg: Any) -> bool:
-    """A measurement of this root, run profile and binary - of the real shape.
+    """A measurement of this root, run profile, binary and runtime code - of the real shape.
 
     The real shape: this record version (the staged profile, measured on the
     root) and a workspace under this run's state directory, where every
     staged workspace lives. A record measured with a workspace elsewhere -
     the first probe's system temp directory - proves nothing about them.
+    Whether the record still stands is ``record_stands``: this says only
+    what it is a measurement of.
     """
 
     return bool(
@@ -168,8 +221,35 @@ def record_matches(record: Mapping[str, Any] | None, cfg: Any) -> bool:
         and record.get("root") == str(cfg.root)
         and record.get("base_profile") == cfg.desktop.permission_profile
         and record.get("codex_binary") == binary_identity(cfg.desktop.binary)
+        and record.get("runtime_code") == runtime_code_identity()
         and _inside(record.get("workspace"), Path(cfg.state_dir))
     )
+
+
+def _age_seconds(measured_at: Any, now: datetime) -> float | None:
+    try:
+        at = datetime.fromisoformat(str(measured_at))
+    except (TypeError, ValueError):
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return (now - at).total_seconds()
+
+
+def record_stands(record: Mapping[str, Any] | None, cfg: Any, *, now: datetime | None = None) -> bool:
+    """A record the dispatcher takes as it is, without measuring again.
+
+    Of this root, profile, binary and runtime code (record_matches), and
+    not a NOT_PROVEN older than ``NOT_PROVEN_RETRY_SECONDS`` - or one whose
+    time cannot be read.
+    """
+
+    if not record_matches(record, cfg):
+        return False
+    if (record or {}).get("outcome") != NOT_PROVEN:
+        return True
+    age = _age_seconds((record or {}).get("measured_at"), now or datetime.now(timezone.utc))
+    return age is not None and 0 <= age < NOT_PROVEN_RETRY_SECONDS
 
 
 def isolation_proven(cfg: Any) -> bool:
@@ -297,6 +377,7 @@ def probe_isolation(
         "profile": profile,
         "server_overrides": list(overrides),
         "codex_binary": binary_identity(binary),
+        "runtime_code": runtime_code_identity(),
         "codex_version": codex_version,
         "desktop_version": desktop_version(),
         "measured_at": utc_now(),
@@ -319,11 +400,11 @@ def probe_isolation(
     return record
 
 
-def ensure_measured(cfg: Any, open_client: OpenClient) -> dict[str, Any]:
-    """The record for this run, measured now when there is none of the real shape."""
+def ensure_measured(cfg: Any, open_client: OpenClient, *, now: datetime | None = None) -> dict[str, Any]:
+    """The record for this run, measured now when none stands (record_stands)."""
 
     record = load_record(cfg.state_dir)
-    if record_matches(record, cfg):
+    if record_stands(record, cfg, now=now):
         return dict(record or {})
     return probe_isolation(
         open_client,
@@ -341,8 +422,9 @@ def server_overrides(cfg: Any, session: Mapping[str, Any], open_client: OpenClie
     A thread created under its staged profile keeps needing it on every
     turn, whatever the record says now. A thread still to be created gets it
     when isolation is proven - measured first, through ``open_client``, if
-    this run has no record of the real shape (a run paused before contract 2
-    is measured here, when it resumes). Anything else: none.
+    no record stands (record_stands: none of this root, profile, binary and
+    runtime code, or a NOT_PROVEN past its interval; a run paused before
+    contract 2 is measured here, when it resumes). Anything else: none.
     """
 
     descriptor = session.get("descriptor") or {}

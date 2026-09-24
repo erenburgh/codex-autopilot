@@ -387,7 +387,7 @@ class RearmAStagedDestinationTests(RearmRelayOwnerCommandTests):
         # A PASS record of the shape the probe writes (isolation_probe): the
         # probe itself is exercised in test_placement_contract.
         from codex_autopilot.isolation_probe import (
-            RECORD_VERSION, binary_identity, probe_workspace, write_record,
+            RECORD_VERSION, binary_identity, probe_workspace, runtime_code_identity, write_record,
         )
 
         write_record(self.cfg.state_dir, {
@@ -395,6 +395,7 @@ class RearmAStagedDestinationTests(RearmRelayOwnerCommandTests):
             "base_profile": self.cfg.desktop.permission_profile,
             "workspace": str(probe_workspace(self.cfg.state_dir)),
             "codex_binary": binary_identity(self.cfg.desktop.binary), "outcome": "PASS",
+            "runtime_code": runtime_code_identity(),
         })
 
     def test_a_staged_destination_is_rearmed_under_contract_one(self) -> None:

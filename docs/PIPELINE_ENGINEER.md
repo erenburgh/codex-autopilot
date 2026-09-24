@@ -266,10 +266,15 @@ part of the signal id, so a second cause is never swallowed by an open ticket
 of the first) holds no task and carries the cause, the two separate facts (App
 Server `projectId`, Desktop's rule and its reason, the Desktop version), a
 diagnosis, a recommendation and every thread of the run outside the project by
-id and title (`stop_context.placement`). A wrong cwd, or a staged permission
-profile that did not keep the root read-only (`isolation_not_proven`, with
-`.codex-autopilot/isolation-probe.json`), is a runtime defect the on-call
-repairs - isolation is never a choice handed to her; a Desktop project root
+id and title (`stop_context.placement`); threads whose placement could not be
+read are listed apart (`unobserved_threads`) and never called outside. A wrong
+cwd, or a staged permission profile that did not keep the root read-only
+(`isolation_not_proven`, with `.codex-autopilot/isolation-probe.json`), is a
+runtime defect the on-call repairs - isolation is never a choice handed to
+her. The dispatcher measures again by itself: a NOT PROVEN record after ten
+minutes, any record once the runtime code or the Codex binary differs - so a
+repair installed with devops-repair-runtime is measured before the next staged
+thread; a Desktop project root
 (R6) goes to her. The same door carries `runtime_roots_widened` (a thread came
 back with roots wider than its workspace) and
 `canonical_changed_outside_manifest` (after a promotion, one ticket per task).
@@ -277,9 +282,18 @@ The on-call's own thread is never stopped by its placement, so the ticket
 always reaches it.
 
 A permission request inside a turn (`ApprovalRequired`) is never answered and
-never retried. Its ticket counts the requests of the run
-(`approvals_in_run`) and names the thread's placement contract: requests that
-keep coming from threads filed at the read-only root are a runtime defect. It is its own failure code, `approval_required`, not counted
+never retried. The runtime classifies it from the request itself
+(`approval_stops.approval_class`): `root_write` when a thread filed at the root
+(contract 2) asks to write under the root outside its workspace - an explicit
+write path there, or a command its sandbox refused at the read-only root
+(codex's own "command failed; retry without sandbox?", the relative-path
+case); `task_permission` otherwise, and whenever the request does not prove
+it (a network wish, an unknown target). `root_write` has its own failure code,
+`approval_root_write`, its own count (`root_write_approvals_in_run`, beside
+`approvals_in_run` for every request of the run) and the reason code
+RECOVERY_EXHAUSTED: the runtime put the thread there, so it is a runtime
+defect, and an escalation of it as DANGEROUS_PERMISSION is refused. A task
+permission is its own failure code, `approval_required`. Neither is counted
 towards the retry ceiling; a stop ticket holds the task with the request in
 it and goes to the on-call, which compares it with the run's durable
 authorization and permission profile (`stop_context.approval`; the on-call's

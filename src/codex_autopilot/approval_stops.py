@@ -39,12 +39,40 @@ So a permission request is its own failure code, ``approval_required``:
 
 An on-call's own request holds no task: its ticket is anchored to the task as
 context only.
+
+A request of a thread filed at the root is told apart by the runtime, not
+by the on-call's reading (the third independent check). Under placement
+contract 2 a staged task's thread has ``cwd = root`` and writes only its
+workspace; a command that writes a relative path meets the read-only root,
+the sandbox refuses, and the turn asks. The first version gave that request
+the same DANGEROUS_PERMISSION as any other and a count of every request of
+the run, and left "the model wrote into the read-only root" versus "the
+task needs a permission" to the on-call reading the brief. Now
+``approval_class`` decides it from the request itself (the 0.153.4 App
+Server schema: ``additionalPermissions.fileSystem``, ``grantRoot``,
+``fileChanges``, ``cwd``, ``networkApprovalContext``):
+
+- ``root_write``: a contract-2 thread asks to write under the root outside
+  its workspace - an explicit write path there, or, with no path and no
+  network in the request, a command at the root that the sandbox refused
+  (codex's own ``SANDBOX_RETRY_REASON``: the relative-path case). Its own
+  failure code (``approval_root_write``), its own count per run
+  (``root_write_approvals_in_run``), and its reason code is
+  RECOVERY_EXHAUSTED: the runtime filed the thread there, so it is a runtime
+  defect of placement, and ``read_engineer_outcome`` refuses to send it to
+  her as DANGEROUS_PERMISSION - as for a request the run's authorization
+  covers;
+- ``task_permission``: everything else, the road described above.
+
+Conservative by construction: a request whose target cannot be read is a
+task permission, and nobody answers either.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Mapping
 
 # Fields of an approval request that differ between two asks for the same
@@ -71,8 +99,77 @@ def approval_signature(payload: Mapping[str, Any]) -> str:
     return f"{method}:{digest}"
 
 
-def approvals_in_run(cfg: Any, state: Any) -> int:
-    """Permission-request stops this run already filed."""
+ROOT_WRITE = "root_write"
+TASK_PERMISSION = "task_permission"
+# The reason codex gives when its sandbox refused a command and it asks to
+# run it again unsandboxed - read from the codex binary's own strings (the
+# same build the probe measures). A request without a path, at the root,
+# with this reason is the relative-path case; with any other reason (a
+# network wish, a question the model asks) the target is not known.
+SANDBOX_RETRY_REASON = "command failed; retry without sandbox?"
+
+
+def _write_targets(params: Mapping[str, Any]) -> list[str]:
+    """Paths the request asks to write, as the schema names them."""
+
+    found: list[str] = []
+    for holder in (params.get("additionalPermissions"), params.get("permissions")):
+        file_system = holder.get("fileSystem") if isinstance(holder, Mapping) else None
+        if not isinstance(file_system, Mapping):
+            continue
+        found.extend(str(item) for item in file_system.get("write") or () if item)
+        for entry in file_system.get("entries") or ():
+            if not isinstance(entry, Mapping):
+                continue
+            path = entry.get("path")
+            if entry.get("access") == "write" and isinstance(path, Mapping) and path.get("type") == "path":
+                found.append(str(path.get("path") or ""))
+    if params.get("grantRoot"):
+        found.append(str(params["grantRoot"]))
+    for key in ("fileChanges", "changes"):
+        if isinstance(params.get(key), Mapping):
+            found.extend(str(item) for item in params[key])
+    return [item for item in found if item.strip()]
+
+
+def _asks_network(params: Mapping[str, Any]) -> bool:
+    extra = params.get("additionalPermissions") or params.get("permissions")
+    return bool(params.get("networkApprovalContext")) or bool(
+        isinstance(extra, Mapping) and extra.get("network")
+    )
+
+
+def approval_class(cfg: Any, session: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+    """``root_write`` or ``task_permission`` - see the module docstring."""
+
+    from .placement_contract import CONTRACT
+
+    if session.get("placement_contract") != CONTRACT:
+        return TASK_PERMISSION
+    root = Path(cfg.root).expanduser().resolve(strict=False)
+    workspace = Path(str((session.get("descriptor") or {}).get("cwd") or root)).expanduser().resolve(strict=False)
+    params = payload.get("params") if isinstance(payload.get("params"), Mapping) else {}
+    if workspace == root or _asks_network(params):
+        return TASK_PERMISSION
+    base = Path(str(params.get("cwd") or root)).expanduser()
+    base = base if base.is_absolute() else root / base
+
+    def in_root_not_workspace(value: str) -> bool:
+        candidate = Path(value).expanduser()
+        candidate = (candidate if candidate.is_absolute() else base / candidate).resolve(strict=False)
+        return candidate.is_relative_to(root) and not candidate.is_relative_to(workspace)
+
+    targets = _write_targets(params)
+    if targets:
+        return ROOT_WRITE if any(in_root_not_workspace(item) for item in targets) else TASK_PERMISSION
+    command = str(payload.get("method") or "") in {"item/commandExecution/requestApproval", "execCommandApproval"}
+    refused = str(params.get("reason") or "").startswith(SANDBOX_RETRY_REASON)
+    at_root = bool(params.get("cwd")) and in_root_not_workspace(str(params.get("cwd")))
+    return ROOT_WRITE if command and refused and at_root else TASK_PERMISSION
+
+
+def approvals_in_run(cfg: Any, state: Any, *, approval_kind: str | None = None) -> int:
+    """Permission-request stops this run already filed - of one class when named."""
 
     from .pipeline_engineer import PipelineIncidentStore
 
@@ -81,6 +178,7 @@ def approvals_in_run(cfg: Any, state: Any) -> int:
         for item in PipelineIncidentStore(cfg.state_dir).load().get("incidents") or ()
         if (item.get("system_state") or {}).get("stop_kind") == "approval_required"
         and str((item.get("system_state") or {}).get("run_id") or "") == str(getattr(state, "run_id", "") or "")
+        and (approval_kind is None or (item.get("system_state") or {}).get("approval_class") == approval_kind)
     )
 
 
@@ -110,12 +208,13 @@ def record_approval_required(
     from .run_state import StateStore, utc_now
 
     signature = approval_signature(payload)
+    kind = approval_class(cfg, _session_by_token(StateStore(cfg.state_dir).load(), reservation_token), payload)
     try:
         record_desktop_failure(
             cfg,
             reservation_token,
-            reason=f"the turn asked for a permission the dispatcher never answers: {signature}",
-            failure_code="approval_required",
+            reason=f"the turn asked for a permission the dispatcher never answers ({kind}): {signature}",
+            failure_code="approval_root_write" if kind == ROOT_WRITE else "approval_required",
             definitive=True,
             thread_id=thread_id,
             turn_id=turn_id or None,
@@ -176,7 +275,10 @@ def record_approval_required(
             context_task_id=task_id if engineer else "",
             system_state={
                 "held": not engineer,
-                "reason_code": "DANGEROUS_PERMISSION",
+                # A request from the root the runtime filed the thread at is
+                # the runtime's defect: it goes up only as RECOVERY_EXHAUSTED.
+                "reason_code": "RECOVERY_EXHAUSTED" if kind == ROOT_WRITE else "DANGEROUS_PERMISSION",
+                "approval_class": kind,
                 "approval": bounded_request(payload),
                 "approval_signature": signature,
                 "covered_by": covered_by,
@@ -187,6 +289,9 @@ def record_approval_required(
                 # and asks - the independent check's risk, counted per run
                 # rather than trusted to the prompt's workdir line.
                 "approvals_in_run": approvals_in_run(cfg, state) + 1,
+                "root_write_approvals_in_run": (
+                    approvals_in_run(cfg, state, approval_kind=ROOT_WRITE) + (1 if kind == ROOT_WRITE else 0)
+                ),
                 "placement_contract": session.get("placement_contract"),
             },
         )

@@ -129,6 +129,8 @@ def stop_context(cfg: Any, plan: Any, state: Any, incident: Mapping[str, Any]) -
             "run_authorization": _run_authorization(cfg, state),
             "covered_by": system.get("covered_by"),
             "approvals_in_run": system.get("approvals_in_run"),
+            "approval_class": system.get("approval_class"),
+            "root_write_approvals_in_run": system.get("root_write_approvals_in_run"),
             "placement_contract": system.get("placement_contract"),
             "permission_profile": str(
                 getattr(getattr(cfg, "desktop", None), "permission_profile", "") or ""
@@ -144,7 +146,7 @@ def stop_context(cfg: Any, plan: Any, state: Any, incident: Mapping[str, Any]) -
     if kind == "placement_defect":
         context["placement"] = {
             key: system.get(key)
-            for key in ("cause", "diagnosis", "recommendation", "defect", "outside_threads")
+            for key in ("cause", "diagnosis", "recommendation", "defect", "outside_threads", "unobserved_threads")
         }
     return context
 

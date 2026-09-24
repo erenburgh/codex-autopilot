@@ -35,6 +35,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .isolation_probe import NOT_PROVEN_RETRY_SECONDS
+
 STOP_KIND = "placement_defect"
 
 
@@ -65,12 +67,16 @@ def _diagnosis(cause: str, observation: Mapping[str, Any], defect: Mapping[str, 
             f"in Desktop: {defect.get('placement_reason') or 'isolation of the root is not proven'}. "
             "The measurement is in .codex-autopilot/isolation-probe.json (outcome, reason, the "
             "staged profile and the Codex binary it was measured on).",
-            "A runtime defect - yours to repair, not hers to choose. NOT_PROVEN because the probe "
-            "could not run or the server lacked the staged profile: repair that and let the "
-            "dispatcher measure again (it measures when the record does not match this root, "
-            "profile and binary). ROOT_WRITABLE: the staged profile "
+            "A runtime defect - yours to repair, not hers to choose. The dispatcher measures "
+            "again by itself before the next staged thread: a NOT_PROVEN record "
+            f"{NOT_PROVEN_RETRY_SECONDS // 60} minutes after it was measured (a probe timeout, a "
+            "server that did not start - read its reason first), and any record measured by "
+            "other runtime code or another Codex binary (its runtime_code and codex_binary). "
+            "So a NOT_PROVEN that keeps coming back, or a ROOT_WRITABLE - the staged profile "
             "(isolation_probe.staged_profile_overrides) did not keep the root read-only on this "
-            "Codex binary - repair it with devops-repair-runtime. Nothing is held meanwhile.",
+            "binary - is repaired with devops-repair-runtime: once the patch is installed the "
+            "runtime code differs and the next staged thread is measured on the repaired code. "
+            "Nothing is held meanwhile.",
             "RECOVERY_EXHAUSTED",
         )
     if cause == "runtime_roots_widened":
@@ -108,7 +114,9 @@ def _diagnosis(cause: str, observation: Mapping[str, Any], defect: Mapping[str, 
         )
     if cause.startswith("unobservable"):
         return (
-            f"Desktop's placement could not be read: {reason}. Desktop {version}.",
+            f"Desktop's placement could not be read: {reason}. Desktop {version}. Threads "
+            "whose placement could not be read are in unobserved_threads: that they are "
+            "outside the project is not known and not claimed.",
             "Check the Codex home the App Server reported and that the saved Desktop project "
             "exists; nothing in her Desktop state is written by the runtime.",
             "GLOBAL_CONFIG_CHANGE",
@@ -124,35 +132,56 @@ def _diagnosis(cause: str, observation: Mapping[str, Any], defect: Mapping[str, 
     )
 
 
-def outside_threads(cfg: Any, state: Any, codex_home: Any) -> list[dict[str, str]]:
-    """The run's threads Desktop files outside the project, by its rule: id, title, task.
+def run_thread_placements(cfg: Any, state: Any, codex_home: Any) -> dict[str, list[dict[str, str]]]:
+    """The run's threads Desktop files outside the project, and those it could not read.
 
     Measured again from each session's recorded cwd, not read from its
     recorded placement: every thread created before the honest check was
     recorded INSIDE by the projectId alone - the five M01 threads of the
     beyondness run among them.
+
+    Two lists, never one. The first version listed everything that was not
+    INSIDE as outside (the third independent check): with Desktop's state
+    unreadable every thread measures UNOBSERVABLE, and every old session -
+    those filed at the root, in the project, among them - went into a ticket
+    saying "Desktop files them in no project". R5 forbids passing an
+    unobservable state off as a fact: an unread thread goes to
+    ``unobserved``, with the reason, and is claimed outside by nobody.
     """
 
-    from .desktop_sidebar import INSIDE, read_desktop_state, sidebar_placement
+    from .desktop_sidebar import OUTSIDE, UNOBSERVABLE, read_desktop_state, sidebar_placement
 
     desktop, why = read_desktop_state(codex_home)
-    seen: dict[str, dict[str, str]] = {}
+    found: dict[str, dict[str, dict[str, str]]] = {OUTSIDE: {}, UNOBSERVABLE: {}}
     for session in getattr(state, "worker_sessions", None) or ():
         thread_id = str(session.get("thread_id") or "")
-        if not thread_id or thread_id in seen or not session.get("actual_cwd"):
+        if not thread_id or not session.get("actual_cwd") or any(thread_id in seen for seen in found.values()):
             continue
         placed = sidebar_placement(
             thread_id, session.get("actual_cwd"), cfg.desktop.desktop_project_id, desktop, unreadable=why
         )
-        if placed.placement != INSIDE:
-            seen[thread_id] = {
+        if placed.placement in found:
+            found[placed.placement][thread_id] = {
                 "thread_id": thread_id,
                 "title": str(session.get("actual_thread_name") or (session.get("descriptor") or {}).get("title") or ""),
                 "task_id": str(session.get("task_id") or ""),
                 "placement": placed.placement,
                 "reason": placed.reason,
             }
-    return list(seen.values())
+    return {"outside": list(found[OUTSIDE].values()), "unobserved": list(found[UNOBSERVABLE].values())}
+
+
+def outside_threads(cfg: Any, state: Any, codex_home: Any) -> list[dict[str, str]]:
+    """The run's threads Desktop files outside the project, by its rule - OUTSIDE only."""
+
+    return run_thread_placements(cfg, state, codex_home)["outside"]
+
+
+def _thread_lists(cfg: Any, state: Any, observation: Mapping[str, Any], list_outside: bool) -> dict[str, Any]:
+    if not list_outside:
+        return {"outside_threads": [], "unobserved_threads": []}
+    placements = run_thread_placements(cfg, state, observation.get("codex_home"))
+    return {"outside_threads": placements["outside"], "unobserved_threads": placements["unobserved"]}
 
 
 def _file_once(cfg: Any, state: Any, *, cause: str, task_id: str, kind: str, after: str,
@@ -197,7 +226,7 @@ def _file_once(cfg: Any, state: Any, *, cause: str, task_id: str, kind: str, aft
             "diagnosis": diagnosis,
             "recommendation": recommendation,
             "defect": dict(defect),
-            "outside_threads": outside_threads(cfg, state, observation.get("codex_home")) if list_outside else [],
+            **_thread_lists(cfg, state, observation, list_outside),
         },
     )
 

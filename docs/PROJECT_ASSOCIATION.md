@@ -74,13 +74,46 @@ or NOT PROVEN is reported by preflight as an ISOLATION finding, staged tasks
 keep their workspace as cwd (isolated, outside the project), and each such
 thread's R5 ticket takes the record to the on-call as a runtime defect. The
 record is kept in `.codex-autopilot/isolation-probe.json` with the Codex binary
-identity and the Desktop version; a record of another shape (another root,
-profile, binary, record version, or a workspace outside the state directory)
-does not count, and the dispatcher measures again - on a short-lived server of
-its own, before it launches the task's server with the profile - which is how
-a run paused before this change is measured when it resumes. Sessions created
-before contract 2 keep their old cwd and profile checks to the end of their
-life.
+identity, the runtime code that measured it (a digest of the runtime's modules)
+and the Desktop version; a record of another shape (another root, profile,
+binary, runtime code, record version, or a workspace outside the state
+directory) does not count, and the dispatcher measures again - on a
+short-lived server of its own, before it launches the task's server with the
+profile - which is how a run paused before this change is measured when it
+resumes.
+
+A failed measurement does not stay for the run. NOT PROVEN (a probe timeout, a
+server that did not start, a permission request) stands for ten minutes and is
+then measured again before the next staged thread. ROOT_WRITABLE is a
+measurement on one binary and one runtime code and stands until either
+changes: a runtime repair (devops-repair-runtime), once installed, changes the
+runtime code, and the next staged thread is measured on the repaired code.
+Before, the record counted by its shape alone, so one transient failure kept
+every staged task on contract 1 to the end of the run.
+
+## Sessions from before contract 2
+
+They carry no `placement_contract`, and their thread's cwd is their staged
+workspace. They keep their old cwd and profile to the end of their life:
+
+- a PREPARED one is resumed by the dispatcher on its own thread: the cwd it
+  must have is its workspace (`session_cwd`), its turn names the run's profile
+  (`session_profile`) with the workspace as its runtime root, its App Server is
+  launched without a staged profile (`server_overrides` gives a created thread
+  one only if it was created under it), and the widened-roots check - a
+  contract 2 check - does not apply;
+- an ACTIVE one - the paused beyondness run's M01 verifier `01a0cf05`, whose
+  dispatcher is gone - is never resumed. When she resumes the run, resume asks
+  the server about every pending session; a finished thread (`notLoaded`)
+  retires the attempt to RETRY_WAIT and releases its locks. The task's next
+  attempt is a new thread, filed at the root under the staged profile when the
+  isolation record stands PASS (measured first if there is none). The old
+  thread stays where Desktop put it, outside the project, and is named by id
+  and title in the run's `created_before_the_honest_check` ticket. A thread
+  the server still reports running is kept, as before: "I do not know" is not
+  "it ended";
+- the on-call's relay repair accepts both contract shapes
+  (`placement_contract.repair_contract_ok`).
 
 ## After a thread is visible
 
@@ -98,6 +131,13 @@ Autopilot sends can prevent that turn, so it is watched (`isolation_guard.py`):
   manifest: a path changed since staging that neither this promotion nor a
   later promotion of another task wrote goes to the on-call with the paths and
   whether roots were seen widened. Nothing is held.
+
+The run's threads Desktop files outside the project are listed in the R5
+tickets by id and title (`outside_threads`). A thread whose placement cannot be
+read - no Desktop state file, no project - is listed apart
+(`unobserved_threads`) and is never claimed outside: with the state unreadable
+every thread measures UNOBSERVABLE, and the first version put all of them, the
+ones filed at the root included, under "Desktop files them in no project".
 
 Preflight requires the run's root to be one of the Desktop project's roots
 exactly, as Desktop compares them; a root below a project root fails, and a

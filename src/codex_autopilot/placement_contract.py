@@ -23,7 +23,12 @@ baselines, staging and the descriptor's state dir are untouched.
 Sessions created before this contract carry no ``placement_contract`` and a
 cwd equal to their workspace; they are checked the old way to the end of
 their life (a paused run's PREPARED session, a resume of its thread, the
-on-call's relay repair).
+on-call's relay repair). An ACTIVE one - the paused beyondness run's M01
+verifier 01a0cf05, its dispatcher gone - never reaches these checks: resume
+reconciliation (control._reconcile_before_resume) reads its finished thread
+and retires the attempt to RETRY_WAIT, and the task's next attempt is a new
+thread under this contract. Both roads are exercised in
+test_placement_contract.SessionsFromBeforeTheContractTests.
 """
 
 from __future__ import annotations

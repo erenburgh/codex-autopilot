@@ -386,6 +386,127 @@ class ContractTwoTests(StagedRun):
         self.assertEqual(client.turn_kwargs["permission_profile"], session["permission_profile"])
 
 
+class SessionsFromBeforeTheContractTests(StagedRun):
+    """What a paused run brings with it, point by point (the verdict's amendment 7).
+
+    The beyondness run paused on 2026-09-23 with the M01 verifier
+    01a0cf05 ACTIVE: ``actual_cwd`` its staged workspace, no
+    ``placement_contract``, its dispatcher gone. The two ways an old
+    session meets the new code are exercised here with production's own
+    call shapes: a PREPARED one is resumed and run by the dispatcher, an
+    ACTIVE one is reconciled when she resumes the run.
+    """
+
+    def created_old(self, *, status_after=None):
+        """A session as the code before contract 2 left it: cwd = its workspace, no contract."""
+
+        from codex_autopilot.lifecycle import create_desktop_thread_via_app_server
+        from codex_autopilot.run_state import StateStore
+
+        self.prove_isolation()
+        descriptor = self.reserve()
+        workspace = Path(descriptor.cwd)
+        creator = SandboxedDispatcher(self.root, [], home=self.home)
+        with mock.patch("codex_autopilot.lifecycle_dispatch.installed_plugin_root", return_value=self.root):
+            create_desktop_thread_via_app_server(
+                self.cfg, descriptor.reservation_token,
+                client_factory=lambda *_a, config_overrides=(): creator.launch(config_overrides),
+                relay_executor_thread_id=OWNER,
+            )
+        if status_after:
+            status_after(descriptor)
+        store = StateStore(self.cfg.state_dir)
+        state = store.load()
+        session = self.session(descriptor.reservation_token, state)
+        session.pop("placement_contract")
+        session.pop("permission_profile")
+        session["actual_cwd"] = str(workspace)
+        session["app_server_creation_contract"]["params"].update(
+            cwd=str(workspace), permissions=self.cfg.desktop.permission_profile
+        )
+        store.save(state)
+        return descriptor, workspace
+
+    def test_an_old_prepared_session_is_resumed_and_turns_the_old_way(self) -> None:
+        """Resume on a fresh dispatcher: its thread's cwd, its roots, the run's profile, no staged server.
+
+        Isolation is proven for the run, yet the old thread keeps what it
+        was created with to the end of its life. Mutations: ``session_cwd``
+        always the root (the thread's cwd is refused before its turn);
+        ``server_overrides`` giving a created thread the staged profile
+        when isolation is proven (overrides for the old session);
+        ``session_profile`` the staged profile (the turn names it).
+        """
+
+        from codex_autopilot.isolation_probe import dispatcher_overrides
+
+        descriptor, workspace = self.created_old()
+        probe = self.factory()
+        self.assertEqual(dispatcher_overrides(self.cfg, descriptor.reservation_token, client_factory=probe), ())
+        self.assertEqual(probe.made, [])
+        client = SandboxedDispatcher(self.root, [], home=self.home)
+        client.thread_cwd = workspace
+        self.assertEqual(self.dispatch(client, descriptor).worker_status, "ROTATE")
+        self.assertIn("thread-resumed", client.events)
+        self.assertEqual(client.threads, [])
+        self.assertEqual(
+            (Path(client.turn_kwargs["cwd"]), client.turn_kwargs["workspace_roots"], client.turn_kwargs["permission_profile"]),
+            (workspace, [workspace], self.cfg.desktop.permission_profile),
+        )
+        session = self.session(descriptor.reservation_token)
+        self.assertIsNone(session.get("placement_contract"))
+        self.assertNotIn("runtime_roots_widened", session)
+
+    def test_the_paused_runs_active_session_is_retired_on_resume_and_its_successor_is_filed_at_the_root(self) -> None:
+        """01a0cf05's road when she resumes: reconciled, never resumed; the next attempt is contract 2.
+
+        Resume (``control._reconcile_before_resume``) asks the server about
+        every pending session; a finished thread (``notLoaded``) retires the
+        attempt to RETRY_WAIT - its thread is not resumed and no turn is
+        started in it, so no placement or isolation check of the new
+        contract ever meets it. The task's next attempt is a new thread,
+        filed at the root under the staged profile. The old thread stays
+        where it is and is named in the created-before ticket.
+        Mutations: ``_observe_one`` reading notLoaded as unknown (the
+        session stays ACTIVE); ``thread_placement`` ignoring the proof (the
+        successor's cwd is its workspace).
+        """
+
+        import time
+
+        from _relay import reserve_ready_frontier
+        from codex_autopilot.control import _reconcile_before_resume
+        from codex_autopilot.lifecycle import acknowledge_desktop_send, claim_automatic_app_server_turn
+        from codex_autopilot.lifecycle_dispatch import app_server_creation_contract
+        from codex_autopilot.run_state import StateStore
+
+        def to_active(descriptor):
+            claim_automatic_app_server_turn(self.cfg, descriptor.reservation_token, relay_executor_thread_id=OWNER)
+            acknowledge_desktop_send(self.cfg, descriptor.reservation_token, thread_id="worker-thread",
+                                     relay_executor_thread_id=OWNER)
+
+        descriptor, workspace = self.created_old(status_after=to_active)
+        self.assertEqual(self.session(descriptor.reservation_token)["status"], "ACTIVE")
+        server = SandboxedDispatcher(self.root, [], home=self.home)
+        server.read_thread = lambda thread_id: {
+            "id": thread_id, "cwd": str(workspace), "status": {"type": "notLoaded"}, "turns": [],
+        }
+        with mock.patch("codex_autopilot.appserver.AppServerClient", lambda *_a, **_k: server):
+            self.assertEqual(_reconcile_before_resume(self.cfg), ("A",))
+        self.assertNotIn("thread-resumed", server.events)
+        self.assertEqual(server.turn_kwargs, {})
+        state = StateStore(self.cfg.state_dir).load()
+        self.assertEqual(self.session(descriptor.reservation_token, state)["status"], "RETRY_WAIT")
+        self.assertEqual(state.task_states["A"], "RETRY_WAIT")
+        (successor,) = [
+            item for item in reserve_ready_frontier(
+                self.cfg, relay_owner_thread_id=OWNER, now_epoch=int(time.time()) + 86_400,
+            ) if item.task_id == "A"
+        ]
+        params = app_server_creation_contract(self.cfg, successor)["params"]
+        self.assertEqual((Path(params["cwd"]), params["runtimeWorkspaceRoots"]), (self.root, [successor.cwd]))
+
+
 class IsolationProbeTests(StagedRun):
     def test_the_probe_measures_the_staged_profile_on_the_root_never_a_legacy_sandbox(self) -> None:
         """What the second independent check asked for, on the protocol as it is.
@@ -442,11 +563,14 @@ class IsolationProbeTests(StagedRun):
         nothing is measured.
         """
 
-        from codex_autopilot.isolation_probe import RECORD_VERSION, binary_identity, ensure_measured, write_record
+        from codex_autopilot.isolation_probe import (
+            RECORD_VERSION, binary_identity, ensure_measured, runtime_code_identity, write_record,
+        )
 
         base = {
             "root": str(self.cfg.root), "base_profile": self.cfg.desktop.permission_profile,
             "codex_binary": binary_identity(self.cfg.desktop.binary), "outcome": "PASS",
+            "runtime_code": runtime_code_identity(),
         }
         for stale in ({**base, "version": RECORD_VERSION, "workspace": tempfile.gettempdir() + "/codex-autopilot-isolation-x"},
                       {**base, "version": 1, "workspace": str(self.cfg.state_dir / "isolation-probe" / "workspace")}):
@@ -457,6 +581,79 @@ class IsolationProbeTests(StagedRun):
         probe = self.factory()
         self.assertEqual(ensure_measured(self.cfg, probe.open)["outcome"], "ROOT_WRITABLE")
         self.assertEqual(probe.made, [])
+
+    def test_a_not_proven_record_is_measured_again_after_its_interval(self) -> None:
+        """The third independent check: one transient failure used to keep the run on contract 1.
+
+        A probe that could not prove anything (here: a permission request,
+        never answered) writes NOT_PROVEN. Within its interval the
+        dispatcher takes it as it is - no probe per task; after it, the
+        dispatcher measures again on its own server and the task gets its
+        staged profile. Mutations: ``record_stands`` ignoring the outcome
+        (the record stands forever - no overrides after the interval); the
+        interval never elapsing (the same).
+        """
+
+        from datetime import datetime, timedelta, timezone
+
+        from codex_autopilot.isolation_probe import (
+            NOT_PROVEN, NOT_PROVEN_RETRY_SECONDS, PASS, dispatcher_overrides, load_record, write_record,
+        )
+
+        descriptor = self.reserve()
+        failing = self.factory(approval=True)
+        self.assertEqual(dispatcher_overrides(self.cfg, descriptor.reservation_token, client_factory=failing), ())
+        self.assertEqual(load_record(self.cfg.state_dir)["outcome"], NOT_PROVEN)
+        healthy = self.factory()
+        self.assertEqual(dispatcher_overrides(self.cfg, descriptor.reservation_token, client_factory=healthy), ())
+        self.assertEqual(healthy.made, [])
+        record = load_record(self.cfg.state_dir)
+        record["measured_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=NOT_PROVEN_RETRY_SECONDS + 1)
+        ).isoformat()
+        write_record(self.cfg.state_dir, record)
+        overrides = dispatcher_overrides(self.cfg, descriptor.reservation_token, client_factory=healthy)
+        self.assertEqual(len(healthy.made), 1)
+        self.assertEqual(load_record(self.cfg.state_dir)["outcome"], PASS)
+        self.assertTrue(overrides)
+
+    def test_an_installed_runtime_repair_is_measured_again_whatever_the_outcome(self) -> None:
+        """The on-call's route for ROOT_WRITABLE: repair the runtime, and the next thread measures.
+
+        A ROOT_WRITABLE on the same code and binary stands (a measurement,
+        not a transient); the record names the runtime code that measured
+        it, and code changed by an installed patch measures again.
+        Mutation: ``record_matches`` without ``runtime_code`` - the old
+        ROOT_WRITABLE stands after the repair and nothing is measured.
+        """
+
+        from codex_autopilot.isolation_probe import PASS, ROOT_WRITABLE, ensure_measured, runtime_code_identity
+
+        record = ensure_measured(self.cfg, self.factory(filesystem_honored=False).open)
+        self.assertEqual((record["outcome"], record["runtime_code"]), (ROOT_WRITABLE, runtime_code_identity()))
+        again = self.factory()
+        self.assertEqual(ensure_measured(self.cfg, again.open)["outcome"], ROOT_WRITABLE)
+        self.assertEqual(again.made, [])
+        with mock.patch("codex_autopilot.isolation_probe.runtime_code_identity", return_value="repaired0000000"):
+            record = ensure_measured(self.cfg, again.open)
+        self.assertEqual(len(again.made), 1)
+        self.assertEqual((record["outcome"], record["runtime_code"]), (PASS, "repaired0000000"))
+
+    def test_the_ticket_names_the_route_that_exists(self) -> None:
+        """The recommendation no longer sends the on-call to wait for a record that never changes.
+
+        Mutation: the earlier text ("it measures when the record does not
+        match this root, profile and binary") - a route a runtime patch
+        never takes.
+        """
+
+        from codex_autopilot.placement_defects import _diagnosis
+
+        _, recommendation, code = _diagnosis("isolation_not_proven", {}, {})
+        self.assertIn("measures again by itself", recommendation)
+        self.assertIn("runtime code", recommendation)
+        self.assertNotIn("does not match this root, profile and binary", recommendation)
+        self.assertEqual(code, "RECOVERY_EXHAUSTED")
 
     def test_preflight_measures_the_runs_profile_in_the_state_dir_and_never_stops(self) -> None:
         """Preflight: the configured profile, a workspace under the state dir, a finding, no stop.
@@ -617,6 +814,54 @@ class PlacementDefectTests(StagedRun):
         self.assertEqual([(item["thread_id"], item["title"]) for item in listed], [("01a0ce87", "A · Implementation (old)")])
 
 
+    def test_an_unreadable_desktop_claims_no_thread_outside(self) -> None:
+        """The third independent check: UNOBSERVABLE used to be listed as outside.
+
+        With no Desktop state every thread measures UNOBSERVABLE; the
+        ticket said "Desktop files them in no project" of old sessions at
+        the root too. Now they are ``unobserved_threads`` and no
+        created-before ticket is filed; once the state reads again, only
+        the thread really outside is listed. Mutation: ``outside_threads``
+        taking everything that is not INSIDE - the old root session is
+        claimed outside and a created-before ticket is filed while Desktop
+        cannot be read.
+        """
+
+        from codex_autopilot.lifecycle_dispatch import _require_thread_placement
+        from codex_autopilot.run_state import StateStore
+
+        missing = self.home.parent / "no-desktop-here"
+        client = SandboxedDispatcher(self.root, [], home=missing)
+        descriptor = self.created(client)
+        store = StateStore(self.cfg.state_dir)
+        state = store.load()
+        template = json.loads(json.dumps(self.session(descriptor.reservation_token, state)))
+        template.pop("placement_contract")
+        for token, thread_id, title, cwd in (
+            ("old-root", "01a0root", "Screening (old)", str(self.root)),
+            ("old-workspace", "01a0ce87", "A · Implementation (old)", descriptor.cwd),
+        ):
+            old = dict(template, reservation_token=token, operation_id=f"{token}-op", thread_id=thread_id,
+                       actual_thread_name=title, actual_cwd=cwd, desktop_placement="INSIDE", status="COMPLETED")
+            state.worker_sessions.insert(0, old)
+        store.save(state)
+        self.assertEqual(
+            _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=client, at=None),
+            "UNOBSERVABLE",
+        )
+        (ticket,) = self.tickets()
+        system = ticket["system_state"]
+        self.assertEqual(system["cause"], "unobservable:none")
+        self.assertEqual(system["outside_threads"], [])
+        self.assertEqual({item["thread_id"] for item in system["unobserved_threads"]},
+                         {"01a0root", "01a0ce87", "worker-thread"})
+        self.assertIn("not known and not claimed", system["diagnosis"])
+        readable = SandboxedDispatcher(self.root, [], home=self.home)
+        _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=readable, at=None)
+        (earlier,) = [item for item in self.tickets() if item["system_state"]["cause"] == "created_before_the_honest_check"]
+        self.assertEqual([item["thread_id"] for item in earlier["system_state"]["outside_threads"]], ["01a0ce87"])
+        self.assertEqual(earlier["system_state"]["unobserved_threads"], [])
+
     def test_two_causes_of_one_run_are_two_tickets(self) -> None:
         """The second independent check's reproduction: a contract-1 thread and older outside threads.
 
@@ -759,15 +1004,15 @@ class WhatTheThreadAtTheRootSeesTests(StagedRun):
 
 
 class ApprovalFrequencyTests(StagedRun):
-    def test_a_permission_request_from_a_root_filed_thread_is_counted(self) -> None:
-        """The independent check's risk: a thread at the read-only root writes a relative path.
+    """A permission request of a thread filed at the root is classified by the runtime.
 
-        The request is never answered; its ticket carries how many such
-        requests this run already had and the thread's placement contract,
-        so a rising count is read as a runtime defect of placement.
-        Mutation: ``approvals_in_run`` a constant (the earlier ticket not
-        counted) - the count reads 1.
-        """
+    The request shapes are the App Server's (0.153.4 schema,
+    CommandExecutionRequestApprovalParams); the sandbox's retry reason is
+    the codex binary's own string (approval_stops.SANDBOX_RETRY_REASON).
+    """
+
+    def asking(self, payload, *, earlier=True):
+        """Dispatch a contract-2 worker whose turn raises ``payload``; the ticket it files."""
 
         from codex_autopilot.blocked_runs import stop_run
         from codex_autopilot.lifecycle import DesktopLifecycleError
@@ -775,23 +1020,141 @@ class ApprovalFrequencyTests(StagedRun):
 
         self.prove_isolation()
         descriptor = self.reserve()
-        # An earlier request of this run - an on-call's, holding no task.
-        store = StateStore(self.cfg.state_dir)
-        state = store.load()
-        stop_run(self.cfg, state, stop_kind="approval_required", phase="APPROVAL_REQUIRED",
-                 reason="earlier", summary="earlier", at=utc_now(), task_ids=(), context_task_id="A")
-        store.save(state)
+        if earlier:
+            # An earlier request of this run - an on-call's, holding no task.
+            store = StateStore(self.cfg.state_dir)
+            state = store.load()
+            stop_run(self.cfg, state, stop_kind="approval_required", phase="APPROVAL_REQUIRED",
+                     reason="earlier", summary="earlier", at=utc_now(), task_ids=(), context_task_id="A")
+            store.save(state)
         client = self.launched(descriptor)
 
         def asks(*_args, **_kwargs):
-            raise ApprovalRequired({"id": 3, "method": "item/fileChange/requestApproval", "params": {"path": "out.txt"}})
+            raise ApprovalRequired(payload(Path(descriptor.cwd)))
 
         client.wait_for_turn = asks
         with self.assertRaises(DesktopLifecycleError):
             self.dispatch(client, descriptor)
-        (latest,) = [item["system_state"] for item in self.tickets("approval_required") if item["affected_task_ids"] == ["A"]]
-        self.assertEqual((latest["approvals_in_run"], latest["placement_contract"]), (2, 2))
         self.assertEqual(client.responded, [])
+        (ticket,) = [item for item in self.tickets("approval_required") if item["affected_task_ids"] == ["A"]]
+        return descriptor, ticket
+
+    def refused_at_root(self, _workspace):
+        from codex_autopilot.approval_stops import SANDBOX_RETRY_REASON
+
+        return {"id": 3, "method": "item/commandExecution/requestApproval", "params": {
+            "threadId": "worker-thread", "turnId": "turn-a", "itemId": "i1",
+            "command": "blender -b scene.blend -o renders/frame.png", "cwd": str(self.root),
+            "reason": SANDBOX_RETRY_REASON,
+        }}
+
+    def test_a_command_the_sandbox_refused_at_the_root_has_its_own_code(self) -> None:
+        """The independent check's risk: a thread at the read-only root writes a relative path.
+
+        Never answered; its own class ``root_write``, its own failure code
+        (not counted towards the retry ceiling), RECOVERY_EXHAUSTED instead
+        of DANGEROUS_PERMISSION, and its own count beside the run's total.
+        Mutations: ``approval_class`` always ``task_permission`` (class,
+        code and count fail); ``approvals_in_run`` without the class filter
+        (the root-write count reads 2); ``approval_root_write`` counted
+        towards the ceiling (the attempts appear).
+        """
+
+        from codex_autopilot.run_state import StateStore
+
+        descriptor, ticket = self.asking(self.refused_at_root)
+        system = ticket["system_state"]
+        self.assertEqual(
+            (system["approval_class"], system["reason_code"], system["placement_contract"]),
+            ("root_write", "RECOVERY_EXHAUSTED", 2),
+        )
+        self.assertEqual((system["approvals_in_run"], system["root_write_approvals_in_run"]), (2, 1))
+        state = StateStore(self.cfg.state_dir).load()
+        self.assertNotIn("approval_root_write", state.failure_signature_attempts)
+        details = [str(item.get("detail")) for item in state.lifecycle_journal
+                   if item.get("reservation_token") == descriptor.reservation_token]
+        self.assertTrue(any("(root_write)" in item for item in details), details)
+
+    def test_what_the_request_proves_decides_the_class(self) -> None:
+        """Read from the request itself; what it does not prove is a task permission.
+
+        Mutations: network ignored (the curl at the root is root_write);
+        explicit write paths not read (the render path under the root is a
+        task permission); the workspace not excluded (a write there is
+        root_write); the retry reason not required (a question at the root
+        is root_write); the contract not required (a contract-1 thread is
+        root_write); an entry that is not a mapping read as one (the
+        classification raises instead of answering).
+        """
+
+        from codex_autopilot.approval_stops import ROOT_WRITE, SANDBOX_RETRY_REASON, TASK_PERMISSION, approval_class
+
+        workspace = self.cfg.state_dir / "staged-artifacts" / "A" / "workspace"
+        session = {"placement_contract": 2, "descriptor": {"cwd": str(workspace)}}
+        command = "item/commandExecution/requestApproval"
+
+        def ask(method=command, **params):
+            return {"id": 1, "method": method, "params": {"threadId": "t", "itemId": "i", **params}}
+
+        def write(path):
+            return {"fileSystem": {"entries": [{"access": "write", "path": {"type": "path", "path": str(path)}}]}}
+
+        cases = [
+            (ask(cwd=str(self.root), reason=SANDBOX_RETRY_REASON, command="touch out.txt"), ROOT_WRITE),
+            (ask(cwd=str(self.root), reason=SANDBOX_RETRY_REASON, command="curl https://example.com",
+                 networkApprovalContext={"host": "example.com", "protocol": "https"}), TASK_PERMISSION),
+            (ask(cwd=str(self.root), additionalPermissions=write(self.root / "renders")), ROOT_WRITE),
+            (ask(cwd=str(self.root), additionalPermissions={"fileSystem": {"write": ["renders/frame.png"]}}), ROOT_WRITE),
+            (ask(cwd=str(self.root), additionalPermissions=write(workspace / "renders")), TASK_PERMISSION),
+            (ask(cwd=str(self.root), additionalPermissions=write(Path.home() / "Library" / "x")), TASK_PERMISSION),
+            (ask(cwd=str(self.root), reason="needs the network", command="npm install"), TASK_PERMISSION),
+            (ask(cwd=str(self.root), additionalPermissions={"fileSystem": {"entries": ["not an entry"]}}), TASK_PERMISSION),
+            (ask("item/fileChange/requestApproval", grantRoot=str(self.root)), ROOT_WRITE),
+            (ask("applyPatchApproval", fileChanges={str(self.root / "src" / "x.py"): {}}), ROOT_WRITE),
+        ]
+        for payload, expected in cases:
+            with self.subTest(payload=payload["params"]):
+                self.assertEqual(approval_class(self.cfg, session, payload), expected)
+        old = {"descriptor": {"cwd": str(workspace)}}
+        self.assertEqual(approval_class(self.cfg, old, cases[0][0]), TASK_PERMISSION)
+
+    def test_her_permission_is_refused_for_a_write_the_runtime_caused(self) -> None:
+        """Like a request the run's authorization covers: never sent to her as a permission.
+
+        Mutation: the ``approval_class`` refusal removed from
+        ``read_engineer_outcome`` - the escalation goes through.
+        """
+
+        from codex_autopilot.engineer_escalation import read_engineer_outcome
+
+        _, ticket = self.asking(self.refused_at_root, earlier=False)
+        escalation = (
+            'AUTOPILOT_ESCALATION: {"diagnosis":"it wants to write the root","decision_needed":"allow?",'
+            '"recommendation":"allow","options":[],"scope":"task"}\n'
+        )
+        status, _code, refused = read_engineer_outcome(
+            self.cfg, ticket["incident_id"], escalation + "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER DANGEROUS_PERMISSION"
+        )
+        self.assertEqual(status, "PROTOCOL_ERROR")
+        self.assertIn("root_write", refused)
+        status, code, refused = read_engineer_outcome(
+            self.cfg, ticket["incident_id"], escalation + "PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER RECOVERY_EXHAUSTED"
+        )
+        self.assertEqual((status, code, refused), ("ESCALATE_TO_USER", "RECOVERY_EXHAUSTED", ""))
+
+    def test_a_task_permission_still_goes_up_as_hers(self) -> None:
+        """A network wish from the same thread keeps DANGEROUS_PERMISSION and adds nothing to the root count.
+
+        Mutation: ``reason_code`` RECOVERY_EXHAUSTED for every request.
+        """
+
+        _, ticket = self.asking(lambda _w: {"id": 4, "method": "item/commandExecution/requestApproval", "params": {
+            "threadId": "worker-thread", "itemId": "i2", "command": "curl https://example.com", "cwd": str(self.root),
+            "networkApprovalContext": {"host": "example.com", "protocol": "https"},
+        }})
+        system = ticket["system_state"]
+        self.assertEqual((system["approval_class"], system["reason_code"]), ("task_permission", "DANGEROUS_PERMISSION"))
+        self.assertEqual((system["approvals_in_run"], system["root_write_approvals_in_run"]), (2, 0))
 
 
 class CodexHomeTests(unittest.TestCase):
