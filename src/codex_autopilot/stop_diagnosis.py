@@ -152,6 +152,8 @@ def stop_context(cfg: Any, plan: Any, state: Any, incident: Mapping[str, Any]) -
         context["roster"] = {
             "plan_sha256": roster.get("plan_sha256"),
             "complete": roster.get("complete"),
+            # The tasks it leaves unstaffed: under way, what the ticket holds.
+            "unstaffed": list(roster.get("unstaffed") or ()),
             "issues": [item.get("message") for item in roster.get("issues") or () if isinstance(item, Mapping)][:MAX_ISSUES * 4],
             "per_task": {
                 str(item.get("id")): item.get("department_error")

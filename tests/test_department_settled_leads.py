@@ -636,12 +636,19 @@ class TheOnCallCanNameTheLeadTests(ThePreR30Run):
         before M03 starts (staffing): one ticket holds M03 - the only task
         still to be accepted - with the derivation's words for the on-call,
         and the change it asks for - M03 names art-reviewer - is admitted.
-        The ticket holds every task still to be accepted (M03 and R01): the
-        run does not go on with a roster that did not assemble.
-        Mutation: state_issues derives the requester's department without
+        The run is under way (M01 and M02 accepted), so the ticket holds
+        only what the roster leaves unstaffed - M03 - and R01 is not held
+        by it. The first staffing commit held R01 too ("a roster that did
+        not assemble starts nothing"); the second independent check
+        (25 Sep 2026) showed that hold freezing sound departments mid-run,
+        and a stop under way holds its own tasks again.
+        Mutations: state_issues derives the requester's department without
         ``settled`` - the on-call's change is refused for the split it
-        cannot touch.
+        cannot touch; staffing._stop holds every unsettled task under way -
+        R01 is held.
         """
+
+        from codex_autopilot.engineer_reservation import tasks_paused_by_incidents
 
         from codex_autopilot.plan_admission import IssueCollector, plan_change_candidate, state_issues
 
@@ -649,7 +656,8 @@ class TheOnCallCanNameTheLeadTests(ThePreR30Run):
         (engineer,) = self.reserve()
         self.assertEqual(engineer.kind, "pipeline_engineer")
         (ticket,) = _tickets(self.cfg, "staffing")
-        self.assertEqual(sorted(ticket["affected_task_ids"]), ["M03", "R01"])
+        self.assertEqual(ticket["affected_task_ids"], ["M03"])
+        self.assertNotIn("R01", tasks_paused_by_incidents(self.cfg, self.plan()))
         self.assertIn("missing for: M03", ticket["system_state"]["diagnosis"])
         self.assertIn("accepted tasks were judged by several leads", ticket["system_state"]["diagnosis"])
         self.assertIn("still to be accepted", ticket["system_state"]["recommendation"])

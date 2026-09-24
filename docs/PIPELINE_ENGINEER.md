@@ -454,21 +454,40 @@ known at start (or "screening at task start"), the acceptance rules (class,
 policy, deterministic checks, the R29 clean suite), the hiring ladder, the
 on-call and the escalation route, the names its threads will carry
 (`THREAD_NAMING.md`) and its dependencies; for the run, the isolation
-measurement and the cwd scheme it implies, and the last roots audit. No thread
+measurement and the cwd scheme it implies - contract 2 only for a record
+the dispatcher itself would take (`record_matches`: this root, profile, binary
+and runtime code) - and the last roots audit. No thread
 is created in advance: the dispatcher still starts each thread right before
 its turn.
 
 The roster is checked whole - every violation in one list, through the
-validator's collector and `validate_department_leads`. One that does not
-assemble does not start the run: the reservation's gate (`staffing_gate`,
-under the coordinator lock, before the frontier is read) files one ticket of
-kind `staffing` through the one door, holding every task not yet settled -
-the whole run, a migrated v0.8 task with no acceptance ahead included -
-with the full list in `diagnosis`, per-task details from the derivation, and
-a recommendation. While it is open the ticket is not filed again, but it
-holds the graph as it is now: a task a committed plan change added while the
-roster stayed incomplete is added to its hold (`hold_more_tasks`), so it
-cannot be reserved before the roster assembles. Nothing but the on-call is reserved. Its
+validator's collector and `validate_department_leads` - and every violation
+names the tasks it leaves unstaffed (`task_ids`, `unstaffed` in the
+snapshot): a task's own check by its path, an unreadable rubric by its
+department's tasks still to be accepted, the lead check by the tasks it
+names. One that does not assemble does not start the run: the reservation's
+gate (`staffing_gate`, under the coordinator lock, before the frontier is
+read) files one ticket of kind `staffing` through the one door, holding
+every task not yet settled - the whole run, a migrated v0.8 task with no
+acceptance ahead included - with the full list in `diagnosis`, per-task
+details from the derivation, and a recommendation. Nothing but the on-call
+is reserved.
+
+Once the run is under way (`run_started`: a worker or a lead was reserved,
+or a task left the frontier) a roster that stops assembling - a committed
+plan change adds a department whose rubric cannot be read - holds only the
+tasks it leaves unstaffed; the other departments go on, to acceptance
+included. The independent check (25 Sep 2026) reproduced the whole-run hold
+there: two departments in parallel, one rubric lost after the start, and the
+other department's finished task stood `IMPLEMENTED` with no lead reserved.
+A roster that could not be built at all names no task: under way its ticket
+holds nothing, calls the on-call all the same, and every acceptance is still
+guarded by the lead's own gate (`department_gate`).
+
+While it is open the ticket is not filed again, but it holds the graph as it
+is now: a task newly held - one a committed plan change added while the
+roster stayed incomplete - is added to its hold (`hold_more_tasks`), so it
+cannot be reserved before the roster assembles. Its
 means are those of a lead stop: `devops-request-plan-change` - the change is
 marked `requires_roster`, and the replanner's graph is refused until the
 whole roster assembles, not only the requester's part -, `devops-supersede-rubric`

@@ -599,10 +599,10 @@ class PipelineIncidentStore:
     def hold_more_tasks(self, incident_id: str, task_ids: Sequence[str], *, at: str) -> list[str]:
         """Widen an open ticket's hold to tasks it did not name; returns those added.
 
-        A run-level stop (``staffing``) holds every unsettled task of the
-        graph it was filed on. A plan change committed while it is open can
-        add a task: unnamed, it was not paused and could be reserved while
-        the roster was still incomplete (independent check, 25 Sep 2026).
+        A ``staffing`` stop holds what its roster leaves unstaffed (every
+        unsettled task before the start). A plan change committed while it
+        is open can add one: unnamed, it was not paused and could be
+        reserved while the roster was incomplete (check, 25 Sep 2026).
         """
 
         with self._transaction() as state:

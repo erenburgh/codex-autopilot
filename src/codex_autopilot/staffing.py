@@ -29,13 +29,17 @@ measurement (isolation_probe), the cwd scheme it implies (placement_contract)
 and the last roots audit (project_roots_audit, R6).
 
 The roster is checked whole, every violation in one list (``IssueCollector``
-of the validator line, ``validate_department_leads`` of the R30 line). One
+of the validator line, ``validate_department_leads`` of the R30 line), and
+every violation names the tasks it leaves unstaffed (``unstaffed``). One
 that does not assemble does not start the run: before any task is reserved
 the stop goes through the one door (``blocked_runs.stop_run``) to the on-call
 with the full list, holding every task not yet settled, and the board
-says so before the first task. The on-call's plan change asked from such a
-ticket must leave the roster whole (``requires_roster``), not just its
-requester - one list, one round.
+says so before the first task. Once the run is under way a roster that
+stops assembling - a committed plan change adds a department whose rubric
+cannot be read - holds only the tasks it leaves unstaffed, and their
+neighbours go on (``run_started``, ``_stop``). The on-call's plan change
+asked from such a ticket must leave the roster whole (``requires_roster``),
+not just its requester - one list, one round.
 
 The roster is never written into plan.json: that would change the plan
 digest and break the PLAN_VERIFIED receipt. It is a snapshot the runtime
@@ -49,6 +53,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any, Collection, Mapping
 
 from .plan_issues import IssueCollector, PlanIssue, render_issues
@@ -155,8 +160,14 @@ def build_roster(
     screening: bool,
     occasion: str,
     at: str | None = None,
+    cfg: Any | None = None,
 ) -> dict[str, Any]:
-    """The whole roster and every violation of it; never raises on the plan's account."""
+    """The whole roster and every violation of it; never raises on the plan's account.
+
+    ``cfg`` lets the isolation section ask what the dispatcher asks
+    (``record_matches``: this root, profile, binary and runtime code);
+    without it only the root is compared.
+    """
 
     from .department_runtime import settled_task_ids
     from .plan_verification import plan_sha256
@@ -166,15 +177,17 @@ def build_roster(
     exempt = _exempt(plan, settled)
     c = IssueCollector()
     collect_graph_issues(c, plan, settled)
-    run = _run_section(plan, state, state_dir)
+    run = _run_section(plan, state, state_dir, cfg)
     rubrics: dict[str, Any] = {}
     tasks = [
         _task_entry(c, plan, task, state=state, settled=settled, exempt=exempt,
                     memory=memory, rubrics=rubrics, screening=screening,
-                    isolation_proven=run["isolation"]["outcome"] == "PASS"
-                    and run["isolation"]["of_this_root"])
+                    isolation_proven=run["isolation"]["proven"])
         for task in plan.tasks
     ]
+    issues, unstaffed, run_wide = _attribute(c.issues, tasks, plan)
+    for entry in tasks:
+        entry["staffed"] = entry["id"] not in unstaffed and not run_wide
     return {
         "schema_version": ROSTER_SCHEMA_VERSION,
         "plan_sha256": plan_sha256(plan),
@@ -182,18 +195,87 @@ def build_roster(
         "built_at": at or utc_now(),
         "occasion": occasion,
         "complete": not c.issues,
-        "issues": [item.to_dict() for item in c.issues],
+        "issues": issues,
+        "unstaffed": sorted(unstaffed),
+        "run_wide": run_wide,
         "run": run,
         "tasks": tasks,
     }
 
 
-def _run_section(plan: Any, state: Any, state_dir: Path) -> dict[str, Any]:
-    from .isolation_probe import load_record
+def _attribute(
+    issues: Collection[PlanIssue], entries: Collection[Mapping[str, Any]], plan: Any
+) -> tuple[list[dict[str, Any]], set[str], bool]:
+    """Every violation with the tasks it leaves unstaffed; and whether one names none.
+
+    Once the run is under way the stop holds these tasks, not the run: the
+    independent check (25 Sep 2026) reproduced two departments in parallel,
+    one rubric unreadable after the start, and the other department's
+    finished task stood IMPLEMENTED with no acceptance, held by a ticket
+    about a rubric that was not its own. A task's own check names it in its
+    path (``task M01...``); a rubric names its department, whose tasks still
+    to be accepted all lack it; the lead check names its tasks in its words.
+    A violation that names no task of the plan (the roster could not be
+    built at all) is the run's.
+    """
+
+    ids = [task.id for task in plan.tasks]
+    members: dict[str, list[str]] = {}
+    for entry in entries:
+        if entry.get("department") and entry.get("acceptance_ahead"):
+            members.setdefault(str(entry["department"]["id"]), []).append(str(entry["id"]))
+    listed: list[dict[str, Any]] = []
+    unstaffed: set[str] = set()
+    run_wide = False
+    for item in issues:
+        if item.path.startswith("task "):
+            # An id may hold a dot ("task M.01.role"): the longest id it starts with.
+            rest = item.path[len("task "):]
+            named = sorted((t for t in ids if rest == t or rest.startswith(t + ".")), key=len)[-1:]
+        elif item.path.startswith("department "):
+            named = members.get(item.path[len("department "):], [])
+        else:
+            named = [
+                task_id for task_id in ids
+                if re.search(rf"(?<![\w.-]){re.escape(task_id)}(?![\w-]|\.\w)", item.message)
+            ]
+        run_wide = run_wide or not named
+        unstaffed.update(named)
+        listed.append({**item.to_dict(), "task_ids": named})
+    return listed, unstaffed, run_wide
+
+
+def run_started(state: Any) -> bool:
+    """Whether any task has been reserved: a worker or a lead was, or a task left the frontier.
+
+    Before that a roster that does not assemble starts nothing; after it,
+    it holds what it leaves unstaffed. A plan verifier anchored to a task,
+    an on-call or a screening session is not the run's work starting.
+    """
+
+    under_way = {"RUNNING", "IMPLEMENTED", "VERIFYING", "REVISION_REQUIRED", "REVISING",
+                 "RETRY_WAIT", "VERIFIED", "FAILED"}
+    if any(str(value) in under_way for value in (getattr(state, "task_states", None) or {}).values()):
+        return True
+    return any(
+        isinstance(session, Mapping)
+        and str(session.get("kind") or "worker") in {"worker", "implementation", "verifier", "revision"}
+        for session in getattr(state, "worker_sessions", None) or ()
+    )
+
+
+def _run_section(plan: Any, state: Any, state_dir: Path, cfg: Any | None = None) -> dict[str, Any]:
+    from .isolation_probe import load_record, record_matches
 
     record = load_record(Path(state_dir)) or {}
     root = str(Path(state_dir).parent)
     outcome = str(record.get("outcome") or "NOT_MEASURED")
+    # Contract 2 is what the dispatcher uses only with a record of this
+    # root, profile, binary and runtime code (``isolation_proven``); the
+    # roster said "contract 2" for any PASS of this root, and the thread
+    # then went to the staged workspace.
+    matches = record_matches(record, cfg) if cfg is not None else record.get("root") == root
+    proven = outcome == "PASS" and bool(matches)
     audit = getattr(state, "roots_audit", None)
     findings = [
         {"code": str(item.get("code") or ""), "status": str(item.get("status") or "")}
@@ -208,11 +290,12 @@ def _run_section(plan: Any, state: Any, state_dir: Path) -> dict[str, Any]:
             "outcome": outcome,
             "measured_at": record.get("measured_at"),
             "of_this_root": record.get("root") == root,
+            "proven": proven,
             # Contract 2 files a staged task's thread at the root under its
             # staged profile; it is used only after the measurement proved
             # the profile keeps the root read-only (placement_contract).
             "staged_cwd": "root with the task's staged profile (contract 2)"
-            if outcome == "PASS" and record.get("root") == root
+            if proven
             else "the task's staged workspace, outside the project in Desktop (contract 1)",
         },
         "roots_audit": {"recorded": isinstance(audit, Mapping), "findings": findings},
@@ -268,7 +351,7 @@ def _task_entry(
             entry["threads"] = _thread_names(plan, task, department)
         except ValueError:
             entry["threads"] = None
-    entry["skills"] = _skills(state, task, screening)
+    entry["skills"] = _skills(state, plan, task, screening)
     entry["acceptance"] = _acceptance(task)
     # A failed check returns FAILED, which is not JSON: None in the snapshot.
     entry["ladder"] = (c.check("ladder", f"task {task.id}", _ladder, task) or None) if task.id not in exempt else _ladder_or_none(task)
@@ -357,16 +440,28 @@ def _ladder_or_none(task: Any) -> dict[str, Any] | None:
         return None
 
 
-def _skills(state: Any, task: Any, screening: bool) -> dict[str, Any]:
-    record = (getattr(state, "task_hiring", None) or {}).get(task.id)
-    hired: list[str] = []
-    if isinstance(record, Mapping):
-        for outcome in (record.get("decision") or {}).get("outcomes") or ():
-            if isinstance(outcome, Mapping) and outcome.get("status") in {"hired", "installed"}:
-                skill = outcome.get("skill") or {}
-                hired.append(str(skill.get("id") or outcome.get("capability") or "?"))
-    if isinstance(record, Mapping):
-        status = "unscreened" if record.get("unscreened") else "screened"
+def _skills(state: Any, plan: Any, task: Any, screening: bool) -> dict[str, Any]:
+    """The skills known at start: planned, hired for this task's contract, or screening ahead.
+
+    Read as the worker's prompt reads them (``recorded_hiring``): a hire made
+    for an older graph version was made for work a replan rewrote under the
+    same id, and says nothing of this task - it is screened again.
+    """
+
+    from .skill_screening import recorded_hiring
+
+    records = getattr(state, "task_hiring", None) or {}
+    try:
+        decision = recorded_hiring(records, task_id=task.id, graph_version=plan.graph_version)
+    except Exception:  # noqa: BLE001 - a record that cannot be read is no hire; screened again
+        decision = None
+    hired = [
+        item.skill.id if item.skill is not None else item.capability
+        for item in (decision.outcomes if decision is not None else ())
+        if item.status in {"hired", "installed"}
+    ]
+    if decision is not None:
+        status = "unscreened" if (records.get(task.id) or {}).get("unscreened") else "screened"
     else:
         status = "at task start" if screening else "off"
     return {
@@ -407,7 +502,8 @@ def write_roster(state_dir: Path, roster: Mapping[str, Any]) -> None:
 
 
 def refresh_roster(
-    state_dir: Path, plan: Any, state: Any, *, occasion: str, memory: Any | None = None
+    state_dir: Path, plan: Any, state: Any, *, occasion: str, memory: Any | None = None,
+    cfg: Any | None = None,
 ) -> dict[str, Any]:
     """Build and write the roster; the runtime is its only writer."""
 
@@ -416,20 +512,26 @@ def refresh_roster(
         from .memory import ProjectMemory
 
         memory = ProjectMemory(state_dir.parent)
+    if cfg is None:
+        try:
+            from .config import load_config
+
+            cfg = load_config(state_dir.parent)
+        except Exception:  # noqa: BLE001 - only labels of the roster: screening, isolation
+            cfg = None
     roster = build_roster(
         plan, state, state_dir=state_dir, memory=memory,
-        screening=_screening_applies(state_dir, plan), occasion=occasion,
+        screening=_screening_applies(cfg, plan), occasion=occasion, cfg=cfg,
     )
     write_roster(state_dir, roster)
     return roster
 
 
-def _screening_applies(state_dir: Path, plan: Any) -> bool:
+def _screening_applies(cfg: Any | None, plan: Any) -> bool:
     try:
-        from .config import load_config
         from .lifecycle_screening import screening_applies
 
-        return bool(screening_applies(load_config(state_dir.parent), plan))
+        return cfg is not None and bool(screening_applies(cfg, plan))
     except Exception:  # noqa: BLE001 - only a label of the roster: "at task start" or "off"
         return False
 
@@ -449,11 +551,13 @@ def staffing_gate(cfg: Any, plan: Any, state: Any) -> dict[str, Any]:
     plan gate and before the frontier is read. A roster whose stamp is the
     current plan's and that assembled is taken as it is; otherwise it is
     rebuilt now. One that does not assemble is a stop through the one door:
-    a ticket for the on-call with the full list, holding every task not yet
-    settled - the frontier read next is then empty, and the pass reserves
-    the on-call next to nothing. A ticket already open for it is not filed
-    again, only widened to a task the graph gained since; the on-call reads
-    the current list from the roster in its package (``stop_diagnosis``).
+    a ticket for the on-call with the full list. Before the start it holds
+    every task not yet settled - the frontier read next is then empty, and
+    the pass reserves the on-call next to nothing; under way it holds only
+    the tasks the roster leaves unstaffed, and the pass goes on with the
+    rest. A ticket already open for it is not filed again, only widened to
+    a task newly held; the on-call reads the current list from the roster
+    in its package (``stop_diagnosis``).
     """
 
     from .plan_verification import plan_sha256
@@ -461,11 +565,11 @@ def staffing_gate(cfg: Any, plan: Any, state: Any) -> dict[str, Any]:
     roster = load_roster(cfg.state_dir)
     if not roster or roster.get("plan_sha256") != plan_sha256(plan) or not roster.get("complete"):
         try:
-            roster = refresh_roster(cfg.state_dir, plan, state, occasion="reservation")
+            roster = refresh_roster(cfg.state_dir, plan, state, occasion="reservation", cfg=cfg)
         except Exception as exc:  # noqa: BLE001 - a roster that cannot be built is a stop, never a raise
             roster = {
-                "plan_sha256": plan_sha256(plan), "complete": False,
-                "issues": [{"stage": "runtime", "path": "roster",
+                "plan_sha256": plan_sha256(plan), "complete": False, "run_wide": True,
+                "issues": [{"stage": "runtime", "path": "roster", "task_ids": [],
                             "message": f"staffing: the roster could not be built: {exc}"}],
             }
     if roster.get("complete"):
@@ -480,13 +584,23 @@ def _stop(cfg: Any, plan: Any, state: Any, roster: Mapping[str, Any]) -> str | N
     from .pipeline_engineer import PipelineIncidentStore
     from .run_state import utc_now
 
-    # The run does not start: every task not settled is held - a migrated
-    # v0.8 task too, though no acceptance is ahead of it. The docs once said
-    # "every task still to be accepted"; the code held them all, and the
-    # independent check (25 Sep 2026) asked which. All: the roster is the
-    # run's, and a run that did not assemble starts nothing.
+    # Before the start the run does not start: every task not settled is
+    # held - a migrated v0.8 task too, though no acceptance is ahead of it
+    # (the docs once said "every task still to be accepted"; the independent
+    # check asked which). Under way, only what the roster leaves unstaffed:
+    # held whole, a rubric unreadable after a plan change froze the
+    # departments that were fine (second check, 25 Sep 2026). A roster that
+    # names no task (it could not be built) holds nothing under way - the
+    # lead's own gate still guards every acceptance (department_gate) - and
+    # the ticket calls the on-call all the same.
     settled = settled_task_ids(state.task_states)
-    held = [task.id for task in plan.tasks if task.id not in settled]
+    started = run_started(state)
+    unstaffed = set(roster.get("unstaffed") or ())
+    held = [
+        task.id for task in plan.tasks
+        if task.id not in settled and (not started or task.id in unstaffed)
+    ]
+    anchor = "" if held else next((task.id for task in plan.tasks if task.id not in settled), "")
     store = PipelineIncidentStore(cfg.state_dir)
     open_tickets = [
         item for item in store.load().get("incidents") or ()
@@ -520,13 +634,17 @@ def _stop(cfg: Any, plan: Any, state: Any, roster: Mapping[str, Any]) -> str | N
         reason=f"staffing: the run's roster did not assemble - {listed}",
         summary=(
             f"The roster of plan v{plan.graph_version} did not assemble "
-            f"({len(issues)} violation{'s' if len(issues) != 1 else ''}); no task starts until it does."
+            f"({len(issues)} violation{'s' if len(issues) != 1 else ''}); "
+            + ("no task starts until it does." if not started
+               else f"held: {', '.join(held)}; the rest of the run goes on." if held
+               else "it holds no task; the run goes on.")
         ),
-        at=utc_now(), task_ids=held,
+        at=utc_now(), task_ids=held, context_task_id=anchor,
         system_state={
             "diagnosis": listed,
             "roster_issues": [item.to_dict() for item in issues],
             "plan_sha256": str(roster.get("plan_sha256") or ""),
+            "run_started": started,
             "recommendation": (
                 "ask the replanner (devops-request-plan-change) for a graph whose roster is "
                 "whole - every violation in the list at once: each task still to be accepted "

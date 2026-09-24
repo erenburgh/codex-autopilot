@@ -76,7 +76,9 @@ be given only a lead its profession already names (`reconcile_plan_change_state`
 found by the run's roster before any task starts (`staffing`), and the run
 does not start - one ticket of kind `staffing` through the one stop door holds
 every task not yet settled (and any task a plan change adds while it is
-open), with the full list for the on-call, who has
+open); once the run is under way such a ticket holds only the tasks the
+roster leaves unstaffed, and the other departments go on to acceptance -
+with the full list for the on-call, who has
 the plan changed so the whole roster assembles (`requires_roster`); the
 verifier's own gate (`department_gate`, stop kind `department_lead`) stays
 the backstop for a rubric history that turns ambiguous later. The on-call has
