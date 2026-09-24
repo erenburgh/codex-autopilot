@@ -7,7 +7,6 @@ import unittest
 from codex_autopilot.config import Config, DesktopConfig, RetryConfig, RuntimeConfig
 from codex_autopilot.plan import validate_plan
 from codex_autopilot.project_association import (
-    ProjectAssociationError,
     match_saved_project,
     resolve_preflight_project,
 )
@@ -149,13 +148,28 @@ class ProjectAssociationTests(unittest.TestCase):
             "inner",
         )
 
-    def test_explicit_project_must_contain_target(self) -> None:
-        with self.assertRaisesRegex(ProjectAssociationError, "does not contain"):
-            match_saved_project(
-                Path("/workspace/product"),
-                [{"id": "elsewhere", "roots": [{"path": "/other"}]}],
-                explicit_project_id="elsewhere",
-            )
+    def test_explicit_project_without_the_target_is_not_used_nor_a_stop(self) -> None:
+        """An explicit project that does not hold the target is never used.
+
+        This test pinned a ProjectAssociationError - a stop of the start.
+        Preflight reaches the match only after Desktop's rootPaths were
+        found to hold the target, so the target is in one space and the
+        owner's rule is that the run goes on: no App Server project is
+        taken (the thread is filed by its cwd, as without the flag) and the
+        flag's mistake is a WARN with its fix (test_project_roots).
+        """
+
+        findings: list = []
+        selected, source = resolve_preflight_project(
+            Path("/workspace/product"),
+            [{"id": "elsewhere", "roots": [{"path": "/other"}]}],
+            explicit_project_id="elsewhere",
+            findings=findings,
+        )
+        self.assertIsNone(selected)
+        self.assertIsNone(source)
+        self.assertEqual([(item.code, item.status, item.project_id) for item in findings],
+                         [("ID_PAIR_MISMATCH", "WARN", "elsewhere")])
 
 
 class SemanticStatusTests(unittest.TestCase):

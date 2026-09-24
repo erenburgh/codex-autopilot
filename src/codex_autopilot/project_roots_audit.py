@@ -31,7 +31,9 @@ Server projects and Desktop's legacy->server id map, and returns findings:
 - DUPLICATE_APP_SERVER_PROJECTS: another App Server project holds the run's
   root, marked visible in Desktop or App Server only;
 - ID_PAIR_MISMATCH: the App Server project Desktop links to this Desktop
-  project is not the one the run uses;
+  project is not the one the run uses. WARN while either space holds the
+  run's root (the run takes the holder); FAIL only when neither does - and
+  even then a record with its fix, not a stop;
 - ROOTS_DIVERGED: Desktop's rootPaths and the linked App Server project's
   roots differ - the two spaces disagree;
 - UNVERIFIED: a key of Desktop's undocumented format is missing, so a check
@@ -500,7 +502,9 @@ def audit_project_roots(
         if selected_project_id and linked != selected_project_id and not any(
             item.code == ID_PAIR_MISMATCH for item in audit.findings
         ):
-            audit.findings.append(id_pair_finding(desktop_project_id or "", linked, selected_project_id, target, projects))
+            audit.findings.append(id_pair_finding(
+                desktop_project_id or "", linked, selected_project_id, target, projects, desktop_roots=desktop_roots
+            ))
         linked_project = projects.get(linked)
         if desktop_roots is not None and linked_project is not None:
             audit.checked.append(ROOTS_DIVERGED)
@@ -554,16 +558,27 @@ def id_pair_finding(
     other: str,
     target: Path,
     projects: Mapping[str, Mapping[str, Any]],
+    *,
+    desktop_roots: Sequence[str] | None = None,
 ) -> RootsFinding:
     """Desktop links its project to ``linked``; the run was about to use ``other``.
 
     WARN when the linked project holds the target - the runtime takes the
-    project she sees, deterministically. FAIL only when it does not: then the
-    target is in neither space as one pair, and no choice is consistent.
+    project she sees, deterministically. WARN too when only ``other`` holds
+    it: the first version made that a FAIL and stopped preflight, though the
+    target was in both spaces (Desktop's rootPaths, which preflight had just
+    checked, and ``other`` in App Server) - the independent check's case.
+    The run takes the holder; one save of the project in Desktop writes the
+    root into its linked App Server project. FAIL only when the target is in
+    neither space: no App Server project of the pair holds it, and Desktop's
+    rootPaths - read, not guessed - do not list it.
     """
 
     linked_project = projects.get(linked)
+    other_project = projects.get(other)
     holds = linked_project is not None and project_holds(linked_project, target)
+    other_holds = other_project is not None and project_holds(other_project, target)
+    in_desktop = desktop_roots is not None and any(_same_path(item, target) for item in desktop_roots)
     name = f"Desktop project {desktop_project_id}" if desktop_project_id else "The Desktop project"
     if holds:
         detail = (
@@ -576,20 +591,73 @@ def id_pair_finding(
             command=f"--app-server-project-id {linked}",
             evidence={"linked": linked, "requested": other},
         )
-    detail = (
-        f"{name} is linked to App Server project {linked}, which "
-        + ("does not exist" if linked_project is None else f"does not hold the run's root {target}")
-        + f"; {other} holds it but is not linked to the Desktop project, so a task would carry an "
-        "App Server project Desktop does not show."
+    lacks = "does not exist" if linked_project is None else f"does not hold the run's root {target}"
+    fix = (
+        "open the project in Codex Desktop and save its folders once (Edit project) so Desktop "
+        f"writes {target} into its linked App Server project"
     )
+    if other_holds or desktop_roots is None or in_desktop:
+        where = (
+            f"{other} holds it, and the run uses {other}" if other_holds
+            else "no App Server project of the pair holds it"
+        )
+        return RootsFinding(
+            ID_PAIR_MISMATCH, "WARN", linked, str(target),
+            f"{name} is linked to App Server project {linked}, which {lacks}; {where}. "
+            "Tasks carry an App Server project Desktop does not link to its project; the run goes on.",
+            recommendation=fix,
+            command="Codex Desktop -> project menu -> Edit project -> Save",
+            evidence={"linked": linked, "requested": other, "requested_holds": other_holds,
+                      "desktop_holds": in_desktop if desktop_roots is not None else None},
+        )
     return RootsFinding(
-        ID_PAIR_MISMATCH, "FAIL", linked, str(target), detail,
+        ID_PAIR_MISMATCH, "FAIL", linked, str(target),
+        f"{name} is linked to App Server project {linked}, which {lacks}; neither {other} nor "
+        f"Desktop's project folders {list(desktop_roots)} hold the run's root {target}: the run's "
+        "target is in neither space, so its tasks cannot be filed in the project.",
         recommendation=(
-            "open the project in Codex Desktop and save its folders once (Edit project) so Desktop "
-            f"writes {target} into its linked App Server project, then start again"
+            f"add {target} to the project in Codex Desktop (Edit project -> Add folder) - Desktop "
+            "writes both spaces - or start the run in one of the project's folders"
         ),
-        command="Codex Desktop -> project menu -> Edit project -> Save",
-        evidence={"linked": linked, "requested": other},
+        command=f"Codex Desktop -> project menu -> Edit project -> add {target}",
+        evidence={"linked": linked, "requested": other, "desktop": list(desktop_roots)},
+    )
+
+
+def explicit_id_finding(
+    requested: str, chosen: str | None, target: Path, projects: Mapping[str, Mapping[str, Any]]
+) -> RootsFinding:
+    """--app-server-project-id named a project without the run's root; ``chosen`` holds it.
+
+    A WARN, not a refusal: another App Server project holds the root, so
+    the target is there to be used - the run goes on in the holder and the
+    flag's mistake is written with the id to pass instead. ``chosen`` is
+    None when no App Server project holds the root: that refused before,
+    though preflight had just found the root in Desktop's rootPaths - the
+    run goes on as without the flag, Desktop filing threads by their cwd,
+    and one save of the project in Desktop writes the root into App Server.
+    """
+
+    lacks = "does not exist" if requested not in projects else f"does not hold the run's root {target}"
+    if chosen is None:
+        return RootsFinding(
+            ID_PAIR_MISMATCH, "WARN", requested, str(target),
+            f"--app-server-project-id named App Server project {requested}, which {lacks}; no App Server "
+            "project holds it, so the run goes on without one and Desktop files its threads by their cwd.",
+            recommendation=(
+                "open the project in Codex Desktop and save its folders once (Edit project) so Desktop "
+                f"writes {target} into its linked App Server project; start without the flag or with that id"
+            ),
+            command="Codex Desktop -> project menu -> Edit project -> Save",
+            evidence={"requested": requested, "chosen": None},
+        )
+    return RootsFinding(
+        ID_PAIR_MISMATCH, "WARN", requested, str(target),
+        f"--app-server-project-id named App Server project {requested}, which {lacks}; "
+        f"{chosen} holds it and the run uses {chosen}.",
+        recommendation=f"pass --app-server-project-id {chosen} next time",
+        command=f"--app-server-project-id {chosen}",
+        evidence={"requested": requested, "chosen": chosen},
     )
 
 

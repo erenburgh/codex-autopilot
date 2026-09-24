@@ -34,6 +34,15 @@ around the skill by escalating its sandbox. These decisions are therefore
 confirmed by typing the project id at an interactive terminal, and refused
 from inside a Codex task (CODEX_THREAD_ID set) - the confirmation must come
 from her keyboard, not from an agent's --yes.
+
+The second check found the door still open: an accepted user decision that
+already existed was taken as hers without asking, and the memory MCP let a
+task write one - origin="user", status="accepted", the exact text copied from
+the proposal. Its probe deleted the duplicate from inside a Codex task with
+nobody typing anything. Now every execution asks at her terminal first, even
+when a record with the text exists, and the memory tool refuses to write or
+re-status these records at all (``owner_only_record``): they are made here,
+after her keyboard, and nowhere else.
 """
 
 from __future__ import annotations
@@ -104,10 +113,36 @@ class ChangeOutcome:
         }
 
 
+def owner_only_record(statement: Any, scope: Any = None) -> str | None:
+    """Why an agent's memory tool may not write or re-status this record; None if it may.
+
+    Her R6 permissions (add a root, remove one, reorder, delete a project)
+    are recognized by exact text, and the roots proposals are hers to
+    answer. Written through the memory tool, any of them is an agent
+    speaking for her: an accepted "user" permission opens a mutation, a
+    "rejected" proposal silences the status line and is never proposed
+    again. The CLI writes them only after her typed confirmation.
+    """
+
+    from .project_association import PROJECT_ROOT_AUTHORIZATION_PREFIX
+    from .project_roots_audit import DECISION_SCOPE, FINDING_PREFIX
+
+    first = str(statement or "").strip().split("\n", 1)[0]
+    reserved = (PROJECT_ROOT_AUTHORIZATION_PREFIX, REMOVE_ROOT, PRIMARY_ROOT, DELETE_PROJECT, FINDING_PREFIX)
+    if str(scope or "").strip() == DECISION_SCOPE or any(first.startswith(prefix) for prefix in reserved):
+        return (
+            "R6: decisions on her saved Codex projects are recorded only by "
+            "`codex-autopilot authorize-project-root`, confirmed at her own terminal; "
+            "the memory tool neither writes nor changes them"
+        )
+    return None
+
+
 def _record_decision(memory: Any, statement: str, confirm: Callable[[str], bool]) -> tuple[str | None, bool]:
-    existing = memory.accepted_user_decision(statement)
-    if existing is not None:
-        return str(existing["id"]), False
+    # Her keyboard first, every time. An existing accepted record with this
+    # text used to be taken as hers without asking - and a task could write
+    # one (see the module note). Each execution is her own act, recorded as
+    # one decision.
     if not confirm(statement):
         return None, False
     record = memory.propose_decision(

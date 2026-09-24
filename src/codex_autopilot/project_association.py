@@ -85,42 +85,66 @@ def match_saved_project(
     every later start without --app-server-project-id failed. Desktop's map
     (``app-server-project-id-by-legacy-project-id-by-host``) is a dictionary:
     one Desktop project links exactly one App Server project, the one she
-    sees. When it is among the candidates it is taken and the others are
-    written as DUPLICATE_APP_SERVER_PROJECTS - not a stop, not silence. An
-    explicit id that differs from the linked one is the same case
-    (ID_PAIR_MISMATCH, WARN); so is a tie with no link at all, broken
-    deterministically below. What still refuses is a link that holds no
-    target (ID_PAIR_MISMATCH, FAIL): Desktop's project points at an App
-    Server project without the run's root, and no choice is a consistent
-    pair - the finding says what to do in Desktop.
+    sees. When it holds the root it is taken and the others are written as
+    DUPLICATE_APP_SERVER_PROJECTS - not a stop, not silence. An explicit id
+    that differs from the linked holder is the same case (ID_PAIR_MISMATCH,
+    WARN); so is a tie with no link at all, broken deterministically below.
+
+    A link to a project WITHOUT the root was still a FAIL here, and the
+    independent check named it: preflight has just seen the root in
+    Desktop's rootPaths, and another App Server project holds it - the
+    target is in both spaces, only the pair is off. Now the holder is taken
+    (the explicit one, else the tie-break) and ID_PAIR_MISMATCH is written as
+    a WARN whose fix is one save of the project in Desktop, which writes the
+    root into its linked App Server project. Nothing here refuses - neither
+    the link nor an explicit flag naming a project without the root; FAIL
+    is the audit's word for a target in neither space, and a record too.
     """
-    from .project_roots_audit import duplicate_finding, id_pair_finding
+    from .project_roots_audit import duplicate_finding, explicit_id_finding, id_pair_finding
 
     resolved = root.expanduser().resolve()
     by_id = {str(project.get("id") or ""): project for project in projects}
     linked = by_id.get(desktop_linked_project_id or "")
+    linked_holds = linked is not None and _project_contains(linked, resolved)
+
+    def mismatch(other: str) -> None:
+        if findings is not None:
+            findings.append(id_pair_finding("", desktop_linked_project_id or "", other, resolved, by_id))
+
     if explicit_project_id:
         explicit = [
             project
             for project in projects
             if str(project.get("id") or "") == explicit_project_id
         ]
-        if len(explicit) != 1:
-            raise ProjectAssociationError(
-                f"explicit saved Codex Project {explicit_project_id!r} was not found uniquely"
-            )
-        if not _project_contains(explicit[0], resolved):
-            raise ProjectAssociationError(
-                f"explicit saved Codex Project {explicit_project_id!r} does not contain the target root"
-            )
-        if desktop_linked_project_id and desktop_linked_project_id != explicit_project_id:
-            finding = id_pair_finding("", desktop_linked_project_id, explicit_project_id, resolved, by_id)
-            if finding.status == "FAIL":
-                raise ProjectAssociationError(f"ID_PAIR_MISMATCH: {finding.line()}")
-            if findings is not None:
-                findings.append(finding)
+        pair_off = bool(desktop_linked_project_id) and desktop_linked_project_id != explicit_project_id
+        if pair_off and linked_holds:
+            # Desktop's pair wins, whatever the flag named.
+            mismatch(explicit_project_id)
             return linked
-        return explicit[0]
+        if len(explicit) == 1 and _project_contains(explicit[0], resolved):
+            if pair_off:
+                mismatch(explicit_project_id)
+            return explicit[0]
+        # A flag naming a project without the root used to refuse even when
+        # another project held it - the same stop as the link above, one
+        # argument earlier. The holder is chosen as if no flag were given
+        # and the flag is written down. With no holder at all it refused
+        # too, although preflight has just found the root in Desktop's
+        # rootPaths: the run goes on exactly as without the flag (no App
+        # Server project, Desktop files the thread by its cwd) and the
+        # flag's mistake is written with its fix.
+        chosen = match_saved_project(
+            root, projects,
+            desktop_linked_project_id=desktop_linked_project_id,
+            desktop_visible_project_ids=desktop_visible_project_ids,
+            findings=findings,
+        )
+        if findings is not None:
+            findings.append(explicit_id_finding(
+                explicit_project_id, str(chosen["id"]) if chosen is not None else None, resolved, by_id
+            ))
+        return chosen
     matches: list[tuple[int, dict[str, Any]]] = []
     for project in projects:
         for entry in project.get("roots") or []:
@@ -137,47 +161,42 @@ def match_saved_project(
         return None
     longest = max(size for size, _ in matches)
     best = {str(project["id"]): project for size, project in matches if size == longest}
-    if desktop_linked_project_id and desktop_linked_project_id not in best:
-        # Desktop links another project than the one holding the root:
-        # WARN and take the linked one if it holds the target, else FAIL.
-        other = sorted(best)[0]
-        finding = id_pair_finding("", desktop_linked_project_id, other, resolved, by_id)
-        if finding.status == "FAIL":
-            raise ProjectAssociationError(f"ID_PAIR_MISMATCH: {finding.line()}")
-        if findings is not None:
-            findings.append(finding)
+    if desktop_linked_project_id and desktop_linked_project_id not in best and linked_holds:
+        # Desktop links a project that holds the root through a shorter
+        # one: the linked project is taken, the other written.
+        mismatch(sorted(best)[0])
         return linked
-    if len(best) != 1:
-        if desktop_linked_project_id in best:
-            if findings is not None:
-                findings.extend(
-                    duplicate_finding(project, resolved, visibility="unknown")
-                    for project_id, project in sorted(best.items())
-                    if project_id != desktop_linked_project_id
-                )
-            return best[desktop_linked_project_id]
-        # No link to break the tie (Desktop's map missing, or no Desktop
-        # project): still not a stop. The choice is deterministic - a
-        # project Desktop shows first, then the lowest id (App Server ids
-        # are UUIDv7, so the oldest: 01a049a3 before the agent's 01a0ce52)
-        # - and every other candidate is written down.
-        shown = desktop_visible_project_ids or set()
-        chosen = min(best, key=lambda project_id: (project_id not in shown, project_id))
+    if desktop_linked_project_id in best:
         if findings is not None:
             findings.extend(
-                duplicate_finding(
-                    project,
-                    resolved,
-                    visibility=(
-                        "unknown" if desktop_visible_project_ids is None
-                        else "visible in Desktop" if project_id in shown else "App Server only"
-                    ),
-                )
+                duplicate_finding(project, resolved, visibility="unknown")
                 for project_id, project in sorted(best.items())
-                if project_id != chosen
+                if project_id != desktop_linked_project_id
             )
-        return best[chosen]
-    return next(iter(best.values()))
+        return best[desktop_linked_project_id]
+    # No usable link (Desktop's map missing, no Desktop project, or a link
+    # to a project without the root): still not a stop. The choice is
+    # deterministic - a project Desktop shows first, then the lowest id (App
+    # Server ids are UUIDv7, so the oldest: 01a049a3 before the agent's
+    # 01a0ce52) - and every other candidate is written down.
+    shown = desktop_visible_project_ids or set()
+    chosen = min(best, key=lambda project_id: (project_id not in shown, project_id))
+    if findings is not None:
+        findings.extend(
+            duplicate_finding(
+                project,
+                resolved,
+                visibility=(
+                    "unknown" if desktop_visible_project_ids is None
+                    else "visible in Desktop" if project_id in shown else "App Server only"
+                ),
+            )
+            for project_id, project in sorted(best.items())
+            if project_id != chosen
+        )
+    if desktop_linked_project_id:
+        mismatch(chosen)
+    return best[chosen]
 
 
 def resolve_preflight_project(
@@ -208,7 +227,10 @@ def resolve_preflight_project(
         findings=findings,
     )
     if target:
-        return target, "explicit target" if explicit_project_id else "target"
+        # "explicit target" only when the flag's project is the one used; a
+        # flag overruled by Desktop's link or by the holder is not its source.
+        named = bool(explicit_project_id) and str(target.get("id") or "") == explicit_project_id
+        return target, "explicit target" if named else "target"
     return None, None
 
 

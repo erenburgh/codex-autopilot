@@ -996,6 +996,12 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 2
+            if str(os.environ.get("CODEX_THREAD_ID") or "").strip():
+                # R6, the independent check: --yes from inside a Codex task
+                # is an agent answering for her, recorded as origin=user.
+                print("Refused: this runs inside a Codex task. Run it in your own terminal - "
+                      "the permission must be yours, not an agent's --yes.", file=sys.stderr)
+                return 3
             record = memory.propose_decision(
                 statement=statement,
                 origin="user",

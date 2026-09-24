@@ -753,12 +753,28 @@ class MemoryMcpServer:
         allowed = {"statement", "created_by", "confidence", "scope", "reason", "provider", "provider_thread_id"}
         return self.memory.add_observation(**self._validate_keys(args, allowed))
 
+    @staticmethod
+    def _refuse_owner_only(statement: Any, scope: Any = None) -> None:
+        # R6: an agent's tool wrote an accepted "user" permission to delete
+        # her project and the CLI executed it (the independent check's
+        # probe). Her decisions on saved projects are not this tool's to
+        # write, answer or revive (project_roots_change.owner_only_record).
+        from .project_roots_change import owner_only_record
+
+        reason = owner_only_record(statement, scope)
+        if reason:
+            raise MemoryValidationError(reason)
+
     def _propose_decision(self, args: dict[str, Any]) -> dict[str, Any]:
         allowed = {"statement", "origin", "created_by", "status", "reason", "scope", "evidence_ids", "provider", "provider_thread_id"}
-        return self.memory.propose_decision(**self._validate_keys(args, allowed))
+        args = self._validate_keys(args, allowed)
+        self._refuse_owner_only(args.get("statement"), args.get("scope"))
+        return self.memory.propose_decision(**args)
 
     def _set_decision_status(self, args: dict[str, Any]) -> dict[str, Any]:
         args = self._validate_keys(args, {"decision_id", "status", "actor", "reason"})
+        record = self.memory.get_record(str(args.get("decision_id") or ""))
+        self._refuse_owner_only(record.get("statement"), record.get("scope"))
         return self.memory.set_decision_status(args.get("decision_id"), args.get("status"), actor=args.get("actor"), reason=args.get("reason"))
 
     def _add_constraint(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -786,6 +802,7 @@ class MemoryMcpServer:
 
     def _user_correction(self, args: dict[str, Any]) -> dict[str, Any]:
         args = self._validate_keys(args, {"statement", "related_ids", "actor"})
+        self._refuse_owner_only(args.get("statement"))
         return self.memory.apply_user_correction(statement=args.get("statement"), related_ids=args.get("related_ids", []), actor=args.get("actor", "user"))
 
     def _milestone_evidence(self, args: dict[str, Any]) -> dict[str, Any]:

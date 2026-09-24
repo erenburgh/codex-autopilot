@@ -167,10 +167,21 @@ agent had created one of its own with `project/create`. Now the project Desktop
 links wins the tie; without a link, the one Desktop shows, then the lowest id
 (App Server ids are UUIDv7, so the oldest). An explicit
 `--app-server-project-id` that differs from the linked holder is overruled the
-same way. Each case is a WARN finding, not a stop. The one refusal left is
-`ID_PAIR_MISMATCH` FAIL: Desktop links its project to an App Server project
-that does not hold the run's root, so no choice is a consistent pair; the
-finding says what to do in Desktop.
+same way. Each case is a WARN finding, not a stop.
+
+The association no longer refuses at all. A link to an App Server project
+that does not hold the run's root was a FAIL that stopped preflight, though
+Desktop's rootPaths (checked just before) and another App Server project held
+the root - the target was in both spaces, only the pair was off. Now the
+holder is used and `ID_PAIR_MISMATCH` is a WARN whose fix is one save of the
+project in Codex Desktop (Edit project -> Save), which writes the root into
+its linked App Server project. An explicit `--app-server-project-id` naming a
+project without the root is the same: the holder is used, or - when no App
+Server project holds the root - the run goes on without one, as it does
+without the flag, and the flag is written with its fix. `ID_PAIR_MISMATCH` is
+a FAIL only for a target in neither space (no project of the pair holds it
+and Desktop's rootPaths do not list it); that too is a record with its fix,
+printed and proposed, not a stop.
 
 ## The roots audit (R6)
 
@@ -219,7 +230,14 @@ afterwards.
 
 `authorize-project-root` carries her decisions, each confirmed by typing the
 project id at an interactive terminal and refused inside a Codex task
-(`CODEX_THREAD_ID`), never by `--yes`:
+(`CODEX_THREAD_ID`), never by `--yes`. Every execution asks, even when an
+accepted record with the same text already exists: the independent check
+wrote such a record through the memory tool (origin "user", status
+"accepted") and deleted the duplicate from inside a task with nobody typing.
+The memory tool now refuses to write, correct or re-status these records -
+her permissions by their prefixes, the proposals by their scope - and
+`authorize-project-root --yes` (the add-root permission) is refused inside a
+Codex task as well:
 
 - `--retire-duplicate <id>` - `project/delete` of an App Server project that
   Desktop does not show, holds the run's root, is not the run's project and
