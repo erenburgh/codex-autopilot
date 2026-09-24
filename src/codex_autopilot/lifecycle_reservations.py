@@ -1094,15 +1094,15 @@ def _staged_workspace_prompt(
     task_id: str,
     verifier: bool,
 ) -> str:
-    """Make the isolation boundary explicit in the worker-visible contract."""
+    """The isolation boundary, whatever cwd the thread is filed with (placement_contract)."""
 
     phase = "verify" if verifier else "edit and test"
     return (
         prompt
-        + "\n\nSTAGED_ARTIFACT_GATE: The App Server cwd is the isolated workspace "
-        + f"{workspace}. {phase.capitalize()} only this workspace for task {task_id}. "
-        + f"The canonical project {canonical_root} must remain unchanged until an independent "
-        + "PASS; the runtime alone promotes the verifier-bound manifest. REVISE keeps the "
-        + "workspace isolated. Write the required handoff under this cwd's "
-        + f"{STATE_DIR_NAME}/handoff/{task_id}.md.\n"
+        + f"\n\nSTAGED_ARTIFACT_GATE: Your only writable root is the staged workspace {workspace}; "
+        + f"run every command with workdir={workspace}. {phase.capitalize()} only it for task {task_id}. "
+        + f"The canonical project {canonical_root} (the thread may be filed there to show the task in "
+        + "Desktop) is read-only for you until an independent PASS; the runtime alone promotes the "
+        + "verifier-bound manifest. REVISE keeps the workspace isolated. Write the handoff to "
+        + f"{workspace}/{STATE_DIR_NAME}/handoff/{task_id}.md.\n"
     )

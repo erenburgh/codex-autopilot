@@ -14,23 +14,30 @@ def require_desktop_project_root(
     desktop_project_id: str,
     target_root: Path,
 ) -> tuple[Path, ...] | None:
-    """Validate the Desktop project's real ``rootPaths`` when available.
+    """Require the run's root to BE a root of the Desktop project - as Desktop compares.
 
     App Server ``project/update`` and ``thread/metadata/update`` can succeed in
     the App Server project namespace without changing the Electron sidebar's
     local-project metadata.  When the Desktop state file is present, treating
     that success as UI placement would be a false positive.
+
+    This check accepted a root anywhere below a project root (``_contains``)
+    while Desktop files a thread only when its cwd EQUALS a root, normalized
+    its way (desktop_sidebar): a run started in a subfolder passed preflight,
+    and every thread it created - the on-call's too - was outside the
+    project. The independent check named the contradiction; the rule is now
+    the runtime's own. ``None`` means the state file does not exist - the
+    caller reports that as a finding, never as a pass.
     """
+
+    from .desktop_sidebar import INSIDE, UNOBSERVABLE, read_desktop_state, root_is_a_project_root
 
     state_path = codex_home.expanduser().resolve() / ".codex-global-state.json"
     if not state_path.is_file():
         return None
-    try:
-        payload = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ProjectAssociationError(
-            f"could not read Desktop project metadata from {state_path}: {exc}"
-        ) from exc
+    payload, why = read_desktop_state(codex_home.expanduser().resolve())
+    if payload is None:
+        raise ProjectAssociationError(f"could not read Desktop project metadata from {state_path}: {why}")
     projects = payload.get("local-projects")
     project = projects.get(desktop_project_id) if isinstance(projects, dict) else None
     if not isinstance(project, dict):
@@ -44,15 +51,21 @@ def require_desktop_project_root(
         raise ProjectAssociationError(
             f"saved Desktop Codex Project {desktop_project_id!r} has invalid rootPaths"
         )
-    roots = tuple(Path(item).expanduser().resolve() for item in raw_roots)
     target = target_root.expanduser().resolve()
-    if not any(_contains(root, target) for root in roots):
+    placed = root_is_a_project_root(target, desktop_project_id, codex_home.expanduser().resolve())
+    if placed.placement == UNOBSERVABLE:
+        raise ProjectAssociationError(placed.reason)
+    if placed.placement != INSIDE:
         raise ProjectAssociationError(
             f"saved Desktop Codex Project {desktop_project_id!r} rootPaths do not "
-            f"contain the target root {target}; configured rootPaths="
-            + json.dumps([str(item) for item in roots], ensure_ascii=False)
+            f"contain the target root {target} as one of its roots: Desktop files a thread in "
+            f"the project only when its cwd equals a root ({placed.reason}); configured rootPaths="
+            + json.dumps(list(raw_roots), ensure_ascii=False)
+            + " (resolved: "
+            + json.dumps([str(Path(item).expanduser().resolve()) for item in raw_roots], ensure_ascii=False)
+            + "; Desktop compares the spelling, not the resolved path)"
         )
-    return roots
+    return tuple(Path(item) for item in raw_roots)
 
 
 def match_saved_project(
@@ -136,14 +149,6 @@ def _project_contains(project: dict[str, Any], root: Path) -> bool:
             continue
         return True
     return False
-
-
-def _contains(root: Path, target: Path) -> bool:
-    try:
-        target.relative_to(root)
-    except ValueError:
-        return False
-    return True
 
 
 # --- R6: permission to mutate the saved project's roots --------------------

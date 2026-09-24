@@ -441,75 +441,93 @@ if __name__ == "__main__":
 
 
 class PlacementGateTests(unittest.TestCase):
-    """Placement is asked of the server: the sidebar is drawn from its
-    list.
+    """Placement is asked of the server AND of Desktop's own filing rule.
 
-    The previous version read keys out of .codex-global-state.json and
-    called OUTSIDE three threads that a human saw in the sidebar with his
-    own eyes. The instrument was never checked against a thread known to
-    be visible, and on its readings a false conclusion was built: that a
-    visible task cannot be created through the App Server.
+    The first version read keys out of .codex-global-state.json and called
+    OUTSIDE threads a human saw in the sidebar. The second asked App Server
+    for projectId only, and these tests pinned it: "a thread in the expected
+    project is inside" with no cwd at all - the very claim R5 forbids, since
+    every staged worker of the beyondness run had that projectId and was in
+    no project. Now the thread must also be filed in the Desktop project by
+    Desktop's rule (desktop_sidebar); both facts are asked here.
     """
 
-    def client(self, thread=None, error=None):
+    ROOT = "/work/project"
+
+    def client(self, thread=None, error=None, roots=(ROOT,)):
         from unittest import mock
+
+        from _desktop_state import desktop_home
 
         fake = mock.MagicMock()
         fake.__enter__.return_value = fake
         fake.__exit__.return_value = False
+        fake.codex_home = str(desktop_home(roots=list(roots)))
         if error is not None:
             fake.read_thread.side_effect = error
         else:
             fake.read_thread.return_value = thread
         return fake
 
-    def test_a_thread_in_the_expected_project_is_inside(self) -> None:
-        from codex_autopilot.launch_gate import INSIDE, desktop_placement
+    def place(self, thread=None, error=None, project_id="p1"):
+        from codex_autopilot.launch_gate import desktop_placement
 
-        placement = desktop_placement(
-            "t1", project_id="p1", client=self.client({"id": "t1", "projectId": "p1"})
+        return desktop_placement(
+            "t1", project_id=project_id, desktop_project_id="desktop-project",
+            client=self.client(thread, error),
         )
-        self.assertEqual(placement, INSIDE)
+
+    def test_a_thread_in_the_expected_project_at_its_root_is_inside(self) -> None:
+        from codex_autopilot.launch_gate import INSIDE
+
+        self.assertEqual(self.place({"id": "t1", "projectId": "p1", "cwd": self.ROOT}), INSIDE)
+
+    def test_the_right_project_id_below_the_root_is_outside(self) -> None:
+        """Mutation: the projectId-only check (the old ``_placement_via``) - INSIDE."""
+
+        from codex_autopilot.launch_gate import OUTSIDE
+
+        staged = self.ROOT + "/.codex-autopilot/staged-artifacts/A/workspace"
+        self.assertEqual(self.place({"id": "t1", "projectId": "p1", "cwd": staged}), OUTSIDE)
 
     def test_a_thread_without_a_project_is_outside(self) -> None:
-        from codex_autopilot.launch_gate import OUTSIDE, desktop_placement
+        from codex_autopilot.launch_gate import OUTSIDE
 
-        placement = desktop_placement(
-            "t1", project_id="p1", client=self.client({"id": "t1", "projectId": None})
-        )
-        self.assertEqual(placement, OUTSIDE)
+        self.assertEqual(self.place({"id": "t1", "projectId": None, "cwd": self.ROOT}), OUTSIDE)
 
     def test_a_thread_in_another_project_is_outside(self) -> None:
-        from codex_autopilot.launch_gate import OUTSIDE, desktop_placement
+        from codex_autopilot.launch_gate import OUTSIDE
 
-        placement = desktop_placement(
-            "t1", project_id="p1", client=self.client({"id": "t1", "projectId": "p2"})
-        )
-        self.assertEqual(placement, OUTSIDE)
+        self.assertEqual(self.place({"id": "t1", "projectId": "p2", "cwd": self.ROOT}), OUTSIDE)
 
     def test_a_vanished_thread_is_absent(self) -> None:
         """A thread without a single turn is not persisted by the
         server."""
 
-        from codex_autopilot.launch_gate import ABSENT, desktop_placement
+        from codex_autopilot.launch_gate import ABSENT
 
-        placement = desktop_placement(
-            "t1", project_id="p1", client=self.client(error=RuntimeError("thread not found"))
-        )
-        self.assertEqual(placement, ABSENT)
+        self.assertEqual(self.place(error=RuntimeError("thread not found")), ABSENT)
 
     def test_an_unbound_reservation_is_absent(self) -> None:
         from codex_autopilot.launch_gate import ABSENT, desktop_placement
 
         self.assertEqual(desktop_placement("", client=self.client()), ABSENT)
 
-    def test_any_project_counts_when_none_is_required(self) -> None:
-        from codex_autopilot.launch_gate import INSIDE, desktop_placement
+    def test_without_a_desktop_project_nothing_is_inside(self) -> None:
+        """This test used to say "any project counts when none is required".
+
+        Without a Desktop project there is nothing to be filed in: the
+        placement cannot be observed, and UNOBSERVABLE is never INSIDE.
+        """
+
+        from codex_autopilot.launch_gate import UNOBSERVABLE, desktop_placement
 
         placement = desktop_placement(
-            "t1", client=self.client({"id": "t1", "projectId": "p2"})
+            "t1", client=self.client({"id": "t1", "projectId": "p2", "cwd": self.ROOT})
         )
-        self.assertEqual(placement, INSIDE)
+        self.assertEqual(placement, UNOBSERVABLE)
+
+
 class OrphanedReservationTests(unittest.TestCase):
     """A reservation exists, no thread, the dispatcher died - the run
     must come back to life."""

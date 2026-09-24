@@ -24,6 +24,7 @@ from .project_association import (
     project_root_authorization_statement,
     project_root_mutation_authorized,
 )
+from .placement_contract import roots_within, session_cwd, thread_placement
 from .resources import ResourceLockCoordinator
 from .run_state import RunState, StateStore, utc_now
 
@@ -55,16 +56,20 @@ def app_server_creation_contract(
     cfg: Config,
     descriptor: LaunchDescriptor,
 ) -> dict[str, Any]:
-    """Return the exact project-scoped v0.7-style create contract."""
+    """Return the exact project-scoped create contract (placement_contract).
 
-    workspace = _descriptor_workspace(cfg, descriptor)
+    ``cwd`` is where Desktop files the thread, ``runtimeWorkspaceRoots``
+    where it may write: the root and the staged workspace under contract 2.
+    """
+
+    placement = thread_placement(cfg, _descriptor_workspace(cfg, descriptor), descriptor.kind)
     params: dict[str, Any] = {
-        "cwd": str(workspace),
+        "cwd": str(placement.cwd),
         "permissions": cfg.desktop.permission_profile,
         "ephemeral": False,
     }
-    if descriptor.kind != "plan_verifier":
-        params["runtimeWorkspaceRoots"] = [str(workspace)]
+    if placement.workspace_roots is not None:
+        params["runtimeWorkspaceRoots"] = [str(item) for item in placement.workspace_roots]
     if cfg.desktop.project_id:
         params["projectId"] = cfg.desktop.project_id
     if descriptor.model:
@@ -73,6 +78,7 @@ def app_server_creation_contract(
         "method": "thread/start",
         "params": params,
         "name": descriptor.title,
+        "placement_contract": placement.contract,
     }
     if cfg.desktop.project_id:
         contract["project_root_precondition"] = {
@@ -226,9 +232,19 @@ def create_desktop_thread_via_app_server(
             # UNKNOWN and produced an AMBIGUOUS_SIDE_EFFECT ticket with no way
             # out - while the dispatcher log held not one `thread/start`.
             plugin_root = installed_plugin_root(cfg.skill_path)
+            if workspace != cfg.root:
+                # A run that has no isolation record for this root, profile
+                # and binary - one paused before contract 2 among them - is
+                # measured here, on this connection, before its first staged
+                # thread (isolation_probe).
+                from .isolation_probe import ensure_measured
+
+                ensure_measured(cfg, client)
+            placement = thread_placement(cfg, workspace, descriptor.kind)
             create_invoked = True
             started = client.start_thread(
-                cwd=workspace,
+                cwd=placement.cwd,
+                workspace_roots=placement.workspace_roots,
                 permission_profile=cfg.desktop.permission_profile,
                 # v0.7 invariant: create the task in the saved project, with a
                 # cwd that is already one of that project's durable roots.
@@ -248,6 +264,12 @@ def create_desktop_thread_via_app_server(
             thread_id = str(thread.get("id") or "")
             if not thread_id:
                 raise DesktopLifecycleError("App Server thread/start returned no thread id")
+            if not roots_within(started.get("runtimeWorkspaceRoots"), placement.workspace_roots):
+                raise DesktopLifecycleError(
+                    "App Server widened the thread's runtime workspace roots to "
+                    f"{started.get('runtimeWorkspaceRoots')!r}; asked for "
+                    f"{[str(item) for item in placement.workspace_roots or ()]!r} - isolation refused"
+                )
             active_profile = started.get("activePermissionProfile") or {}
             if active_profile and active_profile.get("id") != cfg.desktop.permission_profile:
                 raise DesktopLifecycleError(
@@ -260,9 +282,9 @@ def create_desktop_thread_via_app_server(
                     "App Server thread/read returned an unexpected created thread"
                 )
             actual_cwd = _thread_cwd(metadata) or _thread_cwd(thread)
-            if actual_cwd != workspace:
+            if actual_cwd != placement.cwd:
                 raise DesktopLifecycleError(
-                    "App Server-created task does not use its authenticated workspace cwd"
+                    "App Server-created task does not use its placement contract's cwd"
                 )
             actual_name = metadata.get("name")
             if actual_name != descriptor.title:
@@ -323,12 +345,16 @@ def create_desktop_thread_via_app_server(
         session["thread_id"] = thread_id
         session["status"] = "PREPARED"
         session["actual_cwd"] = str(actual_cwd)
+        session["actual_workspace_root"] = str(workspace)
+        session["placement_contract"] = placement.contract
+        session["placement_reason"] = placement.reason
+        session["app_server_creation_contract"] = app_server_creation_contract(cfg, descriptor)
         session["actual_thread_name"] = actual_name
         session["title_verification"] = "verified by App Server thread/read"
         session["actual_project_id"] = actual_project_id
         session["project_association_verification"] = (
-            "verified project-scoped thread/start App Server projectId and authenticated workspace cwd by thread/read; "
-            "Desktop rootPaths/sidebar placement require separate verification"
+            "verified project-scoped thread/start App Server projectId and the placement contract's cwd by "
+            "thread/read; Desktop rootPaths/sidebar placement require separate verification (desktop_sidebar)"
             if cfg.desktop.project_id
             else "App Server projectId not configured"
         )
@@ -481,36 +507,44 @@ def _require_thread_placement(
     client_factory: Callable[..., AppServerClient] = AppServerClient,
     connected_client: AppServerClient | None = None,
     at: str | None,
+    phase: str = "created",
 ) -> str:
-    """Measure the thread's placement and let no work start without it.
+    """Measure the thread's placement; a thread outside the project is an R5 defect.
 
-    The order repeats the v0.7 working cycle: slot created, thread created,
-    and only after confirmed placement does the task start working.
-    Placement is asked of the server - Desktop draws the sidebar from its
-    list. The previous version read the keys of .codex-global-state.json and
-    called OUTSIDE threads a person saw with their own eyes; on its readings
-    a false conclusion about irreparable invisibility was built.
+    Placement is asked twice in one read: App Server's projectId and
+    Desktop's own filing rule (``launch_gate.measure_placement``). The check
+    before it trusted projectId alone and called INSIDE every staged worker
+    of the beyondness run that Desktop showed in no project.
+
+    It no longer stops work. It raised on anything but INSIDE, for a thread
+    of any kind: with the honest rule, a Desktop build whose rule changed, a
+    missing state file or a run started below a project root answer OUTSIDE
+    or UNOBSERVABLE, and the on-call raised for the resulting incident met
+    the same gate with its own thread - a loop nobody could leave
+    (the independent check). Now the defect is recorded on the session and
+    signalled once per cause as a ticket that holds nothing
+    (``placement_defects``); the run goes on. ``phase`` is ``created`` right
+    after thread/start and ``after_first_turn`` once the first turn has
+    completed - a thread with no turn is not yet persisted (launch_gate), so
+    R5's "visible within N seconds" is measured again when it is.
 
     There is nothing to send a binding with: thread/metadata/update
     succeeds while changing nothing, and writing into the application's
-    state behind its back is how the previous version masked a wrong
-    diagnosis. The thread lands in the right project from thread/start.
+    state behind its back is how an earlier version masked a wrong
+    diagnosis. The thread lands in the right project by its cwd.
     """
 
-    from .launch_gate import (
-        INSIDE,
-        OUTSIDE,
-        desktop_placement,
-        placement_observation,
-    )
+    from .launch_gate import INSIDE, OUTSIDE, measure_placement
+    from .placement_defects import record_placement_defect, signal_earlier_outside_threads
 
     required = cfg.runtime.required_thread_placement
     if required == "any":
         return "any"
-    if not cfg.desktop.project_id:
+    if not cfg.desktop.project_id and not cfg.desktop.desktop_project_id:
         # No saved project - nothing to place into, nothing to require.
         # Checking the real Codex directory here would be a dependency on
-        # the machine, not on the run.
+        # the machine, not on the run. A Desktop project alone is enough to
+        # measure: R5 is about her sidebar, not App Server's projectId.
         return "unconfigured"
     timestamp = at or utc_now()
     state = StateStore(cfg.state_dir).load()
@@ -525,12 +559,10 @@ def _require_thread_placement(
         else nullcontext(connected_client)
     )
     with context as client:
-        after = desktop_placement(
-            thread_id, project_id=cfg.desktop.project_id, client=client
+        after, observation = measure_placement(
+            client, thread_id, cfg.desktop.project_id, cfg.desktop.desktop_project_id
         )
-        observation = placement_observation(client, thread_id)
     before = str(session.get("desktop_placement") or "")
-
     _record_placement_outcome(
         cfg,
         reservation_token,
@@ -538,14 +570,13 @@ def _require_thread_placement(
         after=after,
         at=timestamp,
         observation=observation,
+        phase=phase,
     )
-    satisfied = after == INSIDE or (required == "visible" and after in {INSIDE, OUTSIDE})
+    satisfied = after == INSIDE or (required == "visible" and after == OUTSIDE)
     if not satisfied:
-        raise DesktopLifecycleError(
-            f"task not started: thread {thread_id} is in state {after}, "
-            f"while {required} is required. An invisible task cannot be opened; "
-            "the requirement can be relaxed through runtime.required_thread_placement"
-        )
+        record_placement_defect(cfg, reservation_token, after=after, observation=observation, at=timestamp)
+    if phase == "created":
+        signal_earlier_outside_threads(cfg, reservation_token, observation=observation, at=timestamp)
     return after
 
 
@@ -557,22 +588,44 @@ def _record_placement_outcome(
     after: str,
     at: str,
     observation: Mapping[str, Any] | None = None,
+    phase: str = "created",
 ) -> None:
+    """R5's two facts, recorded apart: projectId set, and filed in the project."""
+
     store = StateStore(cfg.state_dir)
     coordinator = ResourceLockCoordinator(store, cfg.root)
     with coordinator.transaction():
         state = store.load()
         session = _session_by_token(state, reservation_token)
         session["desktop_placement"] = after
+        if phase != "created":
+            session[f"desktop_placement_{phase}"] = after
+        detail = f"{before} -> {after}"
         if observation is not None:
             session["desktop_handoff_observation"] = dict(observation)
+            session["app_server_project_id_ok"] = observation.get("app_server_project_id_ok")
+            session["desktop_rule"] = observation.get("desktop_rule")
+            ok = observation.get("app_server_project_id_ok")
+            detail += (
+                f"; projectId={'ok' if ok else 'mismatch' if ok is False else 'unknown'}"
+                f"; sidebar={observation.get('desktop_rule') or 'none'}"
+            )
         _append_event(
             state,
-            "desktop_placement_verified",
+            "desktop_placement_verified" if phase == "created" else f"desktop_placement_{phase}",
             session,
             at,
-            detail=f"{before} -> {after}",
+            detail=detail,
         )
+        store.save(state)
+
+
+def _append_placement_failure(cfg: Config, reservation_token: str, exc: BaseException) -> None:
+    store = StateStore(cfg.state_dir)
+    with ResourceLockCoordinator(store, cfg.root).transaction():
+        state = store.load()
+        session = _session_by_token(state, reservation_token)
+        _append_event(state, "desktop_placement_unmeasured", session, utc_now(), detail=str(exc)[:300])
         store.save(state)
 
 
@@ -872,9 +925,10 @@ def run_automatic_app_server_turn(
             else:
                 resumed = production_client.resume_thread(thread_id)
                 thread = resumed.get("thread") or {}
-            if _thread_cwd(thread) != workspace:
+            expected_cwd = session_cwd(cfg, session, workspace)
+            if _thread_cwd(thread) != expected_cwd:
                 raise DesktopLifecycleError(
-                    "App Server production task is not bound to its authenticated workspace cwd"
+                    "App Server production task is not bound to its placement contract's cwd"
                 )
             if cfg.desktop.project_id and thread.get("projectId") != cfg.desktop.project_id:
                 raise DesktopLifecycleError(
@@ -894,7 +948,8 @@ def run_automatic_app_server_turn(
                 "prompt": prompt,
                 "effort": descriptor.thinking if descriptor.thinking else None,
                 "client_user_message_id": str(session["client_user_message_id"]),
-                "cwd": workspace,
+                "cwd": expected_cwd,
+                "workspace_roots": [workspace],
                 "permission_profile": cfg.desktop.permission_profile,
                 "model": descriptor.model if descriptor.model else None,
             }
@@ -986,6 +1041,17 @@ def run_automatic_app_server_turn(
         raise DesktopLifecycleError(str(exc)) from exc
 
     assert completed_turn is not None
+    if completed_turn.get("status") == "completed":
+        # R5 asks for the placement within N seconds of creation; a thread
+        # with no turn is not persisted yet, so the first completed turn is
+        # when the measurement is final. Never a stop (placement_defects).
+        try:
+            _require_thread_placement(
+                cfg, reservation_token, client_factory=client_factory,
+                connected_client=connected_client, at=None, phase="after_first_turn",
+            )
+        except Exception as exc:  # noqa: BLE001 - a measurement may not cost accepted work
+            _append_placement_failure(cfg, reservation_token, exc)
     if completed_turn.get("status") != "completed":
         reason = json.dumps(
             completed_turn.get("error") or completed_turn,
@@ -1237,9 +1303,9 @@ def claim_automatic_app_server_turn(
             )
         descriptor = LaunchDescriptor.from_dict(dict(session["descriptor"]))
         workspace = _descriptor_workspace(cfg, descriptor)
-        if _thread_cwd({"cwd": session.get("actual_cwd")}) != workspace:
+        if _thread_cwd({"cwd": session.get("actual_cwd")}) != session_cwd(cfg, session, workspace):
             raise DesktopLifecycleError(
-                "automatic production requires the authenticated task workspace cwd"
+                "automatic production requires the placement contract's cwd"
             )
         retained_connection = bool(
             _dispatcher_owns_reservation(session, dispatcher_pid=dispatcher_pid)

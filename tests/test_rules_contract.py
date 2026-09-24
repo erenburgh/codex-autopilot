@@ -354,15 +354,27 @@ class ProjectPlacementTests(unittest.TestCase):
         self.assertIn(str(target.resolve()), message)
         self.assertIn(str(other.resolve()), message)
 
-    def test_r6_accepts_a_target_inside_the_declared_roots(self) -> None:
-        from codex_autopilot.project_association import require_desktop_project_root
+    def test_r6_accepts_only_a_target_that_is_one_of_the_declared_roots(self) -> None:
+        """A target below a root used to be accepted here (nesting).
 
-        root = Path(tempfile.mkdtemp(prefix="codex-root-"))
+        Desktop files a thread in the project only when its cwd EQUALS a
+        root (desktop_sidebar): a run started below the root passed preflight
+        and every thread it made was in no project. Now preflight refuses
+        what the runtime would record as an R5 defect.
+        """
+
+        from codex_autopilot.project_association import (
+            ProjectAssociationError,
+            require_desktop_project_root,
+        )
+
+        root = Path(tempfile.mkdtemp(prefix="codex-root-")).resolve()
         nested = root / "work" / "project"
         nested.mkdir(parents=True)
         home = self._global_state([str(root)])
-        roots = require_desktop_project_root(home, "proj-1", nested)
-        self.assertEqual(roots, (root.resolve(),))
+        self.assertEqual(require_desktop_project_root(home, "proj-1", root), (root,))
+        with self.assertRaisesRegex(ProjectAssociationError, "equals a root"):
+            require_desktop_project_root(home, "proj-1", nested)
 
     def test_r6_is_reachable_from_the_production_preflight(self) -> None:
         """R19: the function existing is not enough, a call path is needed."""

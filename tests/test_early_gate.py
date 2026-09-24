@@ -279,7 +279,7 @@ class HandoffObservationTests(unittest.TestCase):
     """
 
     def test_the_observation_carries_what_the_server_said(self) -> None:
-        from codex_autopilot.launch_gate import placement_observation
+        from codex_autopilot.launch_gate import measure_placement
 
         class Fake:
             def read_thread(self, thread_id):
@@ -290,19 +290,19 @@ class HandoffObservationTests(unittest.TestCase):
                     "threadSource": None,
                 }
 
-        observed = placement_observation(Fake(), "t-1")
+        observed = measure_placement(Fake(), "t-1", None, None)[1]
         self.assertTrue(observed["observed"])
         self.assertIsNone(observed["can_accept_direct_input"])
         self.assertEqual(observed["status_type"], "notLoaded")
         self.assertEqual(observed["originator"], "Codex Desktop")
 
     def test_a_failed_read_is_recorded_as_not_observed(self) -> None:
-        from codex_autopilot.launch_gate import placement_observation
+        from codex_autopilot.launch_gate import measure_placement
 
         class Broken:
             def read_thread(self, thread_id):
                 raise RuntimeError("thread not found")
 
-        observed = placement_observation(Broken(), "t-1")
+        observed = measure_placement(Broken(), "t-1", None, None)[1]
         self.assertFalse(observed["observed"])
         self.assertIn("thread not found", observed["reason"])

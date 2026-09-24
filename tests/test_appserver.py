@@ -91,6 +91,74 @@ class AppServerTests(unittest.TestCase):
         self.assertEqual(params["projectId"], "project-1")
 
 
+    def test_placement_and_file_access_are_separate_on_every_call(self):
+        """Contract 2: filed at the root, writing only the staged workspace.
+
+        thread/start and both turn kinds send ``cwd=/root`` with
+        ``runtimeWorkspaceRoots=['/ws']``: the server rewrites a thread's cwd
+        on each turn, so one turn sent with the workspace would take the
+        thread out of the project again. Mutation: roots back to ``[cwd]``
+        in start_turn/start_plain_turn, or ``workspace_roots`` ignored in
+        start_thread - each assertion on '/ws' fails.
+        """
+
+        client = CaptureClient()
+        client.start_thread(cwd=Path("/root"), permission_profile=":workspace", project_id="p", model=None,
+                            plugin_root=PLUGIN_ROOT, workspace_roots=[Path("/ws")])
+        params = client.calls[-1][1]
+        self.assertEqual((params["cwd"], params["runtimeWorkspaceRoots"]), ("/root", ["/ws"]))
+        client.start_turn(thread_id="t", prompt="p", effort=None, client_user_message_id="c",
+                          skill_name="codex-autopilot-adaptive", skill_path=Path("/skill/SKILL.md"),
+                          cwd=Path("/root"), workspace_roots=[Path("/ws")])
+        params = client.calls[-1][1]
+        self.assertEqual((params["cwd"], params["runtimeWorkspaceRoots"]), ("/root", ["/ws"]))
+        client.start_plain_turn(thread_id="t", prompt="p", effort=None, client_user_message_id="c",
+                                cwd=Path("/root"), workspace_roots=[Path("/ws")])
+        params = client.calls[-1][1]
+        self.assertEqual((params["cwd"], params["runtimeWorkspaceRoots"]), ("/root", ["/ws"]))
+
+    def test_the_plan_verifier_thread_still_carries_no_roots(self):
+        """Roots only when asked for or for Project Memory (the independent check).
+
+        Mutation: ``runtimeWorkspaceRoots`` set unconditionally in
+        start_thread - the plan verifier's contract and request diverge.
+        """
+
+        client = CaptureClient()
+        client.start_thread(cwd=Path("/root"), permission_profile=":workspace", project_id=None,
+                            model=None, project_memory=False)
+        self.assertNotIn("runtimeWorkspaceRoots", client.calls[-1][1])
+
+    def test_command_exec_names_its_process_and_sandbox(self):
+        client = CaptureClient()
+        client.exec_command(["/usr/bin/touch", "/root/x"], cwd=Path("/root"), process_id="p-1",
+                            sandbox_policy={"type": "workspaceWrite"}, permission_profile=":workspace")
+        method, params = client.calls[-1]
+        self.assertEqual(method, "command/exec")
+        self.assertEqual(params["processId"], "p-1")
+        self.assertEqual(params["sandboxPolicy"], {"type": "workspaceWrite"})
+        self.assertNotIn("permissionProfile", params)
+
+    def test_connect_keeps_the_codex_home_the_server_reported(self):
+        """desktop_sidebar reads Desktop's state from there. Mutation: not stored - None."""
+
+        import io
+
+        class Process:
+            stdin, stdout, stderr = io.StringIO(), io.StringIO(""), io.StringIO("")
+
+            def poll(self):
+                return None
+
+        class Client(AppServerClient):
+            def _initialize_request(self):
+                return {"codexHome": "/reported/home"}
+
+        client = Client("codex", Path(tempfile.mktemp()), popen_factory=lambda *_a, **_k: Process())
+        client.connect()
+        self.assertEqual(client.codex_home, "/reported/home")
+        client.log.close()
+
     def test_archive_thread_uses_supported_app_server_method(self):
         client = CaptureClient()
         client.archive_thread("thread")

@@ -32,6 +32,11 @@ class FakeAppServerCreateClient:
         fail_create: bool = False,
     ) -> None:
         self.canonical_cwd = canonical_cwd
+        # Desktop files a thread at this root in its project (desktop_sidebar);
+        # a fake that named no Codex home would be UNOBSERVABLE, an R5 defect.
+        from _desktop_state import desktop_home
+
+        self.codex_home = str(desktop_home(roots=[canonical_cwd]))
         self.thread_cwd = canonical_cwd
         self.events = events
         self.thread_id = thread_id

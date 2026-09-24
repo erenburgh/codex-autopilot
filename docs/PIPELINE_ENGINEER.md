@@ -260,8 +260,20 @@ and the journal - and the brief says so: the engineer cannot close them
 recommendation. `FORBIDDEN_ACTIONS` are unchanged; an ambiguous create or send
 is never repeated.
 
+A thread Desktop files outside the project is an R5 placement defect, not a
+stop: one ticket per cause per run (stop kind `placement_defect`) holds no task
+and carries the cause, the two separate facts (App Server `projectId`, Desktop's
+rule and its reason, the Desktop version), a diagnosis, a recommendation and
+every thread of the run outside the project by id and title
+(`stop_context.placement`). A wrong cwd is a runtime defect the on-call
+repairs; a Desktop project root or the isolation trade-off goes to her. The
+on-call's own thread is never stopped by its placement, so the ticket always
+reaches it.
+
 A permission request inside a turn (`ApprovalRequired`) is never answered and
-never retried. It is its own failure code, `approval_required`, not counted
+never retried. Its ticket counts the requests of the run
+(`approvals_in_run`) and names the thread's placement contract: requests that
+keep coming from threads filed at the read-only root are a runtime defect. It is its own failure code, `approval_required`, not counted
 towards the retry ceiling; a stop ticket holds the task with the request in
 it and goes to the on-call, which compares it with the run's durable
 authorization and permission profile (`stop_context.approval`; the on-call's

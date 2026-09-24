@@ -10,7 +10,7 @@ import queue
 import subprocess
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 from . import __version__
 
@@ -138,6 +138,9 @@ class AppServerClient:
         self.next_id = 1
         self.errors: list[dict[str, Any]] = []
         self.subscribed_thread_ids: set[str] = set()
+        # Where this server keeps its home: the Desktop sidebar state lives
+        # there (desktop_sidebar). Known after `initialize`.
+        self.codex_home: str | None = None
 
     def connect(self) -> dict[str, Any]:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,6 +176,7 @@ class AppServerClient:
                 f"Original text: {exc}"
             ) from exc
         self.notify("initialized")
+        self.codex_home = str(result.get("codexHome") or "") or None
         return result
 
     def _initialize_request(self) -> dict[str, Any]:
@@ -384,6 +388,33 @@ class AppServerClient:
             for message in deferred:
                 self.messages.put(message)
 
+    def exec_command(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        process_id: str,
+        sandbox_policy: Mapping[str, Any] | None = None,
+        permission_profile: str | None = None,
+        timeout_ms: int = 10_000,
+    ) -> dict[str, Any]:
+        """Run one command through App Server's own sandbox, no model involved."""
+
+        params: dict[str, Any] = {
+            "command": list(command),
+            "cwd": str(cwd),
+            "processId": process_id,
+            "timeoutMs": timeout_ms,
+        }
+        if sandbox_policy is not None:
+            params["sandboxPolicy"] = dict(sandbox_policy)
+        elif permission_profile is not None:
+            params["permissionProfile"] = permission_profile
+        return self.request("command/exec", params, timeout=timeout_ms / 1000 + 15)
+
+    def terminate_command(self, process_id: str) -> None:
+        self.request("command/exec/terminate", {"processId": process_id}, timeout=15)
+
     def interrupt_turn(self, thread_id: str, turn_id: str) -> None:
         self.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id}, timeout=15)
 
@@ -404,8 +435,21 @@ class AppServerClient:
         plugin_root: Path | None = None,
         ephemeral: bool = False,
         project_memory: bool = True,
+        workspace_roots: Sequence[Path] | None = None,
     ) -> dict[str, Any]:
+        """Start a thread; ``workspace_roots`` separates placement from file access.
+
+        ``cwd`` is where Desktop files the thread: it must equal a project
+        root for the thread to show in the project (desktop_sidebar). The
+        writable roots are ``workspace_roots`` when given - a task's staged
+        workspace under the canonical root - and ``[cwd]`` otherwise. They
+        are sent only when asked for or when Project Memory needs them: the
+        plan verifier's thread never carried them, and its contract says so.
+        """
+
         params: dict[str, Any] = {"cwd": str(cwd), "permissions": permission_profile, "ephemeral": ephemeral}
+        if workspace_roots is not None:
+            params["runtimeWorkspaceRoots"] = [str(item) for item in workspace_roots]
         if project_memory:
             if plugin_root is None:
                 raise AppServerError("installed plugin root is required for Project Memory")
@@ -421,8 +465,8 @@ class AppServerClient:
             # loses plugin provenance, while a thread-selected capability is
             # intentionally ineligible for persistent approval in Codex core.
             # The installed .mcp.json omits cwd, so App Server binds the local
-            # stdio process to this thread's canonical workspace root.
-            params["runtimeWorkspaceRoots"] = [str(cwd)]
+            # stdio process to this thread's first workspace root.
+            params.setdefault("runtimeWorkspaceRoots", [str(cwd)])
         if project_id is not None:
             params["projectId"] = project_id
         # threadSource is deliberately neither passed nor accepted. The
@@ -522,6 +566,7 @@ class AppServerClient:
         cwd: Path,
         permission_profile: str | None = None,
         model: str | None = None,
+        workspace_roots: Sequence[Path] | None = None,
     ) -> dict[str, Any]:
         self.errors = []
         params: dict[str, Any] = {
@@ -534,8 +579,11 @@ class AppServerClient:
         }
         if effort is not None:
             params["effort"] = effort
+        # Every turn names its cwd and roots again: the server writes the
+        # thread's cwd on each turn, so a turn sent with the workspace as cwd
+        # would take the thread out of the project it was created in.
         params["cwd"] = str(cwd)
-        params["runtimeWorkspaceRoots"] = [str(cwd)]
+        params["runtimeWorkspaceRoots"] = [str(item) for item in (workspace_roots or [cwd])]
         if permission_profile is not None:
             params["permissions"] = permission_profile
         if model is not None:
@@ -552,6 +600,7 @@ class AppServerClient:
         cwd: Path,
         permission_profile: str | None = None,
         model: str | None = None,
+        workspace_roots: Sequence[Path] | None = None,
     ) -> dict[str, Any]:
         """Start a model turn without injecting the production worker skill."""
         self.errors = []
@@ -562,8 +611,11 @@ class AppServerClient:
         }
         if effort is not None:
             params["effort"] = effort
+        # Every turn names its cwd and roots again: the server writes the
+        # thread's cwd on each turn, so a turn sent with the workspace as cwd
+        # would take the thread out of the project it was created in.
         params["cwd"] = str(cwd)
-        params["runtimeWorkspaceRoots"] = [str(cwd)]
+        params["runtimeWorkspaceRoots"] = [str(item) for item in (workspace_roots or [cwd])]
         if permission_profile is not None:
             params["permissions"] = permission_profile
         if model is not None:

@@ -48,6 +48,7 @@ from .lifecycle import (
     retired_session_for_thread,
 )
 from .launch_registry import LaunchRegistry
+from .placement_contract import repair_contract_ok
 from .hook_trust import HookPreflightError, require_trusted_stop_hook_for_config
 from .pipeline_engineer import HealthcheckResult, IncidentPhase, PipelineIncidentStore
 from .plan import load_plan
@@ -442,13 +443,12 @@ def reactivate_desktop_relay_owner(root: Path, *, incident_id: str | None = None
         if cfg.desktop.project_id
         else None
     )
-    if (
+    if (  # the cwd and roots a placement contract may have: placement_contract
         repaired_contract.get("method") != "thread/start"
-        or Path(str(repaired_params.get("cwd") or "")).resolve() != cfg.root
+        or not repair_contract_ok(cfg, failed_descriptor, repaired_params)
         or repaired_params.get("projectId") != cfg.desktop.project_id
         or repaired_root_precondition != expected_root_precondition
         or state.project_id != cfg.desktop.project_id
-        or repaired_params.get("runtimeWorkspaceRoots") != [str(cfg.root)]
     ):
         raise RuntimeError(
             "repaired App Server creation contract does not match canonical project metadata"

@@ -208,6 +208,9 @@ class PreflightResult:
     project_source: str | None = None
     memory_preflight_thread_id: str | None = None
     plan_verification: PlanVerificationReceipt | None = None
+    # The isolation measurement (isolation_probe); bootstrap writes it into
+    # the new run's state - preflight itself creates no state.
+    isolation: dict[str, Any] | None = None
 
     def add(self, name: str, status: str, detail: str) -> None:
         self.checks.append((name, status, detail))
@@ -233,6 +236,53 @@ def _looks_like_codex_home_denial(exc: BaseException) -> bool:
         "sandbox",
     )
     return any(marker in text for marker in markers)
+
+
+def _measure_isolation(
+    client: Any, project: Path, binary: str, initialized: Any, report: Callable[..., None]
+) -> dict[str, Any]:
+    """Can a staged task's thread be filed at the root and still not write it (isolation_probe).
+
+    ROOT_WRITABLE fails preflight with an ISOLATION finding: the choice it
+    leaves - isolated tasks outside her project, or a profile that denies
+    the root - is not the runtime's. NOT_PROVEN keeps the old placement for
+    staged tasks and says so here; each such thread is then an R5 defect.
+    Preflight creates no project state, so the probe's workspace is a
+    temporary directory and the record is returned, not written.
+    """
+
+    from .isolation_probe import PASS, ROOT_WRITABLE, probe_isolation
+
+    workspace = Path(tempfile.mkdtemp(prefix="codex-autopilot-isolation-"))
+    try:
+        record = probe_isolation(
+            client,
+            root=project,
+            workspace=workspace,
+            permission_profile=":workspace",
+            binary=binary,
+            codex_version=str((initialized or {}).get("userAgent") or "") or None,
+        )
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+    if record["outcome"] == ROOT_WRITABLE:
+        detail = f"ISOLATION: {record['reason']} (cwd = {project}, runtime roots = [{record['workspace']}])"
+        report("Isolation", "FAIL", detail)
+        raise PreflightError(
+            f"{detail}. Filing staged tasks in the project would let them write the canonical "
+            "root; keeping them outside the project breaks R5. The choice is yours: a permission "
+            "profile that denies writes to the root, or staged tasks outside the project."
+        )
+    if record["outcome"] == PASS:
+        report("Isolation", "OK", f"staged tasks are filed at {project} and write only their workspace")
+    else:
+        report(
+            "Isolation",
+            "NOT PROVEN",
+            f"{record['reason']}. Staged tasks keep their workspace as cwd and are outside the "
+            "project in Desktop; each is recorded as an R5 defect",
+        )
+    return record
 
 
 def run_preflight(
@@ -356,6 +406,16 @@ def run_preflight(
                     "Desktop project rootPaths",
                     "OK",
                     ", ".join(str(item) for item in desktop_roots),
+                )
+            else:
+                # Not a pass: without Desktop's state no thread's placement
+                # can be observed, and each one is recorded as an R5 defect
+                # (placement_defects) - said here, before the run, not after.
+                report(
+                    "Desktop project rootPaths",
+                    "UNOBSERVABLE",
+                    f"{codex_home / '.codex-global-state.json'} does not exist: Desktop placement "
+                    "cannot be observed; every thread's placement will be recorded as an R5 defect",
                 )
 
         plugin_root = installed_plugin_root(skill_path)
@@ -755,6 +815,7 @@ def run_preflight(
         else:
             report("Model metadata", "OK", "dispatcher will send neither model nor effort")
 
+        result.isolation = _measure_isolation(client, project, binary, initialized, report)
         if replace:
             retired = _archive_replaced_workers(project, client, exclude=set(probe_thread_ids))
             if retired:

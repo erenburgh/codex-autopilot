@@ -582,6 +582,10 @@ def main(argv: list[str] | None = None) -> int:
                 desktop_project_id=getattr(args, "desktop_project_id", None),
                 plan_verification=preflight_result.plan_verification,
             )
+            if preflight_result.isolation:
+                from .isolation_probe import write_record
+
+                write_record(args.project.resolve() / STATE_DIR_NAME, preflight_result.isolation)
             if args.command == "start-skill":
                 state = StateStore(args.project.resolve() / STATE_DIR_NAME).load()
                 if state.status != "DONE":

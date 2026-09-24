@@ -116,6 +116,13 @@ class PreflightClient:
         return []
 
     def start_thread(self, **kwargs):
+        if kwargs.get("ephemeral"):
+            # The isolation probe's thread (isolation_probe): ephemeral, never
+            # a preflight task. This fake has no command/exec, so the probe
+            # reports NOT_PROVEN - the tests of that measurement are in
+            # test_placement_contract.py.
+            self.ephemeral_threads = [*getattr(self, "ephemeral_threads", []), kwargs]
+            return {"thread": {"id": "isolation-probe", "cwd": str(kwargs["cwd"])}}
         self.thread_args = kwargs
         self.thread_args_history.append(kwargs)
         suffix = "" if len(self.thread_args_history) == 1 else f"-{len(self.thread_args_history)}"
@@ -329,28 +336,50 @@ class AuthorizedSparseCompletionClient(AuthorizedMemoryClient):
 
 
 class PreflightTests(unittest.TestCase):
-    def test_desktop_root_paths_accept_the_canonical_target(self):
+    def _desktop_state(self, roots):
         codex_home = Path(tempfile.mkdtemp(prefix="codex-autopilot-codex-home-"))
-        target = Path(tempfile.mkdtemp(prefix="codex-autopilot-target-"))
         (codex_home / ".codex-global-state.json").write_text(
-            json.dumps(
-                {
-                    "local-projects": {
-                        "desktop-project": {
-                            "id": "desktop-project",
-                            "rootPaths": [str(target.parent)],
-                        }
-                    }
-                }
-            ),
+            json.dumps({"local-projects": {"desktop-project": {"id": "desktop-project", "rootPaths": roots}}}),
             encoding="utf-8",
         )
-        roots = require_desktop_project_root(
-            codex_home,
-            "desktop-project",
-            target,
+        return codex_home
+
+    def test_desktop_root_paths_accept_the_canonical_target(self):
+        """The root is one of the project's roots - in Desktop's spelling, case aside.
+
+        This test used to accept a project root ABOVE the target: preflight
+        passed a run whose every thread Desktop then filed in no project
+        (desktop_sidebar: only an equal cwd is in the project). Mutation:
+        project_association back to ``_contains`` (prefix) - the parent case
+        below passes and this test fails.
+        """
+
+        target = Path(tempfile.mkdtemp(prefix="codex-autopilot-target-")).resolve()
+        roots = require_desktop_project_root(self._desktop_state([str(target)]), "desktop-project", target)
+        self.assertEqual(roots, (target,))
+        upper = str(target).upper()
+        self.assertEqual(
+            require_desktop_project_root(self._desktop_state([upper]), "desktop-project", target),
+            (Path(upper),),
         )
-        self.assertEqual(roots, (target.parent.resolve(),))
+        with self.assertRaisesRegex(ProjectAssociationError, "equals a root"):
+            require_desktop_project_root(self._desktop_state([str(target.parent)]), "desktop-project", target)
+
+    def test_a_missing_desktop_state_is_a_finding_not_a_pass(self):
+        """No .codex-global-state.json: preflight says UNOBSERVABLE, never OK.
+
+        It used to return None and report nothing. Mutation: drop the
+        ``else`` branch in preflight - no rootPaths line in the report.
+        """
+
+        root = project()
+        result = run_preflight(
+            root, plan=plan(), profile="adaptive", skill_path=SKILL, binary="/bin/echo",
+            client_factory=PreflightClient, desktop_project_id=DESKTOP_PROJECT, emit=None,
+        )
+        (check,) = [item for item in result.checks if item[0] == "Desktop project rootPaths"]
+        self.assertEqual(check[1], "UNOBSERVABLE")
+        self.assertIn("R5 defect", check[2])
 
     def test_desktop_root_paths_mismatch_fails_before_false_ui_claim(self):
         codex_home = Path(tempfile.mkdtemp(prefix="codex-autopilot-codex-home-"))

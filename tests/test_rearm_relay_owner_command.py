@@ -351,3 +351,59 @@ class RearmWhileTheEngineerStillHoldsTheTicketTests(RearmRelayOwnerCommandTests)
         self.assertEqual(
             [item["actions"] for item in resolutions], [["rearm_relay_owner"]]
         )
+
+
+_PLAIN_GRAPH = _graph
+
+
+def _staged_graph() -> dict[str, object]:
+    """B writes a file through a directory resource: its work is staged."""
+
+    graph = _PLAIN_GRAPH()
+    for task in graph["tasks"]:
+        if task["id"] == DESTINATION:
+            task["resources"] = [{"id": "src", "kind": "directory", "target": "src", "access": "write"}]
+            task["outputs"] = [{"id": "out", "description": "B's file.", "path": "src/b.txt", "required": True}]
+    return graph
+
+
+class RearmAStagedDestinationTests(RearmRelayOwnerCommandTests):
+    """The on-call's relay repair for a staged task, under both placement contracts.
+
+    control.py required the re-derived contract to have ``cwd == root`` and
+    ``runtimeWorkspaceRoots == [root]``. A staged task's thread had its
+    workspace as cwd (contract 1) and, under contract 2, the workspace as
+    its only root - so the repair was refused for every staged worker,
+    verifier and revision (the independent check). Mutation: the old
+    condition back in control.py - both tests here raise "does not match
+    canonical project metadata".
+    """
+
+    def setUp(self) -> None:
+        with mock.patch(f"{__name__}._graph", _staged_graph):
+            super().setUp()
+
+    def _prove_isolation(self) -> None:
+        from codex_autopilot.isolation_probe import binary_identity, write_record
+
+        write_record(self.cfg.state_dir, {
+            "root": str(self.cfg.root), "permission_profile": self.cfg.desktop.permission_profile,
+            "codex_binary": binary_identity(self.cfg.desktop.binary), "outcome": "PASS",
+        })
+
+    def test_a_staged_destination_is_rearmed_under_contract_one(self) -> None:
+        from codex_autopilot.lifecycle import app_server_creation_contract
+
+        params = app_server_creation_contract(self.cfg, self.reservation)["params"]
+        self.assertNotEqual(Path(self.reservation.cwd), self.cfg.root)
+        self.assertEqual(params["cwd"], self.reservation.cwd)
+        self.assertEqual(self.rearm(CONFIRMED)["status"], "REARMED")
+
+    def test_a_staged_destination_is_rearmed_under_contract_two(self) -> None:
+        from codex_autopilot.lifecycle import app_server_creation_contract
+
+        self._prove_isolation()
+        params = app_server_creation_contract(self.cfg, self.reservation)["params"]
+        self.assertEqual((Path(params["cwd"]), params["runtimeWorkspaceRoots"]),
+                         (self.cfg.root, [self.reservation.cwd]))
+        self.assertEqual(self.rearm(CONFIRMED)["status"], "REARMED")

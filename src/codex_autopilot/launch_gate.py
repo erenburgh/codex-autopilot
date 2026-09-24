@@ -122,6 +122,9 @@ class LaunchCheck:
     task_id: str
     passed: bool | None
     detail: str
+    # False: a failure already carried by its own ticket - shown, and it
+    # does not make a second one (an R5 placement defect, placement_defects).
+    decisive: bool = True
 
     @property
     def mark(self) -> str:
@@ -254,13 +257,13 @@ def launch_verdict(checks: Iterable[LaunchCheck]) -> LaunchVerdict:
     items = list(checks)
     if not items:
         return LaunchVerdict.FAILED
-    if all(item.passed is True for item in items):
+    if all(item.passed is True or (item.passed is False and not item.decisive) for item in items):
         return LaunchVerdict.CONFIRMED
     broken = [
         item
         for item in items
         if (item.id in DECISIVE_CHECKS and item.passed is not True)
-        or (item.id in DECISIVE_ON_FAILURE and item.passed is False)
+        or (item.id in DECISIVE_ON_FAILURE and item.passed is False and item.decisive)
     ]
     return LaunchVerdict.FAILED if broken else LaunchVerdict.IN_PROGRESS
 
@@ -268,11 +271,12 @@ def launch_verdict(checks: Iterable[LaunchCheck]) -> LaunchVerdict:
 def launch_confirmed(checks: Iterable[LaunchCheck]) -> bool:
     """The launch is confirmed only if every item passed.
 
-    An unchecked item is not a confirmation.
+    An unchecked item is not a confirmation. A failed item that is not
+    decisive - a failure a ticket of its own already carries - is shown and
+    does not unconfirm the launch it is not about.
     """
 
-    items = list(checks)
-    return bool(items) and all(item.passed is True for item in items)
+    return launch_verdict(checks) is LaunchVerdict.CONFIRMED
 
 
 def render_launch_checklist(checks: Sequence[LaunchCheck]) -> str:
@@ -468,6 +472,17 @@ def _desktop_visibility(
             "visible_in_desktop", task_id, None, "placement not required by the config"
         )
     placement = str(session.get("desktop_placement") or "")
+    defect = session.get("r5_placement_defect")
+    if placement in {OUTSIDE, UNOBSERVABLE} and isinstance(defect, Mapping) and required != "visible":
+        # The thread was created and works; that it is not in the project is
+        # an R5 defect with its own ticket (placement_defects). A launch
+        # ticket on top would raise a second on-call for the same cause - the
+        # on-call whose own thread may measure the same way.
+        return LaunchCheck(
+            "visible_in_desktop", task_id, False,
+            f"R5 defect recorded: {placement} ({defect.get('cause')}); signalled, the run goes on",
+            decisive=False,
+        )
     if placement == INSIDE:
         return LaunchCheck(
             "visible_in_desktop", task_id, True, "thread in the project and visible in the sidebar"
@@ -600,26 +615,31 @@ def _pid_alive(pid: Any) -> bool:
 # eyes - the app's records in .codex-global-state.json say nothing of them,
 # and the server knows them.
 ABSENT = "ABSENT"      # the server does not know the thread: it was not saved
-OUTSIDE = "OUTSIDE"    # the server knows it, but outside the wanted project
-INSIDE = "INSIDE"      # in the project
+OUTSIDE = "OUTSIDE"    # the server knows it, but Desktop files it outside the project
+INSIDE = "INSIDE"      # projectId matches AND Desktop files it in the project
+UNOBSERVABLE = "UNOBSERVABLE"  # Desktop's placement could not be read - never INSIDE
 
 
 def desktop_placement(
     thread_id: str,
     *,
     project_id: str | None = None,
+    desktop_project_id: str | None = None,
     client: Any = None,
     binary: str = "codex",
     log_path: Path | None = None,
 ) -> str:
-    """Ask the server where the thread is.
+    """Ask where the thread is: App Server's projectId and Desktop's own rule.
 
     The old check read the keys of .codex-global-state.json. Measured: three
     threads a person saw in the project sidebar lived only in
     electron-persisted-atom-state and were absent from
-    thread-project-assignments entirely - that check called them OUTSIDE. On
-    its readings the false conclusion was built that a visible task cannot
-    be created through App Server.
+    thread-project-assignments entirely - that check called them OUTSIDE.
+    The check after it asked only App Server for projectId and called a
+    thread INSIDE when it matched - and every staged worker of the
+    beyondness run, projectId set and cwd a subfolder of the root, was
+    INSIDE by it and invisible in the project. Both halves are asked now
+    (``measure_placement``).
 
     A thread with not one turn is not persisted on the server: four probes
     created empty vanished from thread/list completely. So ABSENT means not
@@ -629,61 +649,81 @@ def desktop_placement(
     if not thread_id:
         return ABSENT
     if client is not None:
-        return _placement_via(client, thread_id, project_id)
+        return measure_placement(client, thread_id, project_id, desktop_project_id)[0]
 
     from .appserver import AppServerClient
 
     destination = log_path or Path(tempfile.gettempdir()) / "codex-autopilot-placement.jsonl"
     try:
         with AppServerClient(binary, destination) as fresh:
-            return _placement_via(fresh, thread_id, project_id)
+            return measure_placement(fresh, thread_id, project_id, desktop_project_id)[0]
     except Exception:
         return ABSENT
 
 
-def placement_observation(client: Any, thread_id: str) -> dict[str, Any]:
-    """What the server reports about a thread's fitness for human editing.
+def measure_placement(
+    client: Any, thread_id: str, project_id: str | None, desktop_project_id: str | None
+) -> tuple[str, dict[str, Any]]:
+    """One thread/read: the placement and the observation R5 keeps separate.
 
-    M11-R5 demanded checking not only project membership but editability.
-    Measured on a live server: ``canAcceptDirectInput`` arrives null both in
-    ``thread/read`` of an unloaded thread and in all thirty rows of
-    ``thread/list``. The field is live, not durable: no gate can be built on
-    it, because it does not tell "cannot be edited" from "nobody holds it".
+    INSIDE only when BOTH hold: App Server's projectId is the configured one
+    and Desktop's own rule files the thread in the Desktop project
+    (desktop_sidebar). R5: the status tells "projectId set" from "visible
+    in the project" and never passes the first off as the second - the
+    observation carries them as two fields, with Desktop's rule, its reason,
+    the thread's cwd and the Desktop version the rule was measured on.
 
-    So this is an observation, not a decision. It is written next to the
-    placement so the question of handing over ownership is settled from
-    records, not from memory. ``status.type == "notLoaded"`` is the state in
-    which nobody holds the thread.
+    Editability is observed, not gated on (M11-R5). Measured on a live
+    server: ``canAcceptDirectInput`` arrives null both in ``thread/read`` of
+    an unloaded thread and in all thirty rows of ``thread/list`` - it does
+    not tell "cannot be edited" from "nobody holds it". ``status.type ==
+    "notLoaded"`` is the state in which nobody holds the thread. (This was
+    ``placement_observation``, which read the thread a second time.)
     """
 
-    try:
-        thread = client.read_thread(thread_id) or {}
-    except Exception as exc:
-        return {"observed": False, "reason": str(exc)}
-    status = thread.get("status")
-    return {
-        "observed": True,
-        "can_accept_direct_input": thread.get("canAcceptDirectInput"),
-        "status_type": (
-            str(status.get("type")) if isinstance(status, Mapping) else None
-        ),
-        "originator": thread.get("originator"),
-        "thread_source": thread.get("threadSource"),
-    }
+    from .desktop_sidebar import (
+        INSIDE as SIDEBAR_INSIDE,
+        MEASURED_ON,
+        UNOBSERVABLE as SIDEBAR_UNOBSERVABLE,
+        codex_home_of,
+        desktop_version,
+        observe,
+    )
 
-
-def _placement_via(client: Any, thread_id: str, project_id: str | None) -> str:
     try:
         thread = client.read_thread(thread_id)
-    except Exception:
+    except Exception as exc:
         # A vanished thread answers "thread not found"; the connection may
         # also simply have dropped, but either way we have no placement.
-        return ABSENT
+        return ABSENT, {"observed": False, "reason": str(exc)}
     if not thread:
-        return ABSENT
+        return ABSENT, {"observed": False, "reason": "thread/read returned nothing"}
     assigned = str(thread.get("projectId") or "")
-    if not assigned:
-        return OUTSIDE
-    if project_id and assigned != str(project_id):
-        return OUTSIDE
-    return INSIDE
+    # None: no App Server project is configured, so there is no such fact to require.
+    project_ok = (assigned == str(project_id)) if project_id else None
+    home = codex_home_of(client)
+    sidebar = observe(thread_id, thread.get("cwd"), desktop_project_id, home)
+    status = thread.get("status")
+    observation = {
+        "observed": True,
+        "can_accept_direct_input": thread.get("canAcceptDirectInput"),
+        "status_type": str(status.get("type")) if isinstance(status, Mapping) else None,
+        "originator": thread.get("originator"),
+        "thread_source": thread.get("threadSource"),
+        "cwd": thread.get("cwd"),
+        "app_server_project_id": assigned or None,
+        "app_server_project_id_ok": project_ok,
+        "desktop_rule": sidebar.rule,
+        "desktop_reason": sidebar.reason,
+        "desktop_placement": sidebar.placement,
+        "desktop_version": desktop_version(),
+        "desktop_rule_measured_on": MEASURED_ON,
+        "codex_home": str(home) if home else None,
+    }
+    if project_ok is False:
+        return OUTSIDE, observation
+    if sidebar.placement == SIDEBAR_INSIDE:
+        return INSIDE, observation
+    if sidebar.placement == SIDEBAR_UNOBSERVABLE:
+        return UNOBSERVABLE, observation
+    return OUTSIDE, observation

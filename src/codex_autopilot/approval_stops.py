@@ -71,6 +71,19 @@ def approval_signature(payload: Mapping[str, Any]) -> str:
     return f"{method}:{digest}"
 
 
+def approvals_in_run(cfg: Any, state: Any) -> int:
+    """Permission-request stops this run already filed."""
+
+    from .pipeline_engineer import PipelineIncidentStore
+
+    return sum(
+        1
+        for item in PipelineIncidentStore(cfg.state_dir).load().get("incidents") or ()
+        if (item.get("system_state") or {}).get("stop_kind") == "approval_required"
+        and str((item.get("system_state") or {}).get("run_id") or "") == str(getattr(state, "run_id", "") or "")
+    )
+
+
 def bounded_request(payload: Mapping[str, Any]) -> dict[str, Any]:
     text = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True, default=str)
     if len(text) <= MAX_PAYLOAD_CHARS:
@@ -169,6 +182,12 @@ def record_approval_required(
                 "covered_by": covered_by,
                 "session_kind": str(session.get("kind") or ""),
                 "reservation_token": reservation_token,
+                # How often: a thread filed at the root (placement_contract 2)
+                # whose shell writes a relative path meets the read-only root
+                # and asks - the independent check's risk, counted per run
+                # rather than trusted to the prompt's workdir line.
+                "approvals_in_run": approvals_in_run(cfg, state) + 1,
+                "placement_contract": session.get("placement_contract"),
             },
         )
         store.save(state)

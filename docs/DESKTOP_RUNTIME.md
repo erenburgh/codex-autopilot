@@ -66,10 +66,14 @@ for migration, but new reservations never use that path.
 
 ## Canonical placement, names, and status
 
-The canonical worker filesystem location is always the initialized target
-repository root. Every App Server `thread/start` supplies that root directly as
-`cwd`; there is no later model turn that tries to repair an initially wrong
-checkout. The saved App Server `projectId` is resolved independently: an
+Every App Server `thread/start` and every `turn/start` supplies the
+initialized target repository root as `cwd`: Desktop files a thread in the
+project only when its cwd equals a project root (`desktop_sidebar.py`). A task
+whose work is staged gets its staged workspace as `runtimeWorkspaceRoots` - the
+only place it may write - once the isolation probe proved the root stays
+read-only (placement contract 2); without that proof its thread keeps the
+workspace as cwd and is recorded as an R5 defect. There is no later model turn
+that tries to repair an initially wrong checkout. The saved App Server `projectId` is resolved independently: an
 explicitly configured matching project wins; otherwise Autopilot selects the
 unique saved project with the longest root that contains the target. An
 explicit mismatch or ambiguous longest-root match fails preflight.
@@ -79,8 +83,11 @@ creation uses only the App Server ID. Codex App remains authoritative for
 Desktop sidebar placement through the host's existing namespace mapping. When
 `thread/read` exposes an App Server `projectId`, Autopilot records it and
 verifies the configured App Server project exactly. It does not claim Desktop
-association from that check: actual Desktop visibility/editability must be
-observed independently.
+association from that check: Desktop's own filing rule is read from its state
+(read-only) and recorded as a separate fact, right after creation and again
+after the first completed turn. A thread outside the project is an R5 defect
+with a ticket for the on-call; it never stops the work (see
+PROJECT_ASSOCIATION.md).
 
 Every worker title is deterministic, human-readable, and capped at 96
 characters. The exact forms are:
