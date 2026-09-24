@@ -18,6 +18,17 @@ admission and at run time alike; a task still to be accepted takes part in
 the lead of a task already under way is not a rewrite of its work
 (``resilience.names_only_its_lead``), so the on-call can always give a
 profession one lead.
+
+What the second check found in that exemption, and what closes it. It was
+not limited to history: on a plan that already met R30 - the beyondness
+shape, M01 VERIFIED by art-reviewer - a change moving M03 to a new
+"lax-lead" whose only expectation was "Anything goes." was admitted with no
+issue, and the new department would have started from a fresh rubric
+version 1 built from a profile the replanner wrote. Now a settled task is
+history only as the current plan holds it, and a profession with accepted
+work keeps its lead: one of those that accepted it, or the one the current
+plan names for the rest; a task under way takes only a lead its profession
+already names.
 """
 
 from __future__ import annotations
@@ -132,11 +143,37 @@ class AdmissionLeavesAcceptedTasksOutTests(unittest.TestCase):
         plan = self._plan()
         unchanged = {task.id for task in plan.tasks}
         self.assertEqual(
-            validate_department_leads(plan.tasks, plan.roles, exempt=unchanged, settled={"M01", "M02"}), []
+            validate_department_leads(
+                plan.tasks, plan.roles, exempt=unchanged, settled={"M01", "M02"}, inherited=plan
+            ), []
         )
         # A task still to be accepted takes part, touched by the change or not.
-        (split,) = validate_department_leads(plan.tasks, plan.roles, exempt=unchanged, settled={"M01"})
+        (split,) = validate_department_leads(
+            plan.tasks, plan.roles, exempt=unchanged, settled={"M01"}, inherited=plan
+        )
         self.assertIn("tasks of role 'character-artist' name several - art-reviewer: M03; sculpt-reviewer: M02", split)
+
+    def test_the_split_is_history_only_as_the_current_plan_holds_it(self) -> None:
+        """A settled task whose lead the change rewrote is not history.
+
+        Mutation: ``_history`` takes every settled task, whatever the
+        current plan says of it - the split M01's rewrite creates is not
+        reported. Without the current plan settled means nothing.
+        """
+
+        current = self._plan()
+        m01 = current.task_map["M01"]
+        tasks = tuple(
+            replace(m01, verification=replace(m01.verification, verifier_role="sculpt-reviewer"))
+            if task.id == "M01" else task for task in current.tasks
+        )
+        found = validate_department_leads(
+            tasks, current.roles, exempt=set(current.task_map) - {"M01"}, settled={"M01", "M02"},
+            inherited=current,
+        )
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("art-reviewer: M03; sculpt-reviewer: M01", found[0])
+        self.assertEqual(len(validate_department_leads(current.tasks, current.roles, settled={"M01", "M02"})), 1)
 
     def test_an_exempt_task_still_to_be_accepted_is_not_left_out(self) -> None:
         """Mutation: by_role skips exempt tasks - a new task naming another lead
@@ -147,10 +184,98 @@ class AdmissionLeavesAcceptedTasksOutTests(unittest.TestCase):
         m04 = replace(m03, id="M04", verification=replace(m03.verification, verifier_role="sculpt-reviewer"))
         tasks = (*plan.tasks, m04)
         found = validate_department_leads(
-            tasks, plan.roles, exempt={task.id for task in plan.tasks}, settled={"M01", "M02"}
+            tasks, plan.roles, exempt={task.id for task in plan.tasks}, settled={"M01", "M02"}, inherited=plan
         )
         self.assertEqual(len(found), 1, found)
         self.assertIn("art-reviewer: M03; sculpt-reviewer: M04", found[0])
+
+
+class AProfessionKeepsItsLeadTests(unittest.TestCase):
+    """plan_admission.plan_change_candidate, called as the replanner's admission calls it."""
+
+    LAX_LEAD = {
+        "id": "lax-lead", "name": "Lax Lead", "version": "1.0.0",
+        "responsibilities": ["Accept anything."], "verification_expectations": ["Anything goes."],
+    }
+
+    def _admit(self, current, m03_lead: str, settled):
+        from codex_autopilot.plan_admission import IssueCollector, plan_change_candidate
+
+        raw = plan_to_dict(current)
+        raw["graph_version"] = current.graph_version + 1
+        if "lax-lead" not in current.role_map:
+            raw["roles"].append(dict(self.LAX_LEAD))
+        next(task for task in raw["tasks"] if task["id"] == "M03")["verification"]["verifier_role"] = m03_lead
+        collector = IssueCollector()
+        plan_change_candidate(collector, current, raw, "adaptive", settled=settled)
+        return [issue.message for issue in collector.issues]
+
+    def test_the_second_checks_reproduction_on_the_beyondness_shape_is_refused(self) -> None:
+        """M01 VERIFIED by art-reviewer; M03 moved to lax-lead ("Anything goes.").
+
+        Admitted with 0 issues before this fix, the new department starting
+        from a fresh rubric v1 the replanner wrote. Mutation:
+        validate_department_leads without ``found.extend(moved.values())`` -
+        the list is empty.
+        """
+
+        current = validate_persisted_plan(beyondness_plan(), "adaptive")
+        (split,) = self._admit(current, "lax-lead", set())
+        self.assertIn("name several - art-reviewer: M01; lax-lead: M03", split)
+        (moved,) = self._admit(current, "lax-lead", {"M01"})
+        self.assertIn("a profession keeps its lead once its work has been accepted", moved)
+        self.assertIn("tasks of role 'character-artist' name 'lax-lead' (M03)", moved)
+        self.assertIn("judged by ['art-reviewer']", moved)
+        # Before any acceptance a profession's lead is still the planner's to name.
+        raw = plan_to_dict(current)
+        raw["roles"].append(dict(self.LAX_LEAD))
+        for task in raw["tasks"]:
+            if task["role"] == "character-artist":
+                task["verification"]["verifier_role"] = "lax-lead"
+        self.assertEqual(self._admit(validate_persisted_plan(raw, "adaptive"), "lax-lead", set()), [])
+
+    def test_the_lead_the_current_plan_names_for_the_rest_may_be_kept(self) -> None:
+        """A run from before R30: M01 accepted by art-reviewer, M03 names sculpt-reviewer.
+
+        Keeping sculpt-reviewer or taking art-reviewer is admitted; lax-lead
+        is not. Mutation: ``_moved_leads`` without the current plan's leads
+        (``kept``) - keeping M03's own lead is refused, and the pre-R30 run
+        can never be changed without moving work already under way.
+        """
+
+        raw = beyondness_plan()
+        raw["roles"].append(dict(SCULPT_REVIEWER))
+        next(task for task in raw["tasks"] if task["id"] == "M03")["verification"]["verifier_role"] = "sculpt-reviewer"
+        current = validate_persisted_plan(raw, "adaptive")
+        self.assertEqual(self._admit(current, "sculpt-reviewer", {"M01"}), [])
+        self.assertEqual(self._admit(current, "art-reviewer", {"M01"}), [])
+        (moved,) = self._admit(current, "lax-lead", {"M01"})
+        self.assertIn("the current plan names ['sculpt-reviewer'] for the rest", moved)
+
+
+class TheStatusNamesTheLeadTests(DepartmentRun):
+    def test_a_verifying_task_without_a_session_shows_its_professions_lead(self) -> None:
+        """status._active_title named the worker's profession as the verifier.
+
+        A task from before R30 without its own verifier_role, VERIFYING with
+        no session descriptor: the title names the lead its profession has,
+        and "No Lead Role" when there is none - never the worker. Mutation:
+        the old ``verifier_role or task.role`` fallback - "Character Artist".
+        """
+
+        from codex_autopilot.status import project_status_snapshot
+
+        raw = beyondness_plan(lead_on_every_task=False)
+        plan = validate_persisted_plan(raw, "adaptive")
+        self.assertIsNone(plan.task_map["M03"].verification.verifier_role)
+        state = self.store.load()
+        state.task_states.update(M01="VERIFIED", M02="VERIFIED", M03="VERIFYING")
+        (item,) = project_status_snapshot(self.cfg, state, plan)["verifying"]
+        self.assertEqual(item["active_title"], "Character Art Verifier | Verify M03 | Model part M03")
+        for task in raw["tasks"]:
+            task["verification"].pop("verifier_role", None)
+        (item,) = project_status_snapshot(self.cfg, state, validate_persisted_plan(raw, "adaptive"))["verifying"]
+        self.assertTrue(item["active_title"].startswith("No Lead Role | Verify M03"), item["active_title"])
 
 
 class TheRunTimeLeadIsTheLiveOneTests(unittest.TestCase):
@@ -268,7 +393,7 @@ class APlanChangeOnThePreR30RunTests(ThePreR30Run):
             "evidence_ids": [],
         }, separators=(",", ":"))
 
-    def _candidate(self) -> dict:
+    def _candidate(self, m03_lead: str = "sculpt-reviewer") -> dict:
         current = self.plan()
         raw = plan_to_dict(current)
         raw["graph_version"] = current.graph_version + 1
@@ -278,45 +403,61 @@ class APlanChangeOnThePreR30RunTests(ThePreR30Run):
         for task in raw["tasks"]:
             if task["id"] == "M03":
                 task["depends_on"] = ["P"]
-                task["verification"]["verifier_role"] = "anatomy-lead"
+                task["verification"]["verifier_role"] = m03_lead
         raw["tasks"].insert(0, prerequisite)
         return raw
 
-    def test_is_admitted_verified_and_applied(self) -> None:
-        """The M01/M02 split is left as it was; the change goes through every gate.
-
-        Its requester M03 is also given a new lead, anatomy-lead, whose
-        version-1 rubric is written at the commit - the only writer here.
-        Mutations, each alone, each fails here: settled not passed by
-        admit_replanner_result (refused), by plan_change_reservation's
-        _unverifiable_proposal (a stop, no plan verifier) or
-        _prompt_over_budget, by the plan verifier's descriptor, by
-        _complete_plan_verifier, by commit_plan_change's revalidation (each
-        raises), or by commit_plan_change's ensure_all_department_rubrics (no
-        anatomy-lead rubric); or the replanner's constraints without the
-        sentence on accepted tasks.
-        """
-
-        from codex_autopilot.plan_verification import PLAN_VERIFICATION_PREFIX
-        from codex_autopilot.resilience import PLAN_CHANGE_RESULT_PREFIX
-
+    def _to_replanner(self):
         self.make_pre_r30()
         (worker,) = self.reserve()
         self.mark_active(worker.reservation_token, "worker-M03")
         bump_task_checkpoint(self.root, "M03", "Plan change requested.")
         (replanner,) = self.complete("worker-M03", self._request()).descriptors
         self.assertEqual(replanner.kind, "replanner")
+        self.mark_active(replanner.reservation_token, "replanner-PC1")
+        return replanner
+
+    def _result(self, m03_lead: str = "sculpt-reviewer") -> str:
+        from codex_autopilot.resilience import PLAN_CHANGE_RESULT_PREFIX
+
+        return PLAN_CHANGE_RESULT_PREFIX + " " + json.dumps(
+            {"request_id": "PC1", "base_graph_version": 1, "plan": self._candidate(m03_lead)},
+            separators=(",", ":"),
+        )
+
+    def test_is_admitted_verified_and_applied(self) -> None:
+        """The M01/M02 split is left as it was; the change goes through every gate.
+
+        Its requester M03 is moved to sculpt-reviewer - one of the two leads
+        its profession's accepted work had, the choice there is when that
+        work had several - whose version-1 rubric is written at the commit,
+        the only writer here. This test first gave M03 a brand-new
+        anatomy-lead and called that admitted: the second check named it as
+        the widening it locked in, and it is refused now (below).
+        Mutations, each alone, each fails here: settled not passed by
+        admit_replanner_result (refused), by plan_change_reservation's
+        _unverifiable_proposal (a stop, no plan verifier) or
+        _prompt_over_budget, by the plan verifier's descriptor, by
+        _complete_plan_verifier, by commit_plan_change's revalidation (each
+        raises), or by commit_plan_change's ensure_all_department_rubrics (no
+        sculpt-reviewer rubric); graph_plan not passing the current plan to
+        validate_department_leads (settled means nothing then, the split is
+        refused); or the replanner's constraints without the sentences on
+        accepted tasks.
+        """
+
+        from codex_autopilot.plan_verification import PLAN_VERIFICATION_PREFIX
+
+        replanner = self._to_replanner()
         # Told up front, so it does not spend an attempt rewriting M02.
         self.assertIn("A task already VERIFIED or CANCELLED keeps the lead that judged it", replanner.prompt)
-        self.mark_active(replanner.reservation_token, "replanner-PC1")
-        result = PLAN_CHANGE_RESULT_PREFIX + " " + json.dumps(
-            {"request_id": "PC1", "base_graph_version": 1, "plan": self._candidate()}, separators=(",", ":")
-        )
-        proposed = self.complete("replanner-PC1", result)
+        self.assertIn("Once a profession's work is accepted its lead does not change", replanner.prompt)
+        self.assertEqual(self.rubric_records("sculpt-reviewer"), [])
+        proposed = self.complete("replanner-PC1", self._result())
         self.assertEqual(proposed.worker_status, "PLAN_CHANGE_PROPOSED", self.store.load().plan_changes)
         (verifier,) = proposed.descriptors
         self.assertEqual(verifier.kind, "plan_verifier")
-        self.assertEqual(self.rubric_records("anatomy-lead"), [])
+        self.assertEqual(self.rubric_records("sculpt-reviewer"), [])
         self.mark_active(verifier.reservation_token, "plan-verifier-PC1")
         applied = self.complete("plan-verifier-PC1", PLAN_VERIFICATION_PREFIX + ' {"verdict":"PASS","issues":[]}')
         self.assertEqual(applied.worker_status, "PLAN_VERIFIED")
@@ -326,7 +467,27 @@ class APlanChangeOnThePreR30RunTests(ThePreR30Run):
         self.assertEqual(plan.task_map["M02"].verification.verifier_role, "sculpt-reviewer")
         state = self.store.load()
         self.assertEqual((state.task_states["M01"], state.task_states["M02"]), ("VERIFIED", "VERIFIED"))
-        self.assertEqual(len(self.rubric_records("anatomy-lead")), 1)
+        self.assertEqual(plan.task_map["M03"].verification.verifier_role, "sculpt-reviewer")
+        self.assertEqual(len(self.rubric_records("sculpt-reviewer")), 1)
+        self.assertEqual(self.rubric_records("anatomy-lead"), [])
+
+    def test_a_new_lead_for_the_rest_of_the_profession_goes_back_to_the_replanner(self) -> None:
+        """What this class's first test used to admit: M03 moved to anatomy-lead.
+
+        Refused at admission, back to the replanner with the leads it may
+        choose among - nothing committed, no rubric written. Mutation:
+        validate_department_leads without the moved-lead check
+        (``found.extend(moved.values())``) - the change is proposed.
+        """
+
+        self._to_replanner()
+        rejected = self.complete("replanner-PC1", self._result("anatomy-lead"))
+        self.assertEqual(rejected.worker_status, "PLAN_CHANGE_REJECTED")
+        (rejection,) = self.store.load().plan_changes[0]["rejections"]
+        self.assertIn("a profession keeps its lead once its work has been accepted", rejection["reason"])
+        self.assertIn("judged by ['art-reviewer', 'sculpt-reviewer']", rejection["reason"])
+        self.assertEqual(self.plan().graph_version, 1)
+        self.assertEqual(self.rubric_records("anatomy-lead"), [])
 
 
 class TheOnCallCanNameTheLeadTests(ThePreR30Run):
@@ -364,10 +525,19 @@ class TheOnCallCanNameTheLeadTests(ThePreR30Run):
 
 
 class NamingALeadIsNotARewriteTests(ThePreR30Run):
-    def _apply(self, mutate, m02_state: str):
+    def _apply(self, mutate, m02_state: str, *, leads: dict | None = None):
+        """M02 changed by ``mutate`` while in ``m02_state``, on the current plan
+        a run from before R30 holds: the profession's pending tasks split
+        between art-reviewer (M01, M02) and sculpt-reviewer (M03), or ``leads``."""
+
         from codex_autopilot.resilience import reconcile_plan_change_state
 
         current = self.plan()
+        named = leads if leads is not None else {"M03": "sculpt-reviewer"}
+        current = replace(current, tasks=tuple(
+            replace(task, verification=replace(task.verification, verifier_role=named[task.id]))
+            if task.id in named else task for task in current.tasks
+        ))
         m02 = current.task_map["M02"]
         tasks = tuple(mutate(task) if task.id == "M02" else task for task in current.tasks)
         candidate = replace(current, tasks=tasks, graph_version=current.graph_version + 1)
@@ -399,6 +569,31 @@ class NamingALeadIsNotARewriteTests(ThePreR30Run):
             self._apply(lambda task: replace(self._lead(task), objective="Something else."), "IMPLEMENTED")
         with self.assertRaisesRegex(PlanChangeConflictError, "advanced task M02"):
             self._apply(self._lead, "CANCELLED")
+
+    def test_work_under_way_is_never_moved_to_a_lead_its_profession_never_had(self) -> None:
+        """The second check: names_only_its_lead let tasks under way be moved.
+
+        A new lead for work already done is a new standard for it; the
+        change is refused at the commit and goes back to the replanner.
+        When the profession names no lead at all (a run from before R30 whose
+        tasks left it out), any lead is its first. Mutations: the reconcile
+        branch without the ``named`` check (no conflict), or without
+        ``not named`` (the first lead of a leaderless profession refused).
+        """
+
+        from codex_autopilot.resilience import PlanChangeConflictError
+
+        def moved(task):
+            return replace(task, verification=replace(task.verification, verifier_role="reference-artist"))
+
+        with self.assertRaisesRegex(
+            PlanChangeConflictError, r"advanced task M02 can take only a lead its profession already "
+            r"has \['art-reviewer', 'sculpt-reviewer'\]",
+        ):
+            self._apply(moved, "IMPLEMENTED")
+        leaderless = {task_id: None for task_id in ("M01", "M02", "M03")}
+        state = self._apply(moved, "IMPLEMENTED", leads=leaderless)
+        self.assertEqual(state.task_states["M02"], "IMPLEMENTED")
 
 
 if __name__ == "__main__":

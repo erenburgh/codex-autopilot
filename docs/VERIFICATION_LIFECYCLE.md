@@ -59,7 +59,15 @@ before R30 could name several leads for one profession, and a `VERIFIED` task
 cannot change - counting those refused every later plan change of such a run
 and left the profession's other tasks without a lead for good (found by the
 independent check). A task still to be accepted takes part, touched by the
-change or not. A saved plan is never refused on load: a task with no lead is
+change or not. The exemption is history, not licence: a settled task is left
+out only as the current plan holds it, and once a profession's work has been
+accepted its lead is one of those that accepted it or the one the current plan
+names for the rest - never a new one. The second check reproduced the gap: M01
+`VERIFIED` by `art-reviewer`, and a change moving M03 to a new lead whose only
+expectation was "Anything goes." passed with no issue; the new department would
+have started from a fresh rubric version 1 built from a profile the replanner
+wrote - a new standard with no outcome evidence. A task already under way may
+be given only a lead its profession already names (`reconcile_plan_change_state`). A saved plan is never refused on load: a task with no lead is
 stopped when its verifier is reserved, alone, through the one stop door
 (`department_gate`, stop kind `department_lead`), and the on-call has the plan
 changed to name the lead - naming the lead of a task already under way is not

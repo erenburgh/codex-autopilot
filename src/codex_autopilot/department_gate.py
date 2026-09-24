@@ -82,7 +82,8 @@ def stop_for_department(cfg: Any, plan: Any, state: Any, task_id: str, reason: s
         if ambiguous
         else f"ask the replanner (devops-request-plan-change) to name the Lead Role of "
         f"profession {role!r} in verification.verifier_role of its tasks not yet accepted - "
-        "one lead, not the profession itself; a task VERIFIED or CANCELLED keeps its own"
+        "one lead, not the profession itself; a task VERIFIED or CANCELLED keeps its own, "
+        "and once some of its work is accepted the lead is one of those that accepted it"
     )
     _stop(
         cfg, state, task_id, DEPARTMENT_STOP_KIND, "DEPARTMENT_LEAD_BLOCKED",

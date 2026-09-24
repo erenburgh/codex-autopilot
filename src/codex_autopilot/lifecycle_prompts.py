@@ -112,7 +112,9 @@ def _replanner_prompt(
                 "A task already VERIFIED or CANCELLED keeps the lead that judged it "
                 "and is not counted: one lead is named on the profession's tasks still "
                 "to be accepted, tasks under way included - naming their lead resets "
-                "nothing. "
+                "nothing. Once a profession's work is accepted its lead does not "
+                "change: name one of the leads that accepted it, or keep the one it "
+                "has now; never a new one. "
                 "Existing plan.departments entries are copied verbatim."
             ),
             # Every nested set, by the path a refusal names (R31): for a

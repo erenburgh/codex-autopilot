@@ -56,7 +56,8 @@ graph references, the department leads (R30: each touched task names its
 profession's one lead - the lead of its tasks not yet `VERIFIED` or `CANCELLED`;
 an accepted task keeps the lead that judged it and is not counted, so a plan
 from before R30 whose accepted tasks of one profession had two leads can still
-be changed; departments themselves are derived, never written), the
+be changed; once a profession's work is accepted its lead is one of those that
+accepted it or the one the current plan names, never a new one; departments themselves are derived, never written), the
 fields a change may not replace, coverage, and the
 run-state conditions that can only get worse while the change drains (removed
 task, requester gone, `VERIFIED` or `CANCELLED` task rewritten). A check that

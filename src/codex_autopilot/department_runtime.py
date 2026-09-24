@@ -30,6 +30,16 @@ Now nothing of it is the model's to write or to forget:
   leads refused every later plan change (a VERIFIED task cannot change), the
   role's other tasks could never get a lead, the on-call had nothing to fix,
   and the stop went to her;
+- once a profession's work has been accepted, its lead does not change: a
+  plan change names one of the leads that accepted it, or keeps the one the
+  current plan names. The exemption above first let any change move the
+  rest of a profession to a lead of the replanner's choosing the moment one
+  task was VERIFIED - reproduced on the beyondness shape: M01 VERIFIED by
+  art-reviewer, M03 moved to a new "lax-lead" whose only expectation was
+  "Anything goes.", admitted with no issue - and the new department started
+  from a fresh version 1 built from a profile the replanner wrote: a new
+  acceptance standard with no outcome evidence, the very thing
+  ``ensure_department_rubric`` refuses to do for a changed profile;
 - the derivation is never written into plan.json. Doing so would change the
   plan digest and break the PLAN_VERIFIED receipt of every running run; a
   saved plan is never refused on load for it either - a task with no lead is
@@ -214,6 +224,7 @@ def validate_department_leads(
     *,
     exempt: Iterable[str] = (),
     settled: Collection[str] = (),
+    inherited: Any | None = None,
     report_unknown: bool = True,
 ) -> list[str]:
     """Every R30 lead violation of a graph, in one list, never the first alone.
@@ -227,10 +238,16 @@ def validate_department_leads(
     profession is the one that still has work of it to accept - while an
     exempt task still to be accepted does. ``report_unknown`` is off where
     the graph stage already reports an unknown verifier role.
+
+    ``inherited`` is the current plan of a plan change; ``settled`` means
+    nothing without it. A settled task is history only as the current plan
+    holds it - a split among accepted tasks is exempt because it is already
+    there, never because a change wrote it - and a profession with accepted
+    work keeps its lead (``_moved_leads``).
     """
 
     skip = frozenset(exempt)
-    done = frozenset(settled)
+    done = _history(tasks, settled, inherited)
     role_ids = {role.id for role in roles}
     missing: list[str] = []
     own: list[str] = []
@@ -268,10 +285,12 @@ def validate_department_leads(
                 f"R30: one profession has exactly one lead; tasks of role {role!r} name "
                 f"several - {listed}"
             )
+    moved = _moved_leads(tasks, by_role, done, inherited, settled)
+    found.extend(moved.values())
     # The rest - a declared department or a 0.13 binding that disagrees with
     # the lead - for every task the classes above did not already name.
     named = {item.split(" ")[0] for item in (*own, *unknown)} | set(missing)
-    split = {role for role, leads in by_role.items() if len(leads) > 1}
+    split = {role for role, leads in by_role.items() if len(leads) > 1} | set(moved)
     graph = _Graph(tasks, roles, departments)
     for task in tasks:
         if task.id in skip or task.id in named or task.role in split or task.role not in by_role:
@@ -282,6 +301,59 @@ def validate_department_leads(
             derive_task_department(graph, task, settled=done)
         except DepartmentAcceptanceError as exc:
             found.append(f"R30: task {task.id}: {exc}")
+    return found
+
+
+def _history(tasks: Sequence[Any], settled: Collection[str], inherited: Any | None) -> frozenset[str]:
+    """The settled tasks whose lead is history: as the current plan holds them."""
+
+    if inherited is None:
+        return frozenset()
+    before = inherited.task_map
+    return frozenset(
+        task.id for task in tasks
+        if task.id in settled and task.id in before
+        and before[task.id].verification.verifier_role == task.verification.verifier_role
+    )
+
+
+def _moved_leads(
+    tasks: Sequence[Any],
+    by_role: Mapping[str, Mapping[str, list[str]]],
+    history: frozenset[str],
+    inherited: Any | None,
+    settled: Collection[str],
+) -> dict[str, str]:
+    """Professions a change moves, after acceptance began, to a lead they never had.
+
+    The lead of a profession with accepted work is one of the leads that
+    accepted it, or the one the current plan names for its tasks still to be
+    accepted (a run from before R30 may hold both). Only when the accepted
+    work had several leads is there a choice, and it is among them.
+    """
+
+    accepted: dict[str, set[str]] = {}
+    for task in tasks:
+        if task.id in history:
+            accepted.setdefault(task.role, set()).add(str(task.verification.verifier_role))
+    found: dict[str, str] = {}
+    for role, leads in sorted(by_role.items()):
+        if role not in accepted or len(leads) != 1:
+            continue
+        kept = {
+            str(task.verification.verifier_role) for task in inherited.tasks
+            if task.role == role and task.id not in settled and task.verification.verifier_role
+        }
+        ((lead, ids),) = leads.items()
+        if lead in accepted[role] | kept:
+            continue
+        found[role] = (
+            f"R30: a profession keeps its lead once its work has been accepted - a new lead "
+            f"would judge the rest by a new rubric with no outcome evidence; tasks of role "
+            f"{role!r} name {lead!r} ({', '.join(ids)}), while its accepted work was judged by "
+            f"{sorted(accepted[role])} and the current plan names "
+            f"{sorted(kept) if kept else 'no lead'} for the rest: name one of those"
+        )
     return found
 
 

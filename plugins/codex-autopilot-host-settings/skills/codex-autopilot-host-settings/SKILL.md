@@ -128,7 +128,9 @@ exactly one lead - every task of one `role` names the same `verifier_role` -
 and the lead is never the task's own role. In a plan change, a task already
 `VERIFIED` or `CANCELLED` keeps the lead that judged it and is not counted: name
 one lead on the profession's tasks still to be accepted, including tasks already
-under way (naming their lead resets nothing). Declare the lead as its own
+under way (naming their lead resets nothing). Once a profession's work has been
+accepted its lead stays: name one of the leads that accepted it, or keep the one
+it has; a new lead is refused. Declare the lead as its own
 `RoleProfile` with `verification_expectations`: the runtime turns them, with a
 fixed core (fidelity to the request, every DoD item closed by evidence,
 independent re-checking), into the department's rubric version 1 in Project

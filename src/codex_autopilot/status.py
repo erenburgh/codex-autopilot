@@ -47,7 +47,7 @@ def project_status_snapshot(cfg: Config, state: RunState, plan: Plan) -> dict[st
             item["active_title"] = _active_title(plan, task.id, task_state, session)
             running.append(item)
         elif task_state is TaskState.VERIFYING:
-            item["active_title"] = _active_title(plan, task.id, task_state, session)
+            item["active_title"] = _active_title(plan, task.id, task_state, session, state.task_states)
             verifying.append(item)
         elif task_state is TaskState.READY and task.id in incident_paused:
             incident = next(
@@ -553,6 +553,7 @@ def _active_title(
     task_id: str,
     task_state: TaskState,
     session: dict[str, Any] | None,
+    task_states: dict[str, Any] | None = None,
 ) -> str:
     if session:
         descriptor = session.get("descriptor")
@@ -560,18 +561,28 @@ def _active_title(
             return str(descriptor["title"])
     kind = "verifier" if task_state is TaskState.VERIFYING else "revision" if task_state is TaskState.REVISING else "implementation"
     task = plan.task_map[task_id]
-    role_id = (
-        task.verification.verifier_role or task.role
-        if kind == "verifier"
-        else task.role
-    )
+    role_name = plan.role_map[task.role].name
+    if kind == "verifier":
+        # The judge is the lead of the department of the worker's profession
+        # (R30), as the reservation names it. This fallback read
+        # ``verifier_role or task.role`` after the runtime stopped doing so,
+        # and named the worker's own profession as the verifier of a task
+        # from before R30 whose lead comes from its profession.
+        from .department_runtime import settled_task_ids
+        from .verification import VerificationProtocolError, verifier_route
+
+        try:
+            role_name = plan.role_map[verifier_route(plan, task, settled=settled_task_ids(task_states)).role_id].name
+        except VerificationProtocolError:
+            role_name = "No Lead Role"
     revision_number = int((session or {}).get("revision_number") or 1)
     return task_phase_thread_title(
         task_id=task_id,
         task_title=task.title,
         kind=kind,
-        role_name=plan.role_map[role_id].name,
+        role_name=role_name,
         revision_number=revision_number,
+        departmental_verifier=(kind == "verifier"),
     )
 
 

@@ -235,9 +235,14 @@ def graph_plan(
             # every change - reproduced by the independent check. A settled
             # task now takes no part in it; an exempt one still to be
             # accepted does, since it will be judged by the profession's lead.
+            # The exemption is history, not licence: the second check found a
+            # change moving the rest of a profession to a new lead after its
+            # first acceptance admitted with no issue, so the current plan
+            # goes along and the lead stays one of those it already had.
             exempt |= {task.id for task in read.tasks if inherited.task_map.get(task.id) == task}
         for message in validate_department_leads(
-            read.tasks, roles, departments, exempt=exempt, settled=settled, report_unknown=False
+            read.tasks, roles, departments, exempt=exempt, settled=settled,
+            inherited=inherited, report_unknown=False,
         ):
             c.add("leads", "plan.tasks", message)
     if c.clean(*PLAN_STAGES):

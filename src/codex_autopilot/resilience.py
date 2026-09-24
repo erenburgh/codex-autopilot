@@ -157,6 +157,16 @@ def names_only_its_lead(before: Any, after: Any) -> bool:
     ) == after
 
 
+def profession_leads(plan: Any, role_id: str) -> set[str]:
+    """The leads a plan names for a profession's tasks, its own role not counted."""
+
+    return {
+        str(task.verification.verifier_role) for task in plan.tasks
+        if task.role == role_id and task.verification.verifier_role
+        and task.verification.verifier_role != role_id
+    }
+
+
 def reconcile_plan_change_state(
     current: Plan,
     candidate: Plan,
@@ -212,7 +222,18 @@ def reconcile_plan_change_state(
                 # profession named three leads on three IMPLEMENTED tasks
                 # could not be given one lead by any change (only the
                 # requester may be rewritten), and the stop went to her.
-                continue
+                # It is the choice of one lead among those the profession
+                # has, never a move of work under way to a new one: that is a
+                # new acceptance standard for work done against the old one,
+                # and the second check found it passing unrefused.
+                named = profession_leads(current, before.role)
+                if not named or after.verification.verifier_role in named:
+                    continue
+                raise PlanChangeConflictError(
+                    f"advanced task {task_id} can take only a lead its profession already "
+                    f"has {sorted(named)}: a new lead would judge work done against "
+                    "another standard (R30)"
+                )
             if task_id != requester_task_id and raw_state not in {
                 TaskState.WAITING,
                 TaskState.READY,
