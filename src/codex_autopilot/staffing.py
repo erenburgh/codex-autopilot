@@ -47,6 +47,10 @@ alone writes (``roster.json`` next to run-state), stamped with the
 ``plan_sha256`` it was built from, rebuilt at the bootstrap, after a
 committed plan change, and by the gate whenever the stamp is not the current
 plan's or the last build was incomplete. The replanner edits the graph only.
+The run's facts - the isolation record and the roots audit - move without
+the plan: they are written into the roster where they land (the record's
+writer, every save of run state, the gate; ``sync_run_facts``), and the
+board reads them as they stand (``current_roster``).
 """
 
 from __future__ import annotations
@@ -265,6 +269,24 @@ def run_started(state: Any) -> bool:
 
 
 def _run_section(plan: Any, state: Any, state_dir: Path, cfg: Any | None = None) -> dict[str, Any]:
+    return {
+        "model_strategy": plan.model_strategy,
+        "on_call": ON_CALL_ROLE,
+        "escalation_route": list(ESCALATION_ROUTE),
+        **_run_facts(state, state_dir, cfg),
+    }
+
+
+def _run_facts(state: Any, state_dir: Path, cfg: Any | None) -> dict[str, Any]:
+    """What the run measured and audited: the isolation record and the last roots audit.
+
+    Both change without the plan changing - the CLI writes the preflight's
+    record after the bootstrap built the roster, the dispatcher measures
+    again mid-run, a wake-up and her decisions record a new audit - so they
+    are followed by ``sync_run_facts``, not only by a rebuild. ``state``
+    None leaves the roots audit out (the caller keeps what it had).
+    """
+
     from .isolation_probe import load_record, record_matches
 
     record = load_record(Path(state_dir)) or {}
@@ -276,16 +298,7 @@ def _run_section(plan: Any, state: Any, state_dir: Path, cfg: Any | None = None)
     # then went to the staged workspace.
     matches = record_matches(record, cfg) if cfg is not None else record.get("root") == root
     proven = outcome == "PASS" and bool(matches)
-    audit = getattr(state, "roots_audit", None)
-    findings = [
-        {"code": str(item.get("code") or ""), "status": str(item.get("status") or "")}
-        for item in ((audit or {}).get("findings") or ())
-        if isinstance(item, Mapping)
-    ]
-    return {
-        "model_strategy": plan.model_strategy,
-        "on_call": ON_CALL_ROLE,
-        "escalation_route": list(ESCALATION_ROUTE),
+    facts: dict[str, Any] = {
         "isolation": {
             "outcome": outcome,
             "measured_at": record.get("measured_at"),
@@ -298,8 +311,123 @@ def _run_section(plan: Any, state: Any, state_dir: Path, cfg: Any | None = None)
             if proven
             else "the task's staged workspace, outside the project in Desktop (contract 1)",
         },
-        "roots_audit": {"recorded": isinstance(audit, Mapping), "findings": findings},
     }
+    if state is not None:
+        audit = getattr(state, "roots_audit", None)
+        findings = [
+            {"code": str(item.get("code") or ""), "status": str(item.get("status") or "")}
+            for item in ((audit or {}).get("findings") or ())
+            if isinstance(item, Mapping)
+        ]
+        facts["roots_audit"] = {"recorded": isinstance(audit, Mapping), "findings": findings}
+    return facts
+
+
+def _placement(staged: bool, isolation_proven: bool) -> dict[str, str]:
+    return {
+        "workspace": "staged" if staged else "root",
+        "cwd": ("root (staged profile)" if isolation_proven else "staged workspace") if staged else "root",
+    }
+
+
+def with_current_facts(
+    roster: Mapping[str, Any] | None, state_dir: Path, state: Any, cfg: Any | None
+) -> dict[str, Any] | None:
+    """The roster with the run's facts as they stand now; None when nothing changed.
+
+    The independent check (25 Sep 2026) initialized a run, wrote the
+    preflight's PASS the way the CLI does - after the bootstrap had built
+    the roster - and reserved: the dispatcher used contract 2 while the
+    roster and the board said "isolation: not measured" and every staged
+    task "staged workspace", and a roots finding recorded at a wake-up never
+    reached them - a complete roster of the current plan was not rebuilt
+    before the next plan change. Only the run section and the staged tasks'
+    cwd depend on these facts, so they are replaced here; the rest of the
+    roster is the plan's and stays as it was built.
+    """
+
+    if not isinstance(roster, Mapping) or not isinstance(roster.get("run"), Mapping):
+        return None
+    facts = _run_facts(state, Path(state_dir), cfg)
+    run = roster["run"]
+    if all(run.get(key) == value for key, value in facts.items()):
+        return None
+    proven = bool(facts["isolation"]["proven"])
+    tasks = [
+        {**entry, "placement": _placement((entry.get("placement") or {}).get("workspace") == "staged", proven)}
+        if isinstance(entry, Mapping) and isinstance(entry.get("placement"), Mapping) else entry
+        for entry in roster.get("tasks") or ()
+    ]
+    return {**roster, "run": {**run, **facts}, "tasks": tasks}
+
+
+def current_roster(state_dir: Path, state: Any, cfg: Any | None) -> dict[str, Any] | None:
+    """The roster as the board shows it: the snapshot, with the run's facts of now."""
+
+    roster = load_roster(state_dir)
+    try:
+        return with_current_facts(roster, state_dir, state, cfg) or roster
+    except Exception:  # noqa: BLE001 - a view: the snapshot as written
+        return roster
+
+
+def sync_run_facts(state_dir: Path, state: Any | None = None, cfg: Any | None = None) -> bool:
+    """Write the run's current facts into the roster; True when it changed. Never raises.
+
+    Called where those facts land: the one writer of the isolation record
+    (``isolation_probe.write_record``), every save of run state (the roots
+    audit is state; ``board.refresh_board_file``) and the staffing gate. The
+    runtime is still the roster's only writer. Without ``state`` the state
+    on disk is read; one that cannot be read leaves the roots audit as it
+    was.
+    """
+
+    try:
+        state_dir = Path(state_dir)
+        roster = load_roster(state_dir)
+        if roster is None:
+            return False
+        if cfg is None:
+            from .config import load_config
+
+            cfg = load_config(state_dir.parent)
+        if state is None:
+            try:
+                from .run_state import StateStore
+
+                state = StateStore(state_dir).load()
+            except Exception:  # noqa: BLE001 - the roots audit is kept as it was
+                state = None
+        updated = with_current_facts(roster, state_dir, state, cfg)
+        if updated is None:
+            return False
+        write_roster(state_dir, updated)
+        return True
+    except Exception:  # noqa: BLE001 - a snapshot's label may never stop a run
+        return False
+
+
+def follow_isolation_record(state_dir: Path) -> None:
+    """After a new isolation record: the roster and BOARD.md say what the dispatcher will use.
+
+    The CLI writes the preflight's record after ``initialize_project``, and
+    no save of run state follows before the run starts; a re-measurement
+    mid-run may be followed by none either. Never raises.
+    """
+
+    try:
+        from .run_state import StateStore
+
+        state_dir = Path(state_dir)
+        if load_roster(state_dir) is None:
+            return
+        state = StateStore(state_dir).load()
+        sync_run_facts(state_dir, state)
+        from .board import refresh_board_file
+
+        refresh_board_file(state_dir, state)
+    except Exception:  # noqa: BLE001 - housekeeping may never stop a run
+        return
 
 
 def _task_entry(
@@ -359,10 +487,7 @@ def _task_entry(
     entry["on_call"] = ON_CALL_ROLE
     entry["escalation_route"] = list(ESCALATION_ROUTE)
     staged = task_requires_staging(task, legacy_serial=plan.legacy_serial)
-    entry["placement"] = {
-        "workspace": "staged" if staged else "root",
-        "cwd": ("root (staged profile)" if isolation_proven else "staged workspace") if staged else "root",
-    }
+    entry["placement"] = _placement(staged, isolation_proven)
     entry["depends_on"] = list(task.depends_on)
     entry["dependency_outputs"] = list(task.context.dependency_outputs)
     entry["outputs"] = [item.id for item in task.outputs]
@@ -563,6 +688,17 @@ def staffing_gate(cfg: Any, plan: Any, state: Any) -> dict[str, Any]:
     from .plan_verification import plan_sha256
 
     roster = load_roster(cfg.state_dir)
+    if roster and roster.get("plan_sha256") == plan_sha256(plan) and roster.get("complete"):
+        # Whole and of this plan, but the run's facts may have moved since
+        # it was built: a new isolation record, a binary or runtime code the
+        # record no longer matches, a roots audit (with_current_facts).
+        try:
+            updated = with_current_facts(roster, cfg.state_dir, state, cfg)
+            if updated is not None:
+                write_roster(cfg.state_dir, updated)
+                roster = updated
+        except Exception:  # noqa: BLE001 - a label of the roster may never stop a run
+            pass
     if not roster or roster.get("plan_sha256") != plan_sha256(plan) or not roster.get("complete"):
         try:
             roster = refresh_roster(cfg.state_dir, plan, state, occasion="reservation", cfg=cfg)

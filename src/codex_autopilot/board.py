@@ -83,6 +83,7 @@ WORDS: dict[str, dict[str, str]] = {
         "isolation_ROOT_WRITABLE": "the root is writable",
         "isolation_NOT_PROVEN": "not proven",
         "isolation_NOT_MEASURED": "not measured",
+        "isolation_STALE": "a PASS of another binary or runtime code, measured again before use",
         "roots": "roots: {count} findings",
         "task": "Task",
         "department": "Department · lead · rubric",
@@ -127,6 +128,7 @@ WORDS: dict[str, dict[str, str]] = {
         "isolation_ROOT_WRITABLE": "корень доступен на запись",
         "isolation_NOT_PROVEN": "не доказана",
         "isolation_NOT_MEASURED": "не измерена",
+        "isolation_STALE": "PASS другого бинарника или кода рантайма, перед использованием будет измерена заново",
         "roots": "корни: {count} находок",
         "task": "Задача",
         "department": "Отдел · лид · рубрика",
@@ -179,6 +181,30 @@ def _stop_reason(incident: Mapping[str, Any], words: Mapping[str, str]) -> str:
     # the board says that itself.
     head = summary.split(" The on-call looks first", 1)[0]
     return _clip(head or incident.get("code") or words["no_reason"], 140)
+
+
+def _task_stop_reason(state: Any, task_id: str, sessions: Sequence[Mapping[str, Any]]) -> str:
+    """Why this task stopped, when no open ticket says it: its own stop, never the run's last.
+
+    The board showed ``state.last_error`` here; stop_run writes every stop's
+    reason there, so a task left BLOCKED when its ticket could not be filed
+    showed whichever stop came last - another task's cause, as the
+    independent check (25 Sep 2026) pointed out. The door journals each
+    stop with the tasks it holds and its reason (``run_stop_filed``,
+    ``run_stop_unfiled``); the latest one naming this task is its reason,
+    else the failure its own session recorded.
+    """
+
+    for event in reversed(getattr(state, "resilience_journal", None) or ()):
+        if not isinstance(event, Mapping) or event.get("event") not in {"run_stop_filed", "run_stop_unfiled"}:
+            continue
+        detail = event.get("detail") if isinstance(event.get("detail"), Mapping) else {}
+        if task_id in (detail.get("task_ids") or ()) and detail.get("reason"):
+            return str(detail["reason"])
+    for item in reversed(sessions):
+        if item.get("failure_reason"):
+            return str(item["failure_reason"])
+    return ""
 
 
 def _sessions(state: Any, task_id: str) -> list[Mapping[str, Any]]:
@@ -308,7 +334,7 @@ def board_rows(
             phrase = words["s_stopped_ticket"].format(reason=_stop_reason(ticket, words), ticket=ticket.get("incident_id"))
         elif value in {"BLOCKED", "FAILED"}:
             category = "stopped"
-            phrase = words["s_stopped"].format(reason=_clip(state.last_error or words["no_reason"], 140))
+            phrase = words["s_stopped"].format(reason=_clip(_task_stop_reason(state, task.id, sessions) or words["no_reason"], 140))
         elif value == "VERIFIED":
             category, phrase = "accepted", words["s_accepted"]
         elif value == "CANCELLED":
@@ -364,6 +390,9 @@ def board_summary(rows: Sequence[Mapping[str, str]], roster: Mapping[str, Any] |
     isolation = run.get("isolation") or {}
     if isolation:
         outcome = str(isolation.get("outcome") or "NOT_MEASURED")
+        # A PASS the dispatcher does not take (record_matches: this root,
+        # profile, binary, runtime code) is not "proven": contract 1 is used.
+        outcome = "STALE" if outcome == "PASS" and not isolation.get("proven") else outcome
         findings.append(words["isolation"].format(outcome=words.get(f"isolation_{outcome}", outcome)))
     roots = (run.get("roots_audit") or {}).get("findings") or ()
     if roots:
@@ -381,11 +410,11 @@ def _row_head(row: Mapping[str, str], words: Mapping[str, str]) -> str:
 def render_board(cfg: Any, plan: Any, state: Any, *, detailed: bool = True) -> list[str]:
     """The board as text lines: the summary, then one line per task."""
 
-    from .staffing import load_roster
+    from .staffing import current_roster
 
     language = getattr(cfg, "language", "en")
     words = words_for(language)
-    roster = load_roster(cfg.state_dir)
+    roster = current_roster(cfg.state_dir, state, cfg)
     rows = board_rows(cfg, plan, state, roster=roster)
     lines = [f"{words['title']} — {board_summary(rows, roster, plan, language)}"]
     for row in rows:
@@ -401,11 +430,11 @@ def _cell(text: Any) -> str:
 
 
 def render_board_markdown(cfg: Any, plan: Any, state: Any) -> str:
-    from .staffing import load_roster
+    from .staffing import current_roster
 
     language = getattr(cfg, "language", "en")
     words = words_for(language)
-    roster = load_roster(cfg.state_dir)
+    roster = current_roster(cfg.state_dir, state, cfg)
     rows = board_rows(cfg, plan, state, roster=roster)
     out = [
         f"# {words['title']}",
@@ -459,6 +488,11 @@ def refresh_board_file(state_dir: Path, state: Any) -> bool:
             return False
         cfg = _cached("config", config, lambda: load_config(state_dir.parent))
         plan = _cached(f"plan:{cfg.profile}", plan_file, lambda: load_plan(state_dir, cfg.profile))
+        # The roots audit is state, saved here: the roster follows it (and a
+        # binary or runtime code the isolation record no longer matches).
+        from .staffing import sync_run_facts
+
+        sync_run_facts(state_dir, state, cfg)
         text = render_board_markdown(cfg, plan, state)
         path = state_dir / BOARD_FILE
         try:

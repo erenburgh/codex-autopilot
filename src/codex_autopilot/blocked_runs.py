@@ -86,6 +86,10 @@ def stop_run(
     """
 
     affected = tuple(dict.fromkeys(str(item) for item in task_ids if item))
+    # Each stop is journaled with the tasks it holds and its own reason: the
+    # board shows a task stopped without an open ticket by this, not by
+    # ``last_error``, which the next stop of another task overwrites.
+    held = {"task_ids": list(affected), "reason": str(reason or "")[:600]}
     try:
         filed: str | None = _file(
             cfg,
@@ -108,11 +112,11 @@ def stop_run(
             cfg,
             f"{', '.join(affected) or 'the run'} stopped and no ticket could be written: {reason}",
         )
-        _journal(state, "run_stop_unfiled", at, affected, {"stop_kind": stop_kind, "error": str(exc)})
+        _journal(state, "run_stop_unfiled", at, affected, {"stop_kind": stop_kind, "error": str(exc), **held})
     if reason:
         state.last_error = reason
     if filed is not None:
-        _journal(state, "run_stop_filed", at, affected, {"stop_kind": stop_kind, "incident_id": filed})
+        _journal(state, "run_stop_filed", at, affected, {"stop_kind": stop_kind, "incident_id": filed, **held})
     return filed
 
 

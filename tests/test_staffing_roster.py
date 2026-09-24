@@ -12,6 +12,13 @@ and the other department's finished task stood IMPLEMENTED with no
 acceptance. Before the start a roster that does not assemble starts
 nothing; under way it holds the tasks it leaves unstaffed, and the rest go
 on - through the production lifecycle here.
+
+The third check found the run's facts frozen at the bootstrap: the
+preflight's isolation record, written after it, and a roots audit recorded
+at a wake-up never reached a complete roster of the current plan, nor the
+board; and a task stopped without a ticket showed the run's last error, not
+its own stop's reason (TheRunsFactsFollowTheRunTests,
+AStoppedTaskShowsItsOwnReasonTests).
 """
 
 from __future__ import annotations
@@ -363,3 +370,188 @@ class AStaffingStopUnderWayHoldsOnlyItsTasksTests(DepartmentRun):
         self.assertIn("roster code broke", ticket["system_state"]["diagnosis"])
         self.assertIn("it holds no task; the run goes on", ticket["summary"])
         self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
+
+
+def _pass_record(cfg) -> dict:
+    """A PASS of this root, profile, binary and runtime code, as the preflight measures it."""
+
+    from codex_autopilot.isolation_probe import (
+        RECORD_VERSION, binary_identity, probe_workspace, runtime_code_identity,
+    )
+
+    return {
+        "version": RECORD_VERSION, "root": str(cfg.root), "outcome": "PASS",
+        "workspace": str(probe_workspace(cfg.state_dir)),
+        "base_profile": cfg.desktop.permission_profile,
+        "codex_binary": binary_identity(cfg.desktop.binary),
+        "runtime_code": runtime_code_identity(), "measured_at": "2026-09-25T00:00:00+00:00",
+    }
+
+
+class TheRunsFactsFollowTheRunTests(DepartmentRun):
+    """The isolation record and the roots audit move without the plan (third check).
+
+    The independent check initialized a run, wrote the preflight's PASS the
+    way cli.py does - after initialize_project, whose bootstrap had built
+    the roster - and reserved: the dispatcher used contract 2, the roster
+    and the board said "isolation: not measured", and a roots finding
+    recorded at a wake-up never reached either. A complete roster of the
+    current plan was not rebuilt before the next plan change. Nothing here
+    calls refresh_roster: the facts must arrive through the runtime's own
+    paths.
+    """
+
+    plan_payload = staticmethod(_full_shape)
+
+    def roster(self) -> dict:
+        from codex_autopilot.staffing import load_roster
+
+        return load_roster(self.cfg.state_dir)
+
+    def board_file(self) -> str:
+        return (self.cfg.state_dir / "BOARD.md").read_text(encoding="utf-8")
+
+    def m02(self, roster: dict) -> dict:
+        return next(item for item in roster["tasks"] if item["id"] == "M02")
+
+    def test_the_preflights_record_reaches_the_roster_and_the_board_before_the_start(self) -> None:
+        """Mutations: write_record without follow_isolation_record - both still say
+        "not measured"; with_current_facts leaving the tasks' placement as
+        built - M02 still "staged workspace".
+        """
+
+        from codex_autopilot.board import render_board
+        from codex_autopilot.config import STATE_DIR_NAME
+        from codex_autopilot.isolation_probe import isolation_proven, write_record
+
+        self.assertEqual(self.roster()["run"]["isolation"]["outcome"], "NOT_MEASURED")
+        # cli.py, after initialize_project: the preflight's record is written.
+        write_record(self.root / STATE_DIR_NAME, _pass_record(self.cfg))
+        self.assertTrue(isolation_proven(self.cfg))
+        isolation = self.roster()["run"]["isolation"]
+        self.assertEqual((isolation["outcome"], isolation["proven"]), ("PASS", True))
+        self.assertIn("contract 2", isolation["staged_cwd"])
+        self.assertEqual(self.m02(self.roster())["placement"], {"workspace": "staged", "cwd": "root (staged profile)"})
+        self.assertIn("isolation: proven", self.board_file())
+        # And after the first reservation pass, the reviewer's probe.
+        self.reserve()
+        self.assertTrue(self.roster()["run"]["isolation"]["proven"])
+        head = render_board(self.cfg, self.plan(), self.store.load())[0]
+        self.assertIn("isolation: proven", head)
+
+    def test_a_record_that_stops_matching_moves_the_gate_and_the_board(self) -> None:
+        """The Codex binary is updated mid-run: the dispatcher no longer takes the PASS.
+
+        Mutations: staffing_gate without with_current_facts for a complete
+        roster of this plan - the roster keeps "proven"; render_board reading
+        load_roster instead of current_roster - the board keeps "proven";
+        board_summary naming the outcome without ``proven`` - a PASS the
+        dispatcher does not take reads "proven".
+        """
+
+        from codex_autopilot.board import render_board
+        from codex_autopilot.isolation_probe import isolation_proven, write_record
+        from codex_autopilot.staffing import staffing_gate
+
+        write_record(self.cfg.state_dir, _pass_record(self.cfg))
+        self.assertTrue(self.roster()["run"]["isolation"]["proven"])
+        with mock.patch("codex_autopilot.isolation_probe.binary_identity", return_value="/new/codex:2:2"):
+            self.assertFalse(isolation_proven(self.cfg))
+            # The board, before anything rewrote the snapshot, says what the dispatcher will do.
+            self.assertTrue(self.roster()["run"]["isolation"]["proven"])
+            head = render_board(self.cfg, self.plan(), self.store.load())[0]
+            self.assertIn("isolation: a PASS of another binary or runtime code", head)
+            # The gate, as every reservation pass calls it.
+            roster = staffing_gate(self.cfg, self.plan(), self.store.load())
+        self.assertFalse(roster["run"]["isolation"]["proven"])
+        on_disk = self.roster()
+        self.assertFalse(on_disk["run"]["isolation"]["proven"])
+        self.assertIn("contract 1", on_disk["run"]["isolation"]["staged_cwd"])
+        self.assertEqual(self.m02(on_disk)["placement"]["cwd"], "staged workspace")
+        self.assertTrue(on_disk["complete"])
+
+    def test_a_roots_audit_recorded_at_a_wake_reaches_the_roster_and_the_board(self) -> None:
+        """The pair refresh_run_roots_audit runs: record_roots_audit, then a save of state.
+
+        A finding she has since resolved leaves both as well. Mutation:
+        refresh_board_file without sync_run_facts - roster.json keeps the
+        bootstrap's "no audit", then the resolved finding.
+        """
+
+        from codex_autopilot.project_roots_audit import SIBLING_ROOTS, RootsAudit, RootsFinding, record_roots_audit
+
+        before = self.roster()["run"]["roots_audit"]
+        finding = RootsFinding(code=SIBLING_ROOTS, status="proposed", project_id="desktop-project",
+                               path=str(self.root.parent / "sibling"), detail="A sibling root is saved.")
+
+        def audit(findings):
+            return RootsAudit(target=str(self.root), desktop_project_id="desktop-project", selected_project_id=None,
+                              linked_project_id=None, codex_home=None, checked=[SIBLING_ROOTS], findings=findings)
+
+        state = self.store.load()
+        record_roots_audit(state, audit([finding]), {}, occasion="wake")
+        self.store.save(state)
+        self.assertNotEqual(before, self.roster()["run"]["roots_audit"])
+        self.assertEqual(self.roster()["run"]["roots_audit"],
+                         {"recorded": True, "findings": [{"code": SIBLING_ROOTS, "status": "proposed"}]})
+        self.assertIn("roots: 1 findings", self.board_file())
+        self.reserve()
+        self.assertIn("roots: 1 findings", self.board_file())
+        # She resolved it; the next audit finds nothing.
+        state = self.store.load()
+        record_roots_audit(state, audit([]), {}, occasion="owner decision")
+        self.store.save(state)
+        self.assertEqual(self.roster()["run"]["roots_audit"], {"recorded": True, "findings": []})
+        self.assertNotIn("roots:", self.board_file())
+
+
+class AStoppedTaskShowsItsOwnReasonTests(DepartmentRun):
+    """A task left BLOCKED without a ticket shows its stop's reason, not the run's last."""
+
+    def test_the_reason_of_its_own_stop(self) -> None:
+        """Two stops no ticket could record: M02's, then M03's, which becomes last_error.
+
+        Mutations: the board's phrase from state.last_error (the old one) -
+        M02 shows M03's cause; stop_run journaling no reason - M02 shows
+        "no reason recorded".
+        """
+
+        from codex_autopilot.blocked_runs import stop_run
+        from codex_autopilot.board import board_rows
+
+        state = self.store.load()
+        with mock.patch(
+            "codex_autopilot.pipeline_engineer.PipelineIncidentStore.open_incident",
+            side_effect=OSError("disk gone"),
+        ):
+            for task_id, cause in (("M02", "the reference sheet is missing"), ("M03", "the lead thread vanished")):
+                state.task_states[task_id] = "BLOCKED"  # the caller blocks, then goes through the door
+                stop_run(self.cfg, state, stop_kind="worker_blocked", phase="WORKER_BLOCKED",
+                         reason=f"{task_id}: {cause}", summary=f"{task_id} stopped.",
+                         at="2026-09-25T10:00:00+00:00", task_ids=[task_id])
+        self.store.save(state)
+        self.assertEqual(state.last_error, "M03: the lead thread vanished")
+        rows = {row["id"]: row for row in board_rows(self.cfg, self.plan(), self.store.load())}
+        self.assertEqual(rows["M02"]["category"], "stopped")
+        self.assertEqual(rows["M02"]["state"], "stopped: M02: the reference sheet is missing")
+        self.assertEqual(rows["M03"]["state"], "stopped: M03: the lead thread vanished")
+
+    def test_without_a_stop_the_failure_its_own_session_recorded(self) -> None:
+        """No stop names M01; its retired session says why (lifecycle_failures' failure_reason).
+
+        Mutation: _task_stop_reason without the session fallback - "no reason recorded".
+        """
+
+        from codex_autopilot.board import board_rows
+
+        (worker,) = self.reserve()
+        state = self.store.load()
+        session = next(item for item in state.worker_sessions if item["reservation_token"] == worker.reservation_token)
+        session["status"] = "BLOCKED"
+        session["failure_reason"] = "the worker's turn could not be started"
+        state.task_states["M01"] = "FAILED"
+        state.active_task_ids.remove("M01")
+        state.last_error = "another task's cause"
+        self.store.save(state)
+        rows = {row["id"]: row for row in board_rows(self.cfg, self.plan(), self.store.load())}
+        self.assertEqual(rows["M01"]["state"], "stopped: the worker's turn could not be started")

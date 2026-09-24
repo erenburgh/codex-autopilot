@@ -263,6 +263,12 @@ def write_record(state_dir: Path, record: Mapping[str, Any]) -> None:
     temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
     temporary.write_text(json.dumps(dict(record), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+    # The roster and BOARD.md name the contract this record implies: the CLI
+    # writes the preflight's record after the bootstrap built the roster,
+    # and they said "not measured" while the dispatcher used contract 2.
+    from .staffing import follow_isolation_record
+
+    follow_isolation_record(state_dir)
 
 
 def _wrote(client: Any, target: Path, *, cwd: Path, profile: str) -> tuple[bool | None, str]:

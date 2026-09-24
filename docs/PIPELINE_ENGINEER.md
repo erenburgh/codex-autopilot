@@ -501,7 +501,15 @@ stamped with the `plan_sha256` it was built from; it is never written into
 `plan.json`, whose digest the PLAN_VERIFIED receipt binds. It is built at the
 bootstrap, rebuilt after a committed plan change, and rebuilt by the gate
 whenever its stamp is not the current plan's or its last build was
-incomplete. Every stop ticket carries the `escalation_route` read from the
+incomplete. The run's facts in it - the isolation record and the last roots
+audit - move without the plan, so they are written into it where they land:
+by the record's one writer (`isolation_probe.write_record`, which also
+rewrites BOARD.md: the CLI writes the preflight's record after the bootstrap
+built the roster), at every save of run state (the roots audit is state), and
+by the gate; the board reads them as they stand (`current_roster`). Only the
+run section and the staged tasks' cwd change with them. A PASS the dispatcher
+does not take (another root, profile, binary or runtime code) is not
+"proven" in the roster nor on the board. Every stop ticket carries the `escalation_route` read from the
 roster; the rule it names does not change with it - every stop goes to the
 on-call first.
 

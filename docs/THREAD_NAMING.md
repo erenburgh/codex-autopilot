@@ -52,8 +52,13 @@ under acceptance, revision N of M with hire and effort, stopped with the
 on-call's ticket, waiting for her with the decision, the recommendation and
 the ready `codex-autopilot unblock` command, accepted), the first line of its
 last report and its threads - under one summary line with what staffing
-found. The runtime rewrites `.codex-autopilot/BOARD.md` at every save of run
-state; a failure to write it never stops a run.
+found (the roster, the isolation the dispatcher will use, the roots audit - as
+they stand, not as the bootstrap saw them). A task stopped without an open
+ticket shows its own stop's reason, journaled by the door with the tasks it
+holds, else its session's failure - never the run's last error, which the
+next stop of another task overwrites. The runtime rewrites
+`.codex-autopilot/BOARD.md` at every save of run state and after a new
+isolation record; a failure to write it never stops a run.
 
 Next step, by measurement only: whether a task's thread lives on after one
 completed turn and accepts `turn/start` from another process - the condition
