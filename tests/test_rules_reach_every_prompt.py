@@ -21,6 +21,7 @@ from codex_autopilot.ai_studio import MAX_PROMPT_CHARS
 from codex_autopilot.rules import RULES, rules_for_prompt
 import test_devops_powers as powers
 from test_plan_evolution import graph, task
+from codex_autopilot.resilience import active_plan_change
 from test_validator_one_round import _Replanning, reply
 
 # Her RULES.md (autopilot-v1.0-materials) is in Russian and not part of the
@@ -158,6 +159,81 @@ class ThePlanVerifierReadsTheRulesTests(_Replanning):
         self.assertIn("never cut (R17)", ticket["summary"])
 
 
+class TheReplannersOverflowIsAStopTests(_Replanning):
+    """The replanner's prompt carries every refusal; when that no longer fits, the on-call comes.
+
+    Measured by the independent check: 500 inherited issues, and the refused
+    replanner's completion raised ``replanner prompt is 253384 characters``
+    out of the reservation of the next one - its refusal unrecorded, no stop,
+    no ticket, and a dispatcher down.
+    """
+
+    def swell(self, store) -> None:
+        state = store.load()
+        change = active_plan_change(state, request_id="PC1")
+        change["inherited_rejections"] = [{
+            "at": "2026-09-24T00:00:00Z", "reason": "r", "plan_change_id": "PC0",
+            "issues": [
+                {"stage": "tasks", "path": f"task {i}", "message": f"task {i} " + "y" * 400}
+                for i in range(500)
+            ],
+        }]
+        store.save(state)
+
+    def test_a_refused_replanner_whose_successor_cannot_fit_is_recorded_and_stopped(self) -> None:
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        cfg, store, replanner = self.at_the_replanner(graph([task("A"), task("B")], max_workers=1))
+        self.swell(store)
+        bad = self.valid_candidate(cfg)
+        bad["nonsense_field"] = 1
+
+        outcome = self.answer(cfg, store, replanner, reply("PC1", 1, bad))
+
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        kinds = sorted((item.kind, item.task_id) for item in outcome.descriptors)
+        self.assertNotIn(("replanner", "A"), kinds)
+        self.assertIn(("pipeline_engineer", "A"), kinds)
+        state = store.load()
+        change = active_plan_change(state, request_id="PC1")
+        self.assertEqual(len(change["rejections"]), 1)
+        self.assertIn("nonsense_field", change["rejections"][0]["issues"][0]["message"])
+        ticket = next(
+            item for item in PipelineIncidentStore(cfg.state_dir).load()["incidents"]
+            if item["system_state"].get("stop_kind") == "context_budget"
+        )
+        self.assertEqual(ticket["affected_task_ids"], ["A"])
+        self.assertIn("replanner", ticket["summary"])
+        self.assertIn("never cut (R17)", ticket["summary"])
+        self.assertEqual(state.task_attempts["A"], 2)
+
+    def test_each_text_goes_in_once(self) -> None:
+        """The reason is rendered from the issues; a repeated issue points at its first listing."""
+
+        from codex_autopilot.replanner_hint import attempts_for_context
+
+        cfg, store, replanner = self.at_the_replanner()
+        bad = self.valid_candidate(cfg)
+        bad["nonsense_field"] = 1
+        bad["tasks"][0]["title"] = ""
+        outcome = self.answer(cfg, store, replanner, reply("PC1", 1, bad))
+        outcome = self.answer(cfg, store, outcome.descriptors[0], reply("PC1", 1, bad), "replanner-2")
+
+        prompt = outcome.descriptors[0].prompt
+        context = json.loads(prompt.split("AUTOPILOT_CONTEXT: ", 1)[1].split("\n", 1)[0])
+        first, second = context["rejected_attempts"]
+        self.assertNotIn("reason", first)
+        self.assertEqual(len(first["issues"]), 2)
+        self.assertEqual(
+            second["issues"],
+            [{"path": item["path"], "repeated_from_attempt": 1} for item in first["issues"]],
+        )
+        # The next replanner is still told what it repeated, in full.
+        self.assertIn("[repeated from attempt 1]", prompt)
+        self.assertEqual(prompt.count("plan has unknown fields: ['nonsense_field']"), 2)
+        self.assertEqual(attempts_for_context([]), [])
+
+
 class TheOnCallAlwaysFitsTests(powers._Stopped):
     def test_a_huge_package_is_fitted_around_the_whole_rules_block(self) -> None:
         from codex_autopilot import lifecycle_dispatch
@@ -282,6 +358,12 @@ class AnUnbuildableOnCallPromptIsASignalTests(powers._Stopped):
         self.assertEqual(ticket["escalation_reason"], "RECOVERY_EXHAUSTED")
         self.assertIn(f"exceeds {MAX_PROMPT_CHARS} characters", ticket["escalation_detail"])
         self.assertIn("never cut (R17)", ticket["escalation_detail"])
+        # The recommendation is room for the whole block, never an exception
+        # to R17 (splitting or shortening the block by phase).
+        recommendation = ticket["escalation"]["recommendation"]
+        self.assertIn("raise the prompt ceiling", recommendation)
+        self.assertIn("stays whole", recommendation)
+        self.assertNotIn("split", recommendation)
         events = [item["event"] for item in self.store.load().resilience_journal]
         self.assertIn("pipeline_engineer_unpromptable", events)
 

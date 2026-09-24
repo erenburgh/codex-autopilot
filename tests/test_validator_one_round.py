@@ -344,6 +344,51 @@ class TheStateIsCheckedBeforeTheVerifierTests(_Replanning):
         self.assertIn("advanced task B cannot be rewritten", rejection["issues"][0]["message"])
         self.assertIn("advanced task B cannot be rewritten", passed.descriptors[0].prompt)
 
+        # The run's journal says what happened: the session and its
+        # turn_completed event carry the outcome, not the verdict, which
+        # stays in plan_verification_result.
+        state = store.load()
+        session = next(
+            item for item in state.worker_sessions
+            if item.get("reservation_token") == verifier.reservation_token
+        )
+        self.assertEqual(session["final_status"], "PLAN_REVISION_REQUIRED")
+        self.assertEqual(session["plan_verification_result"]["verdict"], "PASS")
+        self.assertIn("advanced task B cannot be rewritten", session["plan_commit_conflict"])
+        completed = [
+            item for item in state.lifecycle_journal
+            if item.get("event") == "turn_completed"
+            and item.get("reservation_token") == verifier.reservation_token
+        ]
+        self.assertEqual([item.get("detail") for item in completed], ["PLAN_REVISION_REQUIRED"])
+        # Project Memory keeps the verifier's PASS - its word - and beside it
+        # the runtime's note that the graph was not committed.
+        from codex_autopilot.memory import ProjectMemory
+
+        notes = [
+            item for item in ProjectMemory(cfg.root).milestone_evidence("PLAN-v2", limit=100)
+            if item.get("role") == "plan-commit"
+        ]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("did not commit graph v2", notes[0]["summary"])
+        self.assertIn("verifier turn turn-pv", notes[0]["summary"])
+        self.assertIn("advanced task B cannot be rewritten", notes[0]["summary"])
+        # A dispatcher replay of the same turn writes no second note.
+        from types import SimpleNamespace
+
+        from codex_autopilot.plan_verification_lifecycle import _record_uncommitted_pass
+
+        _record_uncommitted_pass(
+            ProjectMemory(cfg.root), SimpleNamespace(graph_version=2), "turn-pv", "sha", "again"
+        )
+        self.assertEqual(
+            len([
+                item for item in ProjectMemory(cfg.root).milestone_evidence("PLAN-v2", limit=100)
+                if item.get("role") == "plan-commit"
+            ]),
+            1,
+        )
+
 
 class ARuntimeConflictSpendsNoAttemptTests(_Replanning):
     def test_a_worker_still_active_at_the_commit_spends_no_semantic_revision(self) -> None:

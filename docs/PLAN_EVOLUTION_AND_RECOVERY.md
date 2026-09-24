@@ -62,12 +62,22 @@ The refusal is recorded in `rejections` with its structured `issues`, and the ne
 replanner's prompt lists every refused attempt (`rejected_attempts`) and the last
 one as a numbered list of `path: message (accepted: ...)`, marking an issue that
 repeats an earlier one; its
-constraints carry `allowed_fields` and `allowed_values`. A graph that moved under
+constraints carry `allowed_fields` and `allowed_values`. Each text goes in once:
+an attempt carries its issues without the reason rendered from them, and an issue
+an earlier attempt already listed is `{"path", "repeated_from_attempt"}`. Nothing
+is cut: a replanner prompt that still does not fit the ceiling is not launched -
+the reservation builds it before counting the attempt, and the refusal is a
+`context_budget` stop for the on-call, the same as the plan verifier's; the
+refusal that led to it is recorded first. A graph that moved under
 the replanner is the runtime's state, not its mistake: the change is rebased and
 a fresh replanner is raised without spending an attempt. A semantic `REVISE` from
 the plan verifier, and a commit conflict after its PASS (an advanced task
 rewritten), return to the replanner the same way instead of taking the dispatcher
-down. A commit refused on the run's own state (the run state's graph version
+down. A PASS the commit refused is journaled as the outcome, not the verdict: the
+verifier's session and its `turn_completed` read `PLAN_REVISION_REQUIRED` with the
+conflict in `plan_commit_conflict`, and Project Memory keeps the verifier's PASS
+with a runtime note beside it (`PLAN-v<N>`, role `plan-commit`) that the graph was
+not committed and why. A commit refused on the run's own state (the run state's graph version
 moved, a worker other than the requester still active, a lock still held) is
 not the replanner's either: the change is rebased, a fresh replanner is raised,
 and no semantic revision is spent (`RUNTIME_CONFLICT` in

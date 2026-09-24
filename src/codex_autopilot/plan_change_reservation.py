@@ -79,13 +79,11 @@ def _prompt_over_budget(cfg: Config, plan: Plan, state: RunState, record: dict[s
     unguarded - the completion that reserved was rolled back with it.
     """
 
-    from .blocked_runs import stop_run
     from .plan_verification import (
         PlanVerificationError,
         build_plan_verification_prompt,
         load_active_memory_constraints,
     )
-    from .run_state import utc_now
 
     try:
         candidate = validate_plan_change(
@@ -98,22 +96,62 @@ def _prompt_over_budget(cfg: Config, plan: Plan, state: RunState, record: dict[s
             state_dir=cfg.state_dir,
         )
     except PlanVerificationError as exc:
-        stop_run(
-            cfg,
-            state,
-            stop_kind="context_budget",
-            phase="CONTEXT_BUDGET_EXCEEDED",
-            reason=f"{task_id}: the plan verifier cannot be launched: {exc}",
-            summary=(
-                f"The plan verifier's prompt for {record.get('id')} does not fit the context "
-                "budget with the rules block, which is never cut (R17)."
-            ),
-            at=utc_now(),
-            task_ids=(task_id,),
-            plan_change_id=str(record.get("id") or ""),
-        )
+        _stop_for_context_budget(cfg, state, record, task_id, "plan verifier", exc)
         return True
     return False
+
+
+def _replanner_prompt_over_budget(
+    cfg: Config, plan: Plan, state: RunState, record: dict[str, Any], task_id: str
+) -> bool:
+    """The replanner's prompt does not fit: the same stop as the plan verifier's.
+
+    The replanner's prompt carries every refused attempt, the inherited ones
+    too, and it was built only inside the descriptor, after the attempt was
+    counted and the locks taken. Its refusal raised out of the reservation:
+    reached from a replanner's own refused completion, it rolled that
+    completion back - the refusal went unrecorded, no stop, no ticket - and
+    took down the dispatcher, which catches only protocol errors. Measured
+    by the independent check with 500 inherited issues.
+
+    Built here first, before anything is reserved. The token is not known
+    yet; a placeholder of the same length (a uuid, ``_stable_id``) gives the
+    same prompt length.
+    """
+
+    from .lifecycle_prompts import ReplannerPromptOverBudget, _replanner_prompt
+
+    try:
+        _replanner_prompt(cfg, plan, state, record, "0" * 36)
+    except ReplannerPromptOverBudget as exc:
+        _stop_for_context_budget(cfg, state, record, task_id, "replanner", exc)
+        return True
+    return False
+
+
+def _stop_for_context_budget(
+    cfg: Config, state: RunState, record: dict[str, Any], task_id: str, who: str, exc: Exception
+) -> None:
+    """R17: rules plus a minimal specification that do not fit are not launched,
+    and that is reported as a context-planning defect - a stop for the on-call."""
+
+    from .blocked_runs import stop_run
+    from .run_state import utc_now
+
+    stop_run(
+        cfg,
+        state,
+        stop_kind="context_budget",
+        phase="CONTEXT_BUDGET_EXCEEDED",
+        reason=f"{task_id}: the {who} cannot be launched: {exc}",
+        summary=(
+            f"The {who}'s prompt for {record.get('id')} does not fit the context "
+            "budget with the rules block, which is never cut (R17)."
+        ),
+        at=utc_now(),
+        task_ids=(task_id,),
+        plan_change_id=str(record.get("id") or ""),
+    )
 
 
 def _reserve_plan_verifier_in_state(
@@ -265,6 +303,8 @@ def _reserve_replanner_in_state(
     if raw_state is TaskState.RETRY_WAIT:
         state.status = "WAITING"
         state.phase = "WAITING_RATE_LIMIT"
+        return ()
+    if _replanner_prompt_over_budget(cfg, plan, state, record, task_id):
         return ()
     if raw_state is TaskState.BLOCKED:
         state.task_states = transition_task(

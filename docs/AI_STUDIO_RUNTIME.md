@@ -82,8 +82,8 @@ prompt has one fail-closed ceiling, `ai_studio.MAX_PROMPT_CHARS` (a quarter of t
 measured context window). Every phase - worker, verifier, planner, replanner, plan
 verifier, on-call - carries the rules block first, each rule with its statement
 and its check verbatim (R17); the block is never cut, and a prompt that cannot hold
-it is refused, never trimmed. The plan verifier's refusal becomes a
-`context_budget` stop for the on-call; the on-call's own package is fitted around
+it is refused, never trimmed. The plan verifier's and the replanner's refusals
+become a `context_budget` stop for the on-call; the on-call's own package is fitted around
 the rules instead (`engineer_package_budget`: its diagnostic parts are replaced,
 largest first, by a marker naming their size), so a large stop never keeps the
 on-call away. Output paths are resolved under the canonical project root; an

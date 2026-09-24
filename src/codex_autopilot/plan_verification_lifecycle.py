@@ -342,21 +342,6 @@ def complete_plan_verifier(
             raise DesktopLifecycleError(
                 "plan verification proposal identity changed during completion"
             )
-        _complete_session_identity(
-            state,
-            current,
-            thread_id=thread_id,
-            turn_id=turn_id,
-            final_status=(
-                "PLAN_VERIFIED"
-                if verdict.verdict == "PASS"
-                else "PLAN_REVISION_REQUIRED"
-            ),
-            timestamp=timestamp,
-        )
-        current["plan_verification_result"] = verdict.to_dict()
-        current["completion_evidence_ids"] = [evidence_id]
-        current["memory_verification_ids"] = [verification_id]
         release_resources_in_state(
             state,
             str(current["resource_ownership_token"]),
@@ -395,6 +380,29 @@ def complete_plan_verifier(
             except PlanChangeConflictError as exc:
                 conflict = str(exc)
         accepted = verdict.verdict == "PASS" and not conflict
+        # The session's status is the outcome, not the verdict. It was
+        # written from the verdict before the commit's conditions were
+        # checked, so a PASS the commit then refused left the session and
+        # its turn_completed event saying PLAN_VERIFIED while the plan stayed
+        # uncommitted and the change went back to the replanner - the run's
+        # journal contradicting its own outcome. The verdict itself stays in
+        # plan_verification_result, and in Project Memory: it is the
+        # verifier's word, and the runtime does not rewrite it; the note
+        # beside it says the PASS was not committed and why.
+        _complete_session_identity(
+            state,
+            current,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            final_status="PLAN_VERIFIED" if accepted else "PLAN_REVISION_REQUIRED",
+            timestamp=timestamp,
+        )
+        current["plan_verification_result"] = verdict.to_dict()
+        current["completion_evidence_ids"] = [evidence_id]
+        current["memory_verification_ids"] = [verification_id]
+        if conflict:
+            current["plan_commit_conflict"] = conflict
+            _record_uncommitted_pass(memory, candidate, turn_id, expected_digest, conflict)
         if not accepted:
             state.task_states = transition_task(
                 current_plan,
@@ -584,6 +592,45 @@ def complete_plan_verifier(
         "PLAN_VERIFIED" if accepted else "PLAN_REVISION_REQUIRED",
         descriptors,
         done,
+    )
+
+
+PLAN_COMMIT_ROLE = "plan-commit"
+
+
+def _record_uncommitted_pass(
+    memory: Any, candidate: Any, turn_id: str, digest: str, conflict: str
+) -> None:
+    """Beside the verifier's PASS in Project Memory: the runtime did not commit it.
+
+    The PASS is recorded before the transaction (dispatcher replay finds it
+    by the verifier's turn), so a PASS the commit refuses stood there alone,
+    for a graph that never became the plan. Keyed by the verifier's turn: a
+    replay after a crash finds the note and writes no second one.
+    """
+
+    milestone = f"PLAN-v{candidate.graph_version}"
+    marker = f"verifier turn {turn_id}"
+    if any(
+        item.get("role") == PLAN_COMMIT_ROLE and marker in str(item.get("summary") or "")
+        for item in memory.milestone_evidence(milestone, limit=100)
+    ):
+        return
+    memory.record_evidence(
+        kind="tool",
+        summary=(
+            f"The runtime did not commit graph v{candidate.graph_version} ({digest}) "
+            f"that the fresh plan verifier passed in {marker}: {conflict}"
+        )[:2000],
+        created_by="codex-autopilot",
+        milestone_id=milestone,
+        role=PLAN_COMMIT_ROLE,
+        tool_name="codex-autopilot/reconcile_plan_change_state",
+        result=json.dumps(
+            {"committed": False, "plan_sha256": digest, "conflict": conflict},
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
     )
 
 

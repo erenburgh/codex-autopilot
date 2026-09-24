@@ -360,7 +360,9 @@ with the stop's reason, `system_state`, `recent_events`, an earlier escalation's
 detail) give way next, the same way. If even the ticket's identity, the action
 lists and the rules cannot fit, the on-call cannot be called for that ticket: it
 goes to the owner as `ESCALATE_TO_USER` / `RECOVERY_EXHAUSTED` with the refusal
-as its diagnosis and a recommendation, the event `pipeline_engineer_unpromptable`
+as its diagnosis and a recommendation - room for the whole block (a higher prompt
+ceiling or a model with a larger window), never a split or shortened rules block,
+which R17 forbids - the event `pipeline_engineer_unpromptable`
 is journaled, and the next ticket in the lane is taken - at reservation and at
 the dispatcher alike (`engineer_reservation.hand_unpromptable_ticket_to_owner`).
 

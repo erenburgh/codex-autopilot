@@ -923,9 +923,15 @@ def hand_unpromptable_ticket_to_owner(
             escalation={
                 "diagnosis": diagnosis,
                 "decision_needed": "how the on-call's context is to hold the rules block and this ticket",
+                # Not "split the rules block by phase": a shortened or
+                # phase-dependent block is the same truncation R17 forbids,
+                # and the recommendation offered her an exception to her own
+                # rule. The design answer is room, not fewer rules.
                 "recommendation": (
-                    "raise the prompt ceiling or split the rules block by phase through "
-                    "a recorded decision; until then the ticket's tasks stay held"
+                    "raise the prompt ceiling (ai_studio.MAX_PROMPT_CHARS, derived from the "
+                    "model's context window) or run the on-call on a model with a larger "
+                    "window; the rules block stays whole and the same in every phase (R17). "
+                    "Until then the ticket's tasks stay held"
                 ),
                 "scope": "task",
             },

@@ -48,6 +48,45 @@ def _issues(item: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [{"stage": "", "path": "", "message": str(item.get("reason") or "")}]
 
 
+def attempts_for_context(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The refused attempts as ``rejected_attempts`` carries them, each text once.
+
+    Every attempt went in with its ``reason`` and its ``issues``, and the
+    reason is rendered from the issues (``plan has N issues: 1. ...``, or the
+    one issue's message) - the same list twice. An issue a later attempt
+    repeated went in again in full, so a chain of changes that inherit each
+    other's refusals grew by the whole list per attempt. Measured by the
+    independent check: 500 inherited issues put the replanner's prompt at
+    253 384 characters against 193 800.
+
+    Now each attempt carries its issues only, and an issue that repeats an
+    earlier attempt's (same stage, path and message) is a reference to the
+    first attempt that listed it - nothing is dropped, every text is still
+    in the context, once. What still does not fit is not cut (R17): the
+    reservation refuses the launch and the on-call is called.
+    """
+
+    first: dict[tuple[str, str, str], int] = {}
+    shown: list[dict[str, Any]] = []
+    for attempt in attempts:
+        issues: list[dict[str, Any]] = []
+        for issue in attempt["issues"]:
+            key = (
+                str(issue.get("stage") or ""),
+                str(issue.get("path") or ""),
+                str(issue.get("message") or ""),
+            )
+            if key in first:
+                issues.append({"path": key[1], "repeated_from_attempt": first[key]})
+            else:
+                first[key] = attempt["attempt"]
+                issues.append(issue)
+        shown.append(
+            {**{key: value for key, value in attempt.items() if key != "reason"}, "issues": issues}
+        )
+    return shown
+
+
 def retry_hint(attempts: list[dict[str, Any]]) -> str:
     """The last refusal as `path: message (accepted: ...)`, numbered, repeats marked."""
 

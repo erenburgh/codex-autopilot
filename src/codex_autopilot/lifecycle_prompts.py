@@ -18,13 +18,29 @@ from .memory import ProjectMemory
 from .department_acceptance import DEPARTMENT_FIELDS, RUBRIC_REFERENCE_FIELDS
 from .plan import GRAPH_PLAN_FIELDS, Plan, Task, plan_to_dict
 from .plan_fields import ALLOWED_FIELDS
-from .replanner_hint import allowed_plan_values, replanner_rejections, retry_hint
+from .replanner_hint import (
+    allowed_plan_values,
+    attempts_for_context,
+    replanner_rejections,
+    retry_hint,
+)
 from .resilience import PLAN_CHANGE_RESULT_PREFIX
 from .rules import rules_for_prompt
 from .run_state import RunState
 from .skill_screening import recorded_hiring
 from .task_state import TaskState
 from .verification import VerificationIssue
+
+
+class ReplannerPromptOverBudget(DesktopLifecycleError):
+    """The replanner's prompt does not fit: the reservation files a stop.
+
+    Raised out of the descriptor build, it rolled back the completion that
+    reserved - the refusal of the previous replanner went unrecorded, and
+    the dispatcher, which catches only protocol errors, went down with it.
+    The reservation now builds the prompt first and turns this into a
+    ``context_budget`` stop for the on-call (``plan_change_reservation``).
+    """
 
 
 def _replanner_prompt(
@@ -60,7 +76,7 @@ def _replanner_prompt(
     # field absent from the plan schema. Each carries its structured
     # issues, and a change the on-call raised after another one used every
     # attempt carries that one's refusals too (``inherited_rejections``).
-    rejections = replanner_rejections(change)
+    attempts = replanner_rejections(change)
     envelope = {
         # R17: the rules stand before any specification they judge, and this
         # is the phase that rewrites the whole graph. It was asked to report
@@ -99,8 +115,8 @@ def _replanner_prompt(
             "allowed_values": allowed_plan_values(),
         },
     }
-    if rejections:
-        envelope["rejected_attempts"] = rejections
+    if attempts:
+        envelope["rejected_attempts"] = attempts_for_context(attempts)
     declared_workers = (
         cfg.runtime.max_parallel_workers
         if getattr(cfg.runtime, "max_parallel_workers_declared", False)
@@ -138,8 +154,8 @@ def _replanner_prompt(
             f"Set max_parallel_workers={declared_workers} in the graph you return; "
             f"it currently holds {plan.max_parallel_workers}."
         )
-    if rejections:
-        retry_ru = retry_en = retry_hint(rejections)
+    if attempts:
+        retry_ru = retry_en = retry_hint(attempts)
     if is_russian(cfg.language):
         prompt = f"""Codex Autopilot AI Studio Runtime — fresh replanner.
 
@@ -169,7 +185,7 @@ The final non-empty line must be the only protocol line in this exact format:
     # clear refusal, because the exception was never imported here since
     # the split of lifecycle.py.
     if len(prompt) > MAX_PROMPT_CHARS:
-        raise DesktopLifecycleError(
+        raise ReplannerPromptOverBudget(
             f"replanner prompt is {len(prompt)} characters against a "
             f"{MAX_PROMPT_CHARS} budget derived from the model context window"
         )
