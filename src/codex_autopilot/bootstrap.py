@@ -43,6 +43,7 @@ def initialize_project(
     desktop_project_id: str | None = None,
     plan_verification: PlanVerificationReceipt | dict[str, object] | None = None,
     skill_screening: str = DEFAULT_SKILL_SCREENING,
+    roots_audit: dict[str, object] | None = None,
 ) -> Plan:
     root = root.expanduser().resolve()
     if not root.is_dir():
@@ -130,6 +131,18 @@ def initialize_project(
     )
     memory = ProjectMemory(root)
     memory.initialize()
+    # R6: preflight's roots audit becomes the run's record and her proposed
+    # decisions here, where Project Memory first exists. A failure to record
+    # it is said and does not stop the start.
+    roots_record = None
+    if roots_audit:
+        from .project_roots_audit import RootsAudit, sync_roots_decisions
+
+        try:
+            audit = RootsAudit.from_dict(roots_audit)
+            roots_record = (audit, sync_roots_decisions(memory, audit))
+        except Exception as exc:  # noqa: BLE001 - a record, never a stop
+            print(f"codex-autopilot: the project roots findings were not recorded: {exc}")
     # R30: every department's version-1 rubric before the first task, while
     # the bootstrap is the only writer. A failure is not fatal here: the
     # verifier's reservation writes it, or stops that one task for the on-call.
@@ -202,6 +215,10 @@ def initialize_project(
             "state_replaced",
             detail={"previous_state": str(previous_state), "reason": "--replace"},
         )
+    if roots_record is not None:
+        from .project_roots_audit import record_roots_audit
+
+        record_roots_audit(state, roots_record[0], roots_record[1], occasion="preflight")
     store = StateStore(state_dir)
     store.save(state)
     plan_file.unlink(missing_ok=True)

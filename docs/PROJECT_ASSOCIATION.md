@@ -153,10 +153,91 @@ exactly, as Desktop compares them; a root below a project root fails, and a
 missing Desktop state file is reported as UNOBSERVABLE, not as a pass.
 
 When App Server exposes a saved project containing the target, preflight chooses
-the unique longest matching root (or a validated explicit target project), sends
+the longest matching root (or a validated explicit target project), sends
 that project ID with the canonical cwd, and attests returned cwd/project/title
 metadata. Desktop sidebar project IDs and App Server project IDs are separate
-namespaces and must not be compared or substituted.
+namespaces and are never substituted for each other; they are paired only
+through Desktop's own map, `app-server-project-id-by-legacy-project-id-by-host`
+in `.codex-global-state.json` - a dictionary, so one Desktop project links
+exactly one App Server project.
+
+Two App Server projects on the run's root used to stop every start ("multiple
+saved Codex Projects match this path"): on the beyondness run the initiating
+agent had created one of its own with `project/create`. Now the project Desktop
+links wins the tie; without a link, the one Desktop shows, then the lowest id
+(App Server ids are UUIDv7, so the oldest). An explicit
+`--app-server-project-id` that differs from the linked holder is overruled the
+same way. Each case is a WARN finding, not a stop. The one refusal left is
+`ID_PAIR_MISMATCH` FAIL: Desktop links its project to an App Server project
+that does not hold the run's root, so no choice is a consistent pair; the
+finding says what to do in Desktop.
+
+## The roots audit (R6)
+
+`project_roots_audit.py` compares the run's root with Desktop's
+`local-projects[<desktop id>].rootPaths`, the App Server projects and the id
+map. Read-only; findings, each WARN unless noted:
+
+- `SIBLING_ROOTS` - another root looks like a copy of the run's root: at
+  least two of the same folder name, the same top-level markers (`*.uproject`,
+  `AGENTS.md`, `.git`) and the same repository name in a remote. Two roots
+  alone are not a finding. Only top-level names are listed; a file the iCloud
+  File Provider evicted (`st_flags & SF_DATALESS`) is never opened; the remote
+  is parsed out of `.git/config`; git runs only for a `.git` pointer file and
+  always with a timeout;
+- `ACTIVE_ROOT_MISMATCH` - the project's first root is not the run's root, so
+  new chats in the project open elsewhere. Desktop's `active-workspace-roots`
+  is global UI state and counts only while `selected-project` is this project;
+- `DUPLICATE_APP_SERVER_PROJECTS` - another App Server project holds the root,
+  marked visible in Desktop or App Server only;
+- `ID_PAIR_MISMATCH` - see above;
+- `ROOTS_DIVERGED` - Desktop's rootPaths and the linked App Server project's
+  roots differ;
+- `UNVERIFIED` - a key of Desktop's undocumented format is missing: "could
+  not check", never a pass and never a stop.
+
+It runs at preflight (printed as `Project roots <CODE>` lines), before every
+thread creation, and at every wake-up (Desktop's side only; a run paused
+before the audit existed is audited at its first wake-up at the user's Codex
+home). The latest audit is `roots_audit` in the run state, and a change of
+findings is a `roots_audit` journal event. Each finding that asks for her
+decision is a proposed decision in Project Memory (`origin=environment`,
+scope `codex-project-roots`) whose text carries the recommendation and the
+ready command; one per finding, however often the audit runs, and a rejected
+one is not proposed again. When a later audit of the same kind no longer sees
+the finding, the runtime supersedes the proposal with the evidence. The status
+card carries one line - "Codex project: 2 roots, the active one is a copy ...;
+see decision D-..." - while a proposal is open.
+
+## Changing a saved project
+
+Desktop keeps `local-projects` as its source, sends `project/update` itself
+when she edits a project, and never reads App Server's roots back. So roots
+are fixed where she sees them: Codex Desktop -> project -> Edit project. That
+edit writes both spaces, needs no record, and the audit closes the proposal
+afterwards.
+
+`authorize-project-root` carries her decisions, each confirmed by typing the
+project id at an interactive terminal and refused inside a Codex task
+(`CODEX_THREAD_ID`), never by `--yes`:
+
+- `--retire-duplicate <id>` - `project/delete` of an App Server project that
+  Desktop does not show, holds the run's root, is not the run's project and
+  has no threads (read from App Server's state database, read-only). The
+  decision `AUTOPILOT_PROJECT_DELETE project_id=<id> root=<path>` is recorded
+  first, a restorable snapshot is written, the project list is read again;
+- `--remove-root <path>` / `--set-primary-root <path>` - App Server follows
+  Desktop only: refused, with the Desktop instruction, unless Desktop already
+  lists the wanted roots. `AppServerClient.replace_project_roots` sends
+  nothing without her exact decision (`AUTOPILOT_PROJECT_ROOT_REMOVE` /
+  `_PRIMARY`, project and path) and refuses a list without the run's root;
+  the audit runs again and a remaining divergence is said, not called done;
+- `--decline <decision id>` - she rejects a proposal; it is not raised again.
+
+A command given without `--project` from a root that has no run, while
+another root of the same Desktop project has one, uses that run and says so;
+`bootstrap`, `start-skill` and `preflight` refuse there and name the run's
+path, since they would start a second run in the copy.
 
 If no saved project contains the target, the supported fallback is an
 unassigned thread with the canonical cwd plus an explicit limitation report.

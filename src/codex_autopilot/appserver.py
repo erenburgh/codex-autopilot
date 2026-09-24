@@ -57,6 +57,14 @@ class ProjectRootDrift(AppServerError):
         )
 
 
+class ProjectMutationRefused(AppServerError):
+    """R6: a saved project is changed only on her recorded decision.
+
+    Raised before any request is sent - the refusal is closed, not a
+    rollback (project_roots_change).
+    """
+
+
 # How often to ask the server about our own turn's state, and how long to
 # wait for confirmation before treating it as broken off.
 TURN_PROBE_SECONDS = 60.0
@@ -729,6 +737,63 @@ class AppServerClient:
         if str(updated.get("id") or "") != project_id or canonical_root not in updated_paths:
             raise AppServerError("project/update did not preserve the canonical root")
         return updated
+
+    def replace_project_roots(
+        self,
+        project_id: str,
+        roots: Sequence[Path],
+        *,
+        keep: Path,
+        authorized: bool = False,
+    ) -> dict[str, Any]:
+        """Set the project's roots to exactly ``roots``, in order - on her decision only.
+
+        Next to ``ensure_project_root`` and closed the same way: without
+        ``authorized`` (the caller found her accepted decision naming this
+        project and this root) nothing is sent. Nor is a list that would
+        leave ``keep`` - the run's root - outside the project: every later
+        creation would fail on ProjectRootDrift (the independent check).
+        The roots go in the spelling given; Desktop compares spellings.
+        """
+
+        if not authorized:
+            raise ProjectMutationRefused(
+                f"no recorded user decision authorizes changing the roots of project {project_id}"
+            )
+        wanted = [Path(str(item)).expanduser() for item in roots]
+        run_root = keep.expanduser().resolve()
+        if not wanted or not any(_is_within(run_root, item.resolve()) for item in wanted):
+            raise ProjectMutationRefused(
+                f"the run's root {run_root} would leave project {project_id}; refused"
+            )
+        updated = self.request(
+            "project/update",
+            {"projectId": project_id, "roots": [{"path": str(item)} for item in wanted]},
+        ).get("project")
+        if not isinstance(updated, dict) or str(updated.get("id") or "") != project_id:
+            raise AppServerError("project/update returned no project")
+        got = [
+            Path(str(item.get("path"))).expanduser().resolve()
+            for item in updated.get("roots") or []
+            if isinstance(item, dict) and item.get("path")
+        ]
+        if got != [item.resolve() for item in wanted]:
+            raise AppServerError("project/update did not keep the requested roots")
+        return updated
+
+    def delete_project(self, project_id: str, *, authorized: bool = False) -> None:
+        """Delete an App Server project - on her decision only, checked by the caller.
+
+        Desktop deletes its own projects with this same method
+        (deleteAppServerProject); a project that exists only in App Server
+        cannot be deleted from Desktop's interface at all.
+        """
+
+        if not authorized:
+            raise ProjectMutationRefused(
+                f"no recorded user decision authorizes deleting project {project_id}"
+            )
+        self.request("project/delete", {"projectId": project_id})
 
     def rate_limits(self) -> dict[str, Any]:
         return self.request("account/rateLimits/read", {})

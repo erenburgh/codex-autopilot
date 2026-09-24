@@ -167,6 +167,7 @@ def run_wake(
     """Sleep until the due time and raise the dispatcher - or leave quietly if not allowed."""
 
     from .department_audit import audit_lead_sessions
+    from .project_roots_audit import refresh_run_roots_audit
     from .resilience import append_resilience_event
 
     store = StateStore(cfg.state_dir)
@@ -224,6 +225,7 @@ def run_wake(
         # freed - the on-call's lane, above all - is reserved at once.
         settled = _settle_dead_sessions(cfg, observe=observe)
         audit_lead_sessions(cfg)  # R30: leads that outlived their acceptance
+        refresh_run_roots_audit(cfg, None, occasion="wake")  # R6: Desktop's side
         if settled:
             descriptors += tuple(
                 reserve(cfg, now_epoch=int(now()), relay_owner_thread_id=owner)

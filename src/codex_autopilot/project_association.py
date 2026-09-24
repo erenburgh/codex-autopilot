@@ -73,9 +73,32 @@ def match_saved_project(
     projects: list[dict[str, Any]],
     *,
     explicit_project_id: str | None = None,
+    desktop_linked_project_id: str | None = None,
+    desktop_visible_project_ids: set[str] | None = None,
+    findings: list[Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Return an explicit target project or the unique longest-root match."""
+    """Return the target project: the one Desktop links, else explicit, else longest root.
+
+    Two App Server projects on one root used to be a stop: "multiple saved
+    Codex Projects match this path". Measured on beyondness: the initiating
+    agent created "<game> - Developer" (01a0ce52) on the run's root, and
+    every later start without --app-server-project-id failed. Desktop's map
+    (``app-server-project-id-by-legacy-project-id-by-host``) is a dictionary:
+    one Desktop project links exactly one App Server project, the one she
+    sees. When it is among the candidates it is taken and the others are
+    written as DUPLICATE_APP_SERVER_PROJECTS - not a stop, not silence. An
+    explicit id that differs from the linked one is the same case
+    (ID_PAIR_MISMATCH, WARN); so is a tie with no link at all, broken
+    deterministically below. What still refuses is a link that holds no
+    target (ID_PAIR_MISMATCH, FAIL): Desktop's project points at an App
+    Server project without the run's root, and no choice is a consistent
+    pair - the finding says what to do in Desktop.
+    """
+    from .project_roots_audit import duplicate_finding, id_pair_finding
+
     resolved = root.expanduser().resolve()
+    by_id = {str(project.get("id") or ""): project for project in projects}
+    linked = by_id.get(desktop_linked_project_id or "")
     if explicit_project_id:
         explicit = [
             project
@@ -90,6 +113,13 @@ def match_saved_project(
             raise ProjectAssociationError(
                 f"explicit saved Codex Project {explicit_project_id!r} does not contain the target root"
             )
+        if desktop_linked_project_id and desktop_linked_project_id != explicit_project_id:
+            finding = id_pair_finding("", desktop_linked_project_id, explicit_project_id, resolved, by_id)
+            if finding.status == "FAIL":
+                raise ProjectAssociationError(f"ID_PAIR_MISMATCH: {finding.line()}")
+            if findings is not None:
+                findings.append(finding)
+            return linked
         return explicit[0]
     matches: list[tuple[int, dict[str, Any]]] = []
     for project in projects:
@@ -107,8 +137,46 @@ def match_saved_project(
         return None
     longest = max(size for size, _ in matches)
     best = {str(project["id"]): project for size, project in matches if size == longest}
+    if desktop_linked_project_id and desktop_linked_project_id not in best:
+        # Desktop links another project than the one holding the root:
+        # WARN and take the linked one if it holds the target, else FAIL.
+        other = sorted(best)[0]
+        finding = id_pair_finding("", desktop_linked_project_id, other, resolved, by_id)
+        if finding.status == "FAIL":
+            raise ProjectAssociationError(f"ID_PAIR_MISMATCH: {finding.line()}")
+        if findings is not None:
+            findings.append(finding)
+        return linked
     if len(best) != 1:
-        raise ProjectAssociationError("multiple saved Codex Projects match this path")
+        if desktop_linked_project_id in best:
+            if findings is not None:
+                findings.extend(
+                    duplicate_finding(project, resolved, visibility="unknown")
+                    for project_id, project in sorted(best.items())
+                    if project_id != desktop_linked_project_id
+                )
+            return best[desktop_linked_project_id]
+        # No link to break the tie (Desktop's map missing, or no Desktop
+        # project): still not a stop. The choice is deterministic - a
+        # project Desktop shows first, then the lowest id (App Server ids
+        # are UUIDv7, so the oldest: 01a049a3 before the agent's 01a0ce52)
+        # - and every other candidate is written down.
+        shown = desktop_visible_project_ids or set()
+        chosen = min(best, key=lambda project_id: (project_id not in shown, project_id))
+        if findings is not None:
+            findings.extend(
+                duplicate_finding(
+                    project,
+                    resolved,
+                    visibility=(
+                        "unknown" if desktop_visible_project_ids is None
+                        else "visible in Desktop" if project_id in shown else "App Server only"
+                    ),
+                )
+                for project_id, project in sorted(best.items())
+                if project_id != chosen
+            )
+        return best[chosen]
     return next(iter(best.values()))
 
 
@@ -117,6 +185,9 @@ def resolve_preflight_project(
     projects: list[dict[str, Any]],
     *,
     explicit_project_id: str | None = None,
+    desktop_linked_project_id: str | None = None,
+    desktop_visible_project_ids: set[str] | None = None,
+    findings: list[Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Resolve Desktop placement separately from the worker filesystem cwd.
 
@@ -132,6 +203,9 @@ def resolve_preflight_project(
         target_root,
         projects,
         explicit_project_id=explicit_project_id,
+        desktop_linked_project_id=desktop_linked_project_id,
+        desktop_visible_project_ids=desktop_visible_project_ids,
+        findings=findings,
     )
     if target:
         return target, "explicit target" if explicit_project_id else "target"

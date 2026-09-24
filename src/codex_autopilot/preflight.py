@@ -44,6 +44,10 @@ from .project_association import (
     require_desktop_project_root,
     resolve_preflight_project,
 )
+from .project_roots_audit import (
+    audit_project_roots,
+    preflight_project_pair,
+)
 
 
 MEMORY_SERVER_NAME = "codex_autopilot_memory"
@@ -211,6 +215,9 @@ class PreflightResult:
     # The isolation measurement (isolation_probe); bootstrap writes it into
     # the new run's state - preflight removes what its probe created.
     isolation: dict[str, Any] | None = None
+    # The saved project's roots audit (project_roots_audit); bootstrap writes
+    # it into the run state and turns its findings into proposed decisions.
+    roots_audit: dict[str, Any] | None = None
 
     def add(self, name: str, status: str, detail: str) -> None:
         self.checks.append((name, status, detail))
@@ -471,15 +478,24 @@ def run_preflight(
             f"{stop_hook.plugin_id}; {stop_hook.trust_status}; {stop_hook.current_hash}",
         )
 
+        # R6: the Desktop project, its linked App Server project and the one
+        # the run uses are one pair; a duplicate on the root is no longer a
+        # stop when Desktop's link decides it (project_roots_audit).
+        linked_id, desktop_visible = preflight_project_pair(codex_home, desktop_project_id)
+        association_findings: list[Any] = []
+        app_server_projects = client.list_projects()
         try:
             saved_project, project_source = resolve_preflight_project(
                 project,
-                client.list_projects(),
+                app_server_projects,
                 explicit_project_id=app_server_project_id,
+                desktop_linked_project_id=linked_id,
+                desktop_visible_project_ids=desktop_visible,
+                findings=association_findings,
             )
         except ProjectAssociationError as exc:
             report("Codex project metadata", "FAIL", str(exc))
-            raise PreflightError(f"Codex project association is ambiguous: {exc}") from exc
+            raise PreflightError(f"Codex project association failed: {exc}") from exc
         if saved_project:
             # This is App Server project metadata. Desktop sidebar placement is
             # checked independently against the local project's real rootPaths.
@@ -497,6 +513,17 @@ def run_preflight(
                 "NONE",
                 "no saved project contains the target root; task stays in Recents with canonical cwd",
             )
+        # Printed and kept, never a stop: the run goes on by default, and the
+        # findings become proposed decisions when bootstrap records the run.
+        roots_audit = audit_project_roots(
+            codex_home, project, desktop_project_id, app_server_projects, result.project_id,
+            extra_findings=association_findings,
+        )
+        result.roots_audit = roots_audit.to_dict()
+        for finding in roots_audit.findings:
+            report(f"Project roots {finding.code}", finding.status, finding.line())
+        if not roots_audit.findings:
+            report("Project roots", "OK", "no copy among the roots, no duplicate project, one id pair")
 
         if desktop_project_id:
             # Pre-created slots were a workaround for a supposed

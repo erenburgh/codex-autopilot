@@ -326,6 +326,10 @@ def render_short_status(
     hook_signal = _hook_trust_signal(state)
     if hook_signal:
         lines.append(f"{words['hook']}: {_clip(hook_signal, 240)}")
+    # R6: one line while a finding on the project's roots waits for her.
+    roots = _roots_line(cfg, state)
+    if roots:
+        lines.append(_clip(roots, 320))
     if snapshot["pause"]["requested"]:
         lines.append(words["paused"])
     # Hiring is on by default and spends a Codex thread per task out of the
@@ -393,6 +397,16 @@ def _owner_decision_lines(cfg: Config, incident: dict, words: dict[str, str]) ->
         lines.append(f"  {words['options']}: " + "; ".join(_clip(item, 120) for item in options[:4]))
     lines.append(f"  {words['answer']}: {owner_answer(cfg, incident)}")
     return lines
+
+
+def _roots_line(cfg: Config, state: RunState, *, russian: bool | None = None) -> str:
+    from .language import is_russian
+    from .project_roots_audit import roots_status_line
+
+    try:
+        return roots_status_line(cfg, state, russian=is_russian(cfg.language) if russian is None else russian)
+    except Exception:  # noqa: BLE001 - the card never fails on a side line
+        return ""
 
 
 def _hook_trust_signal(state: RunState) -> str:
@@ -483,6 +497,7 @@ def render_project_status(
         [
             f"Canonical cwd: {placement['canonical_cwd']}",
             f"Project association: {placement['association']}",
+            f"Project roots: {_roots_line(cfg, state, russian=False) or 'nothing waits for a decision'}",
             (
                 # The model and reasoning level are removed from here: no
                 # production path writes them, and the substituted "Host

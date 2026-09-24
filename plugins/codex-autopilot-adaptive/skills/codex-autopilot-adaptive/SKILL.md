@@ -90,6 +90,8 @@ below answers a question users actually asked.
 
 The target is the Codex project you are working in. Resolve it as that project's own root, and take the Desktop project id from the same place: the two always belong together, because every created task is placed in that project and verified there.
 
+Pass that Desktop project's own App Server project with `--app-server-project-id`, next to `--desktop-project-id`: Desktop links the two in `app-server-project-id-by-legacy-project-id-by-host` of `~/.codex/.codex-global-state.json` (read it, never write it), one App Server id per Desktop project. Preflight audits the saved project's roots and prints `Project roots ...` lines; none of them stops the run except `ID_PAIR_MISMATCH` FAIL, which names its fix. When it reports `SIBLING_ROOTS` or `ACTIVE_ROOT_MISMATCH` - a root of the project is a stale copy of the target (the same folder name, the same top-level markers such as `*.uproject`, `AGENTS.md`, `.git`, the same repository in its remote), or the target is not the project's first root, so the user's new chats in the project open in the copy - explain it to the user in one or two sentences and recommend one option: remove the old copy from the project in Codex Desktop (project menu -> Edit project), or make the target its first folder. That edit is the user's own, in Desktop, which writes both its own list and App Server's; the run does not wait for it, and Autopilot closes its proposal itself once the audit no longer sees the copy. Two roots alone are not a problem - a repository plus an assets folder is legitimate - so say nothing unless preflight reports a finding. Never create, change or delete a Codex project yourself: no `project/create`, `project/update` or `project/delete`, and no edit of `~/.codex/.codex-global-state.json`, by sandbox escalation or otherwise. The one door to a saved project is `authorize-project-root` (see "Saved-project root drift").
+
 A different directory is accepted only when it lies inside some Codex project's roots, and then that project's id is the one to pass. A path that belongs to no Codex project cannot be a target: the run would have no project to place its tasks in, and the user would see nothing. Say so immediately, in one sentence, naming the path and the fix - create a Codex project for that directory, or work in the project you already have. Never start a run that will fail later for this reason, and never ask the user to add the project by hand mid-run. Inspect it and the user's goal or `ROADMAP.md`. Select one model strategy for the run:
 
 - `auto` for `Use Codex Autopilot for this project` and requests without an override.
@@ -264,6 +266,24 @@ scripts/codex-autopilot authorize-project-root --project <target-root> --yes
 `--revoke` withdraws it later. The authorization names that one project and that
 one root; it does not carry to another. Never run it on the user's behalf and
 never infer it from a general request to continue.
+
+The user's decisions on the saved project itself go through the same command and are
+confirmed by typing the project id in their own terminal - they refuse to run
+inside a Codex task and never take `--yes`:
+
+```text
+scripts/codex-autopilot authorize-project-root --project <target-root> --retire-duplicate <app-server-project-id>
+scripts/codex-autopilot authorize-project-root --project <target-root> --remove-root <path>
+scripts/codex-autopilot authorize-project-root --project <target-root> --set-primary-root <path>
+scripts/codex-autopilot authorize-project-root --project <target-root> --decline <decision-id>
+```
+
+`--retire-duplicate` deletes an App Server project that Desktop does not show,
+that holds the run's root, is not the run's project and has no threads; a
+snapshot is kept. `--remove-root` and `--set-primary-root` only bring App
+Server in line with what Desktop already lists; to change the roots
+themselves the user edits the project in Codex Desktop. Give the user the exact command
+preflight or the status card printed; never run it for them.
 
 ## Controls
 

@@ -48,7 +48,7 @@ def parser() -> argparse.ArgumentParser:
     # vocabulary out of the usage line too.
     sub = top.add_subparsers(dest="command", required=True, metavar="command")
     bootstrap = sub.add_parser("bootstrap", help="initialize a project from a structured plan")
-    bootstrap.add_argument("--project", type=Path, default=Path.cwd())
+    bootstrap.add_argument("--project", type=Path, default=None)
     bootstrap.add_argument("--plan-file", type=Path, required=True)
     bootstrap.add_argument("--profile", choices=["adaptive", "host-settings"])
     bootstrap.add_argument("--skill-path", type=Path)
@@ -57,7 +57,7 @@ def parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--app-server-project-id")
     bootstrap.add_argument("--desktop-project-id")
     start_skill = sub.add_parser("start-skill")
-    start_skill.add_argument("--project", type=Path, default=Path.cwd())
+    start_skill.add_argument("--project", type=Path, default=None)
     start_skill.add_argument("--plan-file", type=Path, required=True)
     start_skill.add_argument("--replace", action="store_true")
     start_skill.add_argument("--language", default=DEFAULT_LANGUAGE)
@@ -65,7 +65,7 @@ def parser() -> argparse.ArgumentParser:
     start_skill.add_argument("--desktop-project-id")
     start_skill.add_argument("--approve-project-memory-always", action="store_true")
     preflight = sub.add_parser("preflight", help="validate a target before creating Autopilot state")
-    preflight.add_argument("--project", type=Path, default=Path.cwd())
+    preflight.add_argument("--project", type=Path, default=None)
     preflight.add_argument("--plan-file", type=Path, required=True)
     preflight.add_argument("--profile", choices=["adaptive", "host-settings"])
     preflight.add_argument("--skill-path", type=Path)
@@ -74,7 +74,7 @@ def parser() -> argparse.ArgumentParser:
     preflight.add_argument("--app-server-project-id")
     preflight.add_argument("--desktop-project-id")
     armed = sub.add_parser("arm")
-    armed.add_argument("--project", type=Path, default=Path.cwd())
+    armed.add_argument("--project", type=Path, default=None)
     automatic_relay = sub.add_parser("_relay_dispatch")
     automatic_relay.add_argument("--project", type=Path, required=True)
     automatic_relay.add_argument("--token", required=True)
@@ -95,13 +95,13 @@ def parser() -> argparse.ArgumentParser:
         "timeline",
         help="ladder of launch steps for the active tasks, one line per step",
     )
-    timeline.add_argument("--project", type=Path, default=Path.cwd())
+    timeline.add_argument("--project", type=Path, default=None)
     timeline.add_argument("--task", action="append", default=[])
     relay_status = sub.add_parser("relay-status")
-    relay_status.add_argument("--project", type=Path, default=Path.cwd())
+    relay_status.add_argument("--project", type=Path, default=None)
     relay_status.add_argument("--token", required=True)
     relay_fail = sub.add_parser("relay-fail")
-    relay_fail.add_argument("--project", type=Path, default=Path.cwd())
+    relay_fail.add_argument("--project", type=Path, default=None)
     relay_fail.add_argument("--token", required=True)
     relay_fail.add_argument("--reason", required=True)
     # The caller names the kind of failure: R23 counts repeats by it.
@@ -110,30 +110,30 @@ def parser() -> argparse.ArgumentParser:
     relay_fail.add_argument("--rate-limited", action="store_true")
     relay_fail.add_argument("--reset-at", type=int)
     relay_complete = sub.add_parser("relay-complete")
-    relay_complete.add_argument("--project", type=Path, default=Path.cwd())
+    relay_complete.add_argument("--project", type=Path, default=None)
     relay_complete.add_argument("--thread-id", required=True)
     relay_complete.add_argument("--turn-id", required=True)
     relay_complete.add_argument("--status", choices=["ROTATE", "DONE", "BLOCKED", "ESCALATE"], required=True)
     reconcile_identity = sub.add_parser("reconcile-thread-identity")
-    reconcile_identity.add_argument("--project", type=Path, default=Path.cwd())
+    reconcile_identity.add_argument("--project", type=Path, default=None)
     reconcile_identity.add_argument("--token", required=True)
     reconcile_identity.add_argument("--task-id", required=True)
     reconcile_identity.add_argument("--previous-thread-id", required=True)
     reconcile_identity.add_argument("--current-thread-id", required=True)
     relay_rearm = sub.add_parser("devops-rearm-relay-owner")
-    relay_rearm.add_argument("--project", type=Path, default=Path.cwd())
+    relay_rearm.add_argument("--project", type=Path, default=None)
     relay_rearm.add_argument("--incident-id")
     # A runtime code repair. The edit set and the test are passed as files,
     # not strings: an edit can span lines and modules, and through
     # command-line arguments it would arrive mangled by quotes and newlines.
     devops_repair = sub.add_parser("devops-repair-runtime")
-    devops_repair.add_argument("--project", type=Path, default=Path.cwd())
+    devops_repair.add_argument("--project", type=Path, default=None)
     devops_repair.add_argument("--incident-id", required=True)
     devops_repair.add_argument("--patch-file", type=Path, required=True)
     devops_repair.add_argument("--test-file", type=Path, required=True)
     devops_repair.add_argument("--test-name", required=True)
     devops_revert = sub.add_parser("devops-revert-runtime-patch")
-    devops_revert.add_argument("--project", type=Path, default=Path.cwd())
+    devops_revert.add_argument("--project", type=Path, default=None)
     devops_revert.add_argument("--incident-id", required=True)
     devops_revert.add_argument("--patch-id", required=True)
     # A hired skill bundle is a side effect on the project, so it has a named
@@ -142,14 +142,14 @@ def parser() -> argparse.ArgumentParser:
     skills_list = sub.add_parser(
         "skills", help="list the skill bundles this project has hired"
     )
-    skills_list.add_argument("--project", type=Path, default=Path.cwd())
+    skills_list.add_argument("--project", type=Path, default=None)
     revoke_skill = sub.add_parser(
         "revoke-skill", help="remove one hired skill bundle from this project"
     )
-    revoke_skill.add_argument("--project", type=Path, default=Path.cwd())
+    revoke_skill.add_argument("--project", type=Path, default=None)
     revoke_skill.add_argument("--skill-id", required=True)
     devops_resolve = sub.add_parser("devops-resolve-incident")
-    devops_resolve.add_argument("--project", type=Path, default=Path.cwd())
+    devops_resolve.add_argument("--project", type=Path, default=None)
     devops_resolve.add_argument("--incident-id", required=True)
     devops_resolve.add_argument("--healthcheck-name", required=True)
     devops_resolve.add_argument("--check", action="append", required=True)
@@ -172,7 +172,7 @@ def parser() -> argparse.ArgumentParser:
         "unblock",
         help="lift a task's stop by the user's decision, with a recorded reason",
     )
-    unblock.add_argument("--project", type=Path, default=Path.cwd())
+    unblock.add_argument("--project", type=Path, default=None)
     unblock.add_argument("--task", default="")
     # A ticket that holds no task (the on-call's own request, a run-level
     # stop) is answered by its id; the card prints this form for it.
@@ -183,11 +183,11 @@ def parser() -> argparse.ArgumentParser:
     unblock.add_argument("--option", default="")
     # The on-call's two actions on a stopped task (engineer_stop_actions).
     returned = sub.add_parser("devops-return-task")
-    returned.add_argument("--project", type=Path, default=Path.cwd())
+    returned.add_argument("--project", type=Path, default=None)
     returned.add_argument("--incident-id", required=True)
     returned.add_argument("--task", required=True)
     replan = sub.add_parser("devops-request-plan-change")
-    replan.add_argument("--project", type=Path, default=Path.cwd())
+    replan.add_argument("--project", type=Path, default=None)
     replan.add_argument("--incident-id", required=True)
     replan.add_argument("--task", required=True)
     replan.add_argument("--reason", required=True)
@@ -196,12 +196,12 @@ def parser() -> argparse.ArgumentParser:
     # R30: the on-call's repair of an ambiguous rubric history, and the one
     # door to a later rubric version (the department's lead or the on-call).
     supersede = sub.add_parser("devops-supersede-rubric")
-    supersede.add_argument("--project", type=Path, default=Path.cwd())
+    supersede.add_argument("--project", type=Path, default=None)
     supersede.add_argument("--incident-id", required=True)
     supersede.add_argument("--record", required=True)
     supersede.add_argument("--reason", required=True)
     propose = sub.add_parser("department-rubric-propose")
-    propose.add_argument("--project", type=Path, default=Path.cwd())
+    propose.add_argument("--project", type=Path, default=None)
     propose.add_argument("--department", required=True)
     propose.add_argument("--version", type=int, required=True)
     propose.add_argument("--rubric-json", required=True, help='{"criteria":[{"id","requirement"}],"standards":[...]}')
@@ -210,9 +210,15 @@ def parser() -> argparse.ArgumentParser:
         "authorize-project-root",
         help="authorize Autopilot to add this project's canonical root to the saved Codex project",
     )
-    authorize_root.add_argument("--project", type=Path, default=Path.cwd())
+    authorize_root.add_argument("--project", type=Path, default=None)
     authorize_root.add_argument("--yes", action="store_true")
     authorize_root.add_argument("--revoke", action="store_true")
+    # Her decisions on the saved project itself (project_roots_change):
+    # confirmed at her own terminal, never by --yes.
+    authorize_root.add_argument("--remove-root", type=Path)
+    authorize_root.add_argument("--set-primary-root", type=Path)
+    authorize_root.add_argument("--retire-duplicate")
+    authorize_root.add_argument("--decline", help="decline a proposed project-roots decision by its id")
     for name, summary in (
         ("status", "what the run is doing right now, as one short card"),
         ("stop", "pause after the turns in flight finish; nothing is killed"),
@@ -220,9 +226,9 @@ def parser() -> argparse.ArgumentParser:
         ("logs", "the run's own journal, newest last"),
     ):
         item = sub.add_parser(name, help=summary)
-        item.add_argument("--project", type=Path, default=Path.cwd())
+        item.add_argument("--project", type=Path, default=None)
     doctor = sub.add_parser("doctor", help="check this machine can run Autopilot, and say what is missing")
-    doctor.add_argument("--project", type=Path, default=Path.cwd())
+    doctor.add_argument("--project", type=Path, default=None)
     hook = sub.add_parser("hook")
     uninstall = sub.add_parser("uninstall", help="remove this installation; project state is set aside, never deleted")
     uninstall.add_argument("--yes", action="store_true")
@@ -230,6 +236,52 @@ def parser() -> argparse.ArgumentParser:
     uninstall.add_argument("--purge-project-state", action="store_true")
     sub.add_parser("memory-mcp")
     return top
+
+
+def _owner_project_decision(cfg, args) -> int:
+    """Her word on the saved Codex project, executed (project_roots_change)."""
+
+    from .desktop_sidebar import codex_home_of
+    from .memory import ProjectMemory
+    from .project_roots_change import (
+        PRIMARY_ROOT,
+        REMOVE_ROOT,
+        change_project_roots,
+        retire_duplicate_project,
+        terminal_confirmation,
+    )
+
+    memory = ProjectMemory(cfg.root)
+    subject = args.retire_duplicate or args.decline or cfg.desktop.project_id or ""
+    confirm = terminal_confirmation(subject, environ=os.environ, stdin=sys.stdin, stdout=sys.stdout, ask=input)
+    if args.decline:
+        from .project_roots_audit import DECISION_SCOPE
+
+        record = memory.get_record(str(args.decline))
+        if record.get("scope") != DECISION_SCOPE or record.get("status") != "proposed":
+            print(f"{args.decline} is not an open project-roots proposal.", file=sys.stderr)
+            return 2
+        if not confirm(f"decline {args.decline}"):
+            return 3
+        memory.set_decision_status(str(args.decline), "rejected", actor="user", reason="Declined by the user")
+        print(json.dumps({"declined": args.decline}, ensure_ascii=False))
+        return 0
+    log = cfg.state_dir / "logs" / f"app-server-owner-decision-{int(time.time())}.jsonl"
+    with AppServerClient(cfg.desktop.binary, log) as client:
+        codex_home = codex_home_of(client)
+        if args.retire_duplicate:
+            outcome = retire_duplicate_project(
+                cfg, client, memory, project_id=str(args.retire_duplicate), codex_home=codex_home, confirm=confirm
+            )
+        else:
+            outcome = change_project_roots(
+                cfg, client, memory,
+                action=REMOVE_ROOT if args.remove_root else PRIMARY_ROOT,
+                root=args.remove_root or args.set_primary_root,
+                codex_home=codex_home, confirm=confirm,
+            )
+    print(json.dumps(outcome.to_dict(), ensure_ascii=False))
+    return 0 if outcome.done else 3
 
 
 def _profile_and_skill(args) -> tuple[str, Path]:
@@ -550,6 +602,20 @@ def _automatic_relay_loop(
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if getattr(args, "project", False) is None and args.command != "uninstall":
+        # "No --project" is no longer the same as "--project <cwd>": a chat
+        # in another root of the same Codex project finds the run, or - for
+        # a command that would create one - is told where it is.
+        from .preflight import default_codex_home
+        from .project_roots_audit import CliProjectRedirect, resolve_cli_project
+
+        try:
+            args.project, note = resolve_cli_project(args.command, None, Path.cwd(), default_codex_home())
+        except CliProjectRedirect as exc:
+            print(f"codex-autopilot: {exc}", file=sys.stderr)
+            return 2
+        if note:
+            print(note, file=sys.stderr)
     try:
         if args.command in {"bootstrap", "start-skill", "preflight"}:
             profile, skill = _profile_and_skill(args)
@@ -587,6 +653,7 @@ def main(argv: list[str] | None = None) -> int:
                 project_id=preflight_result.project_id,
                 desktop_project_id=getattr(args, "desktop_project_id", None),
                 plan_verification=preflight_result.plan_verification,
+                roots_audit=preflight_result.roots_audit,
             )
             if preflight_result.isolation:
                 from .isolation_probe import write_record
@@ -891,6 +958,8 @@ def main(argv: list[str] | None = None) -> int:
             from .project_association import project_root_authorization_statement
 
             cfg = load_config(args.project)
+            if args.remove_root or args.set_primary_root or args.retire_duplicate or args.decline:
+                return _owner_project_decision(cfg, args)
             if not cfg.desktop.project_id:
                 print(
                     "This project has no configured App Server project; there is nothing to authorize.",

@@ -91,6 +91,8 @@ below answers a question users actually asked.
 
 The target is the Codex project you are working in. Resolve it as that project's own root, and take the Desktop project id from the same place: the two always belong together, because every created task is placed in that project and verified there.
 
+Pass that Desktop project's own App Server project with `--app-server-project-id`, next to `--desktop-project-id`: Desktop links the two in `app-server-project-id-by-legacy-project-id-by-host` of `~/.codex/.codex-global-state.json` (read it, never write it), one App Server id per Desktop project. Preflight audits the saved project's roots and prints `Project roots ...` lines; none of them stops the run except `ID_PAIR_MISMATCH` FAIL, which names its fix. When it reports `SIBLING_ROOTS` or `ACTIVE_ROOT_MISMATCH` - a root of the project is a stale copy of the target (the same folder name, the same top-level markers such as `*.uproject`, `AGENTS.md`, `.git`, the same repository in its remote), or the target is not the project's first root, so the user's new chats in the project open in the copy - explain it to the user in one or two sentences and recommend one option: remove the old copy from the project in Codex Desktop (project menu -> Edit project), or make the target its first folder. That edit is the user's own, in Desktop, which writes both its own list and App Server's; the run does not wait for it, and Autopilot closes its proposal itself once the audit no longer sees the copy. Two roots alone are not a problem - a repository plus an assets folder is legitimate - so say nothing unless preflight reports a finding. Never create, change or delete a Codex project yourself: no `project/create`, `project/update` or `project/delete`, and no edit of `~/.codex/.codex-global-state.json`, by sandbox escalation or otherwise. The one door to a saved project is `authorize-project-root` (see "Saved-project root drift").
+
 A different directory is accepted only when it lies inside some Codex project's roots, and then that project's id is the one to pass. A path that belongs to no Codex project cannot be a target: the run would have no project to place its tasks in, and the user would see nothing. Say so immediately, in one sentence, naming the path and the fix - create a Codex project for that directory, or work in the project you already have. Never start a run that will fail later for this reason, and never ask the user to add the project by hand mid-run. Inspect it and the user's goal or `ROADMAP.md`. Create one independently verifiable outcome per milestone. Set `model_strategy` to `host-settings`. Do not add a reasoning field: the dispatcher omits both model and effort, and each fresh thread uses whatever defaults the host applies.
 
 Infer one BCP-47 response language from the initiating user's request (for example `ru` or `en`; use the user's explicit language preference when present). Write the goal, milestone titles, objectives, Definition of Done items, execution reasons, reservation prompts, and user-facing updates in that language. Pass the same tag with `--language`; every fresh worker inherits it. Keep protocol identifiers such as `AUTOPILOT_STATUS`, `AUTOPILOT_SLOT_READY`, file names, code, and tool names exact. Role names are the exception and stay in English always, whatever the run language is: `Resilience Engineer`, `DevOps`, `UX Designer`, `Release Engineer`. A role is a profession, and the whole environment names professions in English; the thread-title format also appends the English words `Verifier` and `Verify`, so a translated role produces a half-translated title like `Инженер основания Verifier | M1 | Verify ...`. Task titles, objectives, DoD items and every user-facing line keep the run language.
@@ -193,6 +195,39 @@ any known bound task and escalate through Pipeline Engineer recovery. Never
 create a replacement for an ambiguous task.
 
 If the target is not Git, state that this beta requires a Git repository and suggest `git init`; do not initialize it or make a commit without explicit user authorization.
+
+## Saved-project root drift
+
+Autopilot never changes a saved Codex project on its own. When the canonical
+directory is not inside any root of the configured project, the create fails
+closed and names the exact authorization it needs. The user, and only the user,
+grants it:
+
+```text
+scripts/codex-autopilot authorize-project-root --project <target-root> --yes
+```
+
+`--revoke` withdraws it later. The authorization names that one project and that
+one root; it does not carry to another. Never run it on the user's behalf and
+never infer it from a general request to continue.
+
+The user's decisions on the saved project itself go through the same command and are
+confirmed by typing the project id in their own terminal - they refuse to run
+inside a Codex task and never take `--yes`:
+
+```text
+scripts/codex-autopilot authorize-project-root --project <target-root> --retire-duplicate <app-server-project-id>
+scripts/codex-autopilot authorize-project-root --project <target-root> --remove-root <path>
+scripts/codex-autopilot authorize-project-root --project <target-root> --set-primary-root <path>
+scripts/codex-autopilot authorize-project-root --project <target-root> --decline <decision-id>
+```
+
+`--retire-duplicate` deletes an App Server project that Desktop does not show,
+that holds the run's root, is not the run's project and has no threads; a
+snapshot is kept. `--remove-root` and `--set-primary-root` only bring App
+Server in line with what Desktop already lists; to change the roots
+themselves the user edits the project in Codex Desktop. Give the user the exact command
+preflight or the status card printed; never run it for them.
 
 ## Controls
 

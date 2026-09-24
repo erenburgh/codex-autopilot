@@ -147,6 +147,10 @@ class RunState:
     durable_authorization: dict[str, Any] | None = None
     project_id: str | None = None
     desktop_project_id: str | None = None
+    # R6: the latest audit of the saved project's roots (project_roots_audit)
+    # - findings, the codes it could check, the open proposals by finding,
+    # and when and on which occasion it ran. Absent in older states.
+    roots_audit: dict[str, Any] | None = None
     dispatcher_pid: int | None = None
     initiator_thread_id: str | None = None
     initiator_turn_id: str | None = None

@@ -24,6 +24,7 @@ from .project_association import (
     project_root_authorization_statement,
     project_root_mutation_authorized,
 )
+from .project_roots_audit import refresh_run_roots_audit
 from .placement_contract import Placement, roots_within, session_cwd, session_profile, thread_placement
 from .resources import ResourceLockCoordinator
 from .run_state import RunState, StateStore, utc_now
@@ -233,6 +234,9 @@ def create_desktop_thread_via_app_server(
                     raise DesktopLifecycleError(
                         "configured App Server project could not be verified"
                     )
+            # R6 asks every creation to compare the roots too: a record and a
+            # proposal for her, never a stop (project_roots_audit).
+            refresh_run_roots_audit(cfg, client, occasion="creation")
             # Everything that can fail BEFORE the request is sent is computed
             # before the flag is raised. `installed_plugin_root` used to sit
             # among the call arguments: it failed after `create_invoked =
