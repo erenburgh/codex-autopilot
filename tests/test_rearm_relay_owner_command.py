@@ -416,3 +416,54 @@ class RearmAStagedDestinationTests(RearmRelayOwnerCommandTests):
         self.assertEqual((Path(params["cwd"]), params["runtimeWorkspaceRoots"], params["permissions"]),
                          (self.cfg.root, [self.reservation.cwd], staged_profile_id(Path(self.reservation.cwd))))
         self.assertEqual(self.rearm(CONFIRMED)["status"], "REARMED")
+
+    def test_a_repaired_contract_of_another_shape_is_refused(self) -> None:
+        """Only the pairs thread_placement makes pass the repair, for both contracts.
+
+        The fourth independent check removed the roots condition from
+        repair_contract_ok and every test stayed green: the two tests above
+        only accept. Here the re-derived contract is altered the way a
+        defect in the derivation would alter it, and each alteration is
+        refused before anything is spawned; the untouched contract is then
+        re-armed, so the refusals are the shapes', not the state's.
+        Mutations: the roots condition removed (the old [root] roots and a
+        widened [workspace, root] are re-armed); cwd and profile checked
+        each on its own (cwd = root with the base profile - filed at the
+        root, allowed to write it - and cwd = workspace with the staged
+        profile are re-armed); the cwd condition removed (a cwd outside the
+        root is re-armed).
+        """
+
+        from codex_autopilot.isolation_probe import staged_profile_id
+        from codex_autopilot.lifecycle import app_server_creation_contract
+
+        workspace = str(Path(self.reservation.cwd))
+        root = str(self.cfg.root)
+        base = self.cfg.desktop.permission_profile
+        staged = staged_profile_id(Path(workspace))
+        shapes = {
+            "old roots [root]": {"runtimeWorkspaceRoots": [root]},
+            "roots wider than the workspace": {"runtimeWorkspaceRoots": [workspace, root]},
+            "no roots for a worker": {"runtimeWorkspaceRoots": None},
+            "cwd outside the root": {"cwd": str(self.cfg.root.parent)},
+            "root with the base profile": {"cwd": root, "permissions": base},
+            "workspace with the staged profile": {"cwd": workspace, "permissions": staged},
+            "a foreign profile": {"permissions": ":danger-no-sandbox"},
+        }
+        for proven in (False, True):
+            if proven:
+                self._prove_isolation()
+            for name, change in shapes.items():
+                with self.subTest(contract=2 if proven else 1, shape=name):
+                    def altered(cfg, descriptor, _change=change):
+                        contract = app_server_creation_contract(cfg, descriptor)
+                        params = {**contract["params"], **_change}
+                        params = {key: value for key, value in params.items() if value is not None}
+                        return {**contract, "params": params}
+
+                    with mock.patch("codex_autopilot.control.app_server_creation_contract", altered), \
+                         mock.patch("codex_autopilot.control.spawn_automatic_app_server_relay") as spawn:
+                        with self.assertRaisesRegex(RuntimeError, "does not match canonical project metadata"):
+                            control.reactivate_desktop_relay_owner(self.root)
+                    spawn.assert_not_called()
+        self.assertEqual(self.rearm(CONFIRMED)["status"], "REARMED")

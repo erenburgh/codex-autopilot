@@ -21,7 +21,8 @@ What is closed, and how:
 - before each such turn the thread's own report is read (``environments[].
   runtimeWorkspaceRoots`` of thread/read, and the resume answer's roots):
   roots wider than the workspace are recorded on the session, in the
-  journal, and signalled once per run to the on-call. Nothing is held: the
+  journal, and signalled to the on-call (one ticket while it is open, a
+  new one if the roots widen again after it was closed). Nothing is held: the
   turn/start that follows replaces the roots ("for this turn and subsequent
   turns", codex 0.154.0 schema) and names the staged profile again;
 - after a task's promotion the canonical root is compared with the

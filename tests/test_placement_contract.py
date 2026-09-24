@@ -105,7 +105,12 @@ class SandboxedDispatcher(FakeAppServerCreateClient):
     def exec_command(self, command, *, cwd, process_id, permission_profile, timeout_ms=10_000):
         self.execs.append({"command": list(command), "cwd": Path(cwd), "process_id": process_id,
                            "permission_profile": permission_profile})
-        if self.approval:
+        # True: every command asks. "outside_roots": only a command writing
+        # outside the thread's runtime roots asks - the workspace write runs.
+        roots = [Path(item) for item in (self.threads[-1].get("workspace_roots") or ())] if self.threads else []
+        if self.approval is True or (
+            self.approval == "outside_roots" and not any(_within(Path(command[-1]), item) for item in roots)
+        ):
             raise ApprovalRequired({"id": 7, "method": "item/commandExecution/requestApproval", "params": {}})
         self._known(permission_profile)
         target = Path(command[-1])
@@ -540,8 +545,10 @@ class IsolationProbeTests(StagedRun):
     def test_a_permission_request_is_never_answered_and_proves_nothing(self) -> None:
         """Her boundary: the command is terminated, the request stays unanswered.
 
-        Mutations: accept the request (``respond_*`` called) - ``responded``
-        is not empty; count the request as "read-only" - the outcome is PASS.
+        Mutation: accept the request (``respond_*`` called) - ``responded``
+        is not empty. Every command asks here, the workspace write too, so
+        counting the request as "read-only" does not turn this outcome into
+        PASS; the next test pins that mutation.
         """
 
         from codex_autopilot.isolation_probe import NOT_PROVEN, ensure_measured
@@ -553,6 +560,31 @@ class IsolationProbeTests(StagedRun):
         (server,) = probe.made
         self.assertEqual(server.responded, [])
         self.assertEqual(len(server.terminated), 2)
+
+    def test_a_request_on_the_root_write_alone_is_not_proven_never_pass(self) -> None:
+        """The verdict's amendment: a permission request is "not proven", never "not writable".
+
+        The test above has the fake ask on every command, the workspace
+        write included, so the outcome is NOT_PROVEN through "the workspace
+        was not writable" whatever the root's answer is; the fourth
+        independent check turned the request into "did not write" in
+        ``_wrote`` and all tests stayed green. Here the workspace write
+        runs and only the write under the root asks. Mutation: ``_wrote``
+        returning False on ApprovalRequired - the outcome is PASS, and
+        contract 2 would be taken on a root nobody measured.
+        """
+
+        from codex_autopilot.isolation_probe import NOT_PROVEN, ensure_measured, isolation_proven
+
+        probe = self.factory(approval="outside_roots")
+        record = ensure_measured(self.cfg, probe.open)
+        (server,) = probe.made
+        self.assertEqual(record["outcome"], NOT_PROVEN)
+        self.assertFalse(isolation_proven(self.cfg))
+        self.assertEqual((record["workspace_write"], record["root_write"]), (True, None))
+        self.assertIn("never answered", record["reason"])
+        self.assertEqual(server.responded, [])
+        self.assertEqual(len(server.terminated), 1)
 
     def test_a_record_of_another_shape_is_measured_again(self) -> None:
         """Only a record of the real shape counts; one of the first probe's does not.
@@ -715,7 +747,7 @@ class PlacementDefectTests(StagedRun):
         the on-call that holds no task; the gate returns. The on-call's own
         thread then passes the same gate. Mutations: raise on a non-INSIDE
         placement (the old gate) - DesktopLifecycleError; no dedupe - a
-        second ticket for the same cause.
+        second ticket for the same cause while the first is open.
         """
 
         from codex_autopilot.lifecycle_dispatch import _require_thread_placement
@@ -734,20 +766,19 @@ class PlacementDefectTests(StagedRun):
         self.assertEqual(ticket["system_state"]["cause"], "unobservable:none")
         _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=client, at=None)
         self.assertEqual(len(self.tickets()), 1)
-        # Once per cause per run, not once per open ticket: even after the
-        # on-call closed it, the same cause does not raise another.
-        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
-
-        path = PipelineIncidentStore(self.cfg.state_dir).path
-        stored = json.loads(path.read_text(encoding="utf-8"))
-        for item in stored["incidents"]:
-            item["resolved_at"] = "2026-09-24T00:00:00+00:00"
-        path.write_text(json.dumps(stored), encoding="utf-8")
+        # Once per cause while its ticket is open. This test used to pin
+        # "once per run, even after the on-call closed it" (by writing
+        # resolved_at into the journal by hand); the fourth independent
+        # check showed that a repair that did not hold then reached nobody.
+        # Closed by the on-call and seen again, the cause is a new ticket in
+        # the on-call's lane (the bound on repeats is R23's, tested in
+        # test_a_cause_that_comes_back_after_its_ticket_closed_is_signalled_again).
+        self.close(ticket)
         _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=client, at=None)
-        self.assertEqual(len(self.tickets()), 1)
-        for item in stored["incidents"]:
-            item.pop("resolved_at")
-        path.write_text(json.dumps(stored), encoding="utf-8")
+        first, again = self.tickets()
+        self.assertEqual((first["phase"], again["phase"]),
+                         (IncidentPhase.RESOLVED.value, IncidentPhase.PIPELINE_ENGINEER.value))
+        self.assertEqual(again["system_state"]["cause"], "unobservable:none")
         from _relay import reserve_ready_frontier
 
         engineers = [item for item in reserve_ready_frontier(self.cfg, relay_owner_thread_id=OWNER) if item.kind == "pipeline_engineer"]
@@ -764,7 +795,8 @@ class PlacementDefectTests(StagedRun):
             _require_thread_placement(self.cfg, engineers[0].reservation_token, connected_client=engineer_client, at=None),
             "UNOBSERVABLE",
         )
-        self.assertEqual(len(self.tickets()), 1)
+        # The on-call's own thread, same cause, its ticket open: no third.
+        self.assertEqual(len(self.tickets()), 2)
 
     def test_the_two_facts_are_recorded_apart(self) -> None:
         """R5: "projectId set" and "filed in the project" are two fields and two words.
@@ -787,7 +819,9 @@ class PlacementDefectTests(StagedRun):
     def test_threads_created_outside_before_the_honest_check_are_listed_once(self) -> None:
         """They were recorded INSIDE by projectId; nothing else would ever name them.
 
-        Mutation: ``signal_earlier_outside_threads`` not called - no ticket.
+        Mutations: ``signal_earlier_outside_threads`` not called - no
+        ticket; its ``again_after_close=False`` dropped - a second ticket
+        naming the same threads after the first was closed.
         """
 
         from codex_autopilot.lifecycle_dispatch import _require_thread_placement
@@ -812,6 +846,11 @@ class PlacementDefectTests(StagedRun):
         self.assertEqual(ticket["system_state"]["cause"], "created_before_the_honest_check")
         listed = ticket["system_state"]["outside_threads"]
         self.assertEqual([(item["thread_id"], item["title"]) for item in listed], [("01a0ce87", "A · Implementation (old)")])
+        # A finished fact, not a cause that comes back: closed, it is not
+        # filed again for the same threads on every later launch.
+        self.close(ticket)
+        _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=client, at=None)
+        self.assertEqual(len(self.tickets()), 1)
 
 
     def test_an_unreadable_desktop_claims_no_thread_outside(self) -> None:
@@ -901,6 +940,75 @@ class PlacementDefectTests(StagedRun):
         self.assertEqual(causes, ["created_before_the_honest_check", "isolation_not_proven"])
         (earlier,) = [item for item in self.tickets() if item["system_state"]["cause"] == "created_before_the_honest_check"]
         self.assertIn("01a0ce87", json.dumps(earlier["system_state"]["defect"]))
+
+
+    def close(self, ticket) -> None:
+        """The on-call closes the ticket as the store demands: a named repair and a healthcheck."""
+
+        from codex_autopilot.pipeline_engineer import HealthcheckResult, IncidentPhase, PipelineIncidentStore
+
+        self.assertEqual(ticket["phase"], IncidentPhase.PIPELINE_ENGINEER.value)
+        PipelineIncidentStore(self.cfg.state_dir).complete_pipeline_engineer(
+            ticket["incident_id"], success=True, at="2026-09-24T00:00:00+00:00",
+            actions=("repair_runtime_code",),
+            healthcheck=HealthcheckResult(name="run_declared_healthcheck", passed=True,
+                                          checks=("staged profile repaired",), observed_at="2026-09-24T00:00:00+00:00"),
+        )
+
+    def test_a_cause_that_comes_back_after_its_ticket_closed_is_signalled_again(self) -> None:
+        """The fourth independent check: a closed ticket swallowed the cause for the rest of the run.
+
+        The on-call repairs isolation and closes the ticket; the next staged
+        thread still runs contract 1. That defect is a new ticket - and the
+        third one, after two closures that did not hold, goes to her with
+        the report (R23, stop_repeats), not to a third engineer. While a
+        ticket is open no second one is filed. Another cause with the same
+        reason code, after those closures, still goes to the on-call.
+        Mutations: ``_file_once`` counting closed tickets again - one ticket
+        after the closure; ``repeat_signature`` without ``signal_key`` - the
+        first runtime_roots_widened ticket goes straight to her.
+        """
+
+        from codex_autopilot.isolation_guard import check_thread_roots
+        from codex_autopilot.lifecycle import create_desktop_thread_via_app_server
+        from codex_autopilot.lifecycle_dispatch import _require_thread_placement
+        from codex_autopilot.pipeline_engineer import IncidentPhase
+
+        descriptor = self.reserve()
+        client = SandboxedDispatcher(self.root, [], home=self.home)
+        with mock.patch("codex_autopilot.lifecycle_dispatch.installed_plugin_root", return_value=self.root):
+            create_desktop_thread_via_app_server(
+                self.cfg, descriptor.reservation_token,
+                client_factory=lambda *_a, config_overrides=(): client.launch(config_overrides),
+                relay_executor_thread_id=OWNER,
+            )
+        self.assertEqual(self.session(descriptor.reservation_token)["placement_contract"], 1)
+
+        def isolation_tickets():
+            return [item for item in self.tickets() if item["system_state"]["cause"] == "isolation_not_proven"]
+
+        _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=client, at=None)
+        _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=client, at=None)
+        (first,) = isolation_tickets()
+        self.close(first)
+        _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=client, at=None)
+        self.assertEqual(len(isolation_tickets()), 2)
+        self.assertEqual(isolation_tickets()[-1]["phase"], IncidentPhase.PIPELINE_ENGINEER.value)
+        self.close(isolation_tickets()[-1])
+        _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=client, at=None)
+        third = isolation_tickets()[-1]
+        self.assertEqual(len(isolation_tickets()), 3)
+        self.assertEqual(third["phase"], IncidentPhase.ESCALATE_TO_USER.value)
+
+        widened = check_thread_roots(
+            self.cfg, descriptor.reservation_token,
+            thread={"environments": [{"runtimeWorkspaceRoots": [str(self.root)]}]},
+            response=None, workspace=Path(descriptor.cwd),
+        )
+        self.assertEqual(widened, [str(self.root)])
+        (roots,) = [item for item in self.tickets() if item["system_state"]["cause"] == "runtime_roots_widened"]
+        self.assertEqual(roots["system_state"]["reason_code"], third["system_state"]["reason_code"])
+        self.assertEqual(roots["phase"], IncidentPhase.PIPELINE_ENGINEER.value)
 
 
 class CanonicalAfterPromotionTests(StagedRun):

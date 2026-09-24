@@ -16,8 +16,9 @@ her; a stop is a runtime failure). A thread measured outside the project is:
   with the separate facts R5 demands - App Server projectId, Desktop's rule
   and its reason, the Desktop version the rule was measured on;
 - counted as an R5 violation (rules.record_violation);
-- signalled once per cause per run as a ticket that holds no task
-  (blocked_runs.stop_run, stop kind ``placement_defect``): the on-call looks
+- signalled as a ticket that holds no task, one per cause while it is
+  open (blocked_runs.stop_run, stop kind ``placement_defect``) and a new
+  one when the cause comes back after its ticket was closed: the on-call looks
   first - a runtime defect (a wrong cwd) is its to repair; a decision that
   is hers (a Desktop project root, R6) goes up with its diagnosis, a
   recommendation, and the run's threads that are outside the project by id
@@ -186,12 +187,24 @@ def _thread_lists(cfg: Any, state: Any, observation: Mapping[str, Any], list_out
 
 def _file_once(cfg: Any, state: Any, *, cause: str, task_id: str, kind: str, after: str,
                observation: Mapping[str, Any], at: str, defect: Mapping[str, Any],
-               key: str = "", list_outside: bool = True) -> str | None:
-    """One ticket per ``key`` (the cause, unless given) per run; the run's outside threads in it.
+               key: str = "", list_outside: bool = True, again_after_close: bool = True) -> str | None:
+    """One open ticket per ``key`` (the cause, unless given); the run's outside threads in it.
 
     The key is part of the ticket's signal id (blocked_runs.stop_run
     ``signal_key``): two causes of one run are two tickets, each with its
     own diagnosis, even while the other is open.
+
+    It used to be one ticket per key per run, closed or not (the fourth
+    independent check): the on-call's route for isolation_not_proven or a
+    ROOT_WRITABLE is to repair the runtime and close the ticket; if the
+    next staged thread was measured and failed again, its R5 defect was
+    written and counted, and nobody was called for a repair that did not
+    work. Now a cause that comes back after its ticket was closed files a
+    new one - through the same door, so R23 holds (stop_repeats: the same
+    cause closed twice goes to her with the report, not to a third
+    engineer). ``again_after_close=False`` is for a cause that cannot come
+    back, only be seen again: threads created before the honest check are
+    a finished fact, and a new ticket would name the same threads.
     """
 
     from .blocked_runs import stop_run
@@ -203,6 +216,7 @@ def _file_once(cfg: Any, state: Any, *, cause: str, task_id: str, kind: str, aft
         if (item.get("system_state") or {}).get("stop_kind") == STOP_KIND
         and ((item.get("system_state") or {}).get("signal_key") or (item.get("system_state") or {}).get("cause")) == key
         and str((item.get("system_state") or {}).get("run_id") or "") == str(state.run_id or "")
+        and (not again_after_close or not item.get("resolved_at"))
     ]
     if filed:
         return None
@@ -308,7 +322,7 @@ def signal_earlier_outside_threads(cfg: Any, reservation_token: str, *, observat
         incident_id = _file_once(
             cfg, state, cause="created_before_the_honest_check", task_id=str(session.get("task_id") or ""),
             kind=str(session.get("kind") or ""), after="OUTSIDE", observation=observation, at=at,
-            defect={"rule": "R5", "threads": earlier},
+            defect={"rule": "R5", "threads": earlier}, again_after_close=False,
         )
         store.save(state)
     return incident_id

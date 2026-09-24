@@ -115,27 +115,37 @@ def roots_within(returned: Any, requested: Sequence[Path] | None) -> bool:
 
 
 def repair_contract_ok(cfg: Any, descriptor: Any, params: Mapping[str, Any]) -> bool:
-    """The on-call's relay repair: the re-derived create contract has a known shape.
+    """The on-call's relay repair: the re-derived create contract is one thread_placement makes.
 
     control.py used to demand ``cwd == root`` and ``runtimeWorkspaceRoots ==
     [root]`` for every kind: under contract 2 a staged task's roots are its
     workspace, and the repair would be refused for every worker, verifier
-    and revision (the independent check). Now: the roots are exactly the
-    task's authenticated workspace (none for the plan verifier), the cwd is
-    the root - or, under contract 1, that staged workspace - and the profile
-    is the run's or that workspace's staged one.
+    and revision (the independent check). The first replacement checked
+    roots, cwd and profile each on its own, and the fourth check found it
+    loose: cwd = root with the run's base profile - a thread filed at the
+    root that may write the root - passed, and a mutation dropping the
+    roots check left every test green. Now the roots are exactly the task's
+    authenticated workspace (none for the plan verifier), and cwd and
+    profile are one of the pairs thread_placement produces: the root with
+    the base profile when the workspace IS the root; for a staged workspace
+    the root with its staged profile (contract 2) or the workspace with the
+    base profile (contract 1).
     """
 
     from .isolation_probe import staged_profile_id
     from .lifecycle_dispatch import _descriptor_workspace
 
+    root = Path(cfg.root)
+    base = cfg.desktop.permission_profile
     workspace = _descriptor_workspace(cfg, descriptor)
     cwd = Path(str(params.get("cwd") or "")).resolve()
     kind = str(getattr(descriptor, "kind", "") or "")
     expected_roots = None if kind == "plan_verifier" else [str(workspace)]
-    profiles = {cfg.desktop.permission_profile, staged_profile_id(workspace)}
+    if workspace == root:
+        shapes = {(root, base)}
+    else:
+        shapes = {(root, staged_profile_id(workspace)), (workspace, base)}
     return (
         params.get("runtimeWorkspaceRoots") == expected_roots
-        and cwd in {Path(cfg.root), workspace}
-        and params.get("permissions") in profiles
+        and (cwd, params.get("permissions")) in shapes
     )

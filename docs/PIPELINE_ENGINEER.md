@@ -98,7 +98,10 @@ on-call hands the ticket up (`stop_holds.block_escalated_tasks`) or the same
 stop exhausts the on-call (below).
 
 R23 bounds every stop in the door (`stop_repeats`). The signature is the run,
-the stop kind, its plan change, the tasks it holds and the reason code. When
+the stop kind, its plan change, the tasks it holds, the reason code and the
+cause the stop names, if any (`signal_key`: R5 placement tickets hold no task
+and share a reason code, and one cause's closures must not send another
+cause's first ticket to her). When
 the on-call has closed two tickets with that signature and the stop comes back,
 the third ticket is not given to a third engineer: it goes to the owner as
 `RECOVERY_EXHAUSTED` with a report (the signature, the attempt count, what
@@ -261,9 +264,13 @@ recommendation. `FORBIDDEN_ACTIONS` are unchanged; an ambiguous create or send
 is never repeated.
 
 A thread Desktop files outside the project is an R5 placement defect, not a
-stop: one ticket per cause per run (stop kind `placement_defect`; the cause is
-part of the signal id, so a second cause is never swallowed by an open ticket
-of the first) holds no task and carries the cause, the two separate facts (App
+stop: one ticket per cause while it is open (stop kind `placement_defect`; the
+cause is part of the signal id, so a second cause is never swallowed by an open
+ticket of the first), and a new one when the cause comes back after the on-call
+closed its ticket - a repair that did not hold reaches the on-call again, and
+the R23 bound above sends the third to her. Only threads created before the
+honest check are named once per run: they are a finished fact, not a cause that
+comes back. The ticket holds no task and carries the cause, the two separate facts (App
 Server `projectId`, Desktop's rule and its reason, the Desktop version), a
 diagnosis, a recommendation and every thread of the run outside the project by
 id and title (`stop_context.placement`); threads whose placement could not be

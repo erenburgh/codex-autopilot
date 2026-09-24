@@ -527,7 +527,7 @@ def _require_thread_placement(
     or UNOBSERVABLE, and the on-call raised for the resulting incident met
     the same gate with its own thread - a loop nobody could leave
     (the independent check). Now the defect is recorded on the session and
-    signalled once per cause as a ticket that holds nothing
+    signalled as a ticket per cause (one while open) that holds nothing
     (``placement_defects``); the run goes on. ``phase`` is ``created`` right
     after thread/start and ``after_first_turn`` once the first turn has
     completed - a thread with no turn is not yet persisted (launch_gate), so

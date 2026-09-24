@@ -31,11 +31,13 @@ was measured on - and reports INSIDE only when both hold. Missing Desktop state
 or a missing project is UNOBSERVABLE, never INSIDE.
 
 Placement never stops work. A thread measured outside the project is an R5
-defect on its session and in the journal, and one ticket per cause per run
-(`placement_defects.py`, stop kind `placement_defect`) that holds no task goes
-to the on-call. The cause is part of the ticket's signal id, so two causes of
-one run are two tickets, each with its own diagnosis, even while the other is
-open. A runtime that filed a thread with the wrong cwd, or whose staged
+defect on its session and in the journal, and a ticket that holds no task
+(`placement_defects.py`, stop kind `placement_defect`) goes to the on-call -
+one per cause while it is open. The cause is part of the ticket's signal id,
+so two causes of one run are two tickets, each with its own diagnosis, even
+while the other is open. A cause that comes back after the on-call closed its
+ticket files a new one, so a repair that did not hold is seen; the door's R23
+bound sends the third such ticket to her with the report. A runtime that filed a thread with the wrong cwd, or whose staged
 profile did not hold, is repaired by the on-call; only a missing Desktop root
 (R6) goes to her, with a diagnosis, a recommendation and the run's threads
 outside the project by id and title.
@@ -67,7 +69,9 @@ itself (`cwd = root`, the worst case), with that `permissionProfile` - never
 a legacy sandbox policy - and a workspace under `.codex-autopilot/`, as every
 staged workspace is. An ephemeral thread started as a worker's must answer
 with no wider roots and with that profile active. The disk is the ground
-truth; a permission request is never answered and counts as "not proven".
+truth; a permission request is never answered and counts as "not proven" -
+a request on the root write alone, with the workspace write done, is NOT
+PROVEN, never PASS.
 
 No outcome stops the run or asks her. PASS enables contract 2. ROOT_WRITABLE
 or NOT PROVEN is reported by preflight as an ISOLATION finding, staged tasks
@@ -112,8 +116,12 @@ workspace. They keep their old cwd and profile to the end of their life:
   and title in the run's `created_before_the_honest_check` ticket. A thread
   the server still reports running is kept, as before: "I do not know" is not
   "it ended";
-- the on-call's relay repair accepts both contract shapes
-  (`placement_contract.repair_contract_ok`).
+- the on-call's relay repair accepts exactly the shapes `thread_placement`
+  makes (`placement_contract.repair_contract_ok`): the task's workspace as
+  its only runtime root, with the root and the staged profile (contract 2) or
+  the workspace and the run's profile (contract 1); anything else - the old
+  `[root]` roots, wider roots, a cwd outside the root, the root with the run's
+  profile - is refused.
 
 ## After a thread is visible
 
@@ -125,7 +133,8 @@ Autopilot sends can prevent that turn, so it is watched (`isolation_guard.py`):
 - before each of its own turns Autopilot reads the thread's
   `environments[].runtimeWorkspaceRoots` (and the resume answer's roots);
   roots wider than the workspace are recorded on the session and signalled
-  once per run, and the turn that follows replaces them with the workspace
+  (one ticket while it is open, a new one if they widen again after it was
+  closed), and the turn that follows replaces them with the workspace
   under the staged profile;
 - after the task's promotion the canonical root is compared with the task's
   manifest: a path changed since staging that neither this promotion nor a

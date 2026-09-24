@@ -18,8 +18,9 @@ NO_SUCCESSOR ticket or a verifier nobody could route had none at all.
 
 So the bound lives in the door, once, for every stop:
 
-- the signature is the run, the stop's kind, its plan change, the tasks it holds and
-  the reason code it named - a different code is a different failure;
+- the signature is the run, the stop's kind, its plan change, the tasks it holds,
+  the reason code it named and the cause it names, if any (``signal_key``) -
+  a different code or cause is a different failure;
 - the attempts are the tickets with that signature the on-call CLOSED;
 - her answer to a ticket that was handed to her is the change that touches
   the cause (her decision) and starts the count again. A ticket she swept
@@ -68,15 +69,20 @@ def repeat_signature(incident: Mapping[str, Any]) -> str:
 
     system = incident.get("system_state") or {}
     tasks = ",".join(sorted(str(item) for item in incident.get("affected_task_ids") or ()))
-    return "|".join(
-        (
-            str(system.get("run_id") or ""),
-            str(system.get("stop_kind") or ""),
-            str(system.get("plan_change_id") or ""),
-            tasks or "run",
-            str(system.get("reason_code") or ""),
-        )
-    )
+    parts = [
+        str(system.get("run_id") or ""),
+        str(system.get("stop_kind") or ""),
+        str(system.get("plan_change_id") or ""),
+        tasks or "run",
+        str(system.get("reason_code") or ""),
+    ]
+    # A stop that names its cause (blocked_runs ``signal_key``) is that
+    # cause's failure: R5 placement tickets hold no task and share a reason
+    # code, and without the key two closures of isolation_not_proven sent
+    # a first runtime_roots_widened straight to her.
+    if system.get("signal_key"):
+        parts.append(str(system["signal_key"]))
+    return "|".join(parts)
 
 
 def _answered_by_her(incident: Mapping[str, Any], journal: list[Mapping[str, Any]]) -> bool:
