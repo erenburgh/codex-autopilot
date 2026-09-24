@@ -133,11 +133,28 @@ def _stop_for_context_budget(
     cfg: Config, state: RunState, record: dict[str, Any], task_id: str, who: str, exc: Exception
 ) -> None:
     """R17: rules plus a minimal specification that do not fit are not launched,
-    and that is reported as a context-planning defect - a stop for the on-call."""
+    and that is reported as a context-planning defect - a stop for the on-call.
+
+    The change is closed here, as an exhausted budget closes it. It used to
+    stay DRAINING with ``active_plan_change_id`` set, and while a change is
+    active the frontier reserves only its replanner or plan verifier (and the
+    on-call): measured by the independent check with 500 inherited issues and
+    three workers allowed, B stayed READY through three passes - the whole
+    run stood behind one requester's ticket. Now the requester alone is held
+    by the ticket (it is already BLOCKED: a request and a proposed graph both
+    park it there) and its neighbours go on. The on-call returns
+    it to its worker (``return_stopped_task``); a new round would inherit the
+    same refusals and not fit again, so this stop is not re-planned by it.
+    """
 
     from .blocked_runs import stop_run
     from .run_state import utc_now
 
+    at = utc_now()
+    record["status"] = "REJECTED"
+    record["completed_at"] = at
+    record["closed_for"] = "context_budget"
+    state.active_plan_change_id = None
     stop_run(
         cfg,
         state,
@@ -148,7 +165,7 @@ def _stop_for_context_budget(
             f"The {who}'s prompt for {record.get('id')} does not fit the context "
             "budget with the rules block, which is never cut (R17)."
         ),
-        at=utc_now(),
+        at=at,
         task_ids=(task_id,),
         plan_change_id=str(record.get("id") or ""),
     )

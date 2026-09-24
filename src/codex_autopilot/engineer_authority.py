@@ -158,6 +158,10 @@ STOP_MEANS: dict[str, tuple[str, ...]] = {
     "plan_change_rejected": _REPLAN,
     "plan_verification_rejected": _REPLAN,
     "plan_verification_protocol": _REPLAN,
+    # A replanner or plan verifier whose prompt did not fit (R17). The change
+    # is closed and its requester held; a new round would inherit the same
+    # refusals and overflow again, so the requester goes back to its worker.
+    "context_budget": _RETURN,
     # The top of the hiring ladder: a defect of the gate, rubric or verifier
     # is repaired in code (and only such a repair returns the task, see
     # LADDER_RESET_MODULES); a task too big for one hire is re-planned. Only

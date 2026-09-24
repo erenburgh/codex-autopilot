@@ -561,7 +561,10 @@ def plan_change_candidate(
             tuple(pack for pack in read.skill_packs if pack not in existing),
             evidence_store=promotion_evidence_store,
         )
-    if read.plan is not FAILED:
+    # Gated on the graph as the bindings beside it are: a task naming an
+    # unknown role reached plan.role_map[task.role] and raised KeyError past
+    # the collector, out of the replanner's completion (independent check).
+    if read.plan is not FAILED and c.clean("graph"):
         c.check("immutables", "plan.tasks", validate_plan_skill_qualifications,
                 read.plan, evidence_store=promotion_evidence_store)
     return read

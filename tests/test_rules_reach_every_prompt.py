@@ -157,6 +157,15 @@ class ThePlanVerifierReadsTheRulesTests(_Replanning):
         )
         self.assertEqual(ticket["affected_task_ids"], ["A"])
         self.assertIn("never cut (R17)", ticket["summary"])
+        state = store.load()
+        self.assertIsNone(state.active_plan_change_id)
+        self.assertEqual(active_plan_change(state, request_id="PC1")["status"], "REJECTED")
+        state.max_parallel_workers = 3
+        store.save(state)
+        from _relay import reserve_ready_frontier
+
+        reserved = reserve_ready_frontier(cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None)
+        self.assertIn(("implementation", "B"), [(item.kind, item.task_id) for item in reserved])
 
 
 class TheReplannersOverflowIsAStopTests(_Replanning):
@@ -206,6 +215,42 @@ class TheReplannersOverflowIsAStopTests(_Replanning):
         self.assertIn("replanner", ticket["summary"])
         self.assertIn("never cut (R17)", ticket["summary"])
         self.assertEqual(state.task_attempts["A"], 2)
+
+    def test_the_neighbours_go_on_beside_the_held_requester(self) -> None:
+        """The stop closes the change: only the requester is held.
+
+        Measured by the independent check: the change stayed DRAINING and
+        active, so with three workers allowed B stayed READY through three
+        reservation passes - the whole run stood behind one ticket.
+        """
+
+        from _relay import reserve_ready_frontier
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+        from codex_autopilot.stop_diagnosis import means_for
+
+        cfg, store, replanner = self.at_the_replanner(graph([task("A"), task("B")], max_workers=1))
+        self.swell(store)
+        bad = self.valid_candidate(cfg)
+        bad["nonsense_field"] = 1
+        self.answer(cfg, store, replanner, reply("PC1", 1, bad))
+        state = store.load()
+        state.max_parallel_workers = 3
+        store.save(state)
+
+        reserved = reserve_ready_frontier(cfg, relay_owner_thread_id="owner", hook_gate=lambda _cfg: None)
+
+        self.assertIn(("implementation", "B"), [(item.kind, item.task_id) for item in reserved])
+        state = store.load()
+        self.assertIsNone(state.active_plan_change_id)
+        self.assertEqual(active_plan_change(state, request_id="PC1")["status"], "REJECTED")
+        self.assertEqual(state.task_states["A"], "BLOCKED")
+        ticket = next(
+            item for item in PipelineIncidentStore(cfg.state_dir).load()["incidents"]
+            if item["system_state"].get("stop_kind") == "context_budget"
+        )
+        # A new round would inherit the same refusals and overflow again.
+        self.assertIn("return_stopped_task", means_for(ticket))
+        self.assertNotIn("request_plan_change", means_for(ticket))
 
     def test_each_text_goes_in_once(self) -> None:
         """The reason is rendered from the issues; a repeated issue points at its first listing."""

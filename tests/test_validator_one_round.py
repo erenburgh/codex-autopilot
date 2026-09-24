@@ -488,6 +488,25 @@ class TheProtocolLineIsPartOfTheRoundTests(_Replanning):
         self.assertIn("request_id must be 'PC1'", issues[1]["message"])
         self.assertIn("request_id must be 'PC1'", outcome.descriptors[0].prompt)
 
+    def test_an_unknown_role_with_loaded_skills_is_a_refusal_not_a_crash(self) -> None:
+        """The qualification check waits for the graph, as the bindings beside it do.
+
+        Measured by the independent check: role 'ghost' with a loaded skill
+        raised ``KeyError: ghost`` out of plan.role_map past the collector,
+        out of the replanner's completion and the dispatcher (R3).
+        """
+
+        cfg, store, replanner = self.at_the_replanner()
+        bad = self.valid_candidate(cfg)
+        bad["tasks"][0]["role"] = "ghost"
+        bad["tasks"][0]["loaded_skills"] = [{"id": "lint", "version": "1.0.0"}]
+
+        outcome = self.answer(cfg, store, replanner, reply("PC1", 1, bad))
+
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        issues = active_plan_change(store.load(), request_id="PC1")["rejections"][-1]["issues"]
+        self.assertTrue(any("unknown role 'ghost'" in item["message"] for item in issues), issues)
+
     def test_a_graph_that_moved_spends_no_attempt(self) -> None:
         cfg, store, replanner = self.at_the_replanner()
         state = store.load()

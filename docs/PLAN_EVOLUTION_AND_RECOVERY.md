@@ -68,7 +68,12 @@ an earlier attempt already listed is `{"path", "repeated_from_attempt"}`. Nothin
 is cut: a replanner prompt that still does not fit the ceiling is not launched -
 the reservation builds it before counting the attempt, and the refusal is a
 `context_budget` stop for the on-call, the same as the plan verifier's; the
-refusal that led to it is recorded first. A graph that moved under
+refusal that led to it is recorded first. The stop closes the change (`REJECTED`,
+`closed_for: context_budget`) and holds only its requester, so the neighbours go
+on; the on-call returns the requester to its worker (`return_stopped_task`) - a
+new round would inherit the same refusals and overflow again, so this stop is
+not re-planned. A candidate task naming an unknown role is a refusal like any
+other: the skill-qualification check waits for a clean graph. A graph that moved under
 the replanner is the runtime's state, not its mistake: the change is rebased and
 a fresh replanner is raised without spending an attempt. A semantic `REVISE` from
 the plan verifier, and a commit conflict after its PASS (an advanced task
