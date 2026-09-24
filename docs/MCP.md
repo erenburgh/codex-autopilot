@@ -11,9 +11,17 @@ only (R30): version 1 is the runtime's, the caller must be the department's
 lead or the on-call (known by `CODEX_THREAD_ID`; a server started without it
 refuses, and the proposal goes through `codex-autopilot
 department-rubric-propose` from that thread), and the evidence must include an
-item a recorded acceptance of the department rested on. The
-`department-acceptance-rubric:*` scopes are refused to every other tool, and
-evidence may not use the runtime's `codex-autopilot/*` tool names.
+item an acceptance of the department rested on as the runtime recorded it (a
+runtime-attested fresh-verifier result, judged in another thread than the
+proposer's) and none the proposer wrote itself. Who wrote an item is read from
+Project Memory's audit, where `record_evidence` stamps the server's
+`CODEX_THREAD_ID`; the record's own `provider_thread_id` is the caller's to
+fill in and is not trusted. The `department-acceptance-rubric:*` scopes are
+refused to every other tool, and so is every change of a rubric record's
+status: a contradicting fact, attached evidence, a user correction or a
+conflict naming one is refused before anything is written; a conflict an
+older build opened on one resolves only as `supersede_existing`. Evidence may
+not use the runtime's `codex-autopilot/*` tool names.
 
 The server exposes one MCP tool named `memory`. Its `operation` field is a strict 17-branch JSON Schema union: `current`, `search`, `get`, `record_evidence`, `record_verified_fact`, `store_department_rubric`, `record_verification_result`, `list_verification_results`, `add_observation`, `propose_decision`, `set_decision_status`, `add_constraint`, `question`, `attach_evidence`, `conflict`, `user_correction`, and `milestone_evidence`.
 

@@ -133,7 +133,8 @@ _ACTION_DEFINITIONS: list[dict[str, Any]] = [
             "Propose the next version of a department acceptance rubric (R30). Version 1 "
             "is the runtime's. Only the department's lead or the on-call may propose, from "
             "its own thread; a version advances exactly once and cites outcome evidence - "
-            "evidence a recorded acceptance of this department rested on."
+            "evidence an acceptance of this department rested on, as the runtime recorded it "
+            "from another lead's thread, and none you wrote yourself."
         ),
         "inputSchema": _schema(
             {
@@ -608,7 +609,11 @@ class MemoryMcpServer:
             raise MemoryValidationError(
                 f"tool_name {args.get('tool_name')!r} is reserved for the Codex Autopilot runtime"
             )
-        return self.memory.record_evidence(**args)
+        # Who wrote it, by the thread this server runs for - the audit keeps
+        # it; the record's provider_thread_id is the model's to fill in.
+        return self.memory.record_evidence(
+            **args, writer_thread=str(os.environ.get("CODEX_THREAD_ID") or "") or None
+        )
 
     def _require_active_milestone_link(self, args: dict[str, Any]) -> None:
         """While a milestone is in progress, evidence must name it.

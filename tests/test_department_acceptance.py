@@ -353,6 +353,16 @@ class OnlyOutcomesChangeTheRubricTests(_Memory):
         with self.assertRaisesRegex(DepartmentAcceptanceError, "immutable"):
             store_department_rubric(self.memory, **dict(self.v2, version=1), evidence_ids=[self._evidence()])
 
+    def _acceptance(self, evidence_id: str, thread: str = "lead-1") -> None:
+        """What completion records for a lead's verdict (lifecycle_completion)."""
+
+        self.memory._record_runtime_verification_result(
+            task_id="M01", check_id="independent-acceptance", policy="independent", verdict="REVISE",
+            summary="Lead asked for revision.", evidence_ids=[evidence_id], created_by="Character Art Verifier",
+            provider="codex-desktop", provider_thread_id=thread, provider_turn_id=f"turn-{thread}",
+            details={"department_acceptance": {"department": {"id": "art-reviewer"}}},
+        )
+
     def test_a_new_version_needs_an_acceptance_of_the_department(self) -> None:
         """An observation, a stray record or the runtime's own is not an outcome.
 
@@ -361,26 +371,79 @@ class OnlyOutcomesChangeTheRubricTests(_Memory):
         """
 
         stray = self._evidence()
-        with self.assertRaisesRegex(DepartmentAcceptanceError, "recorded acceptance"):
+        with self.assertRaisesRegex(DepartmentAcceptanceError, "recorded it"):
             store_department_rubric(self.memory, **self.v2, evidence_ids=[stray])
         runtime = self.memory.get_record(self.v1.record_id)["evidence"][0]["id"]
         with self.assertRaisesRegex(DepartmentAcceptanceError, "runtime's own record"):
             store_department_rubric(self.memory, **self.v2, evidence_ids=[runtime])
-        mine = self._evidence(provider_thread_id="lead-thread")
-        with self.assertRaisesRegex(DepartmentAcceptanceError, "proposing thread itself"):
-            store_department_rubric(self.memory, **self.v2, evidence_ids=[mine], caller_thread_id="lead-thread")
         judged = self._evidence()
-        self.memory._record_runtime_verification_result(
-            task_id="M01", check_id="independent-acceptance", policy="independent", verdict="REVISE",
-            summary="Lead asked for revision.", evidence_ids=[judged], created_by="Character Art Verifier",
-            provider="codex-desktop", provider_thread_id="lead-1", provider_turn_id="turn-1",
-            details={"department_acceptance": {"department": {"id": "art-reviewer"}}},
-        )
+        self._acceptance(judged)
         reference = store_department_rubric(self.memory, **self.v2, evidence_ids=[judged])
         self.assertEqual(reference.version, 2)
         self.assertEqual(
             [item.reference.version for item in stored_rubric_versions(self.memory, "art-reviewer")], [1, 2]
         )
+
+    def test_an_outcome_is_the_runtimes_record_not_the_models(self) -> None:
+        """The independent check forged an outcome in two MCP calls; now it is refused.
+
+        Evidence with provider_thread_id "someone-else", and a verification
+        result whose details name the department. Written here from another
+        model's thread, so the writer check (below) does not catch it first:
+        the result itself is what is refused. Mutation: _runtime_acceptance_of
+        without the runtime attestation - a model's own result is the outcome.
+        """
+
+        from codex_autopilot.memory_mcp import MemoryMcpServer
+
+        server = MemoryMcpServer(self.root)
+        with mock.patch.dict("os.environ", {"CODEX_THREAD_ID": "worker-M02"}):
+            evidence = server.actions["record_evidence"]({
+                "kind": "test", "summary": "s", "command": "true", "result": "ok", "exit_code": 0,
+                "created_by": "lead", "provider_thread_id": "someone-else",
+            })["id"]
+            server.actions["record_verification_result"]({
+                "task_id": "M01", "check_id": "x", "policy": "independent", "verdict": "REVISE",
+                "summary": "s", "evidence_ids": [evidence], "created_by": "lead",
+                "provider_thread_id": "someone-else", "provider_turn_id": "t",
+                "details": {"department_acceptance": {"department": {"id": "art-reviewer"}}},
+            })
+        with self.assertRaisesRegex(DepartmentAcceptanceError, "as the runtime recorded it"):
+            store_department_rubric(self.memory, **self.v2, evidence_ids=[evidence], caller_thread_id="lead-thread")
+        self.assertEqual(len(stored_rubric_versions(self.memory, "art-reviewer")), 1)
+
+    def test_the_proposers_own_thread_is_read_from_the_journal(self) -> None:
+        """Written by the proposer, or judged by it: not an outcome, whatever the fields say.
+
+        The evidence names another thread in provider_thread_id; Project
+        Memory's audit knows the server that wrote it ran for the proposer.
+        Mutations: _require_outcome_evidence without its writer-thread check;
+        the MCP evidence door without its writer_thread stamp; an acceptance
+        judged in the proposer's own thread counted as an outcome.
+        """
+
+        from codex_autopilot.memory_mcp import MemoryMcpServer
+
+        with mock.patch.dict("os.environ", {"CODEX_THREAD_ID": "lead-thread"}):
+            mine = MemoryMcpServer(self.root).actions["record_evidence"]({
+                "kind": "test", "summary": "s", "command": "true", "result": "ok", "exit_code": 0,
+                "created_by": "lead", "provider_thread_id": "someone-else",
+            })["id"]
+        self.assertEqual(self.memory.evidence_writer_thread(mine), "lead-thread")
+        self._acceptance(mine, thread="lead-2")
+        with self.assertRaisesRegex(DepartmentAcceptanceError, "proposing thread itself"):
+            store_department_rubric(self.memory, **self.v2, evidence_ids=[mine], caller_thread_id="lead-thread")
+        judged_by_me = self._evidence()
+        self._acceptance(judged_by_me, thread="lead-thread")
+        with self.assertRaisesRegex(DepartmentAcceptanceError, "another lead's thread"):
+            store_department_rubric(
+                self.memory, **self.v2, evidence_ids=[judged_by_me], caller_thread_id="lead-thread"
+            )
+        self.assertEqual(len(stored_rubric_versions(self.memory, "art-reviewer")), 1)
+        reference = store_department_rubric(
+            self.memory, **self.v2, evidence_ids=[judged_by_me], caller_thread_id="on-call"
+        )
+        self.assertEqual(reference.version, 2)
 
 
 class TheScopeIsClosedToModelsTests(_Memory):
@@ -407,6 +470,82 @@ class TheScopeIsClosedToModelsTests(_Memory):
                 "kind": "tool", "summary": "fake runtime record", "tool_name": RUNTIME_RUBRIC_TOOL,
                 "created_by": "worker",
             })
+
+    def test_no_model_door_changes_a_rubrics_status(self) -> None:
+        """Measured by the independent check: `contradicts` made v1 disputed, the
+        history read empty, the runtime wrote a second v1, and resolving the
+        conflict made both verified - "ambiguous" for good.
+
+        Every door is tried the way a model calls it (MCP), and nothing may
+        be half-written by a refused call. Mutations, each alone: the check
+        before a contradicting fact is written (the fact is left behind); the
+        one in attach_evidence; the one before a user correction's decision;
+        the one in open_conflict_in_transaction; the one in resolve_conflict.
+        """
+
+        from codex_autopilot.memory_mcp import MemoryMcpServer
+
+        v1, _ = ensure_department_rubric(self.memory, self.plan, self.department)
+        server = MemoryMcpServer(self.root)
+        evidence = str(server.actions["record_evidence"]({
+            "kind": "test", "summary": "x", "command": "x", "result": "PASS", "exit_code": 0,
+            "created_by": "worker"})["id"])
+        facts_before = self.memory.list_records(categories=["truth"], limit=20).records
+        with self.assertRaisesRegex(MemoryValidationError, "R30: .*department rubric"):
+            server.actions["record_verified_fact"]({
+                "statement": "the rubric is wrong", "evidence_ids": [evidence], "verification_method": "m",
+                "created_by": "worker", "scope": "notes", "contradicts": [v1.record_id],
+            })
+        self.assertEqual(self.memory.list_records(categories=["truth"], limit=20).records, facts_before)
+        for relation in ("contradicts", "supports"):
+            with self.assertRaisesRegex(MemoryValidationError, "R30: .*department rubric"):
+                server.actions["attach_evidence"]({
+                    "record_id": v1.record_id, "evidence_id": evidence, "relation": relation, "actor": "worker",
+                })
+        with self.assertRaisesRegex(MemoryValidationError, "R30: .*department rubric"):
+            server.actions["user_correction"]({
+                "statement": "Use my rubric instead.", "related_ids": [v1.record_id], "actor": "user",
+            })
+        self.assertEqual(self.memory.list_records(categories=["decision"], limit=20).records, [])
+        with self.assertRaisesRegex(MemoryValidationError, "R30: .*department rubric"):
+            self.memory.open_conflict(existing_record_id=v1.record_id, statement="x", created_by="worker")
+        self.assertEqual(self.memory.get_record(v1.record_id)["status"], "verified")
+        self.assertEqual(self.memory.get_record(v1.record_id)["evidence"][0]["tool_name"], RUNTIME_RUBRIC_TOOL)
+        self.assertEqual([item.reference for item in stored_rubric_versions(self.memory, "art-reviewer")], [v1])
+
+    def test_a_dispute_left_by_an_older_build_never_returns_a_rubric_to_verified(self) -> None:
+        """The conflict an older build opened stays resolvable only by retiring the record.
+
+        Mutation: resolve_conflict without its rubric check - reject_incoming
+        returns the disputed v1 to verified beside the v1 written since:
+        ambiguous again.
+        """
+
+        from codex_autopilot.memory_mcp import MemoryMcpServer
+
+        v1, _ = ensure_department_rubric(self.memory, self.plan, self.department)
+        with self.memory._connect(write=True) as db:  # what the 0.14 build let any model do
+            db.execute("UPDATE records SET status='disputed' WHERE id=?", (v1.record_id,))
+            db.execute(
+                "INSERT INTO conflicts(id,existing_record_id,statement,status,created_by,created_at) "
+                "VALUES('CONFLICT-900',?,'legacy','needs_review','worker','2026-09-01T00:00:00+00:00')",
+                (v1.record_id,),
+            )
+        again, _ = ensure_department_rubric(self.memory, self.plan, self.department)
+        self.assertNotEqual(again.record_id, v1.record_id)
+        server = MemoryMcpServer(self.root)
+        for outcome in ("reject_incoming", "reverified_existing"):
+            with self.assertRaisesRegex(MemoryValidationError, "R30: .*department rubric"):
+                server.actions["conflict"]({
+                    "action": "resolve", "conflict_id": "CONFLICT-900", "outcome": outcome,
+                    "resolution": "r", "actor": "worker",
+                })
+        server.actions["conflict"]({
+            "action": "resolve", "conflict_id": "CONFLICT-900", "outcome": "supersede_existing",
+            "resolution": "retired", "actor": "worker",
+        })
+        self.assertEqual(self.memory.get_record(v1.record_id)["status"], "superseded")
+        self.assertEqual([item.reference for item in stored_rubric_versions(self.memory, "art-reviewer")], [again])
 
     def test_the_mcp_rubric_door_needs_a_known_proposer(self) -> None:
         """A server with no caller identity refuses; it never writes on trust.

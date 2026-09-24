@@ -416,8 +416,10 @@ held by the ticket, and its neighbours go on. The ticket's diagnosis names the
 cause and its recommendation the remedy. No lead: `devops-request-plan-change`
 - the change is marked `requires_lead`, and the replanner's graph is refused
 until the requester's profession names one. A stray record in the rubric
-scope: `devops-supersede-rubric --record <id>` retires it (never the runtime's
-own version 1), audited in Project Memory, and the task returns. A follow-up
+scope: `devops-supersede-rubric --record <id>` retires it - only a record
+outside the canonical history (the first verified record of each version
+1..n; a refusal names the stray ones), never the first of its version, even
+when the runtime wrote both - audited in Project Memory, and the task returns. A follow-up
 whose prompt cannot be built stops the same way (`launch_refused`), with what
 its reservation took given back. A turn not started by the runtime still
 running in a finished lead's thread is a `lead_outlived` ticket that holds no

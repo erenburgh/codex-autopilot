@@ -22,6 +22,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from _departments import DepartmentRun
 from codex_autopilot.department_acceptance import DEPARTMENT_FIELDS, DepartmentAcceptanceError
 from codex_autopilot.plan import validate_persisted_plan
 from codex_autopilot.rules import RULES, rules_for_prompt
@@ -112,10 +113,58 @@ class EachReaderIsToldItsPartTests(unittest.TestCase):
         self.assertEqual(len(rules_for_prompt()), len(RULES))
 
 
-class TheEnvelopesPassThePlanAndThePhaseTests(unittest.TestCase):
-    def test_both_task_bearing_envelopes_scope_the_rules_for_their_reader(self) -> None:
-        source = (ROOT / "src/codex_autopilot/ai_studio.py").read_text(encoding="utf-8")
-        self.assertEqual(source.count("rules_for_prompt(self.state_dir, task=task, plan=self.plan, phase="), 2)
+def _prompt_scope(prompt: str) -> str:
+    """The R30 scope as the reader gets it: from the prompt the runtime launched."""
+
+    start = prompt.index('{"id":"R30"')
+    entry, _ = json.JSONDecoder().raw_decode(prompt[start:])
+    return entry["scope"]
+
+
+class EachSessionTheRuntimeLaunchesReadsItsPartTests(DepartmentRun):
+    """The prompts of a run, reserved and completed through the lifecycle.
+
+    This used to count the substring "phase=" in ai_studio's source. The
+    independent check replaced the implementation envelope's phase=phase
+    with phase="verification" - a worker, a reviser and a screener told the
+    lead's "your rubric is in department_acceptance" - and that test, like
+    every test that called rules_for_prompt itself, stayed green.
+    """
+
+    LEAD = "Lead Role 'Character Art Verifier' - you"
+    WORKER = "your work will be accepted by Lead Role 'Character Art Verifier'"
+
+    def test_worker_lead_and_reviser_each_read_their_own(self) -> None:
+        """Mutations: ai_studio's build_prompt passes phase="verification", or
+        phase="implementation", to rules_for_prompt instead of its phase."""
+
+        implementation = self.reserve()[0]
+        self.assertEqual(implementation.kind, "implementation")
+        self.assertIn(self.WORKER, _prompt_scope(implementation.prompt))
+        lead = self.implement(implementation, "worker-M01").descriptors[0]
+        self.assertEqual(lead.kind, "verifier")
+        self.assertIn(self.LEAD, _prompt_scope(lead.prompt))
+        issue = {"code": "SILHOUETTE", "summary": "The silhouette drifts", "details": "Compare.", "dod_refs": [1]}
+        revision = self.judge(lead, "lead-M01", self.verdict("M01", "REVISE", [issue])).descriptors[0]
+        self.assertEqual(revision.kind, "revision")
+        scope = _prompt_scope(revision.prompt)
+        self.assertIn(self.WORKER, scope)
+        self.assertNotIn("department_acceptance", scope)
+
+    def test_the_screener_reads_the_workers_part(self) -> None:
+        """Mutation: the screening envelope passes phase="verification"."""
+
+        from codex_autopilot.config import load_config
+
+        config = self.cfg.state_dir / "config.toml"
+        text = config.read_text(encoding="utf-8")
+        config.write_text(text.replace('skill_screening = "never"', 'skill_screening = "always"'), encoding="utf-8")
+        self.cfg = load_config(self.root)
+        screening = self.reserve()[0]
+        self.assertEqual(screening.kind, "screening")
+        scope = _prompt_scope(screening.prompt)
+        self.assertIn(self.WORKER, scope)
+        self.assertNotIn("department_acceptance", scope)
 
 
 class TheReplannerIsToldDepartmentsAreTheRuntimesTests(unittest.TestCase):

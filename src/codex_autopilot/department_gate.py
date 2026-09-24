@@ -30,12 +30,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .department_acceptance import (
-    RESERVED_TOOL_PREFIX,
-    RUNTIME_RUBRIC_AUTHOR,
-    DepartmentAcceptanceError,
-    rubric_scope,
-)
+from .department_acceptance import DepartmentAcceptanceError, rubric_scope, stray_rubric_records
 from .department_runtime import load_task_department_acceptance
 from .engineer_stop_actions import EngineerStopActionError
 
@@ -168,10 +163,12 @@ def supersede_rubric_record(
     """The on-call's repair of an ambiguous rubric history: retire one stray record.
 
     Only the engineer holding a department_lead ticket, from its own thread,
-    and only a record in a rubric scope that is not the runtime's own
-    version 1. The record is not deleted - its status becomes superseded,
-    with the ticket and the reason in Project Memory's audit - so the history
-    reads 1..n again and the task can be returned.
+    and only a stray record (``stray_rubric_records``): never the first
+    record of a version, which is what earlier leads attested. It used to
+    refuse every record the runtime wrote, and two runtime v1s - measured -
+    left nothing it could retire. The record is not deleted - its status
+    becomes superseded, with the ticket and the reason in Project Memory's
+    audit - so the history reads 1..n again and the task can be returned.
     """
 
     from .engineer_stop_actions import _loaded_incident, require_engineer_thread
@@ -194,12 +191,16 @@ def supersede_rubric_record(
     except Exception as exc:  # noqa: BLE001 - named for the on-call
         raise EngineerStopActionError(str(exc)) from exc
     scope = str(record.get("scope") or "")
-    if not scope.startswith(rubric_scope("x")[:-1]):
+    prefix = rubric_scope("x")[:-1]
+    if not scope.startswith(prefix):
         raise EngineerStopActionError(f"{record_id} is not in a department rubric scope")
-    if str(record.get("created_by") or "") == RUNTIME_RUBRIC_AUTHOR and any(
-        str(item.get("tool_name") or "").startswith(RESERVED_TOOL_PREFIX) for item in record.get("evidence") or ()
-    ):
-        raise EngineerStopActionError(f"{record_id} is the runtime's own version 1; it is not superseded")
+    strays = stray_rubric_records(memory, scope[len(prefix):])
+    if record_id not in strays:
+        raise EngineerStopActionError(
+            f"{record_id} is part of the department's canonical rubric history (the first "
+            "verified record of its version); it is not superseded - the stray records are: "
+            + (", ".join(strays) or "none")
+        )
     memory._set_record_status(
         record_id, str(record.get("category") or "truth"), "superseded",
         f"pipeline-engineer:{incident_id}", f"{incident_id}: {text}"[:2000],

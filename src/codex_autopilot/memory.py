@@ -513,6 +513,53 @@ class ProjectMemory:
             (action, entity_type, entity_id, actor, json.dumps(details or {}, ensure_ascii=False, sort_keys=True), utc_now()),
         )
 
+    def _refuse_rubric_records(self, db: sqlite3.Connection, record_ids: Sequence[str], doing: str) -> None:
+        """R30: a department rubric's status is the runtime's, not a model's.
+
+        Closing the scope to new records was not enough. Measured on the 0.14
+        build: `contradicts` on version 1 made it `disputed`, the history read
+        empty, the runtime wrote a second v1, and resolving the conflict made
+        both verified - "ambiguous" for good, with no record the on-call was
+        allowed to retire. Every door that changes a Truth's status by
+        disputing it (a contradicting fact, a correction, attached evidence,
+        a conflict) is refused here for a record in a rubric scope.
+        """
+
+        ids = [str(item) for item in record_ids]
+        if not ids:
+            return
+        rows = db.execute(
+            f"SELECT id FROM records WHERE id IN ({','.join('?' for _ in ids)}) "
+            "AND substr(scope,1,?)=?",
+            (*ids, len(RESERVED_RUBRIC_SCOPE), RESERVED_RUBRIC_SCOPE),
+        ).fetchall()
+        if rows:
+            raise MemoryValidationError(
+                f"R30: {', '.join(str(row['id']) for row in rows)} is a department rubric; "
+                f"{doing} would change its status, which is the runtime's. A new version is "
+                "proposed with memory_store_department_rubric from the lead's or the on-call's "
+                "thread; a stray record is the on-call's to supersede (devops-supersede-rubric)."
+            )
+
+    def evidence_writer_thread(self, evidence_id: str) -> str:
+        """The thread whose Project Memory server wrote this evidence; '' if none did.
+
+        From the audit log, stamped by the server from CODEX_THREAD_ID - the
+        identity every ownership guard reads - never from the record's own
+        provider_thread_id, which the model fills in itself.
+        """
+
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT details_json FROM audit_log WHERE entity_type='evidence' AND entity_id=? "
+                "AND action='record' ORDER BY id LIMIT 1",
+                (evidence_id,),
+            ).fetchone()
+        try:
+            return str(json.loads(str(row["details_json"])).get("writer_thread") or "") if row else ""
+        except ValueError:
+            return ""
+
     def _resolve_project_path(self, raw: str, *, must_exist: bool = True) -> tuple[str, Path]:
         value = self._required(raw, "path", 4_096)
         candidate = Path(value).expanduser()
@@ -546,6 +593,7 @@ class ProjectMemory:
         environment_probe: str | None = None,
         provider: str | None = None,
         provider_thread_id: str | None = None,
+        writer_thread: str | None = None,
     ) -> dict[str, Any]:
         self.initialize()
         kind = self._required(kind, "kind", 64)
@@ -643,7 +691,11 @@ class ProjectMemory:
                 "evidence",
                 evidence_id,
                 actor,
-                {"kind": kind, "milestone_id": normalized_milestone_id},
+                {
+                    "kind": kind,
+                    "milestone_id": normalized_milestone_id,
+                    **({"writer_thread": str(writer_thread)} if writer_thread else {}),
+                },
             )
         return self.get_evidence(evidence_id)
 
@@ -893,6 +945,8 @@ class ProjectMemory:
             raise MemoryValidationError("Truth evidence IDs must be unique")
         self.initialize()
         with self._connect() as db:
+            # Before the fact is written: the conflict would be refused after it.
+            self._refuse_rubric_records(db, contradicts, "a fact contradicting it")
             rows = db.execute(
                 f"SELECT id,kind,provenance,trust_level FROM evidence "
                 f"WHERE id IN ({','.join('?' for _ in evidence_ids)})",
@@ -1080,6 +1134,7 @@ class ProjectMemory:
         self.initialize()
         normalized_actor = self._required(actor, "actor", 256)
         with self._connect(write=True) as db:
+            self._refuse_rubric_records(db, [record_id], "attaching evidence to it")
             record = db.execute("SELECT category,status,origin FROM records WHERE id=?", (record_id,)).fetchone()
             evidence = db.execute(
                 "SELECT kind,provenance,trust_level FROM evidence WHERE id=?",
@@ -1306,7 +1361,10 @@ class ProjectMemory:
 
 
     def apply_user_correction(self, *, statement: str, related_ids: Sequence[str], actor: str = "user") -> dict[str, Any]:
-        decision = self.propose_decision(statement=statement, origin="user", created_by=actor, status="accepted", reason="Explicit user correction")
+        self.initialize()
+        with self._connect() as db:  # before the decision: the conflict would be refused after it
+            self._refuse_rubric_records(db, related_ids, "a correction disputing it")
+        decision =self.propose_decision(statement=statement, origin="user", created_by=actor, status="accepted", reason="Explicit user correction")
         superseded: list[str] = []
         conflicts: list[str] = []
         for record_id in related_ids:

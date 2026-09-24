@@ -691,12 +691,17 @@ def sweep(
         except Exception as exc:  # noqa: BLE001 - one sick project does not break the sweep
             outcome[raw] = f"unreadable: {exc}"
             continue
+        # R30: a lead that outlived its acceptance is found by the server's
+        # own word, once per lead, whether or not anything is due - and
+        # whether or not the run is still going. It ran after the DONE and
+        # pause skip, and a lead is read only LEAD_AUDIT_DELAY_SECONDS after
+        # it finished: the leads of the run's last ten minutes, the last
+        # task's above all, were never read. A finished run has nothing left
+        # to read once they are, and then no connection is opened.
+        audit_lead_sessions(cfg)
         if state.status == "DONE" or StateStore(cfg.state_dir).pause_requested():
             outcome[raw] = "stopped"
             continue
-        # R30: a lead that outlived its acceptance is found by the server's
-        # own word, once per lead, whether or not anything is due.
-        audit_lead_sessions(cfg)
         if due_wake_epoch(state, cfg) is None:
             outcome[raw] = "nothing due"
             continue

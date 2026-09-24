@@ -71,9 +71,13 @@ last lands it on a run already under way. A changed lead profile does not
 rewrite it: the change is recorded once and shown to the lead. A later
 version is proposed only by the department's lead or the on-call, from its own
 thread (`codex-autopilot department-rubric-propose`), with outcome evidence -
-evidence a recorded acceptance of the department rested on. A stray record in
-the scope makes the history ambiguous; the on-call supersedes it
-(`devops-supersede-rubric`) and returns the task.
+evidence an acceptance of the department rested on, as the runtime recorded it
+from another lead's thread, and not written by the proposer (Project Memory's
+audit knows the writer's thread). No model door changes a rubric record's
+status - a dispute made v1 vanish from the history and come back as a second
+v1. A stray record in the scope makes the history ambiguous; the canonical
+history is the first record of each version 1..n, the on-call supersedes what
+is outside it (`devops-supersede-rubric`) and returns the task.
 
 The lead's thread is titled `<Lead Role> | Verify <Task ID> | <Short Task
 Title>`; its prompt carries `department_acceptance` - the department, the
@@ -87,7 +91,8 @@ a department (default 5) is judged again by a second fresh lead on the same
 work and rubric; the first verdict is applied, the second is recorded beside it
 with the department's disagreement rate (`department_audit`). A lead thread
 that received a turn after its acceptance is found by thread/read in the
-wake-up and the periodic sweep and recorded as an R30 defect; only a foreign
+wake-up and the periodic sweep - for a finished or paused run too, since a lead
+is read ten minutes after it ends - and recorded as an R30 defect; only a foreign
 turn still running there is a ticket, and it holds no task.
 
 ## Independent verifier boundary

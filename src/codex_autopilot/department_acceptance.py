@@ -336,8 +336,8 @@ def store_department_rubric(
     stray second v1 made the department "ambiguous" for good.
 
     A repeated identical write is idempotent. A new version advances by
-    exactly one and cites outcome evidence: evidence a recorded acceptance of
-    this department rests on (``_require_outcome_evidence``) - an observation
+    exactly one and cites outcome evidence: evidence an acceptance of this
+    department rests on, as the runtime recorded it (``_require_outcome_evidence``) - an observation
     is not evidence and cannot change a department standard by itself (R30).
     Who may propose it (the department's lead or the on-call, never a worker
     of its tasks) is decided before this call, from the caller's thread
@@ -630,23 +630,8 @@ def stored_rubric_versions(
     audited in Project Memory) and the history reads clean again.
     """
 
-    records: list[dict[str, Any]] = []
-    cursor: str | None = None
-    while True:
-        page = memory.list_records(
-            categories=["truth"],
-            statuses=["verified"],
-            scope=rubric_scope(department_id),
-            limit=20,
-            cursor=cursor,
-        )
-        records.extend(page.records)
-        cursor = page.next_cursor
-        if cursor is None:
-            break
     loaded: list[LoadedDepartmentRubric] = []
-    for selector in records:
-        record = memory.get_record(str(selector["id"]))
+    for record in _verified_rubric_records(memory, department_id):
         try:
             rubric = department_rubric_from_raw(_parse_statement(record), "Project Memory rubric")
         except DepartmentAcceptanceError as exc:
@@ -676,6 +661,60 @@ def stored_rubric_versions(
     return tuple(loaded)
 
 
+def _verified_rubric_records(memory: ProjectMemory, department_id: str) -> list[dict[str, Any]]:
+    """Every verified record in the department's rubric scope, in the order written."""
+
+    records: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        page = memory.list_records(
+            categories=["truth"], statuses=["verified"], scope=rubric_scope(department_id),
+            limit=20, cursor=cursor,
+        )
+        records.extend(memory.get_record(str(item["id"])) for item in page.records)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    return sorted(records, key=lambda item: (str(item.get("created_at") or ""), _ordinal(item["id"])))
+
+
+def stray_rubric_records(memory: ProjectMemory, department_id: str) -> tuple[str, ...]:
+    """The records an ambiguous history is repaired by retiring, oldest first.
+
+    The history that stands is canonical: for version 1, 2, ... the FIRST
+    verified record of that version, up to the first version missing. That
+    is what earlier leads attested, whoever wrote it. Everything else in the
+    scope is stray - a second record of a version, a version past a gap, a
+    record that is not a rubric of this department. The on-call's repair
+    used to refuse any record the runtime had written, and the measured
+    failure was exactly two runtime v1s: nothing could be retired and the
+    department stayed stopped for her.
+    """
+
+    by_version: dict[int, str] = {}
+    strays: list[str] = []
+    for record in _verified_rubric_records(memory, department_id):
+        try:
+            rubric = department_rubric_from_raw(_parse_statement(record), "Project Memory rubric")
+        except DepartmentAcceptanceError:
+            strays.append(str(record["id"]))
+            continue
+        if rubric.department_id != department_id or rubric.version in by_version:
+            strays.append(str(record["id"]))
+        else:
+            by_version[rubric.version] = str(record["id"])
+    version = 1
+    while version in by_version:
+        version += 1
+    strays.extend(record_id for number, record_id in by_version.items() if number > version)
+    return tuple(strays)
+
+
+def _ordinal(record_id: object) -> int:
+    digits = re.sub(r"[^0-9]", "", str(record_id))
+    return int(digits) if digits else 0
+
+
 def _require_outcome_evidence(
     memory: ProjectMemory,
     evidence_ids: Sequence[str],
@@ -687,16 +726,25 @@ def _require_outcome_evidence(
 
     The kind alone used to decide: any `tool` record passed, including one
     a model wrote a minute before about nothing, and the runtime's own
-    version-1 record. Now at least one item must be what a recorded
-    acceptance of this department rested on - an independent verification
-    result whose department is this one - and none may be the runtime's
-    rubric record or one written from the proposing thread itself.
+    version-1 record. The next version asked for a verification result
+    naming the department - and the independent check forged one in two MCP
+    calls: evidence with provider_thread_id "someone-else", a result whose
+    details named the department. Both fields are the model's to write.
+
+    Now the outcome is what the RUNTIME recorded: a fresh-verifier result it
+    attested at completion (``_record_runtime_verification_result``; the
+    attestation key is refused from any other writer), of this department,
+    judged in a thread other than the proposer's. And no item may be the
+    runtime's rubric record or one the proposing thread wrote itself - by
+    Project Memory's audit of the server that wrote it
+    (``evidence_writer_thread``), not by a field in the record.
     """
 
     if not evidence_ids:
         raise DepartmentAcceptanceError(
             "a rubric change requires outcome evidence; one observation cannot change it"
         )
+    caller = str(caller_thread_id or "").strip()
     outcome = False
     for evidence_id in evidence_ids:
         try:
@@ -707,7 +755,7 @@ def _require_outcome_evidence(
             raise DepartmentAcceptanceError(
                 f"{evidence_id} is the runtime's own record, not an outcome"
             )
-        if caller_thread_id and str(evidence.get("provider_thread_id") or "") == caller_thread_id:
+        if caller and memory.evidence_writer_thread(evidence_id) == caller:
             raise DepartmentAcceptanceError(
                 f"{evidence_id} was written by the proposing thread itself; outcome "
                 "evidence comes from the department's recorded acceptances"
@@ -716,19 +764,32 @@ def _require_outcome_evidence(
             continue
         for verification_id in evidence.get("verification_results") or ():
             try:
-                details = memory.get_verification_result(str(verification_id)).get("details") or {}
+                result = memory.get_verification_result(str(verification_id))
             except MemoryValidationError:
                 continue
-            accepted = ((details.get("department_acceptance") or {}).get("department") or {})
-            if accepted.get("id") == department_id:
+            if _runtime_acceptance_of(result, department_id) and (
+                not caller or str(result.get("provider_thread_id") or "") != caller
+            ):
                 outcome = True
     if not outcome:
         raise DepartmentAcceptanceError(
-            "a rubric change requires outcome evidence: at least one item a recorded "
-            f"acceptance of department {department_id!r} rested on (kinds: "
-            + ", ".join(sorted(OUTCOME_EVIDENCE_KINDS))
-            + ")"
+            "a rubric change requires outcome evidence: at least one item an acceptance of "
+            f"department {department_id!r} rested on, as the runtime recorded it from another "
+            "lead's thread (kinds: " + ", ".join(sorted(OUTCOME_EVIDENCE_KINDS)) + ")"
         )
+
+
+def _runtime_acceptance_of(result: Mapping[str, Any], department_id: str) -> bool:
+    from .memory_verification import RUNTIME_ATTESTATION_KEY
+
+    details = result.get("details") or {}
+    attestation = details.get(RUNTIME_ATTESTATION_KEY) or {}
+    department = (details.get("department_acceptance") or {}).get("department") or {}
+    return (
+        attestation.get("authority_kind") == "fresh_verifier"
+        and attestation.get("provider_thread_id") == result.get("provider_thread_id")
+        and department.get("id") == department_id
+    )
 
 
 def _rubric_json(rubric: DepartmentRubric) -> str:

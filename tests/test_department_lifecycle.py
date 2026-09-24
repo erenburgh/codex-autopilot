@@ -343,38 +343,77 @@ class APlanChangeBringsItsDepartmentsRubricTests(DepartmentRun):
 
 
 class AnAmbiguousRubricIsTheOnCallsToRepairTests(DepartmentRun):
+    def _two_runtime_version_ones(self) -> tuple[str, str]:
+        """The history the independent check produced on the 0.14 build.
+
+        A model disputed v1, the runtime wrote v1 again, the conflict was
+        resolved and both were verified - two records written by the runtime,
+        with the runtime's own evidence. Reproduced here in the journal's
+        terms, since no door of this build can do it any more.
+        """
+
+        from codex_autopilot.department_runtime import ensure_all_department_rubrics
+
+        first = str(self.rubric_records("art-reviewer")[0]["id"])
+        with self.memory._connect(write=True) as db:
+            db.execute("UPDATE records SET status='disputed' WHERE id=?", (first,))
+        ensure_all_department_rubrics(self.memory, self.plan())
+        second = next(str(item["id"]) for item in self.rubric_records("art-reviewer") if item["id"] != first)
+        with self.memory._connect(write=True) as db:
+            db.execute("UPDATE records SET status='verified' WHERE id=?", (first,))
+        return first, second
+
     def test_the_stray_record_is_superseded_and_the_task_returns(self) -> None:
-        """Mutation: supersede_rubric_record without its runtime-v1 guard."""
+        """Two runtime v1s: the later one is stray; the first is what leads attested.
+
+        Mutations: supersede_rubric_record back to refusing any record the
+        runtime wrote (nothing can be retired, the department stays stopped
+        for her); supersede_rubric_record without its canonical-history
+        guard (the first v1 is retired).
+        """
 
         from codex_autopilot.department_gate import supersede_rubric_record
         from codex_autopilot.engineer_stop_actions import EngineerStopActionError, require_stop_ticket_closable
 
-        v1 = self.memory.get_record(str(self.rubric_records("art-reviewer")[0]["id"]))
-        stray = self.memory.record_verified_fact(
-            statement=v1["statement"], evidence_ids=[v1["evidence"][0]["id"]],
-            verification_method="written before the scope was reserved", created_by="old-model",
-            scope=rubric_scope("art-reviewer"), reserved_scope=True,
-        )
+        first, second = self._two_runtime_version_ones()
+        for record_id in (first, second):
+            self.assertEqual(self.memory.get_record(record_id)["created_by"], "codex-autopilot-runtime")
         outcome = self.implement(self.reserve()[0], "worker-M01")
         (ticket,) = _tickets(self.cfg, "department_lead")
         self.assertIn("devops-supersede-rubric", ticket["system_state"]["recommendation"])
-        self.assertIn(str(stray["id"]), ticket["system_state"]["diagnosis"])
+        self.assertIn(second, ticket["system_state"]["diagnosis"])
         engineer = next(item for item in outcome.descriptors if item.kind == "pipeline_engineer")
         self.mark_active(engineer.reservation_token, "on-call")
         incident = str(ticket["incident_id"])
-        with self.assertRaisesRegex(EngineerStopActionError, "runtime's own version 1"):
-            supersede_rubric_record(self.cfg, incident_id=incident, record_id=str(v1["id"]),
+        with self.assertRaisesRegex(EngineerStopActionError, f"canonical rubric history.*stray records are: {second}"):
+            supersede_rubric_record(self.cfg, incident_id=incident, record_id=first,
                                     reason="wrong one", thread_id="on-call")
         with self.assertRaisesRegex(EngineerStopActionError, "only the on-call"):
-            supersede_rubric_record(self.cfg, incident_id=incident, record_id=str(stray["id"]),
+            supersede_rubric_record(self.cfg, incident_id=incident, record_id=second,
                                     reason="stray", thread_id="worker-M01")
-        supersede_rubric_record(self.cfg, incident_id=incident, record_id=str(stray["id"]),
+        supersede_rubric_record(self.cfg, incident_id=incident, record_id=second,
                                 reason="stray second v1", thread_id="on-call")
-        self.assertEqual(self.memory.get_record(str(stray["id"]))["status"], "superseded")
-        self.assertEqual(len(self.rubric_records("art-reviewer")), 1)
+        self.assertEqual(self.memory.get_record(second)["status"], "superseded")
+        self.assertEqual([str(item["id"]) for item in self.rubric_records("art-reviewer")], [first])
         require_stop_ticket_closable(
             self.cfg, incident, ["supersede_department_rubric", "return_stopped_task"], "on-call"
         )
+
+    def test_a_record_past_a_gap_or_not_a_rubric_is_stray(self) -> None:
+        """Mutation: stray_rubric_records keeps a version past the first gap."""
+
+        from codex_autopilot.department_acceptance import stray_rubric_records
+
+        v1 = self.memory.get_record(str(self.rubric_records("art-reviewer")[0]["id"]))
+        support = [v1["evidence"][0]["id"]]
+        statement = json.loads(v1["statement"])
+        written = []
+        for payload in (dict(statement, version=3), {"not": "a rubric"}):
+            written.append(str(self.memory.record_verified_fact(
+                statement=json.dumps(payload), evidence_ids=support, verification_method="legacy",
+                created_by="old-model", scope=rubric_scope("art-reviewer"), reserved_scope=True,
+            )["id"]))
+        self.assertEqual(sorted(stray_rubric_records(self.memory, "art-reviewer")), sorted(written))
 
 
 class OnlyTheLeadOrTheOnCallProposesTests(DepartmentRun):
@@ -480,6 +519,35 @@ class ALeadThatOutlivedItsAcceptanceTests(DepartmentRun):
         with mock.patch("codex_autopilot.department_audit.audit_lead_sessions") as audit:
             wake.sweep(roots=[str(self.root)], spawn=lambda *_a, **_k: 0)
         audit.assert_called()
+
+
+    def test_the_last_leads_of_a_finished_or_paused_run_are_read(self) -> None:
+        """A lead is read ten minutes after it finished; the run may end sooner.
+
+        The sweep skipped a DONE or paused run before it audited, so the
+        leads of the run's last minutes - the last task's above all - were
+        never read. Mutation: the audit back after the DONE and pause skip.
+        """
+
+        from codex_autopilot import wake
+        from codex_autopilot.rules import violation_counts
+
+        session = self._accepted()
+        client, calls = self._client([
+            {"id": session["turn_id"], "status": "completed"},
+            {"id": "her-message", "status": "completed"},
+        ])
+        state = self.store.load()
+        state.status = "DONE"
+        self.store.save(state)
+        self.store.request_pause()
+        with mock.patch("codex_autopilot.appserver.AppServerClient", client):
+            outcome = wake.sweep(roots=[str(self.root)], spawn=lambda *_a, **_k: 0)
+        self.assertEqual(outcome, {str(self.root): "stopped"})
+        self.assertEqual(calls, ["lead-M01"])
+        self.assertEqual(violation_counts(self.cfg.state_dir).get("R30"), 1)
+        lead = next(item for item in self.store.load().worker_sessions if item.get("thread_id") == "lead-M01")
+        self.assertTrue(lead["lead_audit"]["outlived"])
 
 
 class ASecondLeadMeasuresTheRubricTests(DepartmentRun):

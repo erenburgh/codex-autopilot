@@ -48,6 +48,8 @@ def open_conflict_in_transaction(
     incoming_record_id: str | None = None,
     incoming_evidence_id: str | None = None,
 ) -> str:
+    # R30: a department rubric is never disputed; its status is the runtime's.
+    memory._refuse_rubric_records(db, [existing_record_id], "a conflict over it")
     existing = db.execute(
         "SELECT category FROM records WHERE id=?", (existing_record_id,)
     ).fetchone()
@@ -143,6 +145,11 @@ def resolve_conflict(memory, conflict_id: str, *, outcome: str, resolution: str,
             else status_before_conflict(db, conflict_id)
         )
         record_id = str(row["existing_record_id"])
+        if outcome != "supersede_existing":
+            # R30: a rubric disputed by an older build stays out of the
+            # history. Returning it to verified made the history ambiguous:
+            # measured, [1, 1] after the runtime had written v1 again.
+            memory._refuse_rubric_records(db, [record_id], f"resolving {conflict_id} as {outcome}")
         if existing_status in memory._BINDING_STATUSES:
             origin = str(
                 (

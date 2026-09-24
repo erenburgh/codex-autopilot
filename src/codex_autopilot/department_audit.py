@@ -7,7 +7,8 @@ appeared only in the rules text. The check at completion would be pointless -
 at that moment the thread has exactly the one turn the runtime started. So the
 thread is read later, by the server's own answer (thread/read with turns, R2
 allows it), once per lead session, from the wake-up and the periodic sweep
-(``audit_lead_sessions``). A turn after the runtime's is recorded as the
+(``audit_lead_sessions``) - the sweep reads them for a finished or paused run
+too, or the leads of a run's last minutes would never be read. A turn after the runtime's is recorded as the
 defect it is - an R30 violation and a verification result on the task - and
 never as an incident that would take the on-call's lane from the work: a
 harmless extra turn (her own message in the lead's thread) would have stopped
