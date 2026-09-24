@@ -106,15 +106,17 @@ def attested_verdict(cfg: Any, task_id: str, verdict: str = "PASS", issues: Sequ
     """
 
     from codex_autopilot.config import load_config
-    from codex_autopilot.department_runtime import load_task_department_acceptance
+    from codex_autopilot.department_runtime import load_task_department_acceptance, settled_task_ids
     from codex_autopilot.memory import ProjectMemory
     from codex_autopilot.plan import load_plan
+    from codex_autopilot.run_state import StateStore
 
     if isinstance(cfg, (str, Path)):
         cfg = load_config(Path(cfg))
     plan = load_plan(cfg.state_dir, cfg.profile)
+    settled = settled_task_ids(StateStore(cfg.state_dir).load().task_states)
     loaded = load_task_department_acceptance(
-        ProjectMemory(cfg.root), plan, plan.task_map[task_id], ensure=True
+        ProjectMemory(cfg.root), plan, plan.task_map[task_id], ensure=True, settled=settled
     )
     payload = {
         "verdict": verdict,

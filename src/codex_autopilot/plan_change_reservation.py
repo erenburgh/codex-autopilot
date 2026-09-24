@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config
+from .department_runtime import settled_task_ids
 from .engineer_reservation import stop_on_inconsistent_state
 from .lifecycle_base import (
     PENDING_SESSION_STATUSES,
@@ -45,7 +46,7 @@ from .scope import scope_baseline
 from .task_state import TaskState, transition_task
 
 
-def _unverifiable_proposal(cfg: Config, plan: Plan, record: dict[str, Any]) -> str | None:
+def _unverifiable_proposal(cfg: Config, plan: Plan, state: RunState, record: dict[str, Any]) -> str | None:
     """Why this plan change cannot be put before a verifier - or None."""
 
     raw_candidate = record.get("proposed_plan")
@@ -57,6 +58,7 @@ def _unverifiable_proposal(cfg: Config, plan: Plan, record: dict[str, Any]) -> s
             raw_candidate,
             cfg.profile,
             promotion_evidence_store=ProjectMemory(cfg.root),
+            settled=settled_task_ids(state.task_states),
         )
     except ValueError as exc:
         return f"the proposed replacement graph no longer validates: {exc}"
@@ -87,7 +89,8 @@ def _prompt_over_budget(cfg: Config, plan: Plan, state: RunState, record: dict[s
 
     try:
         candidate = validate_plan_change(
-            plan, record["proposed_plan"], cfg.profile, promotion_evidence_store=ProjectMemory(cfg.root)
+            plan, record["proposed_plan"], cfg.profile, promotion_evidence_store=ProjectMemory(cfg.root),
+            settled=settled_task_ids(state.task_states),
         )
         build_plan_verification_prompt(
             candidate,
@@ -196,7 +199,7 @@ def _reserve_plan_verifier_in_state(
     ):
         return ()
     task_id = str(record["requester_task_id"])
-    refusal = _unverifiable_proposal(cfg, plan, record)
+    refusal = _unverifiable_proposal(cfg, plan, state, record)
     if refusal is not None:
         stop_on_inconsistent_state(cfg, state, task_id, refusal)
         return ()

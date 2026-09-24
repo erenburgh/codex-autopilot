@@ -34,7 +34,7 @@ import json
 from typing import Any, Callable, Mapping
 
 from .department_acceptance import RUNTIME_RUBRIC_AUTHOR, DepartmentAcceptanceError
-from .department_runtime import derive_task_department
+from .department_runtime import derive_task_department, settled_task_ids
 
 LEAD_AUDIT_TOOL = "codex-autopilot/lead-audit"
 LEAD_AUDIT_CHECK = "r30-lead-session"
@@ -289,13 +289,13 @@ def second_lead_gate(
         )
         return False, primary, first["verification_id"]
     try:
-        department = derive_task_department(plan, plan.task_map[task_id])
+        department = derive_task_department(plan, plan.task_map[task_id], settled=settled_task_ids(state.task_states))
     except DepartmentAcceptanceError:
         return False, verdict, verification_id
     ordinal = 1 + sum(
         1
         for item in state.worker_sessions
-        if item is not current and _first_verdict_of(plan, item, department.id)
+        if item is not current and _first_verdict_of(plan, item, department.id, settled_task_ids(state.task_states))
     )
     every = int(getattr(getattr(cfg, "runtime", None), "second_lead_every", 0) or 0)
     if every <= 0 or ordinal % every:
@@ -312,13 +312,13 @@ def second_lead_gate(
     return True, verdict, verification_id
 
 
-def _first_verdict_of(plan: Any, session: Mapping[str, Any], department_id: str) -> bool:
+def _first_verdict_of(plan: Any, session: Mapping[str, Any], department_id: str, settled: Any = ()) -> bool:
     if session.get("kind") != "verifier" or session.get("second_lead_of"):
         return False
     if session.get("final_status") not in {"PASS", "REVISE"}:
         return False
     task = plan.task_map.get(str(session.get("task_id") or ""))
     try:
-        return task is not None and derive_task_department(plan, task).id == department_id
+        return task is not None and derive_task_department(plan, task, settled=settled).id == department_id
     except DepartmentAcceptanceError:
         return False

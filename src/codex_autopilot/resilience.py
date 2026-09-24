@@ -146,6 +146,17 @@ def parse_plan_change_request(message: str) -> PlanChangeRequest | None:
     )
 
 
+def names_only_its_lead(before: Any, after: Any) -> bool:
+    """Whether a task's only change is the Lead Role in verification.verifier_role."""
+
+    from dataclasses import replace
+
+    lead = after.verification.verifier_role
+    return before.verification.verifier_role != lead and replace(
+        before, verification=replace(before.verification, verifier_role=lead)
+    ) == after
+
+
 def reconcile_plan_change_state(
     current: Plan,
     candidate: Plan,
@@ -158,7 +169,8 @@ def reconcile_plan_change_state(
     """Revalidate mutable state against a candidate graph without losing history.
 
     Verified task contracts are immutable. Existing tasks cannot be removed, and
-    advanced non-requester work cannot be rewritten. Changed READY/WAITING work,
+    advanced non-requester work cannot be rewritten - only given its
+    profession's lead (R30), which resets nothing. Changed READY/WAITING work,
     the requester, and every affected descendant are reset through the ordinary
     dependency gate. Attempts, revisions, completed sessions, and unaffected
     retry deadlines are preserved.
@@ -192,6 +204,15 @@ def reconcile_plan_change_state(
                 f"verified task {task_id} is immutable during plan evolution"
             )
         if before != after:
+            if (task_id != requester_task_id and raw_state is not TaskState.CANCELLED
+                    and names_only_its_lead(before, after)):
+                # R30: naming the lead of a task's profession is not a rewrite
+                # of its work - nothing it did or holds is reset. An advanced
+                # task could not take it: a plan from before R30 whose
+                # profession named three leads on three IMPLEMENTED tasks
+                # could not be given one lead by any change (only the
+                # requester may be rewritten), and the stop went to her.
+                continue
             if task_id != requester_task_id and raw_state not in {
                 TaskState.WAITING,
                 TaskState.READY,
@@ -300,11 +321,15 @@ def commit_plan_change(
 
     from .memory import ProjectMemory
 
+    from .department_runtime import settled_task_ids
+
+    settled = settled_task_ids(state.task_states)
     validated = validate_plan_change(
         current,
         plan_to_dict(candidate),
         profile,
         promotion_evidence_store=ProjectMemory(state_dir.resolve().parent),
+        settled=settled,
     )
     if validated != candidate or state.graph_version != candidate.graph_version:
         raise PlanChangeConflictError("plan/state commit payload is inconsistent")
@@ -350,7 +375,7 @@ def commit_plan_change(
     # stops that task for the on-call. Recovery does not call it.
     from .department_runtime import ensure_all_department_rubrics
 
-    ensure_all_department_rubrics(ProjectMemory(state_dir.resolve().parent), candidate)
+    ensure_all_department_rubrics(ProjectMemory(state_dir.resolve().parent), candidate, settled=settled)
 
 
 def recover_plan_change_transaction(state_dir: Path, profile: str) -> bool:

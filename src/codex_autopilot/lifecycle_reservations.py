@@ -10,7 +10,7 @@ from typing import Any, Callable
 from .ai_studio import AIStudioRuntime
 from .artifact_staging import ArtifactStagingStore, task_requires_staging
 from .config import Config, DESKTOP_OWNED_SURFACE, STATE_DIR_NAME
-from .department_gate import admit_verifier, build_or_hold, snapshot
+from .department_gate import admit_verifier, build_or_hold, settled_task_ids, snapshot
 from .hook_trust import require_trusted_stop_hook_for_config
 from .lifecycle_prompts import (
     _replanner_prompt,
@@ -935,7 +935,7 @@ def _build_descriptor(
     if kind not in SESSION_KINDS:
         raise DesktopLifecycleError(f"unsupported Desktop session kind: {kind}")
     if kind == "verifier":
-        route = verifier_route(plan, task)
+        route = verifier_route(plan, task, settled=settled_task_ids(state.task_states))
         model = route.model_id
         thinking = route.reasoning
         execution_mode = route.execution_mode
@@ -982,7 +982,7 @@ def _build_descriptor(
             cfg.root,
             language=cfg.language,
             skill_path=cfg.skill_path,
-        ).build_screening_prompt(task.id, reservation_token=token)
+        ).build_screening_prompt(task.id, reservation_token=token, task_states=state.task_states)
     elif kind == "replanner":
         change = active_plan_change(state)
         title = replanner_thread_title(
@@ -1001,7 +1001,7 @@ def _build_descriptor(
             plan,
             raw_candidate,
             cfg.profile,
-            promotion_evidence_store=ProjectMemory(cfg.root),
+            promotion_evidence_store=ProjectMemory(cfg.root), settled=settled_task_ids(state.task_states),
         )
         mode = str(change.get("verification_mode") or "")
         title = plan_verifier_thread_title(candidate.graph_version, mode)

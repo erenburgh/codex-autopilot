@@ -458,6 +458,7 @@ def validate_plan_change(
     profile: str,
     *,
     promotion_evidence_store: Any | None = None,
+    settled: Any = (),
 ) -> Plan:
     """Validate a complete replacement graph before any durable write.
 
@@ -467,6 +468,7 @@ def validate_plan_change(
     transition and skill promotions. user_request is carried over from the
     current plan, never taken from the reply (M11: a 35 234-character echo
     was the measured cause of a legitimate change refused wholesale).
+    ``settled`` - the run's tasks already accepted (R30 leads).
     """
 
     from .plan_admission import plan_change_candidate
@@ -477,9 +479,7 @@ def validate_plan_change(
     if not isinstance(data, dict):
         raise ValueError("plan must be an object")
     c = IssueCollector()
-    read = plan_change_candidate(
-        c, current, data, profile, promotion_evidence_store=promotion_evidence_store
-    )
+    read = plan_change_candidate(c, current, data, profile, promotion_evidence_store=promotion_evidence_store, settled=settled)
     c.raise_if_any()
     return read.plan
 

@@ -125,7 +125,10 @@ Every acceptance is a department lead's. The department is the worker's
 profession: `verification.verifier_role` of a task names the Lead Role of that
 profession's department, and it is required on every task. One profession has
 exactly one lead - every task of one `role` names the same `verifier_role` -
-and the lead is never the task's own role. Declare the lead as its own
+and the lead is never the task's own role. In a plan change, a task already
+`VERIFIED` or `CANCELLED` keeps the lead that judged it and is not counted: name
+one lead on the profession's tasks still to be accepted, including tasks already
+under way (naming their lead resets nothing). Declare the lead as its own
 `RoleProfile` with `verification_expectations`: the runtime turns them, with a
 fixed core (fidelity to the request, every DoD item closed by evidence,
 independent re-checking), into the department's rubric version 1 in Project

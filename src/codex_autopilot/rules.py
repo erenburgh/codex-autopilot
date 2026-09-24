@@ -532,7 +532,7 @@ def record_violation(state_dir, rule_id: str, *, detail: str = "") -> None:
     )
 
 
-def _r30_scope(task: object, *, plan: object = None, phase: str | None = None, memory: object = None) -> str:
+def _r30_scope(task: object, *, plan: object = None, phase: str | None = None, memory: object = None, settled=()) -> str:
     """What R30 means for this task and this reader, in words it can act on.
 
     R30 is in force for every task. It used not to be derivable for most of
@@ -563,7 +563,7 @@ def _r30_scope(task: object, *, plan: object = None, phase: str | None = None, m
         )
     from .department_runtime import r30_scope
 
-    return r30_scope(plan, task, phase=phase, memory=memory)
+    return r30_scope(plan, task, phase=phase, memory=memory, settled=settled)
 
 
 # A rule whose runtime part depends on the task, and the function that
@@ -572,7 +572,7 @@ def _r30_scope(task: object, *, plan: object = None, phase: str | None = None, m
 _SCOPED_RULES = {"R30": _r30_scope}
 
 
-def rules_for_prompt(state_dir=None, *, task=None, plan=None, phase=None, memory=None) -> list[dict[str, str]]:
+def rules_for_prompt(state_dir=None, *, task=None, plan=None, phase=None, memory=None, settled=()) -> list[dict[str, str]]:
     """The rules block for a worker prompt.
 
     The order is fixed by rule R17: ENFORCED first; within a mode, the more
@@ -582,7 +582,9 @@ def rules_for_prompt(state_dir=None, *, task=None, plan=None, phase=None, memory
 
     When the task is known, a rule whose runtime part depends on the task
     also carries `scope`, saying what of it the runtime has in place here -
-    for this reader: the plan and the phase say who judges and by what.
+    for this reader: the plan and the phase say who judges and by what;
+    ``settled`` are the tasks already accepted, whose leads no longer speak
+    for their profession (``department_runtime.settled_task_ids``).
     Without it a reader enforces a part the runtime has not supplied, which
     is neither the reader's fault nor a thing the reader can discover. A
     scope never declares a rule out of force: that would be an exception
@@ -607,6 +609,6 @@ def rules_for_prompt(state_dir=None, *, task=None, plan=None, phase=None, memory
         entry = {"id": item.id, "mode": item.mode, "rule": item.statement, "check": item.check}
         scope = _SCOPED_RULES.get(item.id)
         if scope is not None and task is not None:
-            entry["scope"] = scope(task, plan=plan, phase=phase, memory=memory)
+            entry["scope"] = scope(task, plan=plan, phase=phase, memory=memory, settled=settled)
         block.append(entry)
     return block

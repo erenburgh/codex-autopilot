@@ -109,6 +109,10 @@ def _replanner_prompt(
                 "rubric bindings, or rubrics. Every task names its department's Lead "
                 "Role in verification.verifier_role - one lead per profession (every "
                 "task of one role names the same lead), never the task's own role. "
+                "A task already VERIFIED or CANCELLED keeps the lead that judged it "
+                "and is not counted: one lead is named on the profession's tasks still "
+                "to be accepted, tasks under way included - naming their lead resets "
+                "nothing. "
                 "Existing plan.departments entries are copied verbatim."
             ),
             # Every nested set, by the path a refusal names (R31): for a

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from .department_acceptance import (
     DepartmentAcceptanceError,
@@ -13,7 +13,7 @@ from .department_acceptance import (
     redact_conflicting_rubric_identity,
     rubric_reference_from_raw,
 )
-from .department_runtime import load_task_department_acceptance
+from .department_runtime import load_task_department_acceptance, settled_task_ids
 from .language import is_russian
 from .memory import MemoryValidationError, ProjectMemory
 from .models import MODEL_IDS, MODEL_LABELS, logical_model
@@ -165,7 +165,7 @@ class AIStudioRuntime:
         # rules violated more often come higher in the context (R17).
         self.state_dir = self.project_root / ".codex-autopilot"
 
-    def build_screening_prompt(self, task_id: str, *, reservation_token: str) -> str:
+    def build_screening_prompt(self, task_id: str, *, reservation_token: str, task_states: Mapping[str, str] | None = None) -> str:
         """Build the hiring brief for one task about to get a worker.
 
         The screener sees what the task is and what this machine has, and
@@ -212,7 +212,7 @@ class AIStudioRuntime:
         installed_omitted = len(machine_skills) - len(shown)
         envelope = {
             # R17: the rules stand before the specification they judge.
-            "rules": rules_for_prompt(self.state_dir, task=task, plan=self.plan, phase="screening", memory=self.memory),
+            "rules": rules_for_prompt(self.state_dir, task=task, plan=self.plan, phase="screening", memory=self.memory, settled=settled_task_ids(task_states)),
             **(
                 {"goal_contract": self.plan.goal_contract.to_dict()}
                 if self.plan.goal_contract is not None
@@ -432,13 +432,13 @@ End your turn with exactly one final line:
             load_skill_library(self.state_dir / SKILL_LIBRARY_DIRNAME),
         )
 
-    def route(self, task_id: str, *, phase: str = "implementation") -> RuntimeRoute:
+    def route(self, task_id: str, *, phase: str = "implementation", settled: Collection[str] = ()) -> RuntimeRoute:
         """Route solely from capability/model strategy, never from role identity."""
 
         self._phase(phase)
         task = self._task(task_id)
         if phase == "verification":
-            selected = verifier_route(self.plan, task)
+            selected = verifier_route(self.plan, task, settled=settled)
             return RuntimeRoute(
                 role_id=selected.role_id,
                 execution_mode=selected.execution_mode,
@@ -579,11 +579,11 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
 
         self._phase(phase)
         task = self._task(task_id)
-        route = self.route(task_id, phase=phase)
+        route = self.route(task_id, phase=phase, settled=(settled := settled_task_ids(task_states)))
         role = self.plan.role_map[route.role_id]
         context = self.select_context(task_id, task_states=task_states)
         # R30: every acceptance is a lead's, by its department's rubric.
-        department_acceptance = self._department_acceptance(task) if phase == "verification" else None
+        department_acceptance = self._department_acceptance(task, settled) if phase == "verification" else None
         department_reference = self._department_reference(department_acceptance)
         definition_of_done = self._verifier_definition_of_done(
             task,
@@ -666,7 +666,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             # and is never truncated. If the context budget cannot hold the
             # rules plus a minimal specification, the task is not launched -
             # a context-planning defect, not a reason to drop the rules.
-            "rules": rules_for_prompt(self.state_dir, task=task, plan=self.plan, phase=phase, memory=self.memory),
+            "rules": rules_for_prompt(self.state_dir, task=task, plan=self.plan, phase=phase, memory=self.memory, settled=settled),
             **(
                 {"goal_contract": self.plan.goal_contract.to_dict()}
                 if self.plan.goal_contract is not None
@@ -854,12 +854,12 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             )
         return prompt
 
-    def _department_acceptance(self, task: Task) -> dict[str, Any]:
+    def _department_acceptance(self, task: Task, settled: Collection[str]) -> dict[str, Any]:
         # Version 1 is written here when the department has none: this runs
         # inside the reservation's coordinator transaction, and rubric writes
         # are serialized by their own lock besides (department_acceptance).
         try:
-            loaded = load_task_department_acceptance(self.memory, self.plan, task, ensure=True)
+            loaded = load_task_department_acceptance(self.memory, self.plan, task, ensure=True, settled=settled)
         except DepartmentAcceptanceError as exc:
             raise ContextBoundaryError(
                 f"department verifier cannot launch for task {task.id}: {exc}"

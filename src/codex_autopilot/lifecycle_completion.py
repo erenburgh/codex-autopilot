@@ -14,7 +14,7 @@ from .bootstrap import mark_roadmap, select_milestone
 from .config import Config
 from .department_acceptance import DepartmentAcceptanceError, LoadedDepartmentAcceptance
 from .department_audit import SECOND_LEAD_CHECK, awaiting_second_lead, second_lead_details, second_lead_gate
-from .department_runtime import verdict_acceptance
+from .department_runtime import settled_task_ids, verdict_acceptance
 from .hook_trust import require_trusted_stop_hook_for_config
 from .memory import ProjectMemory
 from .rules import record_violation
@@ -279,7 +279,7 @@ def complete_desktop_worker(
         # used to raise here, which is an incident and a stall. Only a runtime
         # fault - no department, no rubric, a wrong title - raises.
         try:
-            loaded_department_acceptance, refusal = verdict_acceptance(memory, plan, task, session, verdict.rubric)
+            loaded_department_acceptance, refusal = verdict_acceptance(memory, plan, task, session, verdict.rubric, settled=settled_task_ids(initial.task_states))
         except (DepartmentAcceptanceError, ContextBoundaryError) as exc:
             raise WorkerProtocolError(str(exc)) from exc
         if refusal is not None:
@@ -360,7 +360,7 @@ def complete_desktop_worker(
         )
     if verdict is not None:
         second = awaiting_second_lead(initial, task_id) is not None  # R30 mitigation
-        verifier_role = plan.role_map[verifier_route(plan, task).role_id].name
+        verifier_role = plan.role_map[verifier_route(plan, task, settled=settled_task_ids(initial.task_states)).role_id].name
         supporting_evidence = evidence_that_may_support(evidence)
         if not supporting_evidence:
             raise WorkerProtocolError(

@@ -42,10 +42,10 @@ The collector catches ``ValueError`` only (``plan_issues``).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Collection, Iterable
 
 from .department_acceptance import department_contract_from_raw, department_contract_issues
-from .department_runtime import validate_department_leads
+from .department_runtime import settled_task_ids, validate_department_leads
 from .goal_contract import outcome_binding_issues, validate_goal_contract
 from .plan import (
     DEFAULT_COMPUTER_USE_SLOTS,
@@ -132,12 +132,15 @@ def graph_plan(
     require_acceptance_class: bool,
     inherited: Plan | None = None,
     require_leads: bool = True,
+    settled: Collection[str] = (),
 ) -> ReadPlan:
     """Read and check a schema-3 graph; every violation goes to ``c``.
 
     ``require_leads`` is off only for a plan the runtime saved itself: a
     running run whose plan predates R30's leads is stopped task by task when
     a lead is needed (``department_gate``), never refused wholesale on load.
+    ``settled`` are the run's tasks already VERIFIED or CANCELLED - a plan
+    change's; their leads no longer speak for their profession.
     """
 
     read = ReadPlan()
@@ -222,13 +225,19 @@ def graph_plan(
     if require_leads and c.clean("roles", "departments") and c.clean("compatibility"):
         exempt = legacy_exempt_task_ids(read.tasks, legacy_serial=legacy_serial, inherited=inherited)
         if inherited is not None:
-            # A task the change leaves as it was keeps what it had: a VERIFIED
-            # contract is immutable, so asking it for a lead would make every
-            # change of a pre-R30 plan impossible. Its lead is required where
-            # it is needed - the requester (``state_issues``) and the gate.
+            # A task the change leaves as it was keeps what it had: it is not
+            # asked for a lead of its own - its lead is required where it is
+            # needed, the requester (``state_issues``) and the gate. That
+            # alone did not make every change of a pre-R30 plan possible, as
+            # this comment used to claim: an exempt task still took part in
+            # "one profession, one lead", and two VERIFIED tasks of one role
+            # judged by two leads (legal before R30, immutable since) refused
+            # every change - reproduced by the independent check. A settled
+            # task now takes no part in it; an exempt one still to be
+            # accepted does, since it will be judged by the profession's lead.
             exempt |= {task.id for task in read.tasks if inherited.task_map.get(task.id) == task}
         for message in validate_department_leads(
-            read.tasks, roles, departments, exempt=exempt, report_unknown=False
+            read.tasks, roles, departments, exempt=exempt, settled=settled, report_unknown=False
         ):
             c.add("leads", "plan.tasks", message)
     if c.clean(*PLAN_STAGES):
@@ -530,6 +539,7 @@ def plan_change_candidate(
     profile: str,
     *,
     promotion_evidence_store: Any | None = None,
+    settled: Collection[str] = (),
 ) -> ReadPlan:
     """A complete replacement graph, checked against the current one."""
 
@@ -539,7 +549,7 @@ def plan_change_candidate(
     data = dict(data)
     data["user_request"] = current.user_request
     read = graph_plan(
-        c, data, profile, inherited=current,
+        c, data, profile, inherited=current, settled=settled,
         require_goal_contract=current.goal_contract is not None, require_acceptance_class=True,
     )
     if read.graph_version is not FAILED and read.graph_version != current.graph_version + 1:
@@ -601,7 +611,8 @@ def state_issues(
         from .department_runtime import derive_task_department
 
         try:
-            derive_task_department(read.plan, read.plan.task_map[requester_task_id])
+            derive_task_department(read.plan, read.plan.task_map[requester_task_id],
+                                   settled=settled_task_ids(getattr(state, "task_states", None)))
         except ValueError as exc:
             found.append((f"task {requester_task_id}",
                 f"R30: requester {requester_task_id} has no department lead in the new graph: {exc}"))
@@ -690,7 +701,8 @@ def admit_replanner_result(
     raw_plan = _envelope(c, final_message, request_id, base_graph_version)
     if raw_plan is FAILED:
         c.raise_if_any()
-    read = plan_change_candidate(c, current, raw_plan, profile, promotion_evidence_store=evidence_store)
+    settled = settled_task_ids(getattr(state, "task_states", None))
+    read = plan_change_candidate(c, current, raw_plan, profile, promotion_evidence_store=evidence_store, settled=settled)
     coverage(c, read)
     for path, message in state_issues(current, read, state, requester_task_id):
         c.add("state", path, message)

@@ -6,6 +6,7 @@ from typing import Any
 from .blocked_runs import stop_run as _stop_run
 from .bootstrap import mark_roadmap, select_milestone
 from .config import Config
+from .department_runtime import settled_task_ids
 from .lifecycle_base import (
     CompletionOutcome,
     DesktopLifecycleError,
@@ -278,6 +279,7 @@ def complete_plan_verifier(
         raw_candidate,
         cfg.profile,
         promotion_evidence_store=ProjectMemory(cfg.root),
+        settled=settled_task_ids(initial_state.task_states),
     )
     expected_digest = str(change_snapshot.get("proposed_plan_sha256") or "")
     if not expected_digest or expected_digest != plan_sha256(candidate):

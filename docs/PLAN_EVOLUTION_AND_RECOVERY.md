@@ -53,7 +53,10 @@ fixed order: the protocol line itself, unknown fields (each refusal names the
 accepted set, `plan_fields.ALLOWED_FIELDS`), every field of every role,
 department and task, outcome bindings and the R29 acceptance floor per task, the
 graph references, the department leads (R30: each touched task names its
-profession's one lead - departments themselves are derived, never written), the
+profession's one lead - the lead of its tasks not yet `VERIFIED` or `CANCELLED`;
+an accepted task keeps the lead that judged it and is not counted, so a plan
+from before R30 whose accepted tasks of one profession had two leads can still
+be changed; departments themselves are derived, never written), the
 fields a change may not replace, coverage, and the
 run-state conditions that can only get worse while the change drains (removed
 task, requester gone, `VERIFIED` or `CANCELLED` task rewritten). A check that
@@ -102,7 +105,13 @@ An accepted replacement is reconciled against mutable state before it becomes
 visible. Attempts, revisions, completed sessions, verification history, and
 unaffected retry deadlines are preserved. The requester, changed tasks, new
 tasks, and their descendants are re-evaluated through the normal dependency
-gate. Already verified tasks are never downgraded or rewritten.
+gate. Already verified tasks are never downgraded or rewritten. A task already
+under way (not the requester) cannot be rewritten either, with one exception by
+design: a change that only names its profession's lead in
+`verification.verifier_role` is not a rewrite of its work - nothing of it is
+reset (`resilience.names_only_its_lead`). Without it, a plan from before R30
+whose profession named three leads on three implemented tasks could never be
+given one lead, and the stop would reach her.
 
 The plan and run state are a logical transaction protected by the resource
 coordinator lock. A durable `plan-change-transaction.json` redo record contains

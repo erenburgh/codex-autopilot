@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import subprocess
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from .department_acceptance import (
     DepartmentAcceptanceError,
@@ -207,7 +207,7 @@ def deterministic_issues(
     )
 
 
-def verifier_route(plan: Plan, task: Task) -> VerifierRoute:
+def verifier_route(plan: Plan, task: Task, *, settled: Collection[str] = ()) -> VerifierRoute:
     """Route capability separately while deriving the judge from department.
 
     The judge is the lead of the department of the task's profession (R30).
@@ -215,12 +215,14 @@ def verifier_route(plan: Plan, task: Task) -> VerifierRoute:
     department resources - every task of every real plan - so a planner that
     left verifier_role out had the worker's own profession accept its work.
     There is no fallback now: no lead, no verifier (``department_gate``
-    stops that one task for the on-call).
+    stops that one task for the on-call). ``settled`` are the tasks already
+    accepted (``department_runtime.settled_task_ids``): their leads no longer
+    speak for the profession.
     """
 
     policy = task.verification
     try:
-        role_id = derive_task_department(plan, task).lead_role_id
+        role_id = derive_task_department(plan, task, settled=settled).lead_role_id
     except DepartmentAcceptanceError as exc:
         raise VerificationProtocolError(str(exc)) from exc
     execution_mode = policy.execution_mode or task.execution_mode

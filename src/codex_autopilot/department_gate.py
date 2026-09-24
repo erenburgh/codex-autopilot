@@ -31,7 +31,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .department_acceptance import DepartmentAcceptanceError, rubric_scope, stray_rubric_records
-from .department_runtime import load_task_department_acceptance
+from .department_runtime import load_task_department_acceptance, settled_task_ids
 from .engineer_stop_actions import EngineerStopActionError
 
 DEPARTMENT_STOP_KIND = "department_lead"
@@ -45,8 +45,11 @@ def admit_verifier(cfg: Any, plan: Any, state: Any, task: Any, memory: Any) -> s
     from .run_state import utc_now
     from .verification import VerificationProtocolError, verifier_route
 
+    # The profession's lead is the one with work of it still to accept: a
+    # plan from before R30 may name other leads on tasks already VERIFIED.
+    settled = settled_task_ids(state.task_states)
     try:
-        route = verifier_route(plan, task)
+        route = verifier_route(plan, task, settled=settled)
     except ModelRoutingError as exc:
         _append_event(
             state, "verifier_routing_blocked", _latest_task_session(state, task.id), utc_now(),
@@ -62,7 +65,7 @@ def admit_verifier(cfg: Any, plan: Any, state: Any, task: Any, memory: Any) -> s
         stop_for_department(cfg, plan, state, task.id, str(exc))
         return None
     try:
-        load_task_department_acceptance(memory, plan, task, ensure=True)
+        load_task_department_acceptance(memory, plan, task, ensure=True, settled=settled)
     except Exception as exc:  # noqa: BLE001 - any refusal here is this task's stop, never a raise
         stop_for_department(cfg, plan, state, task.id, str(exc))
         return None
@@ -78,8 +81,8 @@ def stop_for_department(cfg: Any, plan: Any, state: Any, task_id: str, reason: s
         "(devops-supersede-rubric), then return the task"
         if ambiguous
         else f"ask the replanner (devops-request-plan-change) to name the Lead Role of "
-        f"profession {role!r} in verification.verifier_role of its tasks - one lead, "
-        "not the profession itself"
+        f"profession {role!r} in verification.verifier_role of its tasks not yet accepted - "
+        "one lead, not the profession itself; a task VERIFIED or CANCELLED keeps its own"
     )
     _stop(
         cfg, state, task_id, DEPARTMENT_STOP_KIND, "DEPARTMENT_LEAD_BLOCKED",

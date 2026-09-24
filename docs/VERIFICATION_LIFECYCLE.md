@@ -51,10 +51,19 @@ profession: every task of one `role` names the same lead in
 verifier of every task of the profession (`department_runtime`). A submitted
 plan or plan change that leaves a lead out, gives one profession two leads or
 makes a profession its own lead is refused, every such task in one list; a
-task a change leaves untouched keeps what it had. A saved plan is never
-refused on load: a task with no lead is stopped when its verifier is reserved,
-alone, through the one stop door (`department_gate`, stop kind
-`department_lead`), and the on-call has the plan changed to name the lead.
+task a change leaves untouched is not asked for a lead of its own. The lead of
+a profession is the one with work of it still to accept: a task already
+`VERIFIED` or `CANCELLED` keeps the lead that judged it and takes no part in
+"one lead" (`settled_task_ids`), at admission and at run time. A plan from
+before R30 could name several leads for one profession, and a `VERIFIED` task
+cannot change - counting those refused every later plan change of such a run
+and left the profession's other tasks without a lead for good (found by the
+independent check). A task still to be accepted takes part, touched by the
+change or not. A saved plan is never refused on load: a task with no lead is
+stopped when its verifier is reserved, alone, through the one stop door
+(`department_gate`, stop kind `department_lead`), and the on-call has the plan
+changed to name the lead - naming the lead of a task already under way is not
+a rewrite of its work, and resets nothing (`resilience.names_only_its_lead`).
 Nothing of the department is written into `plan.json`: the plan digest bound
 to PLAN_VERIFIED does not move (checked on the live beyondness plan). A
 declared `departments` entry only names a department; its `rubric` field, if a

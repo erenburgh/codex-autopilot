@@ -21,6 +21,15 @@ Now nothing of it is the model's to write or to forget:
   each task's own verifier_role, and the independent check named why that is
   R30 by name only: two tasks of one profession could reach two leads with
   two rubrics, and nothing would notice;
+- the lead of a profession is the one that still has work of it to accept.
+  A task already VERIFIED or CANCELLED keeps the lead that judged it and
+  names nothing for the rest (``settled_task_ids``). The first cut read
+  every task of the role, and the independent check reproduced where that
+  goes: a plan from before R30 - admission let one profession name several
+  verifier_role values then - with two VERIFIED tasks of one role and two
+  leads refused every later plan change (a VERIFIED task cannot change), the
+  role's other tasks could never get a lead, the on-call had nothing to fix,
+  and the stop went to her;
 - the derivation is never written into plan.json. Doing so would change the
   plan digest and break the PLAN_VERIFIED receipt of every running run; a
   saved plan is never refused on load for it either - a task with no lead is
@@ -37,7 +46,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Collection, Iterable, Mapping, Sequence
 
 from .department_acceptance import (
     RUNTIME_RUBRIC_AUTHOR,
@@ -83,34 +92,56 @@ CORE_CRITERIA: tuple[RubricCriterion, ...] = (
 DRIFT_SCOPE_PREFIX = "department-acceptance-drift:"
 
 
-def role_lead(plan: Any, role_id: str) -> str:
-    """The one lead of a profession: what its tasks name in verifier_role."""
+def settled_task_ids(task_states: Mapping[str, Any] | None) -> frozenset[str]:
+    """The tasks whose acceptance is over: VERIFIED or CANCELLED (absorbing)."""
 
-    leads = sorted(
-        {
-            str(task.verification.verifier_role)
-            for task in plan.tasks
-            if task.role == role_id and task.verification.verifier_role
-        }
-    )
+    from .task_state import TERMINAL_TASK_STATES
+
+    terminal = {item.value for item in TERMINAL_TASK_STATES}
+    return frozenset(str(key) for key, value in (task_states or {}).items() if str(value) in terminal)
+
+
+def role_lead(plan: Any, role_id: str, *, settled: Collection[str] = ()) -> str:
+    """The one lead of a profession: what its tasks still to be accepted name.
+
+    Tasks in ``settled`` are asked only when none of the rest names a lead -
+    a task of a plan from before R30 that names none takes the lead its
+    profession's accepted work had, if that was one.
+    """
+
+    live: set[str] = set()
+    done: set[str] = set()
+    for task in plan.tasks:
+        if task.role == role_id and task.verification.verifier_role:
+            (done if task.id in settled else live).add(str(task.verification.verifier_role))
+    leads = sorted(live or done)
     if not leads:
         raise DepartmentAcceptanceError(
             f"no Lead Role is defined for role {role_id!r}: none of its tasks names one in "
             "verification.verifier_role (R30)"
         )
-    if len(leads) > 1:
+    if len(leads) > 1 and live:
         raise DepartmentAcceptanceError(
             f"role {role_id!r} has several leads {leads}; one profession has exactly one "
             "lead (R30)"
         )
+    if len(leads) > 1:
+        raise DepartmentAcceptanceError(
+            f"no Lead Role is defined for role {role_id!r}: its accepted tasks were judged by "
+            f"several leads {leads} and none of its other tasks names one in "
+            "verification.verifier_role (R30)"
+        )
     return leads[0]
 
 
-def derive_task_department(plan: Any, task: Any) -> DepartmentDefinition:
-    """The department of a task: the one its worker's profession belongs to."""
+def derive_task_department(plan: Any, task: Any, *, settled: Collection[str] = ()) -> DepartmentDefinition:
+    """The department of a task: the one its worker's profession belongs to.
 
-    lead = role_lead(plan, task.role)
+    A settled task's is the department of the lead that judged it.
+    """
+
     own = task.verification.verifier_role
+    lead = own if own and task.id in settled else role_lead(plan, task.role, settled=settled)
     if own and own != lead:  # guarded by role_lead; kept for a hand-built plan
         raise DepartmentAcceptanceError(
             f"task {task.id} names lead {own!r}, its role's lead is {lead!r}"
@@ -182,17 +213,24 @@ def validate_department_leads(
     departments: Sequence[Any] = (),
     *,
     exempt: Iterable[str] = (),
+    settled: Collection[str] = (),
     report_unknown: bool = True,
 ) -> list[str]:
     """Every R30 lead violation of a graph, in one list, never the first alone.
 
-    ``exempt`` are the migrated v0.8 tasks of a ``legacy_serial`` plan whose
-    acceptance contract is untouched (R8/R29 provenance); the new tasks of
-    such a plan need a lead like any other. ``report_unknown`` is off where
+    ``exempt`` are the tasks that keep what they had: the migrated v0.8
+    tasks of a ``legacy_serial`` plan whose acceptance contract is untouched
+    (R8/R29 provenance), and on a plan change every task it leaves as it
+    was; the new and the changed tasks need a lead like any other.
+    ``settled`` are the tasks whose acceptance is over (``settled_task_ids``):
+    they do not take part in "one profession, one lead" - the lead of a
+    profession is the one that still has work of it to accept - while an
+    exempt task still to be accepted does. ``report_unknown`` is off where
     the graph stage already reports an unknown verifier role.
     """
 
     skip = frozenset(exempt)
+    done = frozenset(settled)
     role_ids = {role.id for role in roles}
     missing: list[str] = []
     own: list[str] = []
@@ -200,7 +238,7 @@ def validate_department_leads(
     by_role: dict[str, dict[str, list[str]]] = {}
     for task in tasks:
         lead = task.verification.verifier_role
-        if lead:
+        if lead and task.id not in done:
             by_role.setdefault(task.role, {}).setdefault(lead, []).append(task.id)
         if task.id in skip:
             continue
@@ -241,7 +279,7 @@ def validate_department_leads(
         if any(lead == task.role or lead not in role_ids for lead in by_role[task.role]):
             continue
         try:
-            derive_task_department(graph, task)
+            derive_task_department(graph, task, settled=done)
         except DepartmentAcceptanceError as exc:
             found.append(f"R30: task {task.id}: {exc}")
     return found
@@ -300,7 +338,7 @@ def ensure_department_rubric(
     return reference, False
 
 
-def ensure_all_department_rubrics(memory: Any, plan: Any) -> dict[str, str]:
+def ensure_all_department_rubrics(memory: Any, plan: Any, *, settled: Collection[str] = ()) -> dict[str, str]:
     """Version 1 for every department of the plan; failures returned, never raised.
 
     Called where a failure must not stop what called it: the bootstrap and a
@@ -312,7 +350,7 @@ def ensure_all_department_rubrics(memory: Any, plan: Any) -> dict[str, str]:
     seen: set[str] = set()
     for task in plan.tasks:
         try:
-            department = derive_task_department(plan, task)
+            department = derive_task_department(plan, task, settled=settled)
         except DepartmentAcceptanceError:
             continue
         if department.id in seen:
@@ -331,7 +369,7 @@ def current_department_rubric(memory: Any, department_id: str) -> LoadedDepartme
 
 
 def load_task_department_acceptance(
-    memory: Any, plan: Any, task: Any, *, ensure: bool
+    memory: Any, plan: Any, task: Any, *, ensure: bool, settled: Collection[str] = ()
 ) -> LoadedDepartmentAcceptance:
     """Derive the task's department and load its current rubric, exactly.
 
@@ -340,7 +378,7 @@ def load_task_department_acceptance(
     against what exists, never against a rubric written after it.
     """
 
-    department = derive_task_department(plan, task)
+    department = derive_task_department(plan, task, settled=settled)
     if ensure:
         reference, drift = ensure_department_rubric(memory, plan, department)
     else:
@@ -417,7 +455,7 @@ def rubric_for_workers(memory: Any, plan: Any, department: DepartmentDefinition)
     return current.rubric if current is not None else derive_department_rubric(plan, department)
 
 
-def r30_scope(plan: Any, task: Any, *, phase: str | None, memory: Any = None) -> str:
+def r30_scope(plan: Any, task: Any, *, phase: str | None, memory: Any = None, settled: Collection[str] = ()) -> str:
     """R30 for this task and this reader, stated as facts it can act on.
 
     One text for every phase told a worker, a reviser and a screener that
@@ -430,7 +468,7 @@ def r30_scope(plan: Any, task: Any, *, phase: str | None, memory: Any = None) ->
     """
 
     try:
-        department = derive_task_department(plan, task)
+        department = derive_task_department(plan, task, settled=settled)
     except DepartmentAcceptanceError as exc:
         return (
             f"In force. No Lead Role is defined for this task ({exc}): its acceptance "
@@ -506,7 +544,7 @@ def authorize_rubric_proposal(root: Path, department_id: str, caller_thread_id: 
     if kind == "pipeline_engineer":
         return "Pipeline Engineer"
     task = plan.task_map.get(str(session.get("task_id") or ""))
-    department = derive_task_department(plan, task) if task is not None else None
+    department = derive_task_department(plan, task, settled=settled_task_ids(state.task_states)) if task is not None else None
     if department is None or department.id != department_id:
         raise DepartmentAcceptanceError(
             f"this lead judges department {department.id if department else None!r}, not "
@@ -516,7 +554,8 @@ def authorize_rubric_proposal(root: Path, department_id: str, caller_thread_id: 
 
 
 def verdict_acceptance(
-    memory: Any, plan: Any, task: Any, session: Mapping[str, Any], attested: RubricReference | None
+    memory: Any, plan: Any, task: Any, session: Mapping[str, Any], attested: RubricReference | None,
+    *, settled: Collection[str] = (),
 ) -> tuple[LoadedDepartmentAcceptance | None, tuple[str, bool] | None]:
     """The department a verdict is judged against, and why it is refused, if it is.
 
@@ -530,7 +569,7 @@ def verdict_acceptance(
 
     prompt = str((session.get("descriptor") or {}).get("prompt") or "")
     try:
-        loaded = load_task_department_acceptance(memory, plan, task, ensure=False)
+        loaded = load_task_department_acceptance(memory, plan, task, ensure=False, settled=settled)
     except DepartmentAcceptanceError as exc:
         if '"department_acceptance"' in prompt:
             raise
