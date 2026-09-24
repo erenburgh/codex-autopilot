@@ -143,6 +143,22 @@ def stop_context(cfg: Any, plan: Any, state: Any, incident: Mapping[str, Any]) -
                 and item.get("approval_signature") == system.get("approval_signature")
             ][-3:],
         }
+    if kind == "staffing":
+        # The list as the roster has it now, not as the ticket was filed: a
+        # plan change since may have fixed some of it (staffing).
+        from .staffing import load_roster
+
+        roster = load_roster(getattr(cfg, "state_dir", "")) or {}
+        context["roster"] = {
+            "plan_sha256": roster.get("plan_sha256"),
+            "complete": roster.get("complete"),
+            "issues": [item.get("message") for item in roster.get("issues") or () if isinstance(item, Mapping)][:MAX_ISSUES * 4],
+            "per_task": {
+                str(item.get("id")): item.get("department_error")
+                for item in roster.get("tasks") or () if isinstance(item, Mapping) and item.get("department_error")
+            },
+            "recommendation": system.get("recommendation"),
+        }
     if kind == "placement_defect":
         context["placement"] = {
             key: system.get(key)

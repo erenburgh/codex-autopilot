@@ -160,6 +160,11 @@ STOP_MEANS: dict[str, tuple[str, ...]] = {
     # stray record in the rubric scope - the on-call supersedes it; a runtime
     # defect - repaired. Then the task returns.
     "department_lead": _RETURN + ("request_plan_change", "supersede_department_rubric"),
+    # The run's roster did not assemble before its tasks (staffing): the same
+    # causes as a lead stop, for the whole graph at once - the replanner makes
+    # the roster whole, a stray rubric record is superseded, a runtime defect
+    # (a rubric that cannot be read) is repaired. Then the held tasks return.
+    "staffing": _RETURN + ("request_plan_change", "supersede_department_rubric"),
     # R30: a turn not started by the runtime runs in a finished lead's thread.
     # The runtime never ends a turn; a runtime defect that started it is
     # repaired, anything else is diagnosed and handed up.

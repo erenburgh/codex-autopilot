@@ -621,6 +621,15 @@ def state_issues(
         except ValueError as exc:
             found.append((f"task {requester_task_id}",
                 f"R30: requester {requester_task_id} has no department lead in the new graph: {exc}"))
+    if change.get("requires_roster") and read.plan is not FAILED:
+        # A change the on-call asked for because the run's roster did not
+        # assemble (staffing) leaves the roster whole - every violation, not
+        # only the requester's: a graph admitted with the rest untouched
+        # would stop the run again on the next pass, one round per task.
+        from .staffing import graph_issues
+
+        for message in graph_issues(read.plan, settled_task_ids(getattr(state, "task_states", None))):
+            found.append(("plan.tasks", f"the run's roster must assemble: {message}"))
     final = {TaskState.VERIFIED.value: "verified", TaskState.CANCELLED.value: "cancelled"}
     states = getattr(state, "task_states", None) or {}
     for task in read.tasks:

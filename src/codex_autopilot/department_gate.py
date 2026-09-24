@@ -187,8 +187,8 @@ def supersede_rubric_record(
     state = StateStore(cfg.state_dir).load()
     _, incident = _loaded_incident(cfg, incident_id)
     require_engineer_thread(state, incident_id, thread_id)
-    if str((incident.get("system_state") or {}).get("stop_kind") or "") != DEPARTMENT_STOP_KIND:
-        raise EngineerStopActionError("only a department_lead stop supersedes a rubric record")
+    if str((incident.get("system_state") or {}).get("stop_kind") or "") not in {DEPARTMENT_STOP_KIND, "staffing"}:
+        raise EngineerStopActionError("only a department_lead or staffing stop supersedes a rubric record")
     memory = ProjectMemory(cfg.root)
     try:
         record = memory.get_record(record_id)

@@ -563,7 +563,10 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(names.issubset({"config.toml", "plan.json", "role-specifications.json", "MILESTONE.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md", "handoff", "run-state.json", "memory.sqlite3", "memory.sqlite3-wal", "memory.sqlite3-shm", "memory.lock",
             # R30: the one writer lock of department rubric histories; the
             # bootstrap writes every department's version 1.
-            "department-rubric.lock"}))
+            "department-rubric.lock",
+            # Staffing: the run's roster, stamped with the plan digest (never
+            # plan.json), and the branch board regenerated at every save.
+            "roster.json", "BOARD.md"}))
         self.assertTrue((root / "ROADMAP.md").is_file())
         self.assertFalse((root / ".git/refs/heads/main").exists())
 

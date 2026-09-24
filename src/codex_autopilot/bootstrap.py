@@ -219,6 +219,16 @@ def initialize_project(
         from .project_roots_audit import record_roots_audit
 
         record_roots_audit(state, roots_record[0], roots_record[1], occasion="preflight")
+    # The roster before the first task (staffing): a snapshot stamped with
+    # the plan digest, never plan.json. One that does not assemble is the
+    # first reservation's stop to the on-call; a failure to write it is said
+    # here, and that reservation builds it again.
+    try:
+        from .staffing import refresh_roster
+
+        refresh_roster(state_dir, plan, state, occasion="bootstrap", memory=memory)
+    except Exception as exc:  # noqa: BLE001 - the gate rebuilds it before any task
+        print(f"codex-autopilot: the run's roster was not written: {exc}")
     store = StateStore(state_dir)
     store.save(state)
     plan_file.unlink(missing_ok=True)

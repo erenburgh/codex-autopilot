@@ -262,6 +262,12 @@ class StateStore:
             os.replace(temp, self.path)
         finally:
             temp.unlink(missing_ok=True)
+        # The branch board follows every save (board): a view regenerated from
+        # what was just written, never read back, and never a reason for the
+        # save to fail - housekeeping may never stop a run.
+        from .board import refresh_board_file
+
+        refresh_board_file(self.state_dir, state)
 
     def request_pause(self) -> None:
         self.pause_path.write_text(utc_now() + "\n", encoding="utf-8")

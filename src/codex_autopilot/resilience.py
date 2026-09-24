@@ -396,7 +396,17 @@ def commit_plan_change(
     # stops that task for the on-call. Recovery does not call it.
     from .department_runtime import ensure_all_department_rubrics
 
-    ensure_all_department_rubrics(ProjectMemory(state_dir.resolve().parent), candidate, settled=settled)
+    memory = ProjectMemory(state_dir.resolve().parent)
+    ensure_all_department_rubrics(memory, candidate, settled=settled)
+    # The roster of the new graph, stamped with its digest (staffing): the
+    # replanner edits the graph only, the runtime restaffs it. Tolerated for
+    # the same reason: the next reservation's gate rebuilds a stale roster.
+    try:
+        from .staffing import refresh_roster
+
+        refresh_roster(state_dir, candidate, state, occasion="plan_change", memory=memory)
+    except Exception:  # noqa: BLE001 - never wedges a committed change
+        pass
 
 
 def recover_plan_change_transaction(state_dir: Path, profile: str) -> bool:

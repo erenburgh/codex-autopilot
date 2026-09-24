@@ -60,19 +60,35 @@ class TheRubricIsThereBeforeTheFirstTaskTests(DepartmentRun):
 
 class ARunAlreadyUnderWayTests(DepartmentRun):
     def initialize(self, plan_file, skill) -> None:
-        # A run bootstrapped by the runtime from before R30: no rubric at all.
-        with mock.patch("codex_autopilot.bootstrap.ensure_all_department_rubrics", return_value={}):
+        # A run bootstrapped by the runtime from before R30 and before the
+        # roster: no rubric at all, no roster.json.
+        with mock.patch("codex_autopilot.bootstrap.ensure_all_department_rubrics", return_value={}), \
+                mock.patch("codex_autopilot.staffing.refresh_roster"):
             super().initialize(plan_file, skill)
 
-    def test_the_rubric_lands_at_the_leads_reservation(self) -> None:
-        """Under the coordinator lock the lead's reservation writes version 1.
+    def test_the_rubric_lands_before_the_first_task(self) -> None:
+        """The first reservation after the upgrade staffs the run and writes version 1.
 
-        Mutation: admit_verifier and the prompt only read (ensure=False) -
-        M01 is stopped for want of a rubric instead of being judged.
+        This test pinned the rubric landing at the lead's reservation
+        (admit_verifier, ensure=True): that was the first place a run under
+        way met R30. The roster is now built before any task (staffing), by
+        the reservation's gate under the same coordinator lock, and writes
+        version 1 there; the lead's reservation finds it and stays the
+        backstop. Mutation: the roster only reads the rubric - after the
+        first reservation there is none and the roster is incomplete.
         """
 
+        from codex_autopilot.staffing import load_roster
+
         self.assertEqual(self.rubric_records("art-reviewer"), [])
-        verifier = self.implement(self.reserve()[0], "worker-M01").descriptors[0]
+        self.assertIsNone(load_roster(self.cfg.state_dir))
+        worker = self.reserve()[0]
+        self.assertEqual(worker.kind, "implementation")
+        self.assertEqual(len(self.rubric_records("art-reviewer")), 1)
+        roster = load_roster(self.cfg.state_dir)
+        self.assertTrue(roster["complete"], roster["issues"])
+        self.assertEqual(roster["tasks"][0]["rubric"]["version"], 1)
+        verifier = self.implement(worker, "worker-M01").descriptors[0]
         self.assertEqual(verifier.kind, "verifier")
         self.assertEqual(len(self.rubric_records("art-reviewer")), 1)
         self.assertEqual(_tickets(self.cfg, "department_lead"), [])
@@ -178,7 +194,7 @@ def _two_professions() -> dict:
     return raw
 
 
-class ATaskWithNoLeadStopsAloneTests(DepartmentRun):
+class ATaskWithNoLeadStopsTheRunBeforeItStartsTests(DepartmentRun):
     plan_payload = staticmethod(_two_professions)
 
     def initialize(self, plan_file, skill) -> None:
@@ -187,43 +203,43 @@ class ATaskWithNoLeadStopsAloneTests(DepartmentRun):
                 mock.patch("_plan_contract._attach_test_lead"):
             super().initialize(plan_file, skill)
 
-    def test_its_neighbour_is_judged_while_the_on_call_looks(self) -> None:
-        """One ticket holds M01; M02 goes on to its lead in the same run.
+    def test_no_task_starts_and_the_on_call_holds_the_list(self) -> None:
+        """Nothing starts; one staffing ticket holds both tasks for the on-call.
 
-        It used to raise inside the reservation: the pass rolled back - with
-        the completion of the neighbour that called it - and no ticket was
-        filed. Mutation: admit_verifier re-raises instead of stopping.
+        This class pinned the opposite: M01 stopped alone at its lead's
+        reservation, after its worker had run, while M02 went on to be
+        judged - the verifier gate was the first place a missing lead was
+        noticed. Her requirement is the roster before the start (staffing):
+        a roster that does not assemble does not start the run, and the stop
+        goes through the one door to the on-call with the full list.
+        Mutation: the reservation does not call staffing_gate - M01 and M02
+        are reserved.
         """
 
-        first, second = self.reserve()
-        stopped = self.implement(first if first.task_id == "M01" else second, "worker-M01")
-        self.assertEqual([item.kind for item in stopped.descriptors], ["pipeline_engineer"])
+        descriptors = self.reserve()
+        self.assertEqual([item.kind for item in descriptors], ["pipeline_engineer"])
         state = self.store.load()
-        self.assertEqual(state.task_states["M01"], "IMPLEMENTED")
-        (ticket,) = _tickets(self.cfg, "department_lead")
-        self.assertEqual(ticket["affected_task_ids"], ["M01"])
+        self.assertEqual((state.task_states["M01"], state.task_states["M02"]), ("READY", "READY"))
+        (ticket,) = _tickets(self.cfg, "staffing")
+        self.assertEqual(sorted(ticket["affected_task_ids"]), ["M01", "M02"])
+        self.assertIn("missing for: M01", ticket["system_state"]["diagnosis"])
         self.assertIn("devops-request-plan-change", ticket["system_state"]["recommendation"])
-        self.assertIn("'character-artist'", ticket["system_state"]["recommendation"])
-        neighbour = self.implement(second if first.task_id == "M01" else first, "worker-M02")
-        self.assertIn(("verifier", "M02"), [(item.kind, item.task_id) for item in neighbour.descriptors])
 
-    def test_the_on_calls_request_carries_the_lead_requirement(self) -> None:
-        """Mutation: request_plan_change without marking requires_lead."""
+    def test_the_on_calls_request_carries_the_roster_requirement(self) -> None:
+        """Mutation: request_plan_change without marking requires_roster."""
 
         from codex_autopilot.engineer_stop_actions import request_plan_change
         from codex_autopilot.resilience import active_plan_change
 
-        first, second = self.reserve()
-        stopped = self.implement(first if first.task_id == "M01" else second, "worker-M01")
-        engineer = next(item for item in stopped.descriptors if item.kind == "pipeline_engineer")
+        (engineer,) = self.reserve()
         self.mark_active(engineer.reservation_token, "on-call")
-        (ticket,) = _tickets(self.cfg, "department_lead")
+        (ticket,) = _tickets(self.cfg, "staffing")
         result = request_plan_change(
             self.cfg, incident_id=str(ticket["incident_id"]), task_id="M01",
             reason="name the lead of character-artist", thread_id="on-call",
         )
         record = active_plan_change(self.store.load(), request_id=result["plan_change_id"])
-        self.assertTrue(record["requires_lead"])
+        self.assertTrue(record["requires_roster"])
 
     def test_the_on_calls_plan_change_must_name_the_lead(self) -> None:
         """A change asked for a lead stop is refused until the requester has one.

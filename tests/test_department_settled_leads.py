@@ -631,9 +631,14 @@ class TheOnCallCanNameTheLeadTests(ThePreR30Run):
     def test_a_task_naming_none_is_stopped_and_the_on_calls_change_passes(self) -> None:
         """M03 names no lead; its accepted colleagues were judged by two.
 
-        The gate stops M03 alone with that diagnosis, and the change the
-        on-call asks for - M03 names art-reviewer - is admitted. Mutation:
-        state_issues derives the requester's department without
+        The stop used to come at M03's lead reservation, after its worker
+        had run (the gate was the first to notice). The roster notices it
+        before M03 starts (staffing): one ticket holds M03 - the only task
+        still to be accepted - with the derivation's words for the on-call,
+        and the change it asks for - M03 names art-reviewer - is admitted.
+        The ticket holds every task still to be accepted (M03 and R01): the
+        run does not go on with a roster that did not assemble.
+        Mutation: state_issues derives the requester's department without
         ``settled`` - the on-call's change is refused for the split it
         cannot touch.
         """
@@ -641,12 +646,13 @@ class TheOnCallCanNameTheLeadTests(ThePreR30Run):
         from codex_autopilot.plan_admission import IssueCollector, plan_change_candidate, state_issues
 
         self.make_pre_r30(m03_lead=None)
-        (worker,) = self.reserve()
-        self.implement(worker, "worker-M03")
-        (ticket,) = _tickets(self.cfg, "department_lead")
-        self.assertEqual(ticket["affected_task_ids"], ["M03"])
+        (engineer,) = self.reserve()
+        self.assertEqual(engineer.kind, "pipeline_engineer")
+        (ticket,) = _tickets(self.cfg, "staffing")
+        self.assertEqual(sorted(ticket["affected_task_ids"]), ["M03", "R01"])
+        self.assertIn("missing for: M03", ticket["system_state"]["diagnosis"])
         self.assertIn("accepted tasks were judged by several leads", ticket["system_state"]["diagnosis"])
-        self.assertIn("not yet accepted", ticket["system_state"]["recommendation"])
+        self.assertIn("still to be accepted", ticket["system_state"]["recommendation"])
         current = self.plan()
         change = plan_to_dict(current)
         change["graph_version"] = current.graph_version + 1

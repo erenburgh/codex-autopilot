@@ -33,6 +33,33 @@ user-visible title. Internal thread IDs remain separate metadata. The runtime
 must set the title before production and read it back through App Server/Desktop
 metadata; a desired-title field alone is not evidence.
 
+## Names before threads (staffing)
+
+The run's roster (`staffing.py`, `.codex-autopilot/roster.json`) carries, for
+every task, the names its worker's and its lead's threads will have, made
+before the first task. The threads themselves are not made in advance: App
+Server does not keep a thread with no turn (four empty probe threads vanished
+from `thread/list`), threads created ahead ("slots", `worker_thread_ids`)
+were removed for want of an ownership hand-over and for vanishing after two
+idle hours, and R30 and rehiring want a fresh session per acceptance and per
+revision. The dispatcher still starts each thread 10-60 ms before its turn.
+
+What the owner wanted from the sidebar is the branch board instead:
+`codex-autopilot status` and the status card print one line per task -
+department, lead and rubric version, its state in the run's language
+(working and in which thread, waiting for which dependencies, waiting for or
+under acceptance, revision N of M with hire and effort, stopped with the
+on-call's ticket, waiting for her with the decision, the recommendation and
+the ready `codex-autopilot unblock` command, accepted), the first line of its
+last report and its threads - under one summary line with what staffing
+found. The runtime rewrites `.codex-autopilot/BOARD.md` at every save of run
+state; a failure to write it never stops a run.
+
+Next step, by measurement only: whether a task's thread lives on after one
+completed turn and accepts `turn/start` from another process - the condition
+for a permanent task branch as its report channel. Not assumed here; it needs
+a live App Server measurement.
+
 ## Candidate status
 
 `src/codex_autopilot/thread_titles.py` currently emits middle-dot titles such as

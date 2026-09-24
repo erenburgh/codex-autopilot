@@ -445,13 +445,52 @@ The deterministic regression coverage is in
 behavior in `tests/test_desktop_lifecycle.py` and Studio boundaries in
 `tests/test_ai_studio.py`.
 
+## The run's roster (staffing)
+
+Before any task is reserved the runtime staffs the run (`staffing.py`, no
+model): for every task its department and lead (R30), the department's rubric
+(record, version, sha256 - version 1 is written by the runtime), the skills
+known at start (or "screening at task start"), the acceptance rules (class,
+policy, deterministic checks, the R29 clean suite), the hiring ladder, the
+on-call and the escalation route, the names its threads will carry
+(`THREAD_NAMING.md`) and its dependencies; for the run, the isolation
+measurement and the cwd scheme it implies, and the last roots audit. No thread
+is created in advance: the dispatcher still starts each thread right before
+its turn.
+
+The roster is checked whole - every violation in one list, through the
+validator's collector and `validate_department_leads`. One that does not
+assemble does not start the run: the reservation's gate (`staffing_gate`,
+under the coordinator lock, before the frontier is read) files one ticket of
+kind `staffing` through the one door, holding every task still to be
+accepted, with the full list in `diagnosis`, per-task details from the
+derivation, and a recommendation. Nothing but the on-call is reserved. Its
+means are those of a lead stop: `devops-request-plan-change` - the change is
+marked `requires_roster`, and the replanner's graph is refused until the
+whole roster assembles, not only the requester's part -, `devops-supersede-rubric`
+for a stray rubric record, a runtime repair for a rubric that cannot be read.
+`stop_context` shows the list as the roster has it now. The ticket's signal is
+one per run (`roster`), so a roster the replanner cannot make whole reaches
+her through R23 after two closures, not a third on-call.
+
+The roster is a snapshot only the runtime writes (`.codex-autopilot/roster.json`),
+stamped with the `plan_sha256` it was built from; it is never written into
+`plan.json`, whose digest the PLAN_VERIFIED receipt binds. It is built at the
+bootstrap, rebuilt after a committed plan change, and rebuilt by the gate
+whenever its stamp is not the current plan's or its last build was
+incomplete. Every stop ticket carries the `escalation_route` read from the
+roster; the rule it names does not change with it - every stop goes to the
+on-call first.
+
 ## Department lead stops (R30)
 
 A verifier is reserved only with its department's lead and rubric
-(`department_gate.admit_verifier`, under the coordinator lock). When the
-task's profession names no lead, or its department's rubric history is
-ambiguous, that task alone stops (`department_lead`): it stays `IMPLEMENTED`,
-held by the ticket, and its neighbours go on. The ticket's diagnosis names the
+(`department_gate.admit_verifier`, under the coordinator lock). A task with no
+lead no longer reaches it - the roster stops the run before its start - so
+this gate is the backstop for what changes after the roster was built: a
+department's rubric history that became ambiguous. Then that task alone stops
+(`department_lead`): it stays `IMPLEMENTED`, held by the ticket, and its
+neighbours go on. The ticket's diagnosis names the
 cause and its recommendation the remedy. No lead: `devops-request-plan-change`
 - the change is marked `requires_lead`, and the replanner's graph is refused
 until the requester's profession names one. A stray record in the rubric

@@ -178,6 +178,10 @@ def _file(
                     "phase": phase,
                     "stop_kind": stop_kind,
                     "plan_change_id": plan_change_id,
+                    # Who the ticket goes to and on: read from the roster
+                    # (staffing). The rule is not the roster's to change -
+                    # routing above is unconditional; this names the route.
+                    "escalation_route": _route(cfg),
                     **system_state,
                 },
                 recent_events=tuple(recent_events),
@@ -200,6 +204,15 @@ def _file(
 
         bound_repeated_stop(cfg, state, incident_id, at=at, reason=reason)
     return incident_id
+
+
+def _route(cfg: Any) -> list[str]:
+    from .staffing import ESCALATION_ROUTE, escalation_route
+
+    try:
+        return escalation_route(cfg.state_dir)
+    except Exception:  # noqa: BLE001 - a label of the ticket, never a reason not to file it
+        return list(ESCALATION_ROUTE)
 
 
 def escalate_to_owner(

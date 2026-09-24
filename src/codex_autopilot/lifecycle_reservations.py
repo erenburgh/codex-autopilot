@@ -12,10 +12,8 @@ from .artifact_staging import ArtifactStagingStore, task_requires_staging
 from .config import Config, DESKTOP_OWNED_SURFACE, STATE_DIR_NAME
 from .department_gate import admit_verifier, build_or_hold, settled_task_ids, snapshot
 from .hook_trust import require_trusted_stop_hook_for_config
-from .lifecycle_prompts import (
-    _replanner_prompt,
-    _worker_prompt,
-)
+from .lifecycle_prompts import _replanner_prompt, _worker_prompt
+from .staffing import staffing_gate
 from .memory import ProjectMemory
 from .models import MODEL_IDS, logical_model
 from .revision_budget import basis_for
@@ -326,6 +324,7 @@ def _reserve_in_state(
         if mismatch is not None:
             stop_on_mismatched_task_states(cfg, plan, state, mismatch)
         return finish(())
+    staffing_gate(cfg, plan, state)  # the roster before the frontier: an incomplete one holds it
     paused = tasks_paused_by_incidents(cfg, plan)
     if state.active_plan_change_id is not None:
         change = active_plan_change(state)

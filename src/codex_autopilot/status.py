@@ -308,6 +308,8 @@ def render_short_status(
         f"Codex Autopilot — {snapshot['status']}: "
         f"{progress['verified']}/{progress['total']} {words['verified']}"
     ]
+    # The branch board: one line per task, in the run's language (board).
+    lines.extend(_board(cfg, state, plan, detailed=False))
     for heading, key in ((words["running"], "running"), (words["verifying"], "verifying")):
         for item in snapshot[key]:
             lines.append(f"{heading}: {item['id']} — {item['title']}")
@@ -428,6 +430,15 @@ def _hook_trust_signal(state: RunState) -> str:
     return ""
 
 
+def _board(cfg: Config, state: RunState, plan: Plan, *, detailed: bool) -> list[str]:
+    from .board import render_board
+
+    try:
+        return render_board(cfg, plan, state, detailed=detailed)
+    except Exception as exc:  # noqa: BLE001 - the card never fails on the board
+        return [f"Board unavailable: {exc}"]
+
+
 def _clip(text: str, limit: int) -> str:
     value = str(text)
     return value if len(value) <= limit else value[: limit - 1] + "…"
@@ -474,6 +485,7 @@ def render_project_status(
         _render_screening(snapshot["screening"]),
         _render_creation_causality(snapshot["creation_causality"]),
     ]
+    lines.extend(_board(cfg, state, plan, detailed=True))
     for heading, key in (
         ("Running", "running"),
         ("Verifying", "verifying"),

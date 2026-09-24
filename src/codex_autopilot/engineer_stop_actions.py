@@ -307,8 +307,11 @@ def request_plan_change(
             at=timestamp,
         )
         record["requested_by_incident"] = incident_id
-        if str((incident.get("system_state") or {}).get("stop_kind") or "") == "department_lead":
+        stop_kind = str((incident.get("system_state") or {}).get("stop_kind") or "")
+        if stop_kind == "department_lead":
             record["requires_lead"] = True  # R30: the graph must name the requester's lead
+        if stop_kind == "staffing":
+            record["requires_roster"] = True  # the graph must leave the whole roster assembled
         # A replanner that used every attempt: the new change is a fresh
         # budget, and it carries the refusals so the next replanner is not blind.
         from .replanner_hint import inherit_rejections

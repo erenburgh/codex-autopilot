@@ -56,6 +56,11 @@ below answers a question users actually asked.
    "tasks". `останови` / `stop` pauses after the current turn; `продолжи` /
    `resume` continues; `удали Codex Autopilot` / `uninstall Codex Autopilot`
    removes the plugin and keeps the project - removal needs the full name.
+   When the user asks what is happening with the run ("что с прогоном",
+   "how is it going"), show the branch board - run `status` and give its
+   board as printed: one line per task with its department, lead, state in
+   the run's language, last report and threads, under one summary line. Do
+   not retell the journal or run-state instead of it.
 3. **What a running task means.** While a milestone runs, its thread is held by
    Autopilot until the task ends with a status line; do not type into it. Thread
    titles say who is working and on what: `<Role> | <task id> | <phase>`, with

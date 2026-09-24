@@ -183,7 +183,12 @@ answer with the status card. Trailing punctuation and a leading `just`, `please`
 `просто`, `давай`, `давайте`, or `пожалуйста` are ignored. Uninstall is deliberately
 not in this list: it requires the product name.
 
-The status report groups milestones under `Running`, `Verifying`, `Waiting`,
+The status card and the report open with the branch board: one line per task
+with its department, lead and rubric version, its state in the run's language
+and, in the report, the first line of its last report and its threads, under a
+summary of how many tasks are accepted, working, waiting, stopped and waiting
+for you. The runtime keeps the same board in `.codex-autopilot/BOARD.md`. The
+status report then groups milestones under `Running`, `Verifying`, `Waiting`,
 and `Ready`; explains each wait; shows verified progress plus worker and
 Computer Use capacity; and lists exact active task titles. It also reports the
 canonical target cwd and distinguishes verified App Server project metadata

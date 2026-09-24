@@ -73,9 +73,13 @@ since its "accepted lead" was `'None'` or the profession itself, and the stop
 went to her. Such work, and a `CANCELLED` task judged by no one
 (`SettledTasks.accepted`), locks nothing: the planner names the lead. A task already under way may
 be given only a lead its profession already names (`reconcile_plan_change_state`). A saved plan is never refused on load: a task with no lead is
-stopped when its verifier is reserved, alone, through the one stop door
-(`department_gate`, stop kind `department_lead`), and the on-call has the plan
-changed to name the lead - naming the lead of a task already under way is not
+found by the run's roster before any task starts (`staffing`), and the run
+does not start - one ticket of kind `staffing` through the one stop door holds
+every task still to be accepted, with the full list for the on-call, who has
+the plan changed so the whole roster assembles (`requires_roster`); the
+verifier's own gate (`department_gate`, stop kind `department_lead`) stays
+the backstop for a rubric history that turns ambiguous later. The on-call has
+the plan changed to name the lead - naming the lead of a task already under way is not
 a rewrite of its work, and resets nothing (`resilience.names_only_its_lead`).
 Nothing of the department is written into `plan.json`: the plan digest bound
 to PLAN_VERIFIED does not move (checked on the live beyondness plan). A
