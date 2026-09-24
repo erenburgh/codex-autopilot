@@ -431,19 +431,15 @@ def _validate_plan_payload(
     if not isinstance(data, dict):
         raise ValueError("plan must be an object")
     schema = data.get("schema_version")
-    if schema in {None, LEGACY_PLAN_SCHEMA_VERSION} and "milestones" in data:
-        if inherited is not None:
-            raise ValueError("plan changes must use the canonical v0.9 schema")
+    if schema in {None, LEGACY_PLAN_SCHEMA_VERSION} and "milestones" in data and inherited is None:
         from .plan_legacy import validate_legacy_plan
 
         return validate_legacy_plan(
             data, profile, migrated_milestone_ids=migrated_milestone_ids
         )
-    if schema != PLAN_SCHEMA_VERSION:
-        raise ValueError(
-            f"plan.schema_version must be {PLAN_SCHEMA_VERSION}; "
-            f"v0.8 serial plans may use {LEGACY_PLAN_SCHEMA_VERSION} or omit it"
-        )
+    # Any other schema_version is one violation among the rest
+    # (``plan_admission.graph_plan``, stage "fields"). It was a pregate here
+    # that raised alone and hid every other defect of the graph.
     return _validate_graph_plan(
         data,
         profile,

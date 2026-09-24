@@ -1,4 +1,4 @@
-"""A rule the runtime does not apply must not read as one that it does.
+"""A rule's runtime part that is missing must not read as one that is there.
 
 R30 - acceptance by the department lead against a versioned rubric - is
 written unconditionally and carries mode ENFORCED. The runtime activates it
@@ -11,7 +11,14 @@ The prompt block sent the statement and dropped that gate. On a real run
 the plan never declared, and withheld acceptance of finished work. The worker
 asked for a prerequisite, the replanner tried to invent a department, and the
 run blocked after three rejected attempts - 23 minutes of model time on a
-rule that did not apply to the task.
+rule whose runtime part was missing for the task.
+
+The first answer told the reader R30 was "NOT in force" for such a task.
+With the check now given verbatim, that line stood beside "a verdict not
+given by the department's versioned rubric is refused": the prompt
+contradicted itself and wrote an exception from R30 into it. R30 is in
+force for every task; the scope says the missing department is the
+runtime's gap, not the work's.
 """
 
 from __future__ import annotations
@@ -59,20 +66,38 @@ class WhatTheReaderIsToldTests(unittest.TestCase):
         entry = self._r30(rules_for_prompt())
         self.assertNotIn("scope", entry)
 
-    def test_a_task_with_no_binding_is_told_the_rule_is_not_in_force(self) -> None:
+    def test_a_task_with_no_binding_is_told_the_gap_is_the_runtimes(self) -> None:
         entry = self._r30(rules_for_prompt(task=_task(
             _resource(id="asset-files", kind="directory", access="write", target="Art"),
             _resource(id="blender-ui", kind="logical", access="write", target="ui:blender"),
         )))
-        self.assertIn("NOT in force", entry["scope"])
-        self.assertIn("definition of done", entry["scope"])
+        self.assertTrue(entry["scope"].startswith("In force for every task."))
+        self.assertIn("the runtime's open part of R30 - not a defect", entry["scope"])
+        self.assertIn("refusals in the check are the runtime's to apply", entry["scope"])
 
     def test_the_rule_still_reads_as_enforced(self) -> None:
-        """Scope says where it applies, not that it is optional where it does."""
+        """Scope says what the runtime has in place, never that the rule is off."""
 
         entry = self._r30(rules_for_prompt(task=_task()))
         self.assertEqual(entry["mode"], "ENFORCED")
-        self.assertIn("NOT in force", entry["scope"])
+        self.assertIn("In force", entry["scope"])
+
+    def test_no_scope_writes_an_exception_beside_the_verbatim_check(self) -> None:
+        """The check refuses a verdict not given by the rubric; no scope may excuse it.
+
+        The independent check found "NOT in force ... do not withhold
+        acceptance" beside that check once it went verbatim. A softer
+        "judge the work by its own definition of done" is the same exception:
+        an instruction to accept by something other than the rubric.
+        """
+
+        for task in (_task(), _task(*BOUND), _task(BOUND[0])):
+            entry = self._r30(rules_for_prompt(task=task))
+            scope = entry["scope"].casefold()
+            with self.subTest(scope=entry["scope"][:40]):
+                self.assertIn("versioned rubric is refused", entry["check"])
+                for excuse in ("not in force", "withhold", "definition of done", "do not", "judge"):
+                    self.assertNotIn(excuse, scope)
 
     def test_a_bound_task_is_told_which_department(self) -> None:
         entry = self._r30(rules_for_prompt(task=_task(*BOUND)))
@@ -103,7 +128,7 @@ class WhatTheReaderIsToldTests(unittest.TestCase):
 class TheRealBlockedTaskTests(unittest.TestCase):
     """The shape that actually blocked: M01 of the beyondness run."""
 
-    def test_m01s_resources_put_r30_out_of_scope(self) -> None:
+    def test_m01s_resources_are_told_no_department_was_derived(self) -> None:
         m01 = _task(*[
             _resource(id=name, kind="logical", access="write", target=name)
             for name in (
@@ -116,7 +141,8 @@ class TheRealBlockedTaskTests(unittest.TestCase):
             )
         ])
         entry = next(i for i in rules_for_prompt(task=m01) if i["id"] == "R30")
-        self.assertIn("NOT in force", entry["scope"])
+        self.assertIn("runtime has derived no department", entry["scope"])
+        self.assertNotIn("NOT in force", entry["scope"])
 
 
 class TheRefusalNamesWhatIsAcceptedTests(unittest.TestCase):

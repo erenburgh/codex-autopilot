@@ -52,6 +52,17 @@ class PlanChangeConflictError(RuntimeError):
     pass
 
 
+class PlanChangeStateConflict(PlanChangeConflictError):
+    """A commit refused on the run's own state, not on the proposed graph.
+
+    The graph moved, a worker is still active, a lock is still held. None of
+    it is the replanner's to fix, so it must not spend the replanner's
+    attempts: every reconcile conflict used to be counted as a semantic
+    revision, and a runtime condition could burn the budget down to
+    PLAN_VERIFICATION_REJECTED.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class PlanChangeRequest:
     request_version: int
@@ -154,7 +165,7 @@ def reconcile_plan_change_state(
     """
 
     if state.graph_version != current.graph_version:
-        raise PlanChangeConflictError("run state graph version is not the replanner base")
+        raise PlanChangeStateConflict("run state graph version is not the replanner base")
     if candidate.graph_version != current.graph_version + 1:
         raise PlanChangeConflictError("candidate graph version is not the next version")
     if requester_task_id not in current.task_map or requester_task_id not in candidate.task_map:
@@ -166,11 +177,11 @@ def reconcile_plan_change_state(
         )
     unexpected_active = set(state.active_task_ids) - {requester_task_id}
     if unexpected_active:
-        raise PlanChangeConflictError(
+        raise PlanChangeStateConflict(
             f"plan change apply requires drained workers: {sorted(unexpected_active)}"
         )
     if state.resource_locks:
-        raise PlanChangeConflictError("plan change apply requires reconciled resource locks")
+        raise PlanChangeStateConflict("plan change apply requires reconciled resource locks")
 
     changed: set[str] = set()
     for task_id, before in current.task_map.items():

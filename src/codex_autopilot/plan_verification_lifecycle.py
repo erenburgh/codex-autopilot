@@ -32,6 +32,7 @@ from .plan_verification import (
 )
 from .resilience import (
     PlanChangeConflictError,
+    PlanChangeStateConflict,
     active_plan_change,
     append_resilience_event,
     commit_plan_change,
@@ -372,7 +373,13 @@ def complete_plan_verifier(
         # raised out of the dispatcher, which catches only protocol errors:
         # the verifier's turn was spent and the dispatcher went down. It is
         # the replanner's to fix, so it goes back to it like a REVISE.
+        #
+        # A conflict on the run's own state (the graph moved, a worker still
+        # active, a lock still held) is not the replanner's: it spends no
+        # attempt and adds no refusal to its prompt, and the change is rebased
+        # for a fresh replanner - as the admission does when the graph moved.
         conflict = ""
+        runtime_conflict = False
         if verdict.verdict == "PASS":
             try:
                 reconcile_plan_change_state(
@@ -383,6 +390,8 @@ def complete_plan_verifier(
                     requester_task_id=str(change["requester_task_id"]),
                     at=timestamp,
                 )
+            except PlanChangeStateConflict as exc:
+                conflict, runtime_conflict = str(exc), True
             except PlanChangeConflictError as exc:
                 conflict = str(exc)
         accepted = verdict.verdict == "PASS" and not conflict
@@ -399,26 +408,31 @@ def complete_plan_verifier(
                 else "semantic plan verification rejected: "
                 + format_plan_verification_issues(verdict.issues)
             )
-            rejections = list(change.get("rejections") or [])
-            rejections.append(
-                {
-                    "at": timestamp,
-                    "reason": issue_payload,
-                    # One by one, so the next replanner reads a numbered list.
-                    "issues": (
-                        [{"stage": "reconcile", "path": "plan.tasks", "message": conflict}]
-                        if conflict
-                        else [_semantic_issue(item) for item in verdict.issues]
-                    ),
-                }
-            )
-            change["rejections"] = rejections
+            if runtime_conflict:
+                change["base_graph_version"] = current_plan.graph_version
+            else:
+                change["rejections"] = [
+                    *(change.get("rejections") or []),
+                    {
+                        "at": timestamp,
+                        "reason": issue_payload,
+                        # One by one, so the next replanner reads a numbered list.
+                        "issues": (
+                            [{"stage": "reconcile", "path": "plan.tasks", "message": conflict}]
+                            if conflict
+                            else [_semantic_issue(item) for item in verdict.issues]
+                        ),
+                    },
+                ]
             history = list(change.get("plan_verification_history") or [])
             history.append(
                 {
                     "at": timestamp,
                     "mode": mode,
-                    "verdict": "RECONCILE_CONFLICT" if conflict else "REVISE",
+                    "verdict": (
+                        "RUNTIME_CONFLICT" if runtime_conflict
+                        else "RECONCILE_CONFLICT" if conflict else "REVISE"
+                    ),
                     "issues": [item.to_dict() for item in verdict.issues],
                     "evidence_id": evidence_id,
                     "verification_result_id": verification_id,
@@ -426,7 +440,13 @@ def complete_plan_verifier(
                 }
             )
             change["plan_verification_history"] = history
-            exhausted = len(
+            # Uncounted is not unbounded. A drain or a lock clears by the next
+            # round; the same refusal twice in a row does not clear by
+            # waiting, and a fresh replanner cannot fix the run's state - it
+            # would only spend turns. That goes to the on-call, the same door
+            # as an exhausted budget.
+            stuck = runtime_conflict and len(history) > 1 and history[-2].get("verdict") == "RUNTIME_CONFLICT"
+            exhausted = stuck or len(
                 [
                     item
                     for item in history
@@ -444,7 +464,11 @@ def complete_plan_verifier(
                     plan_change_id=str(change.get("id") or ""),
                     phase="PLAN_VERIFICATION_REJECTED",
                     reason=issue_payload,
-                    summary="The plan verifier refused the proposed plan every time.",
+                    summary=(
+                        "The plan could not be committed against the run's own state twice in a row."
+                        if stuck
+                        else "The plan verifier refused the proposed plan every time."
+                    ),
                     at=timestamp,
                     task_ids=(task_id,),
                 )

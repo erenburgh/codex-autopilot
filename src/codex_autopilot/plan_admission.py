@@ -136,8 +136,13 @@ def graph_plan(
 
     read = ReadPlan()
     c.check("fields", "plan", reject_unknown, data, PLAN_FIELDS, "plan", REQUIRED_PLAN_FIELDS)
-    if inherited is not None and data.get("schema_version") != PLAN_SCHEMA_VERSION:
-        c.add("fields", "plan.schema_version", "plan changes must use the canonical v0.9 schema")
+    # schema_version is one violation of the stage, never a pregate: the
+    # rest of the graph is still read and reported with it.
+    if data.get("schema_version") != PLAN_SCHEMA_VERSION:
+        c.add("fields", "plan.schema_version",
+              "plan changes must use the canonical v0.9 schema" if inherited is not None
+              else f"plan.schema_version must be {PLAN_SCHEMA_VERSION}; "
+              f"v0.8 serial plans may use {LEGACY_PLAN_SCHEMA_VERSION} or omit it")
 
     read.goal = c.check("header", "plan.goal", required_string, data.get("goal"), "plan.goal")
     user_request = c.check(

@@ -682,41 +682,59 @@ def _reserve_pipeline_engineer_in_state(
     engineer at work is derived in ``run_status`` from its pending session.
     """
 
+    from .ai_studio import ContextBoundaryError
     from .lifecycle_reservations import _build_descriptor, _descriptor_state_dir
 
     if engineer_session_pending(state):
         return ()
     incident = open_pipeline_engineer_incident(cfg)
-    # R23 for the on-call itself: a ticket whose engineers were lost twice
-    # (``hand_lost_engineers_to_owner``) goes to her, and the next ticket in
-    # the lane is taken instead.
-    while incident is not None and hand_lost_engineers_to_owner(cfg, state, incident):
-        incident = open_pipeline_engineer_incident(cfg)
-    if incident is None:
-        return ()
-    incident_id = str(incident["incident_id"])
-    task_id = _anchor_task(plan, state, incident)
+    handed: set[str] = set()
+    while True:
+        # R23 for the on-call itself: a ticket whose engineers were lost twice
+        # (``hand_lost_engineers_to_owner``) goes to her, and the next ticket in
+        # the lane is taken instead.
+        while incident is not None and hand_lost_engineers_to_owner(cfg, state, incident):
+            incident = open_pipeline_engineer_incident(cfg)
+        if incident is None:
+            return ()
+        incident_id = str(incident["incident_id"])
+        task_id = _anchor_task(plan, state, incident)
 
-    worker_sequence = state.worker_sequence + 1
-    token = _stable_id(
-        state,
-        f"reservation:{task_id}:pipeline_engineer:{incident_id}:{worker_sequence}",
-    )
-    state.worker_sequence = worker_sequence
-    operation_id = _stable_id(state, f"operation:{token}")
-    client_id = f"autopilot-{_stable_id(state, f'client:{token}')[:24]}"
-    attempt = int(state.task_attempts.get(task_id, 0)) or 1
-    descriptor = _build_descriptor(
-        cfg,
-        _graph_for_the_engineer(plan, state),
-        state,
-        task_id=task_id,
-        kind="pipeline_engineer",
-        attempt=attempt,
-        token=token,
-        operation_id=operation_id,
-        client_id=client_id,
-    )
+        worker_sequence = state.worker_sequence + 1
+        token = _stable_id(
+            state,
+            f"reservation:{task_id}:pipeline_engineer:{incident_id}:{worker_sequence}",
+        )
+        operation_id = _stable_id(state, f"operation:{token}")
+        client_id = f"autopilot-{_stable_id(state, f'client:{token}')[:24]}"
+        attempt = int(state.task_attempts.get(task_id, 0)) or 1
+        try:
+            descriptor = _build_descriptor(
+                cfg,
+                _graph_for_the_engineer(plan, state),
+                state,
+                task_id=task_id,
+                kind="pipeline_engineer",
+                attempt=attempt,
+                token=token,
+                operation_id=operation_id,
+                client_id=client_id,
+            )
+        except ContextBoundaryError as exc:
+            # The on-call's prompt cannot be built for this ticket. It used to
+            # raise out of the reservation, unguarded: the on-call never came
+            # and nobody was told. The ticket goes to her with the reason, and
+            # the next ticket in the lane is taken - once per ticket in a
+            # pass, so a ticket that stays in the lane cannot spin it.
+            if incident_id in handed or not hand_unpromptable_ticket_to_owner(
+                cfg, state, incident, str(exc)
+            ):
+                return ()
+            handed.add(incident_id)
+            incident = open_pipeline_engineer_incident(cfg)
+            continue
+        state.worker_sequence = worker_sequence
+        break
     session: dict[str, Any] = {
         "reservation_token": token,
         "resource_ownership_token": None,
@@ -865,6 +883,80 @@ def hand_lost_engineers_to_owner(cfg: Any, state: Any, incident: dict[str, Any])
         detail=f"{incident_id} -> owner",
     )
     return True
+
+
+def hand_unpromptable_ticket_to_owner(
+    cfg: Any, state: Any | None, incident: dict[str, Any], error: str
+) -> bool:
+    """The on-call's prompt cannot be built: the ticket goes to her. True if sent.
+
+    Every stop calls the on-call - and when its prompt cannot be built, the
+    call is the one thing that cannot happen. The package is fitted around
+    the rules (``engineer_package_budget``), so this is left for a rules
+    block grown past the ceiling, or a ticket whose record the prompt
+    refuses. Neither is the on-call's to repair, and neither may be a
+    silence: she gets the ticket with the reason and a recommendation, like
+    any escalation (R13, RECOVERY_EXHAUSTED - the runtime's own recovery
+    cannot be brought). Never raises: a reservation may not fail on
+    bookkeeping. Without ``state`` (the dispatcher, outside the run-state
+    transaction) only the ticket moves; its tasks stay held by it.
+    """
+
+    from .blocked_runs import escalate_to_owner
+    from .stop_holds import block_escalated_tasks, holds_its_tasks
+
+    incident_id = str(incident.get("incident_id") or "")
+    at = utc_now()
+    diagnosis = (
+        f"The on-call engineer for ticket {incident_id} cannot be called: its prompt "
+        f"was refused - {error}. The diagnostic parts of the package are already "
+        "cut to fit; what remains is the ticket's identity, its action lists and "
+        "the rules block, which is never cut (R17)."
+    )[:2000]
+    try:
+        outcome = escalate_to_owner(
+            cfg,
+            incident_id,
+            code="RECOVERY_EXHAUSTED",
+            detail=diagnosis,
+            at=at,
+            escalation={
+                "diagnosis": diagnosis,
+                "decision_needed": "how the on-call's context is to hold the rules block and this ticket",
+                "recommendation": (
+                    "raise the prompt ceiling or split the rules block by phase through "
+                    "a recorded decision; until then the ticket's tasks stay held"
+                ),
+                "scope": "task",
+            },
+        )
+    except Exception:  # noqa: BLE001 - escalate_to_owner banners what it could not record
+        return False
+    if outcome == "refused":
+        return False
+    if outcome == "answered":
+        # She already answered this ticket and it came back to the lane; the
+        # escalation is not recorded over her answer, so she is told here
+        # and the run journal keeps it.
+        from .blocked_runs import _tell_owner
+
+        _tell_owner(cfg, diagnosis)
+    if state is None:
+        return outcome == "escalated"
+    if outcome == "escalated" and holds_its_tasks(incident):
+        try:
+            block_escalated_tasks(cfg, state, incident_id)
+        except Exception:  # noqa: BLE001 - the ticket still holds them; she is told
+            pass
+    from .resilience import append_resilience_event
+
+    append_resilience_event(
+        state,
+        "pipeline_engineer_unpromptable",
+        at=at,
+        detail={"incident_id": incident_id, "error": error[:2000], "outcome": outcome},
+    )
+    return outcome == "escalated"
 
 
 def _graph_for_the_engineer(plan: Any, state: Any) -> Any:

@@ -181,6 +181,168 @@ class TheOnCallAlwaysFitsTests(powers._Stopped):
         frame = len(prompt) - len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         self.assertLess(frame, ENGINEER_FRAME_RESERVE)
 
+    def test_a_ticket_whose_every_field_is_huge_still_brings_the_on_call(self) -> None:
+        """The edge: the ticket's own diagnostics past the ceiling, with the whole rules block.
+
+        The ticket carries its summary (the stop's reason on record), its
+        system_state, its recent_events and what an earlier escalation left.
+        They used to stay outside the fitting, left to the ceiling's refusal.
+        """
+
+        from codex_autopilot import lifecycle_dispatch, lifecycle_reservations
+        from codex_autopilot.engineer_package_budget import INCIDENT_IDENTITY
+
+        incident_id, engineer = self.stopped(kind="approval_required", reason_code="DANGEROUS_PERMISSION")
+        session = next(
+            item for item in self.store.load().worker_sessions
+            if item.get("reservation_token") == engineer.reservation_token
+        )
+        real = lifecycle_reservations.pipeline_engineer_package
+        big = MAX_PROMPT_CHARS
+
+        def swollen(cfg, state, wanted=None):
+            package = real(cfg, state, wanted)
+            package["incident"].update(
+                summary="s" * big,
+                system_state={"blob": "y" * big},
+                recent_events=[{"detail": "e" * big}],
+                escalation_detail="d" * big,
+            )
+            package["system_state"] = {"blob": "y" * big}
+            package["recent_events"] = [{"detail": "e" * big}]
+            return package
+
+        huge = {"gathered_by": "dispatcher", "threads": [{"name": "n" * big}]}
+        with mock.patch.object(lifecycle_reservations, "pipeline_engineer_package", swollen), \
+             mock.patch.object(lifecycle_dispatch, "server_view_for_incident", return_value=huge):
+            prompt = lifecycle_dispatch._pipeline_engineer_prompt_with_server_view(self.cfg, None, session)
+
+        self.assertLessEqual(len(prompt), MAX_PROMPT_CHARS)
+        payload = json.loads(prompt.split("AUTOPILOT_INCIDENT: ", 1)[1].split("\n", 1)[0])
+        self.assertEqual(payload["rules"], rules_for_prompt(self.cfg.state_dir))
+        ticket = payload["incident"]
+        self.assertEqual(ticket["incident_id"], incident_id)
+        for key in ("summary", "system_state", "recent_events", "escalation_detail"):
+            with self.subTest(key=key):
+                self.assertTrue(ticket[key]["truncated"])
+                self.assertGreaterEqual(ticket[key]["original_chars"], big)
+        original = self.ticket(incident_id)
+        for key in INCIDENT_IDENTITY:
+            if key in original:
+                with self.subTest(identity=key):
+                    self.assertEqual(ticket[key], original[key])
+
+    def test_a_prompt_the_dispatcher_cannot_build_goes_to_her(self) -> None:
+        from codex_autopilot import lifecycle_dispatch
+        from codex_autopilot.ai_studio import AIStudioRuntime, ContextBoundaryError
+
+        incident_id, engineer = self.stopped()
+        session = next(
+            item for item in self.store.load().worker_sessions
+            if item.get("reservation_token") == engineer.reservation_token
+        )
+        refusal = ContextBoundaryError(f"Pipeline Engineer prompt exceeds {MAX_PROMPT_CHARS} characters")
+        with mock.patch.object(AIStudioRuntime, "build_pipeline_engineer_prompt", side_effect=refusal):
+            with self.assertRaises(ContextBoundaryError):
+                lifecycle_dispatch._pipeline_engineer_prompt_with_server_view(self.cfg, None, session)
+
+        ticket = self.ticket(incident_id)
+        self.assertEqual(ticket["phase"], "ESCALATE_TO_USER")
+        self.assertEqual(ticket["escalation_reason"], "RECOVERY_EXHAUSTED")
+        self.assertIn("cannot be called", ticket["escalation_detail"])
+
+
+class AnUnbuildableOnCallPromptIsASignalTests(powers._Stopped):
+    def test_the_ticket_goes_to_her_and_the_run_goes_on(self) -> None:
+        """Every stop calls the on-call; when its prompt cannot be built, she is told.
+
+        ContextBoundaryError used to raise out of the reservation unguarded:
+        the pass that should bring the on-call rolled back, and nobody was
+        told why it never came.
+        """
+
+        from codex_autopilot.ai_studio import AIStudioRuntime, ContextBoundaryError
+        from _relay import reserve_ready_frontier
+
+        state = self.store.load()
+        state.task_states["A"] = "BLOCKED"
+        incident_id = powers.stop_run(
+            self.cfg, state, stop_kind="worker_blocked", phase="BLOCKED",
+            reason="A stopped: MISSING_RESOURCE", summary="s.", at=powers.AT,
+            task_ids=("A",), system_state={"reason_code": "MISSING_RESOURCE"},
+        )
+        self.store.save(state)
+        refusal = ContextBoundaryError(f"Pipeline Engineer prompt exceeds {MAX_PROMPT_CHARS} characters")
+        with mock.patch.object(AIStudioRuntime, "build_pipeline_engineer_prompt", side_effect=refusal):
+            reserved = reserve_ready_frontier(self.cfg)
+
+        self.assertEqual([(item.kind, item.task_id) for item in reserved], [("implementation", "B")])
+        ticket = self.ticket(str(incident_id))
+        self.assertEqual(ticket["phase"], "ESCALATE_TO_USER")
+        self.assertEqual(ticket["escalation_reason"], "RECOVERY_EXHAUSTED")
+        self.assertIn(f"exceeds {MAX_PROMPT_CHARS} characters", ticket["escalation_detail"])
+        self.assertIn("never cut (R17)", ticket["escalation_detail"])
+        events = [item["event"] for item in self.store.load().resilience_journal]
+        self.assertIn("pipeline_engineer_unpromptable", events)
+
+    def _stop_a(self):
+        state = self.store.load()
+        state.task_states["A"] = "BLOCKED"
+        incident_id = powers.stop_run(
+            self.cfg, state, stop_kind="worker_blocked", phase="BLOCKED",
+            reason="A stopped: MISSING_RESOURCE", summary="s.", at=powers.AT,
+            task_ids=("A",), system_state={"reason_code": "MISSING_RESOURCE"},
+        )
+        self.store.save(state)
+        return str(incident_id)
+
+    def test_a_ticket_that_stays_in_the_lane_cannot_spin_the_reservation(self) -> None:
+        """Handed once per pass: a ticket the escalation left open is not taken again."""
+
+        from codex_autopilot import blocked_runs
+        from codex_autopilot.ai_studio import AIStudioRuntime, ContextBoundaryError
+        from _relay import reserve_ready_frontier
+
+        self._stop_a()
+        calls = []
+
+        def left_open(*_args, **_kwargs):
+            calls.append(1)
+            if len(calls) > 3:
+                raise AssertionError("the reservation took the same ticket again")
+            return "escalated"
+
+        refusal = ContextBoundaryError(f"Pipeline Engineer prompt exceeds {MAX_PROMPT_CHARS} characters")
+        with mock.patch.object(AIStudioRuntime, "build_pipeline_engineer_prompt", side_effect=refusal), \
+             mock.patch.object(blocked_runs, "escalate_to_owner", side_effect=left_open):
+            reserved = reserve_ready_frontier(self.cfg)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([(item.kind, item.task_id) for item in reserved], [("implementation", "B")])
+
+    def test_a_ticket_she_already_answered_is_still_a_signal(self) -> None:
+        """Her answer is not overwritten by the escalation; she is told, and the journal keeps it."""
+
+        from codex_autopilot import blocked_runs
+        from codex_autopilot.ai_studio import AIStudioRuntime, ContextBoundaryError
+        from _relay import reserve_ready_frontier
+
+        incident_id = self._stop_a()
+        told = []
+        refusal = ContextBoundaryError(f"Pipeline Engineer prompt exceeds {MAX_PROMPT_CHARS} characters")
+        with mock.patch.object(AIStudioRuntime, "build_pipeline_engineer_prompt", side_effect=refusal), \
+             mock.patch.object(blocked_runs, "escalate_to_owner", return_value="answered"), \
+             mock.patch.object(blocked_runs, "_tell_owner", side_effect=lambda _cfg, text: told.append(text)):
+            reserve_ready_frontier(self.cfg)
+
+        self.assertEqual(len(told), 1)
+        self.assertIn(f"ticket {incident_id} cannot be called", told[0])
+        events = [
+            item for item in self.store.load().resilience_journal
+            if item["event"] == "pipeline_engineer_unpromptable"
+        ]
+        self.assertEqual([item["detail"]["outcome"] for item in events], ["answered"])
+
 
 if __name__ == "__main__":
     unittest.main()

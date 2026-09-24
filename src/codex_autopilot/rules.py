@@ -533,20 +533,33 @@ def record_violation(state_dir, rule_id: str, *, detail: str = "") -> None:
 
 
 def _r30_scope(task: object) -> str:
-    """Whether R30 is in force for this task, in words the reader can act on.
+    """What R30 means for this task, in words the reader can act on.
 
     R30 reads as unconditional - acceptance is performed by the department
-    lead against a versioned rubric - but the runtime only enforces it when
-    the task declares both the department-binding and rubric-binding logical
-    resources. `task_department_binding` returns None otherwise and nothing
-    downstream asks for a lead or a rubric.
+    lead against a versioned rubric - but the runtime derives a department
+    only when the task declares both the department-binding and the
+    rubric-binding logical resource. ``task_department_binding`` returns
+    None otherwise and nothing downstream asks for a lead or a rubric.
 
-    A verifier that was handed the statement without that gate did the only
+    A verifier that was handed the statement without that fact did the only
     thing it could: it looked for a department and a rubric, found neither,
     and refused to accept a task the runtime never scoped to a department.
     The worker then asked for a prerequisite, the replanner tried to invent a
-    department, and the run blocked - 23 minutes of model time on a rule that
-    did not apply. Measured on a real run, 23 Sep 2026.
+    department, and the run blocked - 23 minutes of model time. Measured on a
+    real run, 23 Sep 2026.
+
+    The first answer told the reader R30 was "NOT in force" here and not to
+    withhold acceptance. With the check now given verbatim (R17) that line
+    stood next to "a verdict not given by the department's versioned rubric
+    is refused" - the prompt contradicted itself, and it wrote into the
+    prompt the very exception from R30 the owner told us to remove. R30 is
+    in force for every task. This line states facts only - what the runtime
+    has not derived for this task, and whose part that is - and gives the
+    reader no instruction the check does not: not "do not withhold", not
+    "judge by the definition of done", which were the same exception in
+    softer words. The refusals in the check are the runtime's to apply.
+    Deriving the department for every task (the R30 line) closes the gap and
+    removes this scope.
     """
 
     from .department_acceptance import DepartmentAcceptanceError, task_department_binding
@@ -557,12 +570,14 @@ def _r30_scope(task: object) -> str:
         return f"In force, and the task's own binding is malformed: {exc}"
     if binding is None:
         return (
-            "NOT in force for this task. It declares neither the "
-            "department-binding nor the rubric-binding logical resource, so the "
-            "runtime scopes it to no department and asks for no rubric. Do not "
-            "look for a department lead or a Project Memory rubric here, and do "
-            "not withhold acceptance for their absence: judge this task by its "
-            "own definition of done."
+            "In force for every task. For this one the runtime has derived no "
+            "department, lead or versioned rubric: it declares neither the "
+            "department-binding nor the rubric-binding logical resource. The "
+            "refusals in the check are the runtime's to apply, and deriving "
+            "what they need is the runtime's open part of R30 - not a defect "
+            "of the work and not a prerequisite the worker or this turn can "
+            "supply. There is no department lead or Project Memory rubric for "
+            "you to find here."
         )
     return (
         f"In force: the task binds department {binding.department_id!r} and its "
@@ -570,7 +585,7 @@ def _r30_scope(task: object) -> str:
     )
 
 
-# A rule whose runtime activation depends on the task, and the function that
+# A rule whose runtime part depends on the task, and the function that
 # says so. Only the rules listed here carry a `scope` line; the rest apply
 # wherever they are read, which is why they need no gate.
 _SCOPED_RULES = {"R30": _r30_scope}
@@ -584,10 +599,12 @@ def rules_for_prompt(state_dir=None, *, task=None) -> list[dict[str, str]]:
     entry carries the rule's statement and its check verbatim: if the
     context budget cannot hold it, the task is not launched.
 
-    When the task is known, a rule the runtime activates conditionally also
-    carries `scope`, saying whether it is in force here. Without it a reader
-    enforces a rule the runtime does not, which is neither the reader's fault
-    nor a thing the reader can discover.
+    When the task is known, a rule whose runtime part depends on the task
+    also carries `scope`, saying what of it the runtime has in place here.
+    Without it a reader enforces a part the runtime has not supplied, which
+    is neither the reader's fault nor a thing the reader can discover. A
+    scope never declares a rule out of force: that would be an exception
+    from her rule written into the prompt.
     """
     counts = violation_counts(state_dir) if state_dir is not None else {}
 

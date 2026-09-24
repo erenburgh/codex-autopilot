@@ -31,6 +31,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from codex_autopilot.pipeline_engineer import (
     HealthcheckResult,
@@ -190,8 +191,13 @@ class TheSameHeldStopIsBoundedTests(_Run):
 
         self._loop(6)
         # Her answer as production takes it: unblock the task, then Resume
-        # closes what waits for her.
-        with contextlib.redirect_stdout(io.StringIO()):
+        # closes what waits for her. The wake-up her answer raises is a real
+        # detached process; left unpatched it wrote its log into the state
+        # directory while the temporary root was being removed, and the
+        # test failed at cleanup about one run in five ("Directory not
+        # empty"), at HEAD as well.
+        with mock.patch("codex_autopilot.wake._spawn_wake", return_value=4242), \
+             contextlib.redirect_stdout(io.StringIO()):
             main(["unblock", "--project", str(self.root), "--task", "A", "--reason", "the key is in place"])
         _answer_escalation(self.cfg, self.store.load())
         worker = reserve_ready_frontier(self.cfg, relay_owner_thread_id="owner-2")[0]

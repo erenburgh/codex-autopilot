@@ -638,7 +638,7 @@ def _pipeline_engineer_prompt_with_server_view(
 ) -> str:
     """The engineer's prompt with the server's answer already inside."""
 
-    from .ai_studio import AIStudioRuntime
+    from .ai_studio import AIStudioRuntime, ContextBoundaryError
     from .lifecycle_reservations import pipeline_engineer_package
     from .plan import load_plan
 
@@ -652,14 +652,24 @@ def _pipeline_engineer_prompt_with_server_view(
         client, cfg, state, package["incident"]
     )
     plan = load_plan(cfg.state_dir, cfg.profile)
-    return AIStudioRuntime(
-        plan,
-        cfg.root,
-        language=cfg.language,
-        skill_path=cfg.skill_path,
-    ).build_pipeline_engineer_prompt(
-        package, reservation_token=str(session.get("reservation_token") or "")
-    )
+    try:
+        return AIStudioRuntime(
+            plan,
+            cfg.root,
+            language=cfg.language,
+            skill_path=cfg.skill_path,
+        ).build_pipeline_engineer_prompt(
+            package, reservation_token=str(session.get("reservation_token") or "")
+        )
+    except ContextBoundaryError as exc:
+        # The reservation built this prompt without the server's view, and
+        # that view is the first part cut to fit - so only a ticket or a
+        # rules block that grew since lands here. The on-call cannot be
+        # called; she is told, and the raise fails this session as before.
+        from .engineer_reservation import hand_unpromptable_ticket_to_owner
+
+        hand_unpromptable_ticket_to_owner(cfg, None, package["incident"], str(exc))
+        raise
 
 
 def causal_gate_open(

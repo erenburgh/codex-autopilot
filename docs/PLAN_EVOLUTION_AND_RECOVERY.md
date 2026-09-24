@@ -66,7 +66,14 @@ the replanner is the runtime's state, not its mistake: the change is rebased and
 a fresh replanner is raised without spending an attempt. A semantic `REVISE` from
 the plan verifier, and a commit conflict after its PASS (an advanced task
 rewritten), return to the replanner the same way instead of taking the dispatcher
-down. When the three attempts are spent, only the requester is held and the
+down. A commit refused on the run's own state (the run state's graph version
+moved, a worker other than the requester still active, a lock still held) is
+not the replanner's either: the change is rebased, a fresh replanner is raised,
+and no semantic revision is spent (`RUNTIME_CONFLICT` in
+`plan_verification_history`). The same refusal twice in a row does not clear by
+waiting, so the second one goes to the on-call through the same door as an
+exhausted budget. A wrong `schema_version` is one violation among the rest, for
+a fresh plan as for a change. When the three attempts are spent, only the requester is held and the
 on-call is called; it can raise a new change (`devops-request-plan-change`) with a
 fresh budget that carries the old refusals as `inherited_rejections`, and so does
 her `unblock --option replan`.

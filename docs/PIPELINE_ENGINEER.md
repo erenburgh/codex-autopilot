@@ -355,7 +355,14 @@ the rules do not fit the prompt ceiling together, the package gives way: its
 diagnostic parts (`server_view`, `recent_events`, `stop_context`, `system_state`)
 are replaced, largest first, by `{"truncated": true, "original_chars": N, "head": ...}`;
 the ticket's identity, class, phase and actions never are
-(`engineer_package_budget`).
+(`engineer_package_budget`). The ticket's own copies of diagnostics (its summary
+with the stop's reason, `system_state`, `recent_events`, an earlier escalation's
+detail) give way next, the same way. If even the ticket's identity, the action
+lists and the rules cannot fit, the on-call cannot be called for that ticket: it
+goes to the owner as `ESCALATE_TO_USER` / `RECOVERY_EXHAUSTED` with the refusal
+as its diagnosis and a recommendation, the event `pipeline_engineer_unpromptable`
+is journaled, and the next ticket in the lane is taken - at reservation and at
+the dispatcher alike (`engineer_reservation.hand_unpromptable_ticket_to_owner`).
 
 No worker transcript or forwarded authorization prose is accepted by this
 entry point. Status output shows the role, incident phase, paused task IDs,

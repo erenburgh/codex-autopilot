@@ -174,6 +174,58 @@ class OneRefusalCarriesEveryDefectTests(_Replanning):
         self.assertEqual(stages, ["roles", "coverage"], issues)
         self.assertIn("'second' has no producer", issues[1]["message"])
 
+    def test_outcomes_and_r29_are_checked_per_task_beside_a_broken_one(self) -> None:
+        """A broken task hides nothing of another task's own checks.
+
+        Outcome bindings and the R29 floor depend on the task alone. Gated on
+        every task being read, B's two violations surfaced only in the round
+        after A's field was fixed.
+        """
+
+        cfg, _store = self.initialize(graph([task("A")], max_workers=1))
+        current = load_plan(cfg.state_dir, cfg.profile)
+        bad = self.candidate_with_prerequisite(current)
+        bad["tasks"][0]["title"] = ""
+        requester = bad["tasks"][1]
+        requester["produces_outcomes"] = ["ghost"]
+        requester["verification"]["deterministic_checks"] = []
+        with self.assertRaises(PlanIssues) as caught:
+            validate_plan_change(current, bad, "adaptive")
+        found = [(item.stage, item.path) for item in caught.exception.issues]
+        self.assertEqual(found, [
+            ("tasks", "task 1.title"),
+            ("outcomes", "task A.produces_outcomes"),
+            ("acceptance", "task A.verification"),
+        ])
+        self.assertIn("unknown Goal Contract outcomes: ghost", caught.exception.issues[1].message)
+        self.assertIn("full-suite deterministic check", caught.exception.issues[2].message)
+
+    def test_a_wrong_schema_version_is_one_issue_among_the_rest(self) -> None:
+        cfg, _store = self.initialize(graph([task("A")], max_workers=1))
+        current = load_plan(cfg.state_dir, cfg.profile)
+        bad = self.candidate_with_prerequisite(current)
+        bad["schema_version"] = 2
+        bad["goal"] = "Another goal."
+        with self.assertRaises(PlanIssues) as caught:
+            validate_plan_change(current, bad, "adaptive")
+        self.assertEqual(messages(caught.exception), [
+            "plan changes must use the canonical v0.9 schema",
+            "plan changes must not replace the run goal",
+        ])
+
+    def test_a_fresh_plan_reports_its_schema_with_the_rest(self) -> None:
+        """The planner's graph too: schema_version used to be a pregate."""
+
+        raw = graph([task("A")])
+        raw["schema_version"] = 4
+        raw["tasks"][0]["title"] = ""
+        with self.assertRaises(PlanIssues) as caught:
+            validate_plan(raw, "adaptive")
+        self.assertEqual(messages(caught.exception), [
+            "plan.schema_version must be 3; v0.8 serial plans may use 2 or omit it",
+            "task 1.title must be a non-empty string",
+        ])
+
     def test_one_violation_reads_exactly_as_before(self) -> None:
         cfg, _store = self.initialize(graph([task("A")], max_workers=1))
         current = load_plan(cfg.state_dir, cfg.profile)
@@ -243,6 +295,16 @@ class TheStateIsCheckedBeforeTheVerifierTests(_Replanning):
         issues = active_plan_change(store.load(), request_id="PC1")["rejections"][-1]["issues"]
         self.assertEqual(issues[-1]["message"], "verified task B is immutable during plan evolution")
 
+    def test_a_cancelled_task_rewritten_is_refused_at_once(self) -> None:
+        """CANCELLED is absorbing: a rewrite of it can never be committed."""
+
+        _cfg, store, outcome = self._with_b("CANCELLED")
+        self.assertEqual(outcome.worker_status, "PLAN_CHANGE_REJECTED")
+        self.assertNotIn("plan_verifier", [item.kind for item in outcome.descriptors])
+        issues = active_plan_change(store.load(), request_id="PC1")["rejections"][-1]["issues"]
+        self.assertEqual(issues[-1]["stage"], "state")
+        self.assertEqual(issues[-1]["message"], "cancelled task B is immutable during plan evolution")
+
     def test_an_advanced_task_rewritten_is_left_to_the_commit(self) -> None:
         cfg, store, outcome = self._with_b("IMPLEMENTED")
         self.assertEqual(outcome.worker_status, "PLAN_CHANGE_PROPOSED")
@@ -265,6 +327,89 @@ class TheStateIsCheckedBeforeTheVerifierTests(_Replanning):
         self.assertEqual(rejection["issues"][0]["stage"], "reconcile")
         self.assertIn("advanced task B cannot be rewritten", rejection["issues"][0]["message"])
         self.assertIn("advanced task B cannot be rewritten", passed.descriptors[0].prompt)
+
+
+class ARuntimeConflictSpendsNoAttemptTests(_Replanning):
+    def test_a_worker_still_active_at_the_commit_spends_no_semantic_revision(self) -> None:
+        """The run's own state refused the commit, not the graph.
+
+        Every reconcile conflict used to count as a semantic revision, so a
+        worker still active, a lock still held or a graph that moved could
+        burn the budget down to PLAN_VERIFICATION_REJECTED. Here the budget
+        has one revision left, and a runtime conflict must not take it.
+        """
+
+        from codex_autopilot.plan_verification_lifecycle import MAX_SEMANTIC_PLAN_REVISIONS
+
+        cfg, store, replanner = self.at_the_replanner(graph([task("A"), task("B")], max_workers=1))
+        outcome = self.answer(cfg, store, replanner, reply("PC1", 1, self.valid_candidate(cfg)))
+        verifier = outcome.descriptors[0]
+        self.assertEqual(verifier.kind, "plan_verifier")
+        state = store.load()
+        change = active_plan_change(state, request_id="PC1")
+        change["plan_verification_history"] = [
+            {"at": "2026-09-24T00:00:00Z", "verdict": "REVISE"}
+        ] * MAX_SEMANTIC_PLAN_REVISIONS
+        # A worker reserved beside the verifier - which the drain gate is
+        # there to prevent; the run's state is what is wrong, not the graph.
+        state.max_parallel_workers = 2
+        state.task_states["B"] = "RUNNING"
+        state.active_task_ids = [*state.active_task_ids, "B"]
+        store.save(state)
+
+        self.mark_active(store, verifier.reservation_token, "plan-verifier-PC1")
+        passed = complete_desktop_worker(
+            cfg, thread_id="plan-verifier-PC1", turn_id="turn-pv",
+            final_message=PLAN_VERIFICATION_PREFIX + ' {"verdict":"PASS","issues":[]}',
+            hook_gate=lambda _cfg: None,
+        )
+
+        change = active_plan_change(store.load(), request_id="PC1")
+        self.assertEqual(change["status"], "DRAINING")
+        self.assertEqual(change.get("rejections") or [], [])
+        self.assertEqual(change["plan_verification_history"][-1]["verdict"], "RUNTIME_CONFLICT")
+        self.assertNotIn("proposed_plan", change)
+        self.assertEqual(load_plan(cfg.state_dir, cfg.profile).graph_version, 1)
+        self.assertEqual(passed.worker_status, "PLAN_REVISION_REQUIRED")
+
+    def test_the_same_runtime_conflict_twice_calls_the_on_call(self) -> None:
+        """Uncounted is not unbounded: the run's state that did not clear goes to the on-call.
+
+        A fresh replanner cannot fix a worker that stays active beside the
+        drain gate; left uncounted with no bound, the change would cycle
+        replanner and verifier turns for ever with nobody told.
+        """
+
+        from codex_autopilot.pipeline_engineer import PipelineIncidentStore
+
+        cfg, store, replanner = self.at_the_replanner(graph([task("A"), task("B")], max_workers=1))
+        verifier = self.answer(cfg, store, replanner, reply("PC1", 1, self.valid_candidate(cfg))).descriptors[0]
+        state = store.load()
+        change = active_plan_change(state, request_id="PC1")
+        change["plan_verification_history"] = [
+            {"at": "2026-09-24T00:00:00Z", "verdict": "RUNTIME_CONFLICT"}
+        ]
+        state.max_parallel_workers = 2
+        state.task_states["B"] = "RUNNING"
+        state.active_task_ids = [*state.active_task_ids, "B"]
+        store.save(state)
+
+        self.mark_active(store, verifier.reservation_token, "plan-verifier-PC1")
+        complete_desktop_worker(
+            cfg, thread_id="plan-verifier-PC1", turn_id="turn-pv",
+            final_message=PLAN_VERIFICATION_PREFIX + ' {"verdict":"PASS","issues":[]}',
+            hook_gate=lambda _cfg: None,
+        )
+
+        state = store.load()
+        self.assertIsNone(state.active_plan_change_id)
+        ticket = next(
+            item for item in PipelineIncidentStore(cfg.state_dir).load()["incidents"]
+            if item["system_state"].get("stop_kind") == "plan_verification_rejected"
+        )
+        self.assertEqual(ticket["affected_task_ids"], ["A"])
+        self.assertIn("drained workers", state.last_error)
+        self.assertEqual(state.status, "RUNNING")
 
 
 class TheProtocolLineIsPartOfTheRoundTests(_Replanning):

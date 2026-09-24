@@ -14,9 +14,22 @@ So the package is fitted here. What does not fit is the diagnostic
 material, largest part first, each cut part replaced by a marker that says
 it was cut and how large it was - never silently, never the rules, never
 the ticket's identity, class, phase, allowed or forbidden actions. The
-on-call reads the rest from the journal it is pointed at. If the rules and
-the ticket alone cannot fit, nothing is cut and the ceiling refuses as
-before: that is a context-planning defect, not something to hide.
+on-call reads the rest from the journal it is pointed at.
+
+The ticket itself carries its own copies of the diagnostics - its summary
+(with the stop's reason on record), system_state and recent_events, the
+last two duplicated at the top of the package, and whatever an earlier
+escalation left on it. The independent check found
+them outside the fitting: the store bounds them (2 000, 16 000 and 20 x
+2 000 characters), but nothing here relied on that, and "the rules and the
+ticket alone" were left to the ceiling's refusal. Every field of the ticket
+but its identity (``INCIDENT_IDENTITY``) is fitted too now, after the
+top-level parts, so what cannot be cut is the ticket's identity,
+the action lists and the rules - small by construction. If even that does
+not fit (a rules block grown past the ceiling), the prompt is refused and
+the ticket goes to the owner with the reason
+(``engineer_reservation.hand_unpromptable_ticket_to_owner``): the one case
+where the on-call cannot be called is still a signal, never a silence.
 """
 
 from __future__ import annotations
@@ -30,6 +43,13 @@ from typing import Any, Mapping
 ENGINEER_FRAME_RESERVE = 24_000
 # Diagnostic parts, in the order they are given up when they are equally large.
 TRIMMABLE = ("server_view", "recent_events", "stop_context", "system_state")
+# What names the ticket - never cut. Every other field of the ticket (its
+# summary, system_state, recent_events, an earlier escalation) is
+# diagnostic and is given up after the top-level parts, largest first.
+INCIDENT_IDENTITY = (
+    "incident_id", "signal_id", "code", "classification", "signature", "phase",
+    "affected_task_ids", "context_task_id", "runbook_id", "operation", "side_effect_outcome",
+)
 _HEAD = 2_000
 
 
@@ -44,21 +64,32 @@ def engineer_payload(
 
     package = dict(incident_package)
     package["rules"] = rules
+    incident = package.get("incident")
+    ticket: dict[str, Any] = {}
+    if isinstance(incident, Mapping):
+        ticket = package["incident"] = dict(incident)
+    ticket_parts = tuple(key for key in ticket if key not in INCIDENT_IDENTITY)
     room = ceiling - ENGINEER_FRAME_RESERVE
     payload = _dumps(package)
-    while len(payload) > room:
-        present = [key for key in TRIMMABLE if key in package and not _is_marker(package[key])]
-        if not present:
-            return payload
-        largest = max(present, key=lambda key: (len(_dumps(package[key])), -TRIMMABLE.index(key)))
-        text = _dumps(package[largest])
-        package[largest] = {
-            "truncated": True,
-            "original_chars": len(text),
-            "head": text[:_HEAD],
-            "why": "the on-call prompt's context budget; the rules block is never cut (R17)",
-        }
-        payload = _dumps(package)
+    for container, keys in ((package, TRIMMABLE), (ticket, ticket_parts)):
+        while len(payload) > room:
+            # A part no longer than its marker's head would only grow when cut.
+            present = [
+                key for key in keys
+                if key in container and not _is_marker(container[key])
+                and len(_dumps(container[key])) > _HEAD
+            ]
+            if not present:
+                break
+            largest = max(present, key=lambda key: (len(_dumps(container[key])), -keys.index(key)))
+            text = _dumps(container[largest])
+            container[largest] = {
+                "truncated": True,
+                "original_chars": len(text),
+                "head": text[:_HEAD],
+                "why": "the on-call prompt's context budget; the rules block is never cut (R17)",
+            }
+            payload = _dumps(package)
     return payload
 
 
