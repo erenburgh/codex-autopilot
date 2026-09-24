@@ -60,7 +60,8 @@ reads exactly as before; several read `plan has N issues:` and a numbered list.
 
 The refusal is recorded in `rejections` with its structured `issues`, and the next
 replanner's prompt lists every refused attempt (`rejected_attempts`) and the last
-one as a numbered list, marking an issue that repeats an earlier one; its
+one as a numbered list of `path: message (accepted: ...)`, marking an issue that
+repeats an earlier one; its
 constraints carry `allowed_fields` and `allowed_values`. A graph that moved under
 the replanner is the runtime's state, not its mistake: the change is rebased and
 a fresh replanner is raised without spending an attempt. A semantic `REVISE` from

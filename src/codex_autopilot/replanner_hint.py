@@ -49,7 +49,7 @@ def _issues(item: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def retry_hint(attempts: list[dict[str, Any]]) -> str:
-    """The numbered list of the last refusal, with repeats marked."""
+    """The last refusal as `path: message (accepted: ...)`, numbered, repeats marked."""
 
     last = attempts[-1]
     seen: dict[tuple[str, str], int] = {}
@@ -66,7 +66,11 @@ def retry_hint(attempts: list[dict[str, Any]]) -> str:
         listed.add(message)
         path = str(issue.get("path") or "")
         accepted = issue.get("accepted") or ()
-        line = f"{len(lines) + 1}. {message}"
+        # `path: message`. The path is where the model has to look: a plan
+        # verifier's semantic issue carries its task and outcome ids only
+        # there, and a line without them read "1. necessity: P is not
+        # needed." with the ids left to the JSON of rejected_attempts.
+        line = f"{len(lines) + 1}. {path + ': ' if path else ''}{message}"
         if accepted and "accepted fields are" not in message:
             line += f" (accepted: {', '.join(str(item) for item in accepted)})"
         earlier = seen.get((path, message))

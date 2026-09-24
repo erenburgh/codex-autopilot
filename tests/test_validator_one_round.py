@@ -20,9 +20,10 @@ from pathlib import Path
 
 from _handoff import bump_task_checkpoint
 from _relay import reserve_ready_frontier
+from codex_autopilot.department_acceptance import DEPARTMENT_FIELDS
 from codex_autopilot.lifecycle import complete_desktop_worker
 from codex_autopilot.plan import load_plan, validate_plan, validate_plan_change
-from codex_autopilot.plan_fields import ALLOWED_FIELDS
+from codex_autopilot.plan_fields import ALLOWED_FIELDS, COMPATIBILITY_FIELDS
 from codex_autopilot.plan_issues import PlanIssues
 from codex_autopilot.plan_verification import PLAN_VERIFICATION_PREFIX
 from codex_autopilot.resilience import PLAN_CHANGE_RESULT_PREFIX, active_plan_change
@@ -39,6 +40,22 @@ def reply(change_id: str, base: int, plan: dict) -> str:
 
 def messages(exc: PlanIssues) -> list[str]:
     return [item.message for item in exc.issues]
+
+
+def misspelled_department() -> tuple[dict, str, str]:
+    """A department with `lead_role` written for `lead_role_id`, the v1.0 run's slip.
+
+    Built from ``DEPARTMENT_FIELDS`` rather than a literal: the R30 line
+    reworks the department's fields, and a test about naming the unknown and
+    the missing together must not also pin which fields a department has.
+    """
+
+    dropped = "lead_role_id" if "lead_role_id" in DEPARTMENT_FIELDS else DEPARTMENT_FIELDS[-1]
+    wrong = "lead_role" if dropped == "lead_role_id" else f"{dropped}_misspelled"
+    assert wrong not in DEPARTMENT_FIELDS
+    department = {name: name for name in DEPARTMENT_FIELDS if name != dropped}
+    department[wrong] = "builder"
+    return department, wrong, dropped
 
 
 class _Replanning(unittest.TestCase):
@@ -84,10 +101,8 @@ class OneRefusalCarriesEveryDefectTests(_Replanning):
         bad["nonsense_field"] = 1
         del bad["roles"][0]["name"]
         del bad["tasks"][0]["reasoning"]
-        bad["departments"] = [{
-            "id": "eng", "name": "Engineering", "lead_role": "builder",
-            "rubric": {"record_id": "r", "version": 1, "sha256": "0" * 64},
-        }]
+        department, wrong, dropped = misspelled_department()
+        bad["departments"] = [department]
 
         outcome = self.answer(cfg, store, replanner, reply("PC1", 1, bad))
 
@@ -98,13 +113,14 @@ class OneRefusalCarriesEveryDefectTests(_Replanning):
         self.assertEqual(len(issues), 4, issues)
         self.assertIn("plan has unknown fields: ['nonsense_field']", issues[0])
         self.assertIn("role 1.name must be a non-empty string", issues[1])
-        self.assertIn("department 1 has unknown fields: ['lead_role']", issues[2])
-        self.assertIn("missing required fields: ['lead_role_id']", issues[2])
+        self.assertIn(f"department 1 has unknown fields: [{wrong!r}]", issues[2])
+        self.assertIn(f"missing required fields: [{dropped!r}]", issues[2])
         self.assertIn("task 1 requires reasoning", issues[3])
         prompt = outcome.descriptors[0].prompt
         self.assertIn("The previous attempt was rejected for 4 reasons;", prompt)
-        for number in range(1, 5):
-            self.assertIn(f"\n{number}. ", prompt)
+        # Each line is `path: message`, the path the collector recorded.
+        for number, item in enumerate(change["rejections"][-1]["issues"], 1):
+            self.assertIn(f"\n{number}. {item['path']}: {item['message']}", prompt)
 
     def test_two_defects_inside_one_task_are_both_reported(self) -> None:
         cfg, _store = self.initialize(graph([task("A")], max_workers=1))
@@ -475,8 +491,9 @@ class TheNextPromptTests(_Replanning):
         )
         prompt = outcome.descriptors[0].prompt
         self.assertIn("rejected for 2 reasons", prompt)
-        self.assertIn("1. necessity: P is not needed.", prompt)
-        self.assertIn("2. dod_sufficiency: A's DoD proves nothing.", prompt)
+        # The ids live only in the issue's path; the numbered line names them.
+        self.assertIn("\n1. P: necessity: P is not needed.", prompt)
+        self.assertIn("\n2. A: dod_sufficiency: A's DoD proves nothing.", prompt)
 
 
 class TheExhaustedBudgetIsTheOnCallsTests(_Replanning):
@@ -607,6 +624,16 @@ class OneSourceOfFieldsTests(unittest.TestCase):
                 self.assertIn(f"accepted fields are {sorted(ALLOWED_FIELDS[path])}", unknown[0].message)
                 self.assertEqual(tuple(unknown[0].accepted), tuple(ALLOWED_FIELDS[path]))
 
+    def test_every_key_but_the_departments_is_driven(self) -> None:
+        # A key of ALLOWED_FIELDS left out of objects() is a set nothing
+        # holds against the parser - plan.compatibility was, until the
+        # independent review. The department keys are the R30 line's to
+        # rework, and department_acceptance checks them by the same tuples.
+        # plan.compatibility has its own driver below: a submitted plan may
+        # not declare it at all, only a migrated run's persisted plan has it.
+        skipped = set(ALLOWED_FIELDS) - set(self.objects(self.plan())) - {"plan.compatibility"}
+        self.assertTrue(all(path.startswith("plan.departments") for path in skipped), skipped)
+
     def test_every_listed_field_is_accepted_by_the_parser(self) -> None:
         for path in self.objects(self.plan()):
             for name in ALLOWED_FIELDS[path]:
@@ -619,16 +646,64 @@ class OneSourceOfFieldsTests(unittest.TestCase):
                     )
 
 
+class TheCompatibilitySetIsHeldTests(unittest.TestCase):
+    """plan.compatibility against COMPATIBILITY_FIELDS, both ways.
+
+    Only a migrated v0.8 run's persisted plan carries it: ``validate_plan``
+    and ``validate_migrating_plan`` refuse any declared compatibility, a plan
+    change must repeat the current one exactly, and ``load_plan`` takes it
+    only in the exact legacy form. So the set is held where it is written and
+    read (the persisted round trip) and where ``plan_admission._compatibility``
+    judges it, with the arguments ``validate_persisted_plan`` passes.
+    """
+
+    def legacy(self) -> dict:
+        from test_acceptance_floor_integrity import _historical_legacy_acceptance, _legacy_graph, _task
+
+        return _legacy_graph([_task("A", verification=_historical_legacy_acceptance())])
+
+    def admit(self, raw: dict) -> list:
+        from codex_autopilot.plan import _validate_plan_payload
+
+        try:
+            _validate_plan_payload(
+                raw, "adaptive", inherited=None, migrated_milestone_ids=frozenset({"A"}),
+                require_goal_contract=True, require_acceptance_class=True,
+            )
+        except PlanIssues as exc:
+            return list(exc.issues)
+        except ValueError as exc:
+            return [type("I", (), {"message": str(exc), "accepted": getattr(exc, "accepted", ())})()]
+        return []
+
+    def test_a_migrated_plan_writes_and_reads_exactly_the_listed_fields(self) -> None:
+        from codex_autopilot.plan import plan_to_dict
+        from test_acceptance_floor_integrity import _load_persisted_legacy
+
+        loaded = _load_persisted_legacy(self.legacy())
+        self.assertTrue(loaded.legacy_serial)
+        self.assertEqual(sorted(plan_to_dict(loaded)["compatibility"]), sorted(COMPATIBILITY_FIELDS))
+        self.assertEqual(ALLOWED_FIELDS["plan.compatibility"], COMPATIBILITY_FIELDS)
+
+    def test_every_listed_field_is_admitted_and_anything_else_names_them(self) -> None:
+        self.assertEqual(self.admit(self.legacy()), [])
+        raw = self.legacy()
+        raw["compatibility"]["bogus"] = 1
+        unknown = [item for item in self.admit(raw) if "unknown fields: ['bogus']" in item.message]
+        self.assertEqual(len(unknown), 1)
+        self.assertIn(f"accepted fields are {sorted(COMPATIBILITY_FIELDS)}", unknown[0].message)
+        self.assertEqual(tuple(unknown[0].accepted), COMPATIBILITY_FIELDS)
+
+
 class RefusalsNameWhatIsAcceptedTests(unittest.TestCase):
     def test_a_department_names_the_unknown_and_the_missing_in_one_line(self) -> None:
         from codex_autopilot.department_acceptance import DepartmentAcceptanceError, department_contract_from_raw
 
+        department, wrong, dropped = misspelled_department()
         with self.assertRaises(DepartmentAcceptanceError) as caught:
-            department_contract_from_raw(
-                {"id": "eng", "name": "E", "lead_role": "x", "rubric": {}}, "department 1"
-            )
-        self.assertIn("unknown fields: ['lead_role']", str(caught.exception))
-        self.assertIn("missing required fields: ['lead_role_id']", str(caught.exception))
+            department_contract_from_raw(department, "department 1")
+        self.assertIn(f"unknown fields: [{wrong!r}]", str(caught.exception))
+        self.assertIn(f"missing required fields: [{dropped!r}]", str(caught.exception))
 
 
 if __name__ == "__main__":

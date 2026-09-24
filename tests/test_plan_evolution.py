@@ -960,9 +960,9 @@ class PlanEvolutionTests(unittest.TestCase):
         self.assertIn("allowed_plan_fields", prompt)
         # The hint is now a numbered list of every reason of the last refusal
         # (it was one line with rejections[-1]["reason"]); a single reason
-        # reads the same words, numbered 1.
+        # reads the same words, numbered 1, after the path it concerns.
         self.assertIn("The previous attempt was rejected for 1 reason;", prompt)
-        self.assertIn("1. plan has unknown fields: ['nonsense_field']", prompt)
+        self.assertIn("1. plan: plan has unknown fields: ['nonsense_field']", prompt)
 
     def test_user_declared_worker_count_reaches_the_replanner(self) -> None:
         """The worker cap lives in the plan, which the replanner rewrites.
