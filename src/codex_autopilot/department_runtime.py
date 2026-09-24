@@ -22,7 +22,7 @@ Now nothing of it is the model's to write or to forget:
   R30 by name only: two tasks of one profession could reach two leads with
   two rubrics, and nothing would notice;
 - the lead of a profession is the one that still has work of it to accept.
-  A task already VERIFIED or CANCELLED keeps the lead that judged it and
+  A task already VERIFIED or CANCELLED keeps the lead it had and
   names nothing for the rest (``settled_task_ids``). The first cut read
   every task of the role, and the independent check reproduced where that
   goes: a plan from before R30 - admission let one profession name several
@@ -39,7 +39,10 @@ Now nothing of it is the model's to write or to forget:
   "Anything goes.", admitted with no issue - and the new department started
   from a fresh version 1 built from a profile the replanner wrote: a new
   acceptance standard with no outcome evidence, the very thing
-  ``ensure_department_rubric`` refuses to do for a changed profile;
+  ``ensure_department_rubric`` refuses to do for a changed profile. Only
+  VERIFIED work under a lead that could lead today locks it: a CANCELLED
+  task, or pre-R30 work verified with no lead, by its own profession or by
+  legacy-worker, has no standard to keep (``_moved_leads``);
 - the derivation is never written into plan.json. Doing so would change the
   plan digest and break the PLAN_VERIFIED receipt of every running run; a
   saved plan is never refused on load for it either - a task with no lead is
@@ -102,13 +105,44 @@ CORE_CRITERIA: tuple[RubricCriterion, ...] = (
 DRIFT_SCOPE_PREFIX = "department-acceptance-drift:"
 
 
-def settled_task_ids(task_states: Mapping[str, Any] | None) -> frozenset[str]:
+class SettledTasks(frozenset):
+    """Settled task ids that also know which of them a lead actually accepted.
+
+    Both VERIFIED and CANCELLED leave "one profession, one lead", but only a
+    VERIFIED task was judged by anyone. The independent check found
+    ``_moved_leads`` reading a CANCELLED task as accepted work: one task of a
+    profession cancelled before any acceptance locked the lead of the rest,
+    and the refusal told the replanner a lead had judged it. The set rides
+    through every caller unchanged (plan_change_candidate, the replanner's
+    admission) as the plain frozenset it was; ``accepted`` is read only where
+    acceptance matters.
+    """
+
+    accepted: frozenset[str]
+
+    def __new__(cls, ids: Iterable[str], accepted: Iterable[str] = ()):
+        made = super().__new__(cls, ids)
+        made.accepted = frozenset(accepted) & made
+        return made
+
+
+def settled_task_ids(task_states: Mapping[str, Any] | None) -> SettledTasks:
     """The tasks whose acceptance is over: VERIFIED or CANCELLED (absorbing)."""
 
-    from .task_state import TERMINAL_TASK_STATES
+    from .task_state import TERMINAL_TASK_STATES, TaskState
 
     terminal = {item.value for item in TERMINAL_TASK_STATES}
-    return frozenset(str(key) for key, value in (task_states or {}).items() if str(value) in terminal)
+    states = {str(key): str(value) for key, value in (task_states or {}).items()}
+    return SettledTasks(
+        (key for key, value in states.items() if value in terminal),
+        (key for key, value in states.items() if value == TaskState.VERIFIED.value),
+    )
+
+
+def _accepted_ids(settled: Collection[str]) -> frozenset[str]:
+    """What a lead judged: VERIFIED only, when the caller knows (``SettledTasks``)."""
+
+    return getattr(settled, "accepted", frozenset(settled))
 
 
 def role_lead(plan: Any, role_id: str, *, settled: Collection[str] = ()) -> str:
@@ -285,7 +319,7 @@ def validate_department_leads(
                 f"R30: one profession has exactly one lead; tasks of role {role!r} name "
                 f"several - {listed}"
             )
-    moved = _moved_leads(tasks, by_role, done, inherited, settled)
+    moved = _moved_leads(tasks, by_role, done, inherited, settled, {role.id: role for role in roles})
     found.extend(moved.values())
     # The rest - a declared department or a 0.13 binding that disagrees with
     # the lead - for every task the classes above did not already name.
@@ -323,6 +357,7 @@ def _moved_leads(
     history: frozenset[str],
     inherited: Any | None,
     settled: Collection[str],
+    roles: Mapping[str, Any],
 ) -> dict[str, str]:
     """Professions a change moves, after acceptance began, to a lead they never had.
 
@@ -330,11 +365,26 @@ def _moved_leads(
     accepted it, or the one the current plan names for its tasks still to be
     accepted (a run from before R30 may hold both). Only when the accepted
     work had several leads is there a choice, and it is among them.
+
+    Only a lead that could lead today counts, on either side. The
+    independent check reproduced on the beyondness shape, M01 VERIFIED:
+    before R30 a character-artist task could name no verifier_role (the
+    verifier was ``verifier_role or task.role``) or its own role, and both
+    were admitted. Such a profession's "accepted lead" was 'None' or
+    'character-artist'; the gate stopped M03 for want of a lead, the
+    on-call's change naming art-reviewer was refused as a new lead, naming
+    character-artist was refused as its own profession - no change could
+    pass, and the stop went to her. The same for work accepted by the
+    generic legacy-worker. A profession whose accepted work had no lead
+    that could lead has no standard to keep: the planner names its lead as
+    before any acceptance. And only VERIFIED work was accepted - a
+    CANCELLED task was judged by no one (``SettledTasks.accepted``).
     """
 
+    judged = _accepted_ids(settled)
     accepted: dict[str, set[str]] = {}
     for task in tasks:
-        if task.id in history:
+        if task.id in history and task.id in judged and _can_lead(task.verification.verifier_role, task.role, roles):
             accepted.setdefault(task.role, set()).add(str(task.verification.verifier_role))
     found: dict[str, str] = {}
     for role, leads in sorted(by_role.items()):
@@ -342,7 +392,8 @@ def _moved_leads(
             continue
         kept = {
             str(task.verification.verifier_role) for task in inherited.tasks
-            if task.role == role and task.id not in settled and task.verification.verifier_role
+            if task.role == role and task.id not in settled
+            and _can_lead(task.verification.verifier_role, task.role, roles)
         }
         ((lead, ids),) = leads.items()
         if lead in accepted[role] | kept:
@@ -355,6 +406,16 @@ def _moved_leads(
             f"{sorted(kept) if kept else 'no lead'} for the rest: name one of those"
         )
     return found
+
+
+def _can_lead(lead: Any, role_id: str, roles: Mapping[str, Any]) -> bool:
+    """A lead R30 admits: named, another profession, a role of the plan, not legacy-worker."""
+
+    role = roles.get(str(lead)) if lead else None
+    return (
+        role is not None and lead != role_id
+        and role.id != "legacy-worker" and role.name.casefold() != "legacy serial worker"
+    )
 
 
 def lead_profile_digest(role: Any) -> str:

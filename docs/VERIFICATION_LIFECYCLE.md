@@ -66,7 +66,12 @@ names for the rest - never a new one. The second check reproduced the gap: M01
 `VERIFIED` by `art-reviewer`, and a change moving M03 to a new lead whose only
 expectation was "Anything goes." passed with no issue; the new department would
 have started from a fresh rubric version 1 built from a profile the replanner
-wrote - a new standard with no outcome evidence. A task already under way may
+wrote - a new standard with no outcome evidence. Accepted means `VERIFIED` by a lead that could lead today (`_can_lead`): the third
+check reproduced a run from before R30 whose accepted character-artist work had
+no `verifier_role`, or its own role, or `legacy-worker` - no change could pass,
+since its "accepted lead" was `'None'` or the profession itself, and the stop
+went to her. Such work, and a `CANCELLED` task judged by no one
+(`SettledTasks.accepted`), locks nothing: the planner names the lead. A task already under way may
 be given only a lead its profession already names (`reconcile_plan_change_state`). A saved plan is never refused on load: a task with no lead is
 stopped when its verifier is reserved, alone, through the one stop door
 (`department_gate`, stop kind `department_lead`), and the on-call has the plan

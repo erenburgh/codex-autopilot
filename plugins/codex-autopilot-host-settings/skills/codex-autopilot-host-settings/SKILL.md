@@ -130,7 +130,9 @@ and the lead is never the task's own role. In a plan change, a task already
 one lead on the profession's tasks still to be accepted, including tasks already
 under way (naming their lead resets nothing). Once a profession's work has been
 accepted its lead stays: name one of the leads that accepted it, or keep the one
-it has; a new lead is refused. Declare the lead as its own
+it has; a new lead is refused. Accepted means VERIFIED by a lead that
+could lead today: a CANCELLED task, or work accepted before R30 with no lead,
+its own profession or legacy-worker as verifier, locks nothing - name the lead. Declare the lead as its own
 `RoleProfile` with `verification_expectations`: the runtime turns them, with a
 fixed core (fidelity to the request, every DoD item closed by evidence,
 independent re-checking), into the department's rubric version 1 in Project

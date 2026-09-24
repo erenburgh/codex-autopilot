@@ -253,6 +253,143 @@ class AProfessionKeepsItsLeadTests(unittest.TestCase):
         self.assertIn("the current plan names ['sculpt-reviewer'] for the rest", moved)
 
 
+class APreR30LeadThatCannotLeadLocksNothingTests(unittest.TestCase):
+    """The third check's gaps: accepted work whose lead could never lead today.
+
+    Before R30 a task could name no verifier_role - the verifier was
+    ``verifier_role or task.role`` - or its own role, and both were
+    admitted; so was work verified by the generic legacy-worker. Reproduced
+    by calling plan_change_candidate as the replanner's admission does, on
+    the beyondness shape with M01 VERIFIED: the gate stopped M03 for want of
+    a lead, the on-call's change naming art-reviewer was refused with
+    "judged by ['None']" (or ['character-artist']), naming the profession
+    itself was refused as its own lead - no change could pass and the stop
+    went to her. And a CANCELLED task, judged by no one, locked its
+    profession's lead as if it had been accepted.
+    """
+
+    def _current(self, m01_lead: str | None, *, m03_lead: str | None = None):
+        raw = beyondness_plan()
+        for task in raw["tasks"]:
+            if task["role"] != "character-artist":
+                continue
+            lead = m01_lead if task["id"] == "M01" else m03_lead
+            if lead is None:
+                task["verification"].pop("verifier_role", None)
+            else:
+                task["verification"]["verifier_role"] = lead
+        return validate_persisted_plan(raw, "adaptive")
+
+    def _on_call_names(self, current, lead: str, task_states: dict) -> list[str]:
+        from codex_autopilot.plan_admission import IssueCollector, plan_change_candidate
+
+        change = plan_to_dict(current)
+        change["graph_version"] = current.graph_version + 1
+        next(task for task in change["tasks"] if task["id"] == "M03")["verification"]["verifier_role"] = lead
+        collector = IssueCollector()
+        plan_change_candidate(collector, current, change, "adaptive", settled=settled_task_ids(task_states))
+        return [issue.message for issue in collector.issues]
+
+    def test_a_profession_accepted_with_no_or_its_own_lead_gets_one_from_the_on_call(self) -> None:
+        """M01 VERIFIED with no lead / its own role; M03 has no lead.
+
+        The gate stops M03; the on-call's change naming art-reviewer is
+        admitted, and after it M03's department is art-reviewer's.
+        Mutation: ``_moved_leads`` counting every history task's lead
+        (without ``_can_lead`` on ``accepted``) - each variant is refused
+        with "judged by ['None']" / ['character-artist'].
+        """
+
+        for m01_lead in (None, "character-artist"):
+            with self.subTest(m01_lead=m01_lead):
+                current = self._current(m01_lead)
+                with self.assertRaisesRegex(DepartmentAcceptanceError, "R30"):
+                    derive_task_department(current, current.task_map["M03"], settled={"M01"})
+                self.assertEqual(self._on_call_names(current, "art-reviewer", {"M01": "VERIFIED"}), [])
+                raw = plan_to_dict(current)
+                next(task for task in raw["tasks"] if task["id"] == "M03")["verification"]["verifier_role"] = "art-reviewer"
+                changed = validate_persisted_plan(raw, "adaptive")
+                department = derive_task_department(changed, changed.task_map["M03"], settled={"M01"})
+                self.assertEqual(department.lead_role_id, "art-reviewer")
+
+    def test_the_current_plans_own_lead_for_the_rest_is_not_a_lead_to_keep(self) -> None:
+        """M01 VERIFIED and M03 both name character-artist, the pre-R30 own-lead case.
+
+        The on-call's art-reviewer is admitted. And where the accepted work
+        did have a lead (M01 by art-reviewer) while the rest names the
+        profession itself, a new lead is refused naming only art-reviewer:
+        the refusal must not offer the replanner a lead admission refuses.
+        Mutation: ``kept`` without ``_can_lead`` - the refusal says "the
+        current plan names ['character-artist']".
+        """
+
+        current = self._current("character-artist", m03_lead="character-artist")
+        self.assertEqual(self._on_call_names(current, "art-reviewer", {"M01": "VERIFIED"}), [])
+        current = self._current("art-reviewer", m03_lead="character-artist")
+        (moved,) = [item for item in self._on_call_names(current, "reference-artist", {"M01": "VERIFIED"})
+                    if "keeps its lead" in item]
+        self.assertIn("judged by ['art-reviewer'] and the current plan names no lead for the rest", moved)
+
+    def test_work_accepted_by_the_generic_legacy_worker_locks_no_lead(self) -> None:
+        """A migrated task VERIFIED by legacy-worker, as a legacy_serial plan holds it.
+
+        Called as graph_plan calls validate_department_leads (adaptive
+        admission refuses a legacy-worker verifier outright, so the plans
+        are built by hand). The change naming art-reviewer for M03 passes.
+        Mutation: ``_can_lead`` without the legacy-worker clause - refused
+        with "judged by ['legacy-worker']".
+        """
+
+        base = validate_persisted_plan(beyondness_plan(), "adaptive")
+        legacy = replace(base.role_map["art-reviewer"], id="legacy-worker", name="Legacy Serial Worker")
+
+        def with_leads(m01: str, m03: str):
+            tasks = tuple(
+                replace(task, verification=replace(task.verification, verifier_role={"M01": m01, "M03": m03}[task.id]))
+                if task.id in {"M01", "M03"} else task
+                for task in base.tasks
+            )
+            return replace(base, roles=(*base.roles, legacy), tasks=tasks)
+
+        current = with_leads("legacy-worker", "legacy-worker")
+        changed = with_leads("legacy-worker", "art-reviewer")
+        found = validate_department_leads(
+            changed.tasks, changed.roles, exempt={"M01", "M02"},
+            settled=settled_task_ids({"M01": "VERIFIED"}), inherited=current, report_unknown=False,
+        )
+        self.assertEqual(found, [])
+
+    def test_a_cancelled_task_locks_no_lead(self) -> None:
+        """M01 CANCELLED under art-reviewer; M03 moved to lax-lead before any acceptance.
+
+        Admitted: no lead judged M01. The same change with M01 VERIFIED is
+        refused. Mutation: ``_accepted_ids`` returning every settled id
+        (CANCELLED counted as accepted) - the CANCELLED case is refused with
+        "judged by ['art-reviewer']".
+        """
+
+        current = validate_persisted_plan(beyondness_plan(), "adaptive")
+        lax = AProfessionKeepsItsLeadTests.LAX_LEAD
+
+        def admit(state: str) -> list[str]:
+            from codex_autopilot.plan_admission import IssueCollector, plan_change_candidate
+
+            change = plan_to_dict(current)
+            change["graph_version"] = current.graph_version + 1
+            change["roles"].append(dict(lax))
+            next(task for task in change["tasks"] if task["id"] == "M03")["verification"]["verifier_role"] = "lax-lead"
+            collector = IssueCollector()
+            plan_change_candidate(collector, current, change, "adaptive",
+                                  settled=settled_task_ids({"M01": state, "M02": "READY"}))
+            return [issue.message for issue in collector.issues]
+
+        self.assertEqual(admit("CANCELLED"), [])
+        (moved,) = admit("VERIFIED")
+        self.assertIn("judged by ['art-reviewer']", moved)
+        settled = settled_task_ids({"M01": "VERIFIED", "M02": "CANCELLED", "M03": "READY"})
+        self.assertEqual((set(settled), set(settled.accepted)), ({"M01", "M02"}, {"M01"}))
+
+
 class TheStatusNamesTheLeadTests(DepartmentRun):
     def test_a_verifying_task_without_a_session_shows_its_professions_lead(self) -> None:
         """status._active_title named the worker's profession as the verifier.
