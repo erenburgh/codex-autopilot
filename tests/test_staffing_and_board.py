@@ -387,6 +387,92 @@ class TheBoardSpeaksRussianTests(_Board):
         self.assertEqual([row["category"] for row in rows], ["accepted", "working", "yours"])
 
 
+class _BoardAlongARevision:
+    """One task driven through the production lifecycle: work, acceptance, revision.
+
+    A mixin, so that only its two language classes run it.
+
+    The independent check (25 Sep 2026) broke the working phrase, the last
+    report and the threads column in a copy of board.py and every test
+    still passed. Each is asserted here as the lifecycle leaves it.
+    """
+
+    expected: dict[str, str] = {}
+
+    def row(self) -> dict:
+        from codex_autopilot.board import board_rows
+
+        return next(row for row in board_rows(self.cfg, self.plan(), self.store.load()) if row["id"] == "M01")
+
+    def test_the_working_phrase_the_report_and_the_threads(self) -> None:
+        """Mutations (each kills this test): RUNNING shows the "ready to start"
+        phrase; _thread_label drops the thread id; _report always "—" (or
+        takes the checkpoint's heading); _threads prints "x" instead of
+        kind, status and id; the REVISING branch without its thread.
+        """
+
+        from codex_autopilot.control import status_text
+
+        words = self.expected
+        (worker,) = self.reserve()
+        row = self.row()
+        self.assertEqual(row["state"], words["pending"])
+        self.assertEqual((row["report"], row["threads"]), ("—", "implementation CREATE_REQUESTED —"))
+        self.mark_active(worker.reservation_token, "thread-w1")
+        row = self.row()
+        self.assertEqual(row["state"], words["working"])
+        self.assertEqual(row["category"], "working")
+        self.assertEqual(row["threads"], "implementation ACTIVE thread-w1")
+        lead = self.implement(worker, "thread-w1").descriptors[0]
+        self.mark_active(lead.reservation_token, "thread-l1")
+        row = self.row()
+        self.assertEqual(row["state"], words["acceptance"])
+        # The first line of substance of the handoff, not its "# M01" heading.
+        self.assertEqual(row["report"], "Work done.")
+        self.assertEqual(row["threads"], "implementation COMPLETED thread-w1; verifier ACTIVE thread-l1")
+        issue = {"code": "SILHOUETTE", "summary": "The silhouette drifts",
+                 "details": "Compare the side view.", "dod_refs": [1]}
+        revision = self.judge(lead, "thread-l1", self.verdict("M01", "REVISE", [issue])).descriptors[0]
+        self.mark_active(revision.reservation_token, "thread-w2")
+        row = self.row()
+        self.assertEqual(self.store.load().task_states["M01"], "REVISING")
+        self.assertEqual(row["state"], words["revising"])
+        self.assertEqual(
+            row["threads"],
+            "implementation COMPLETED thread-w1; verifier COMPLETED thread-l1; revision ACTIVE thread-w2",
+        )
+        # Reachability: the detailed status prints both columns.
+        self.assertIn(words["line"], status_text(self.root))
+
+
+class TheBoardAlongARevisionInEnglishTests(_BoardAlongARevision, _Board):
+    language = "en"
+    expected = {
+        "pending": "working: Character Artist | M01 | Model part M01",  # named, no id yet
+        "working": "working: Character Artist | M01 | Model part M01 (thread-w1)",
+        "acceptance": "under acceptance by Character Art Verifier — "
+                      "Character Art Verifier | Verify M01 | Model part M01 (thread-l1)",
+        "revising": "revision 1 of 2, hire 1, effort medium — "
+                    "working: Character Artist | M01-R1 | Revise Model part M01 (thread-w2)",
+        "line": "— report: Work done. — threads: implementation COMPLETED thread-w1; "
+                "verifier COMPLETED thread-l1; revision ACTIVE thread-w2",
+    }
+
+
+class TheBoardAlongARevisionInRussianTests(_BoardAlongARevision, _Board):
+    language = "ru"
+    expected = {
+        "pending": "работает: Character Artist | M01 | Model part M01",
+        "working": "работает: Character Artist | M01 | Model part M01 (thread-w1)",
+        "acceptance": "на приёмке у Character Art Verifier — "
+                      "Character Art Verifier | Verify M01 | Model part M01 (thread-l1)",
+        "revising": "ревизия 1 из 2, наём 1, effort medium — "
+                    "работает: Character Artist | M01-R1 | Revise Model part M01 (thread-w2)",
+        "line": "— отчёт: Work done. — треды: implementation COMPLETED thread-w1; "
+                "verifier COMPLETED thread-l1; revision ACTIVE thread-w2",
+    }
+
+
 class BoardFileTests(_Board):
     language = "ru"
 
@@ -435,17 +521,153 @@ class TheStatusShowsTheBoardTests(_Board):
 
 
 class RoutingReadsTheRosterTests(DepartmentRun):
-    def test_every_stop_ticket_names_the_route_the_rule_takes(self) -> None:
-        """Mutation: blocked_runs files without escalation_route."""
-
+    def _stop(self, task_id: str) -> dict:
         from codex_autopilot.blocked_runs import stop_run
-        from codex_autopilot.staffing import ESCALATION_ROUTE
 
         state = self.store.load()
         incident = stop_run(self.cfg, state, stop_kind="launch_refused", phase="LAUNCH_REFUSED",
-                            reason="r", summary="s", at="2026-09-24T00:00:00+00:00", task_ids=("M01",))
-        ticket = next(item for item in PipelineIncidentStore(self.cfg.state_dir).load()["incidents"]
-                      if item["incident_id"] == incident)
+                            reason="r", summary="s", at="2026-09-24T00:00:00+00:00", task_ids=(task_id,))
+        return next(item for item in PipelineIncidentStore(self.cfg.state_dir).load()["incidents"]
+                    if item["incident_id"] == incident)
+
+    def _roster_route(self, route: list[str]) -> None:
+        """The roster as the runtime wrote it, with the run's route replaced."""
+
+        from codex_autopilot.staffing import load_roster, write_roster
+
+        roster = load_roster(self.cfg.state_dir)
+        roster["run"]["escalation_route"] = route
+        write_roster(self.cfg.state_dir, roster)
+
+    def test_every_stop_ticket_names_the_route_the_rule_takes(self) -> None:
+        """Mutation: blocked_runs files without escalation_route."""
+
+        from codex_autopilot.staffing import ESCALATION_ROUTE
+
+        ticket = self._stop("M01")
         self.assertEqual(ticket["system_state"]["escalation_route"], list(ESCALATION_ROUTE))
         self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
+
+    def test_the_route_is_the_rosters_and_the_on_call_stays_first(self) -> None:
+        """The ticket carries the roster's route; a roster cannot move the on-call.
+
+        The independent check (25 Sep 2026): the roster held the same
+        constant the test compared with, so a door that never read the
+        roster passed. Here the roster names a route of its own.
+
+        Mutations: blocked_runs._route returns ESCALATION_ROUTE without
+        reading the roster - the first ticket has the constant; escalation_route
+        without the on-call-first check - the second ticket names the owner
+        first, and the ticket still goes to the on-call either way.
+        """
+
+        route = ["Pipeline Engineer (on-call): every stop, first", "owner: R13 or R23 (this roster's words)"]
+        self._roster_route(route)
+        ticket = self._stop("M01")
+        self.assertEqual(ticket["system_state"]["escalation_route"], route)
+        self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
+        # A roster that would send stops to her first does not change the rule.
+        from codex_autopilot.staffing import ESCALATION_ROUTE
+
+        self._roster_route(["owner: every stop", "Pipeline Engineer (on-call)"])
+        ticket = self._stop("M02")
+        self.assertEqual(ticket["system_state"]["escalation_route"], list(ESCALATION_ROUTE))
+        self.assertEqual(ticket["phase"], "PIPELINE_ENGINEER")
+
+
+class AStaffingTicketHoldsTheWholeRunTests(DepartmentRun):
+    """Which tasks a staffing ticket holds, and that it keeps holding them all.
+
+    The independent check (25 Sep 2026): the docs said "every task still to
+    be accepted" while the code held every unsettled task, and a task a
+    plan change added while the ticket was open was held by nothing.
+    """
+
+    def _broken(self, plan, *extra):
+        def lead(task, value):
+            return replace(task, verification=replace(task.verification, verifier_role=value))
+
+        return replace(plan, tasks=(plan.tasks[0], lead(plan.tasks[1], None), plan.tasks[2], *extra))
+
+    def test_a_migrated_task_with_no_acceptance_ahead_is_held_too(self) -> None:
+        """The run does not start: the legacy self-accepted M01 waits with M02 and M03.
+
+        Called as the reservation calls it. Mutation: _stop holds only tasks
+        with acceptance ahead (drops the exempt set) - M01 is not held and
+        tasks_paused_by_incidents lets it be reserved.
+        """
+
+        from codex_autopilot.engineer_reservation import tasks_paused_by_incidents
+        from codex_autopilot.plan import VerificationPolicy
+        from codex_autopilot.staffing import build_roster, staffing_gate
+
+        plan = self.plan()
+        legacy = replace(plan.tasks[0], verification=VerificationPolicy(
+            policy="self", required=True, deterministic_checks=(), max_revision_attempts=0))
+        plan = self._broken(replace(plan, legacy_serial=True, tasks=(legacy, *plan.tasks[1:])))
+        state = self.store.load()
+        roster = build_roster(plan, state, state_dir=self.cfg.state_dir, memory=self.memory,
+                              screening=False, occasion="test")
+        m01 = roster["tasks"][0]
+        self.assertFalse(m01["acceptance_ahead"])  # exempt: no violation is M01's
+        self.assertFalse(any("M01" in item["message"] for item in roster["issues"]), roster["issues"])
+        staffing_gate(self.cfg, plan, state)
+        (ticket,) = _tickets(self.cfg, "staffing")
+        self.assertEqual(sorted(ticket["affected_task_ids"]), ["M01", "M02", "M03"])
+        self.assertEqual(tasks_paused_by_incidents(self.cfg, plan), {"M01", "M02", "M03"})
+
+    def test_a_task_added_while_the_ticket_is_open_is_held(self) -> None:
+        """A plan change adds M04; the roster is still incomplete; M04 is held by the same ticket.
+
+        Mutation: _stop returns the open ticket without hold_more_tasks - M04
+        is paused by nothing and could be reserved before the roster assembles.
+        """
+
+        from codex_autopilot.engineer_reservation import tasks_paused_by_incidents
+        from codex_autopilot.staffing import staffing_gate
+
+        plan = self._broken(self.plan())
+        state = self.store.load()
+        staffing_gate(self.cfg, plan, state)
+        (first,) = _tickets(self.cfg, "staffing")
+        self.assertEqual(sorted(first["affected_task_ids"]), ["M01", "M02", "M03"])
+        m04 = replace(plan.tasks[2], id="M04", depends_on=())
+        grown = replace(plan, graph_version=plan.graph_version + 1, tasks=(*plan.tasks, m04))
+        state.task_states["M04"] = "READY"
+        staffing_gate(self.cfg, grown, state)
+        (ticket,) = _tickets(self.cfg, "staffing")  # the same ticket, not a second one
+        self.assertEqual(ticket["incident_id"], first["incident_id"])
+        self.assertEqual(ticket["affected_task_ids"], ["M01", "M02", "M03", "M04"])
+        self.assertEqual(tasks_paused_by_incidents(self.cfg, grown), {"M01", "M02", "M03", "M04"})
+        events = [item["event"] for item in PipelineIncidentStore(self.cfg.state_dir).load()["journal"]]
+        self.assertIn("incident_hold_widened", events)
+        # A pass with nothing new widens nothing.
+        staffing_gate(self.cfg, grown, state)
+        self.assertEqual(_tickets(self.cfg, "staffing")[0]["affected_task_ids"], ["M01", "M02", "M03", "M04"])
+        self.assertEqual(events.count("incident_hold_widened"), 1)
+
+    def test_a_hold_that_cannot_be_widened_is_a_ticket_of_its_own(self) -> None:
+        """The journal refuses the widening: M04 still gets held, by a ticket through the door.
+
+        Mutation: the except branch of _stop returns the open ticket - M04
+        is held by nothing.
+        """
+
+        from codex_autopilot.engineer_reservation import tasks_paused_by_incidents
+        from codex_autopilot.pipeline_engineer import PipelineIncidentError
+        from codex_autopilot.staffing import staffing_gate
+
+        plan = self._broken(self.plan())
+        state = self.store.load()
+        staffing_gate(self.cfg, plan, state)
+        grown = replace(plan, graph_version=plan.graph_version + 1,
+                        tasks=(*plan.tasks, replace(plan.tasks[2], id="M04", depends_on=())))
+        with mock.patch.object(PipelineIncidentStore, "hold_more_tasks",
+                               side_effect=PipelineIncidentError("journal locked")):
+            staffing_gate(self.cfg, grown, state)
+        first, second = _tickets(self.cfg, "staffing")
+        self.assertEqual(sorted(first["affected_task_ids"]), ["M01", "M02", "M03"])
+        self.assertEqual(second["affected_task_ids"], ["M04"])
+        self.assertEqual(second["phase"], "PIPELINE_ENGINEER")
+        self.assertIn("M04", tasks_paused_by_incidents(self.cfg, grown))
 

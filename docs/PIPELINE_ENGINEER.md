@@ -462,9 +462,13 @@ The roster is checked whole - every violation in one list, through the
 validator's collector and `validate_department_leads`. One that does not
 assemble does not start the run: the reservation's gate (`staffing_gate`,
 under the coordinator lock, before the frontier is read) files one ticket of
-kind `staffing` through the one door, holding every task still to be
-accepted, with the full list in `diagnosis`, per-task details from the
-derivation, and a recommendation. Nothing but the on-call is reserved. Its
+kind `staffing` through the one door, holding every task not yet settled -
+the whole run, a migrated v0.8 task with no acceptance ahead included -
+with the full list in `diagnosis`, per-task details from the derivation, and
+a recommendation. While it is open the ticket is not filed again, but it
+holds the graph as it is now: a task a committed plan change added while the
+roster stayed incomplete is added to its hold (`hold_more_tasks`), so it
+cannot be reserved before the roster assembles. Nothing but the on-call is reserved. Its
 means are those of a lead stop: `devops-request-plan-change` - the change is
 marked `requires_roster`, and the replanner's graph is refused until the
 whole roster assembles, not only the requester's part -, `devops-supersede-rubric`

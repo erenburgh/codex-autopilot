@@ -596,6 +596,27 @@ class PipelineIncidentStore:
             )
             return _copy(incident)
 
+    def hold_more_tasks(self, incident_id: str, task_ids: Sequence[str], *, at: str) -> list[str]:
+        """Widen an open ticket's hold to tasks it did not name; returns those added.
+
+        A run-level stop (``staffing``) holds every unsettled task of the
+        graph it was filed on. A plan change committed while it is open can
+        add a task: unnamed, it was not paused and could be reserved while
+        the roster was still incomplete (independent check, 25 Sep 2026).
+        """
+
+        with self._transaction() as state:
+            incident = _incident(state, incident_id)
+            if incident.get("resolved_at"):
+                raise PipelineIncidentError(f"incident {incident_id} is closed: it holds nothing")
+            named = [str(item) for item in incident["affected_task_ids"]]
+            added = [item for item in dict.fromkeys(str(t) for t in task_ids) if item and item not in named]
+            if added:
+                incident["affected_task_ids"] = named + added
+                incident["updated_at"] = at
+                _append_event(state, "incident_hold_widened", at, incident=incident, detail=", ".join(added))
+            return added
+
     def ensure_pipeline_engineer(self, incident_id: str, *, at: str) -> dict[str, Any]:
         """Idempotently route an infrastructure incident to one engineer lane.
 

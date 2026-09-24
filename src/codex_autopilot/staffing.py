@@ -32,7 +32,7 @@ The roster is checked whole, every violation in one list (``IssueCollector``
 of the validator line, ``validate_department_leads`` of the R30 line). One
 that does not assemble does not start the run: before any task is reserved
 the stop goes through the one door (``blocked_runs.stop_run``) to the on-call
-with the full list, holding every task still to be accepted, and the board
+with the full list, holding every task not yet settled, and the board
 says so before the first task. The on-call's plan change asked from such a
 ticket must leave the roster whole (``requires_roster``), not just its
 requester - one list, one round.
@@ -449,11 +449,11 @@ def staffing_gate(cfg: Any, plan: Any, state: Any) -> dict[str, Any]:
     plan gate and before the frontier is read. A roster whose stamp is the
     current plan's and that assembled is taken as it is; otherwise it is
     rebuilt now. One that does not assemble is a stop through the one door:
-    a ticket for the on-call with the full list, holding every task still to
-    be accepted - the frontier read next is then empty, and the pass
-    reserves the on-call next to nothing. A ticket already open for it is
-    not filed again; the on-call reads the current list from the roster in
-    its package (``stop_diagnosis``).
+    a ticket for the on-call with the full list, holding every task not yet
+    settled - the frontier read next is then empty, and the pass reserves
+    the on-call next to nothing. A ticket already open for it is not filed
+    again, only widened to a task the graph gained since; the on-call reads
+    the current list from the roster in its package (``stop_diagnosis``).
     """
 
     from .plan_verification import plan_sha256
@@ -480,12 +480,33 @@ def _stop(cfg: Any, plan: Any, state: Any, roster: Mapping[str, Any]) -> str | N
     from .pipeline_engineer import PipelineIncidentStore
     from .run_state import utc_now
 
-    for item in PipelineIncidentStore(cfg.state_dir).load().get("incidents") or ():
-        system = item.get("system_state") or {}
-        if not item.get("resolved_at") and system.get("stop_kind") == STAFFING_STOP_KIND:
-            return str(item.get("incident_id"))
+    # The run does not start: every task not settled is held - a migrated
+    # v0.8 task too, though no acceptance is ahead of it. The docs once said
+    # "every task still to be accepted"; the code held them all, and the
+    # independent check (25 Sep 2026) asked which. All: the roster is the
+    # run's, and a run that did not assemble starts nothing.
     settled = settled_task_ids(state.task_states)
     held = [task.id for task in plan.tasks if task.id not in settled]
+    store = PipelineIncidentStore(cfg.state_dir)
+    open_tickets = [
+        item for item in store.load().get("incidents") or ()
+        if not item.get("resolved_at") and (item.get("system_state") or {}).get("stop_kind") == STAFFING_STOP_KIND
+    ]
+    if open_tickets:
+        # One ticket per stop, but it holds the graph as it is now: a task a
+        # plan change added while the roster stayed incomplete (a rubric that
+        # cannot be read passes plan admission) was named by no ticket and
+        # could be reserved. It is added to the open ticket's hold.
+        named = {str(task) for item in open_tickets for task in item.get("affected_task_ids") or ()}
+        missing = [task_id for task_id in held if task_id not in named]
+        ticket = str(open_tickets[-1].get("incident_id"))
+        if not missing:
+            return ticket
+        try:
+            store.hold_more_tasks(ticket, missing, at=utc_now())
+            return ticket
+        except Exception:  # noqa: BLE001 - never unheld: the door files them a ticket of their own
+            held = missing
     issues = roster_issues(roster)
     listed = render_issues(issues) if issues else "the roster did not assemble"
     details = [
