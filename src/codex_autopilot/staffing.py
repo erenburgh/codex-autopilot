@@ -46,7 +46,10 @@ digest and break the PLAN_VERIFIED receipt. It is a snapshot the runtime
 alone writes (``roster.json`` next to run-state), stamped with the
 ``plan_sha256`` it was built from, rebuilt at the bootstrap, after a
 committed plan change, and by the gate whenever the stamp is not the current
-plan's or the last build was incomplete. The replanner edits the graph only.
+plan's, the last build was incomplete, or a rubric it names is no longer
+the one its lead would be admitted by - the same check, not a copy
+(``department_runtime.admit_department_rubric``). The replanner edits the
+graph only.
 The run's facts - the isolation record and the roots audit - move without
 the plan: they are written into the roster where they land (the record's
 writer, every save of run state, the gate; ``sync_run_facts``), and the
@@ -501,7 +504,7 @@ def _rubric(c: Any, plan: Any, department: Any, memory: Any | None, cache: dict[
     committed plan change, the reservation under the coordinator lock.
     """
 
-    from .department_runtime import ensure_department_rubric
+    from .department_runtime import admit_department_rubric
 
     if department.id in cache:
         return cache[department.id]
@@ -509,8 +512,11 @@ def _rubric(c: Any, plan: Any, department: Any, memory: Any | None, cache: dict[
         cache[department.id] = None
         return None
     try:
-        reference, drift = ensure_department_rubric(memory, plan, department)
-        value: dict[str, Any] | None = {**reference.to_dict(), "lead_profile_changed": bool(drift)}
+        # The lead's own check (department_gate): what it would refuse, the roster does.
+        loaded = admit_department_rubric(memory, plan, department)
+        value: dict[str, Any] | None = {
+            **loaded.department.rubric.to_dict(), "lead_profile_changed": bool(loaded.lead_profile_changed),
+        }
     except Exception as exc:  # noqa: BLE001 - every failure is a named violation of the roster
         value = None
         c.add(
@@ -674,8 +680,8 @@ def staffing_gate(cfg: Any, plan: Any, state: Any) -> dict[str, Any]:
 
     Called under the coordinator lock by every reservation pass, after the
     plan gate and before the frontier is read. A roster whose stamp is the
-    current plan's and that assembled is taken as it is; otherwise it is
-    rebuilt now. One that does not assemble is a stop through the one door:
+    current plan's, that assembled and whose rubrics still hold
+    (``_rubrics_hold``) is taken as it is; otherwise it is rebuilt now. One that does not assemble is a stop through the one door:
     a ticket for the on-call with the full list. Before the start it holds
     every task not yet settled - the frontier read next is then empty, and
     the pass reserves the on-call next to nothing; under way it holds only
@@ -699,6 +705,8 @@ def staffing_gate(cfg: Any, plan: Any, state: Any) -> dict[str, Any]:
                 roster = updated
         except Exception:  # noqa: BLE001 - a label of the roster may never stop a run
             pass
+        if not _rubrics_hold(cfg, plan, state, roster):
+            roster = None
     if not roster or roster.get("plan_sha256") != plan_sha256(plan) or not roster.get("complete"):
         try:
             roster = refresh_roster(cfg.state_dir, plan, state, occasion="reservation", cfg=cfg)
@@ -712,6 +720,50 @@ def staffing_gate(cfg: Any, plan: Any, state: Any) -> dict[str, Any]:
         return roster
     _stop(cfg, plan, state, roster)
     return roster
+
+
+def _rubrics_hold(cfg: Any, plan: Any, state: Any, roster: Mapping[str, Any]) -> bool:
+    """Whether every rubric a whole roster names is still the one its lead would be admitted by.
+
+    Rubrics live in Project Memory, not in the plan: the stamp does not see
+    them move. The independent check made a department's history ambiguous
+    (two runtime v1s) after the bootstrap; the roster built before it was
+    taken as whole, M01's worker started, and the task stopped only at its
+    lead's reservation. Asked here with the lead's own check
+    (``admit_department_rubric``) for each department with acceptance
+    still ahead: a refusal or another record than the roster's rebuilds
+    the roster, which then names the violation and holds the department's
+    tasks before any of them starts. A check that cannot run at all
+    rebuilds it too - the rebuild names what failed.
+    """
+
+    from .department_runtime import admit_department_rubric, derive_task_department, settled_task_ids
+
+    try:
+        settled = settled_task_ids(state.task_states)
+        memory = None
+        seen: set[str] = set()
+        for entry in roster.get("tasks") or ():
+            if not isinstance(entry, Mapping) or not entry.get("acceptance_ahead"):
+                continue
+            named = entry.get("rubric")
+            task = plan.task_map.get(str(entry.get("id")))
+            if not isinstance(named, Mapping) or task is None or task.id in settled:
+                continue
+            department = derive_task_department(plan, task, settled=settled)
+            if department.id in seen:
+                continue
+            seen.add(department.id)
+            if memory is None:
+                from .memory import ProjectMemory
+
+                memory = ProjectMemory(Path(cfg.state_dir).parent)
+            current = admit_department_rubric(memory, plan, department).department.rubric.to_dict()
+            if any(named.get(key) != value for key, value in current.items()):
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - the rebuild names the violation; this only asks for it
+        return False
 
 
 def _stop(cfg: Any, plan: Any, state: Any, roster: Mapping[str, Any]) -> str | None:

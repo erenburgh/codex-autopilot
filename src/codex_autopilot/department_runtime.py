@@ -501,6 +501,32 @@ def current_department_rubric(memory: Any, department_id: str) -> LoadedDepartme
     return history[-1] if history else None
 
 
+def admit_department_rubric(
+    memory: Any, plan: Any, department: DepartmentDefinition
+) -> LoadedDepartmentAcceptance:
+    """The department's rubric as its lead is admitted by it; the one check of it.
+
+    Version 1 is written when there is none; a history that is not exactly
+    1..n (two runtime v1s) is refused with its record ids
+    (``stored_rubric_versions``); the current record is attested
+    (``load_department_rubric``). The lead's reservation and prompt ask it
+    here, and so does the roster (``staffing``), at its build and at every
+    reservation pass: the roster used to call a department whole on a
+    snapshot taken before a second v1 appeared, the worker started, and the
+    task stopped only at its lead's reservation - after its work was done.
+    """
+
+    reference, drift = ensure_department_rubric(memory, plan, department)
+    contract = DepartmentContract(
+        department.id, department.name, department.lead_role_id, reference
+    )
+    return LoadedDepartmentAcceptance(
+        department=contract,
+        rubric=load_department_rubric(memory, contract),
+        lead_profile_changed=drift,
+    )
+
+
 def load_task_department_acceptance(
     memory: Any, plan: Any, task: Any, *, ensure: bool, settled: Collection[str] = ()
 ) -> LoadedDepartmentAcceptance:
@@ -513,15 +539,14 @@ def load_task_department_acceptance(
 
     department = derive_task_department(plan, task, settled=settled)
     if ensure:
-        reference, drift = ensure_department_rubric(memory, plan, department)
-    else:
-        history = stored_rubric_versions(memory, department.id)
-        if not history:
-            raise DepartmentAcceptanceError(
-                f"department {department.id!r} has no rubric in Project Memory"
-            )
-        reference = history[-1].reference
-        drift = _profile_drift(memory, plan, department, history[0])
+        return admit_department_rubric(memory, plan, department)
+    history = stored_rubric_versions(memory, department.id)
+    if not history:
+        raise DepartmentAcceptanceError(
+            f"department {department.id!r} has no rubric in Project Memory"
+        )
+    reference = history[-1].reference
+    drift = _profile_drift(memory, plan, department, history[0])
     contract = DepartmentContract(
         department.id, department.name, department.lead_role_id, reference
     )

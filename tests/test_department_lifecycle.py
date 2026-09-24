@@ -303,6 +303,46 @@ def _two_professions_with_leads() -> dict:
     return raw
 
 
+class ALeadStopAsksTheReplannerForALeadTests(DepartmentRun):
+    plan_payload = staticmethod(_two_professions_with_leads)
+
+    def test_the_on_calls_request_carries_the_lead_requirement(self) -> None:
+        """A department_lead stop's plan change must name the requester's lead.
+
+        The roster now stops a task with no lead before its start, so the
+        lead's own gate is what files this stop: here it refuses M01 at its
+        lead's reservation, after its worker, through the production
+        completion (``admit_verifier`` -> ``stop_for_department``). The
+        on-call's request is the CLI's (devops-request-plan-change). This
+        was pinned before the roster and lost when its test was rewritten
+        for the staffing stop.
+
+        Mutation: request_plan_change without marking requires_lead - the
+        replanner's graph is admitted with M01 still without a lead.
+        """
+
+        from codex_autopilot.department_acceptance import DepartmentAcceptanceError
+        from codex_autopilot.engineer_stop_actions import request_plan_change
+        from codex_autopilot.resilience import active_plan_change
+
+        workers = {item.task_id: item for item in self.reserve()}
+        refusal = DepartmentAcceptanceError("profession 'character-artist' names no Lead Role")
+        with mock.patch("codex_autopilot.department_gate.load_task_department_acceptance", side_effect=refusal):
+            stopped = self.implement(workers["M01"], "worker-M01")
+        self.assertEqual(self.store.load().task_states["M01"], "IMPLEMENTED")
+        (ticket,) = _tickets(self.cfg, "department_lead")
+        self.assertEqual(ticket["affected_task_ids"], ["M01"])
+        engineer = next(item for item in stopped.descriptors if item.kind == "pipeline_engineer")
+        self.mark_active(engineer.reservation_token, "on-call")
+        result = request_plan_change(
+            self.cfg, incident_id=str(ticket["incident_id"]), task_id="M01",
+            reason="name the lead of character-artist", thread_id="on-call",
+        )
+        record = active_plan_change(self.store.load(), request_id=result["plan_change_id"])
+        self.assertIs(record.get("requires_lead"), True)
+        self.assertNotIn("requires_roster", record)
+
+
 class APlanChangeBringsItsDepartmentsRubricTests(DepartmentRun):
     def _candidate(self):
         from codex_autopilot.plan import plan_to_dict, validate_plan_change
@@ -379,27 +419,41 @@ class AnAmbiguousRubricIsTheOnCallsToRepairTests(DepartmentRun):
             db.execute("UPDATE records SET status='verified' WHERE id=?", (first,))
         return first, second
 
-    def test_the_stray_record_is_superseded_and_the_task_returns(self) -> None:
-        """Two runtime v1s: the later one is stray; the first is what leads attested.
+    def test_the_roster_holds_the_department_until_the_stray_record_is_superseded(self) -> None:
+        """Two runtime v1s: nothing of the department starts; the on-call retires the later one.
 
-        Mutations: supersede_rubric_record back to refusing any record the
-        runtime wrote (nothing can be retired, the department stays stopped
-        for her); supersede_rubric_record without its canonical-history
-        guard (the first v1 is retired).
+        The roster built at the bootstrap, before the second v1, was taken as
+        whole: M01's worker started, and the task stopped only at its lead's
+        reservation, after its work. The roster now asks every rubric with
+        the lead's own check (``admit_department_rubric``) at every
+        reservation pass: the stop is the roster's, before the first task,
+        through the one door. The first v1 is what leads attested; the later
+        one is stray.
+
+        Mutations: staffing_gate takes a whole roster of this plan without
+        asking its rubrics (M01's worker is reserved);
+        supersede_rubric_record back to refusing any record the runtime
+        wrote (nothing can be retired, the department stays stopped for
+        her); supersede_rubric_record without its canonical-history guard
+        (the first v1 is retired).
         """
 
         from codex_autopilot.department_gate import supersede_rubric_record
         from codex_autopilot.engineer_stop_actions import EngineerStopActionError, require_stop_ticket_closable
+        from codex_autopilot.staffing import refresh_roster
 
         first, second = self._two_runtime_version_ones()
         for record_id in (first, second):
             self.assertEqual(self.memory.get_record(record_id)["created_by"], "codex-autopilot-runtime")
-        outcome = self.implement(self.reserve()[0], "worker-M01")
-        (ticket,) = _tickets(self.cfg, "department_lead")
+        descriptors = self.reserve()
+        self.assertEqual([item.kind for item in descriptors], ["pipeline_engineer"])
+        self.assertEqual(self.store.load().task_states["M01"], "READY")
+        self.assertEqual(_tickets(self.cfg, "department_lead"), [])
+        (ticket,) = _tickets(self.cfg, "staffing")
+        self.assertIn("M01", ticket["affected_task_ids"])
         self.assertIn("devops-supersede-rubric", ticket["system_state"]["recommendation"])
         self.assertIn(second, ticket["system_state"]["diagnosis"])
-        engineer = next(item for item in outcome.descriptors if item.kind == "pipeline_engineer")
-        self.mark_active(engineer.reservation_token, "on-call")
+        self.mark_active(descriptors[0].reservation_token, "on-call")
         incident = str(ticket["incident_id"])
         with self.assertRaisesRegex(EngineerStopActionError, f"canonical rubric history.*stray records are: {second}"):
             supersede_rubric_record(self.cfg, incident_id=incident, record_id=first,
@@ -414,6 +468,11 @@ class AnAmbiguousRubricIsTheOnCallsToRepairTests(DepartmentRun):
         require_stop_ticket_closable(
             self.cfg, incident, ["supersede_department_rubric", "return_stopped_task"], "on-call"
         )
+        roster = refresh_roster(self.cfg.state_dir, self.plan(), self.store.load(), occasion="test",
+                                memory=self.memory, cfg=self.cfg)
+        self.assertTrue(roster["complete"], roster["issues"])
+        m01 = next(item for item in roster["tasks"] if item["id"] == "M01")
+        self.assertEqual(m01["rubric"]["record_id"], first)
 
     def test_a_record_past_a_gap_or_not_a_rubric_is_stray(self) -> None:
         """Mutation: stray_rubric_records keeps a version past the first gap."""
