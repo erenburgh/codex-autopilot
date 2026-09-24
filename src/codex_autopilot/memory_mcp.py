@@ -11,7 +11,8 @@ from typing import Any, Callable
 from . import __version__
 from .artifact_staging import resolve_canonical_project_root
 from .config import STATE_DIR_NAME
-from .department_acceptance import store_department_rubric
+from .department_acceptance import RESERVED_TOOL_PREFIX, store_department_rubric
+from .department_runtime import authorize_rubric_proposal
 from .memory import CATEGORIES, MAX_PAGE_SIZE, MemoryError, MemoryValidationError, ProjectMemory
 
 
@@ -129,8 +130,10 @@ _ACTION_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "memory_store_department_rubric",
         "description": (
-            "Store one immutable, evidence-backed department acceptance rubric. "
-            "A new version must advance exactly once and cite outcome evidence."
+            "Propose the next version of a department acceptance rubric (R30). Version 1 "
+            "is the runtime's. Only the department's lead or the on-call may propose, from "
+            "its own thread; a version advances exactly once and cites outcome evidence - "
+            "evidence a recorded acceptance of this department rested on."
         ),
         "inputSchema": _schema(
             {
@@ -598,6 +601,13 @@ class MemoryMcpServer:
         allowed = {"kind", "summary", "milestone_id", "role", "path", "line_start", "line_end", "command", "result", "exit_code", "tool_name", "artifact_path", "user_instruction", "environment_probe", "created_by", "provider", "provider_thread_id"}
         args = self._validate_keys(args, allowed)
         self._require_active_milestone_link(args)
+        # R30: evidence under the runtime's tool names is the runtime's own
+        # record (version 1 of a department rubric); from a model it would
+        # pass for it.
+        if str(args.get("tool_name") or "").strip().startswith(RESERVED_TOOL_PREFIX):
+            raise MemoryValidationError(
+                f"tool_name {args.get('tool_name')!r} is reserved for the Codex Autopilot runtime"
+            )
         return self.memory.record_evidence(**args)
 
     def _require_active_milestone_link(self, args: dict[str, Any]) -> None:
@@ -692,10 +702,15 @@ class MemoryMcpServer:
             "evidence_ids",
             "created_by",
         }
-        reference = store_department_rubric(
-            self.memory,
-            **self._validate_keys(args, allowed),
-        )
+        args = self._validate_keys(args, allowed)
+        # R30: only the department's lead or the on-call proposes a version,
+        # known by its thread - never a worker of the tasks it judges. The
+        # identity is CODEX_THREAD_ID, as for every ownership guard; a server
+        # started without it refuses, and the proposal goes through
+        # `codex-autopilot department-rubric-propose` from that thread.
+        caller = str(os.environ.get("CODEX_THREAD_ID") or "")
+        authorize_rubric_proposal(self.root, str(args.get("department_id") or ""), caller)
+        reference = store_department_rubric(self.memory, **args, caller_thread_id=caller)
         return reference.to_dict()
 
     def _record_verification_result(self, args: dict[str, Any]) -> dict[str, Any]:

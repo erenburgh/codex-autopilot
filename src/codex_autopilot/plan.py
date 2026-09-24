@@ -283,6 +283,7 @@ def validate_persisted_plan(
         ),
         require_goal_contract=not persisted_compatibility,
         require_acceptance_class=not persisted_compatibility,
+        require_leads=False,
     )
     project_root = state_dir.expanduser().resolve().parent if state_dir is not None else None
     validate_trusted_skill_promotions(plan.skill_packs, project_root=project_root)
@@ -425,6 +426,7 @@ def _validate_plan_payload(
     require_goal_contract: bool,
     require_acceptance_class: bool,
     migrated_milestone_ids: frozenset[str] | None = None,
+    require_leads: bool = True,
 ) -> Plan:
     if profile not in {"adaptive", "host-settings"}:
         raise ValueError("profile must be adaptive or host-settings")
@@ -446,6 +448,7 @@ def _validate_plan_payload(
         inherited=inherited,
         require_goal_contract=require_goal_contract,
         require_acceptance_class=require_acceptance_class,
+        require_leads=require_leads,
     )
 
 
@@ -532,6 +535,7 @@ def _validate_graph_plan(
     require_goal_contract: bool,
     require_acceptance_class: bool,
     inherited: "Plan | None" = None,
+    require_leads: bool = True,
 ) -> Plan:
     """Every violation of the graph in one pass (``plan_admission``)."""
 
@@ -540,12 +544,8 @@ def _validate_graph_plan(
 
     c = IssueCollector()
     read = graph_plan(
-        c,
-        data,
-        profile,
-        inherited=inherited,
-        require_goal_contract=require_goal_contract,
-        require_acceptance_class=require_acceptance_class,
+        c, data, profile, inherited=inherited, require_goal_contract=require_goal_contract,
+        require_acceptance_class=require_acceptance_class, require_leads=require_leads,
     )
     c.raise_if_any()
     return read.plan

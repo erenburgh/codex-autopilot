@@ -10,14 +10,14 @@ from typing import Any, Callable
 from .ai_studio import AIStudioRuntime
 from .artifact_staging import ArtifactStagingStore, task_requires_staging
 from .config import Config, DESKTOP_OWNED_SURFACE, STATE_DIR_NAME
-from .department_acceptance import task_department_binding
+from .department_gate import admit_verifier, build_or_hold, snapshot
 from .hook_trust import require_trusted_stop_hook_for_config
 from .lifecycle_prompts import (
     _replanner_prompt,
     _worker_prompt,
 )
 from .memory import ProjectMemory
-from .models import MODEL_IDS, ModelRoutingError, logical_model
+from .models import MODEL_IDS, logical_model
 from .revision_budget import basis_for
 from .plan import Plan, load_plan, validate_plan_change
 from .plan_verification import (
@@ -41,7 +41,6 @@ from .resources import (
     build_scheduler_availability,
 )
 from .lifecycle_screening import screening_gate
-from .blocked_runs import stop_run
 from .engineer_reservation import (  # noqa: F401 - re-exported for existing importers
     _reserve_pipeline_engineer_in_state,
     open_pipeline_engineer_incident,
@@ -517,29 +516,9 @@ def _reserve_followup_sessions_in_state(
             )
             issues: tuple[VerificationIssue, ...] = ()
             evidence, check_results = _latest_completion_context(memory, state, task.id)
-            try:
-                execution_mode = verifier_route(plan, task).execution_mode
-            except ModelRoutingError as exc:
-                _append_event(
-                    state,
-                    "verifier_routing_blocked",
-                    _latest_task_session(state, task.id),
-                    utc_now(),
-                    detail=str(exc),
-                )
-                # It used to stop with only last_error, then (0.13) BLOCKED
-                # and a ticket. R3: routing is infrastructure - the task stays
-                # IMPLEMENTED, held by the ticket until the on-call looks.
-                stop_run(
-                    cfg,
-                    state,
-                    stop_kind="verifier_routing",
-                    phase="VERIFIER_ROUTING_BLOCKED",
-                    reason=str(exc),
-                    summary=f"No verifier could be routed for {task.id}.",
-                    at=utc_now(),
-                    task_ids=(task.id,),
-                )
+            # Route, lead and rubric (R30), or a stop of this task alone.
+            execution_mode = admit_verifier(cfg, plan, state, task, memory)
+            if execution_mode is None:
                 continue
         elif raw_state == TaskState.REVISION_REQUIRED.value:
             if _rehire_or_block_on_revision_limit(
@@ -601,6 +580,7 @@ def _reserve_followup_sessions_in_state(
             state.task_attempts[task.id] = previous_attempt
             continue
 
+        restore = {**snapshot(state, task.id), "task_attempts": previous_attempt or None}
         state.worker_sequence = worker_sequence
         if kind == "revision":
             state.task_revisions[task.id] = revision_number
@@ -611,22 +591,15 @@ def _reserve_followup_sessions_in_state(
             state.task_revision_basis[task.id] = basis_for(
                 state.graph_version, task.depends_on
             )
-        descriptor = _build_descriptor(
-            cfg,
-            plan,
-            state,
-            task_id=task.id,
-            kind=kind,
-            attempt=attempt,
-            token=token,
-            operation_id=operation_id,
-            client_id=client_id,
-            verification_round=verification_round,
-            revision_number=revision_number,
-            verification_issues=issues,
-            verification_evidence=evidence,
+        descriptor = build_or_hold(cfg, plan, state, task.id, lambda: _build_descriptor(
+            cfg, plan, state, task_id=task.id, kind=kind, attempt=attempt, token=token,
+            operation_id=operation_id, client_id=client_id,
+            verification_round=verification_round, revision_number=revision_number,
+            verification_issues=issues, verification_evidence=evidence,
             deterministic_results=check_results,
-        )
+        ), token=token, restore=restore)
+        if descriptor is None:
+            continue
         state.task_states = transition_task(
             plan, state.task_states, task.id, destination
         )
@@ -1043,9 +1016,7 @@ def _build_descriptor(
             kind=kind,
             role_name=plan.role_map[role_id].name,
             revision_number=revision_number,
-            departmental_verifier=(
-                kind == "verifier" and task_department_binding(task) is not None
-            ),
+            departmental_verifier=(kind == "verifier"),
         )
         prompt = _worker_prompt(
             cfg,

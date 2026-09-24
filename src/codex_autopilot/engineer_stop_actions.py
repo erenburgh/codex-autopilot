@@ -307,6 +307,8 @@ def request_plan_change(
             at=timestamp,
         )
         record["requested_by_incident"] = incident_id
+        if str((incident.get("system_state") or {}).get("stop_kind") or "") == "department_lead":
+            record["requires_lead"] = True  # R30: the graph must name the requester's lead
         # A replanner that used every attempt: the new change is a fresh
         # budget, and it carries the refusals so the next replanner is not blind.
         from .replanner_hint import inherit_rejections
@@ -415,6 +417,11 @@ def require_stop_ticket_closable(
         raise EngineerStopActionError(
             "repair_runtime_code is named, but this ticket has no live runtime patch (staged "
             "or installed): stage it with devops-repair-runtime first"
+        )
+    if "supersede_department_rubric" in named and not incident.get("rubric_supersessions"):
+        raise EngineerStopActionError(
+            "supersede_department_rubric is named, but this ticket superseded no rubric "
+            "record: use devops-supersede-rubric first"
         )
     if "request_plan_change" in named and not incident.get("plan_change_requests"):
         raise EngineerStopActionError(

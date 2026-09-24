@@ -5,20 +5,16 @@ from typing import Any, Callable
 
 from .blocked_runs import stop_run as _stop_run
 from .stop_holds import stop_worker_task
-from .ai_studio import AIStudioRuntime, ContextBoundaryError
+from .ai_studio import ContextBoundaryError
 from .artifact_staging_lifecycle import (
     audit_completed_task_scope,
     bind_completion_artifact_gate,
 )
 from .bootstrap import mark_roadmap, select_milestone
 from .config import Config
-from .department_acceptance import (
-    DepartmentAcceptanceError,
-    LoadedDepartmentAcceptance,
-    load_task_department_acceptance,
-    require_rubric_attestation,
-    task_department_binding,
-)
+from .department_acceptance import DepartmentAcceptanceError, LoadedDepartmentAcceptance
+from .department_audit import SECOND_LEAD_CHECK, awaiting_second_lead, second_lead_details, second_lead_gate
+from .department_runtime import verdict_acceptance
 from .hook_trust import require_trusted_stop_hook_for_config
 from .memory import ProjectMemory
 from .rules import record_violation
@@ -277,72 +273,30 @@ def complete_desktop_worker(
     task = plan.task_map[task_id]
     loaded_department_acceptance: LoadedDepartmentAcceptance | None = None
     if verdict is not None:
+        # R30: every verdict is a lead's, by its department's current rubric.
+        # A verdict without the exact attestation is the model's mistake and
+        # goes to the rejection recorder (reason on record, a fresh lead); it
+        # used to raise here, which is an incident and a stall. Only a runtime
+        # fault - no department, no rubric, a wrong title - raises.
         try:
-            department_binding = task_department_binding(task)
-            if department_binding is not None:
-                dependency_outputs = AIStudioRuntime(
-                    plan,
-                    cfg.root,
-                    language=cfg.language,
-                    skill_path=cfg.skill_path,
-                    memory=memory,
-                ).select_context(
-                    task.id,
-                    task_states=initial.task_states,
-                ).dependency_outputs
-                loaded_department_acceptance = load_task_department_acceptance(
-                    memory,
-                    departments=plan.departments,
-                    task=task,
-                    role_names={item.id: item.name for item in plan.roles},
-                    dependency_outputs=dependency_outputs,
-                )
-                department = loaded_department_acceptance.department
-                require_rubric_attestation(department.rubric, verdict.rubric)
-                expected_title = department_verifier_thread_title(
-                    task.id,
-                    task.title,
-                    lead_role_name=plan.role_map[department.lead_role_id].name,
-                )
-                actual_title = str((session.get("descriptor") or {}).get("title") or "")
-                if actual_title != expected_title:
-                    raise DepartmentAcceptanceError(
-                        "department verifier title does not identify the pinned Lead Role: "
-                        f"expected {expected_title!r}, observed {actual_title!r}"
-                    )
-            elif verdict.rubric is not None:
-                # The same class as the unreadable verdict above, reaching
-                # the runtime by the other door. There the verdict cannot be
-                # parsed; here it parses perfectly and carries a `rubric`
-                # the task is not entitled to - `rubric` is a legal field,
-                # just not for a task with no department binding.
-                #
-                # That second door bypassed the rejection recorder, so the
-                # reason was never written down and the NEXT verifier was
-                # told nothing. It repeated the mistake, its turn was
-                # interrupted again, and the task sat in VERIFYING waiting
-                # for the on-call engineer. Measured three times on one
-                # live run - twice on M6, once on M11A - each time costing
-                # a worker turn and a stall.
-                #
-                # Recording it reaches the note that already exists and
-                # says exactly the right thing: return AUTOPILOT_VERIFICATION
-                # with exactly two top-level fields.
-                return _reject_verifier_result(
-                    cfg,
-                    session=session,
-                    thread_id=thread_id,
-                    turn_id=turn_id,
-                    reason=(
-                        "verifier attested a department rubric for a task without "
-                        "department-binding and rubric-binding resources"
-                    ),
-                    at=at,
-                    now_epoch=now_epoch,
-                    dispatcher_authorized=dispatcher_authorized,
-                )
+            loaded_department_acceptance, refusal = verdict_acceptance(memory, plan, task, session, verdict.rubric)
         except (DepartmentAcceptanceError, ContextBoundaryError) as exc:
             raise WorkerProtocolError(str(exc)) from exc
+        if refusal is not None:
+            return _reject_verifier_result(
+                cfg, session=session, thread_id=thread_id, turn_id=turn_id, reason=refusal[0], at=at,
+                now_epoch=now_epoch, dispatcher_authorized=dispatcher_authorized, counted=refusal[1],
+            )
+        department = loaded_department_acceptance.department
+        expected_title = department_verifier_thread_title(
+            task.id, task.title, lead_role_name=plan.role_map[department.lead_role_id].name
+        )
+        actual_title = str((session.get("descriptor") or {}).get("title") or "")
+        if actual_title != expected_title:
+            raise WorkerProtocolError(
+                "department verifier title does not identify the pinned Lead Role: "
+                f"expected {expected_title!r}, observed {actual_title!r}"
+            )
         invalid_refs = sorted(
             {
                 ref
@@ -405,6 +359,7 @@ def complete_desktop_worker(
             )
         )
     if verdict is not None:
+        second = awaiting_second_lead(initial, task_id) is not None  # R30 mitigation
         verifier_role = plan.role_map[verifier_route(plan, task).role_id].name
         supporting_evidence = evidence_that_may_support(evidence)
         if not supporting_evidence:
@@ -417,7 +372,7 @@ def complete_desktop_worker(
             )
         verification = memory._record_runtime_verification_result(
             task_id=task_id,
-            check_id="independent-acceptance",
+            check_id=SECOND_LEAD_CHECK if second else "independent-acceptance",
             policy="independent",
             verdict=verdict.verdict,
             summary=(
@@ -435,6 +390,7 @@ def complete_desktop_worker(
             details={
                 "verification_round": int(session.get("verification_round") or 0),
                 "issues": [item.to_dict() for item in verdict.issues],
+                **second_lead_details(initial, task_id, verdict),
                 **(
                     {
                         "department_rubric": loaded_department_acceptance.rubric.to_dict(),
@@ -447,7 +403,7 @@ def complete_desktop_worker(
         )
         independent_verification_id = str(verification["id"])
         memory_verification_ids.append(independent_verification_id)
-        if verdict.verdict == "PASS" and task.skill_attestation is not None:
+        if verdict.verdict == "PASS" and task.skill_attestation is not None and not second:
             implementation_evidence, implementation_checks = _latest_completion_context(
                 memory, initial, task_id
             )
@@ -558,7 +514,10 @@ def complete_desktop_worker(
             if state.task_states[task_id] != TaskState.VERIFYING.value:
                 raise DesktopLifecycleError("verifier completion requires VERIFYING state")
             assert verdict is not None
-            if verdict.verdict == "PASS":
+            deferred, verdict, independent_verification_id = second_lead_gate(
+                cfg, plan, state, current, verdict, independent_verification_id, timestamp
+            )
+            if verdict.verdict == "PASS" and not deferred:
                 artifact_gate.promote(
                     task_id,
                     independent_verification_id,
@@ -584,7 +543,7 @@ def complete_desktop_worker(
                         sort_keys=True,
                     ),
                 )
-            else:
+            elif not deferred:
                 artifact_gate.require_revision(task_id)
                 state.task_states = transition_task(
                     plan, state.task_states, task_id, TaskState.REVISION_REQUIRED
@@ -695,7 +654,7 @@ def complete_desktop_worker(
         state.task_retry_at.pop(task_id, None)
         _sync_legacy_cursor(plan, state)
         next_relay_owner = thread_id
-        if kind == "verifier" and verdict is not None and verdict.verdict == "PASS":
+        if kind == "verifier" and state.task_states[task_id] == TaskState.VERIFIED.value:
             next_relay_owner = str(
                 current.get("accepted_implementation_thread_id") or ""
             )
@@ -1095,13 +1054,16 @@ def _reject_verifier_result(
     at: str | None,
     now_epoch: int | None,
     dispatcher_authorized: bool = False,
+    counted: bool = True,
 ) -> CompletionOutcome:
     """Return the verdict to the verifier with the reason and let it rewrite it.
 
     The acceptance counts in no direction: an unreadable verdict is neither
     PASS nor REVISE. The task returns to IMPLEMENTED - the work is done and
     still awaits acceptance - and the ordinary reservation path raises a
-    fresh verifier.
+    fresh verifier. A refusal that is not the model's mistake (R30: the
+    rubric advanced, or the lead predates it) is recorded and not counted
+    toward the limit (``department_runtime.attestation_refusal``).
     """
 
     timestamp = at or utc_now()
@@ -1118,9 +1080,9 @@ def _reject_verifier_result(
             return CompletionOutcome(False, None, (), state.status == "DONE")
         task_id = str(current["task_id"])
         rejections = list(state.verification_rejections.get(task_id) or [])
-        rejections.append({"at": timestamp, "reason": reason})
+        rejections.append({"at": timestamp, "reason": reason, **({} if counted else {"counted": False})})
         state.verification_rejections[task_id] = rejections
-        exhausted = len(rejections) > MAX_VERIFICATION_REJECTIONS
+        exhausted = sum(1 for item in rejections if item.get("counted", True)) > MAX_VERIFICATION_REJECTIONS
 
         current["turn_id"] = turn_id
         current["final_status"] = "VERIFICATION_REJECTED"

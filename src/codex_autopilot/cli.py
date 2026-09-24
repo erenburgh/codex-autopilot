@@ -193,6 +193,19 @@ def parser() -> argparse.ArgumentParser:
     replan.add_argument("--reason", required=True)
     replan.add_argument("--kind", default="prerequisite")
     replan.add_argument("--change-json", default="")
+    # R30: the on-call's repair of an ambiguous rubric history, and the one
+    # door to a later rubric version (the department's lead or the on-call).
+    supersede = sub.add_parser("devops-supersede-rubric")
+    supersede.add_argument("--project", type=Path, default=Path.cwd())
+    supersede.add_argument("--incident-id", required=True)
+    supersede.add_argument("--record", required=True)
+    supersede.add_argument("--reason", required=True)
+    propose = sub.add_parser("department-rubric-propose")
+    propose.add_argument("--project", type=Path, default=Path.cwd())
+    propose.add_argument("--department", required=True)
+    propose.add_argument("--version", type=int, required=True)
+    propose.add_argument("--rubric-json", required=True, help='{"criteria":[{"id","requirement"}],"standards":[...]}')
+    propose.add_argument("--evidence", nargs="+", required=True)
     authorize_root = sub.add_parser(
         "authorize-project-root",
         help="authorize Autopilot to add this project's canonical root to the saved Codex project",
@@ -700,6 +713,39 @@ def main(argv: list[str] | None = None) -> int:
                 change=json.loads(args.change_json) if args.change_json else None,
             )
             print(json.dumps(result, ensure_ascii=False))
+            return 0
+        if args.command == "devops-supersede-rubric":
+            from .department_gate import supersede_rubric_record
+
+            result = supersede_rubric_record(
+                load_config(args.project),
+                incident_id=args.incident_id,
+                record_id=str(args.record).strip(),
+                reason=str(args.reason),
+                thread_id=_relay_executor_thread_id(),
+            )
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        if args.command == "department-rubric-propose":
+            from .department_acceptance import store_department_rubric
+            from .department_runtime import authorize_rubric_proposal
+            from .memory import ProjectMemory
+
+            cfg = load_config(args.project)
+            thread = _relay_executor_thread_id()
+            author = authorize_rubric_proposal(cfg.root, str(args.department), thread)
+            content = json.loads(args.rubric_json)
+            reference = store_department_rubric(
+                ProjectMemory(cfg.root),
+                department_id=str(args.department),
+                version=int(args.version),
+                criteria=content.get("criteria") or [],
+                standards=content.get("standards") or [],
+                evidence_ids=list(args.evidence),
+                created_by=author,
+                caller_thread_id=thread,
+            )
+            print(json.dumps(reference.to_dict(), ensure_ascii=False))
             return 0
         if args.command == "devops-repair-runtime":
             # The engineer edits the runtime's code - but the gateway accepts

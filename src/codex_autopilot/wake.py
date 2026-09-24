@@ -166,6 +166,7 @@ def run_wake(
 ) -> int:
     """Sleep until the due time and raise the dispatcher - or leave quietly if not allowed."""
 
+    from .department_audit import audit_lead_sessions
     from .resilience import append_resilience_event
 
     store = StateStore(cfg.state_dir)
@@ -222,6 +223,7 @@ def run_wake(
         # mid-turn are settled by the server's own word, and whatever that
         # freed - the on-call's lane, above all - is reserved at once.
         settled = _settle_dead_sessions(cfg, observe=observe)
+        audit_lead_sessions(cfg)  # R30: leads that outlived their acceptance
         if settled:
             descriptors += tuple(
                 reserve(cfg, now_epoch=int(now()), relay_owner_thread_id=owner)
@@ -675,6 +677,7 @@ def sweep(
     """
 
     from .config import load_config as _load_config
+    from .department_audit import audit_lead_sessions
 
     outcome: dict[str, str] = {}
     for raw in roots if roots is not None else registered_projects():
@@ -691,6 +694,9 @@ def sweep(
         if state.status == "DONE" or StateStore(cfg.state_dir).pause_requested():
             outcome[raw] = "stopped"
             continue
+        # R30: a lead that outlived its acceptance is found by the server's
+        # own word, once per lead, whether or not anything is due.
+        audit_lead_sessions(cfg)
         if due_wake_epoch(state, cfg) is None:
             outcome[raw] = "nothing due"
             continue

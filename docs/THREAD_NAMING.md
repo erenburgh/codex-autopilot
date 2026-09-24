@@ -5,12 +5,16 @@ metadata:
 
 ```text
 <Role> | <Task ID> | <Short Task Title>
-<Verifier Role> Verifier | <Task ID> | <Short Verification Title>
+<Lead Role> | Verify <Task ID> | <Short Task Title>
 <Role> | <Task ID>-R<revision> | <Short Revision Title>
 Planner | PLAN | <Short Project Goal>
 Planner | PC-<ID> | <Short Change Purpose>
 Screening | Hire <Task ID> | <Short Task Title>
 ```
+
+Every verifier is its department's lead (R30), so its title names the lead:
+`Character Art Verifier | Verify M01 | Model part M01`. The older
+`<Verifier Role> Verifier | <Task ID> | ...` form is no longer produced.
 
 `Screening` appears only in a run that has turned hiring on
 (`runtime.skill_screening`); it is the thread that decides which skills the
@@ -20,7 +24,7 @@ For the reference task, the exact titles are:
 
 ```text
 3D Artist | T44 | Create Weapon Model
-3D Artist Verifier | T44 | Verify Weapon Model
+Art Lead | Verify T44 | Create Weapon Model
 3D Artist | T44-R1 | Revise Weapon Model
 ```
 

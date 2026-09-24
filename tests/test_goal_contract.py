@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from _plan_contract import canonical_verification
+from _plan_contract import TEST_LEAD_ROLE, canonical_verification
 
 from codex_autopilot.goal_contract import (
     GoalContractError,
@@ -87,7 +87,8 @@ def graph(*, include_contract: bool = True) -> dict:
                 "id": "builder",
                 "name": "Runtime Engineer",
                 "responsibilities": ["Build the accepted vertical slice."],
-            }
+            },
+            dict(TEST_LEAD_ROLE),
         ],
         "tasks": [task(outcomes=["playable", "packaged"])],
     }

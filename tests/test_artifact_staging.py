@@ -310,8 +310,8 @@ class StagedArtifactLifecycleTests(unittest.TestCase):
         )
 
     def test_revise_leaves_no_canonical_trace_and_pass_promotes(self) -> None:
+        from _plan_contract import attested_verdict
         from codex_autopilot.lifecycle import complete_desktop_worker
-        from codex_autopilot.verification import VERIFICATION_PREFIX
 
         implementation = self.reserve()
         workspace = Path(implementation.cwd)
@@ -346,11 +346,9 @@ class StagedArtifactLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id="verifier-thread-1",
             turn_id="verifier-turn-1",
-            final_message=(
-                "AUTOPILOT_RULES: R24, R29\n"
-                + VERIFICATION_PREFIX
-                + '{"verdict":"REVISE","issues":[{"code":"CONTENT","summary":"Revise content","details":"Use proposal 2.","dod_refs":[1]}]}'
-            ),
+            final_message=attested_verdict(self.cfg, "A", "REVISE", [
+                {"code": "CONTENT", "summary": "Revise content", "details": "Use proposal 2.", "dod_refs": [1]}
+            ], prefix="AUTOPILOT_RULES: R24, R29\n"),
         )
         revision = second.descriptors[0]
         self.assertEqual(Path(revision.cwd), workspace)
@@ -376,11 +374,7 @@ class StagedArtifactLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id="verifier-thread-2",
             turn_id="verifier-turn-2",
-            final_message=(
-                "AUTOPILOT_RULES: R24, R29\n"
-                + VERIFICATION_PREFIX
-                + '{"verdict":"PASS","issues":[]}'
-            ),
+            final_message=attested_verdict(self.cfg, "A", prefix="AUTOPILOT_RULES: R24, R29\n"),
         )
 
         self.assertEqual((self.root / "src" / "result.txt").read_text(), "proposal-2\n")

@@ -15,7 +15,6 @@ from .config import Config
 from .lifecycle_base import DesktopLifecycleError
 from .language import is_russian
 from .memory import ProjectMemory
-from .department_acceptance import DEPARTMENT_FIELDS, RUBRIC_REFERENCE_FIELDS
 from .plan import GRAPH_PLAN_FIELDS, Plan, Task, plan_to_dict
 from .plan_fields import ALLOWED_FIELDS
 from .replanner_hint import (
@@ -99,15 +98,19 @@ def _replanner_prompt(
             "existing_task_ids_must_remain": True,
             "next_graph_version": plan.graph_version + 1,
             "allowed_plan_fields": sorted(GRAPH_PLAN_FIELDS),
-            # Naming the top-level fields and stopping there sent a real
-            # replanner guessing at a nested object it had never seen: the
-            # plan carried no departments, the skill does not describe one,
-            # and `lead_role_id` appears nowhere a model could read. It wrote
-            # `lead_role`, was refused, and the run spent its whole budget of
-            # three attempts on a misspelling. A nested field set is cheap to
-            # state and impossible to derive.
-            "allowed_department_fields": sorted(DEPARTMENT_FIELDS),
-            "allowed_rubric_reference_fields": sorted(RUBRIC_REFERENCE_FIELDS),
+            # Departments, their leads and rubrics are the runtime's (R30):
+            # it derives them from verifier_role, and the replanner used to be
+            # handed the nested department and rubric field sets to write -
+            # a real one spent its whole budget on `lead_role` for
+            # `lead_role_id`, a field it never needed. What it must do is
+            # name one lead per profession.
+            "departments": (
+                "Derived by the runtime: do not write departments, department or "
+                "rubric bindings, or rubrics. Every task names its department's Lead "
+                "Role in verification.verifier_role - one lead per profession (every "
+                "task of one role names the same lead), never the task's own role. "
+                "Existing plan.departments entries are copied verbatim."
+            ),
             # Every nested set, by the path a refusal names (R31): for a
             # task, a verification, a check, a resource, an output and a
             # context the model used to see no list at all.
@@ -239,20 +242,25 @@ def _worker_prompt(
     )
     # The reason the previous verdict could not be read. Without it a fresh
     # verifier rewrites blind and repeats the same error: measured on the
-    # `rubric` field the previous task itself introduced.
+    # `rubric` field the previous task itself introduced. The note said
+    # "exactly two top-level fields" then; since every acceptance is a lead's
+    # (R30) the verdict carries three, and that note would have told the lead
+    # to drop the very attestation the runtime refuses it without.
     rejections = (state.verification_rejections or {}).get(task_id) or []
     if phase == "verification" and rejections:
         last = str(rejections[-1].get("reason") or "")
         note = (
             f"\n\nThe previous verdict was rejected by the runtime: {last}. The acceptance "
             "counted in no direction - the verdict was not read. Return "
-            'AUTOPILOT_VERIFICATION ровно с двумя полями верхнего уровня: '
-            '"verdict" and "issues". Any other field rejects the verdict entirely.'
+            'AUTOPILOT_VERIFICATION ровно с тремя полями верхнего уровня: "verdict", '
+            '"issues" и "rubric" - точной аттестацией из department_acceptance.rubric.reference. '
+            "Any other field rejects the verdict entirely."
             if is_russian(cfg.language)
             else f"\n\nThe previous verdict was rejected by the runtime: {last}. "
             "Acceptance was not recorded either way - the verdict was not read. "
-            'Return AUTOPILOT_VERIFICATION with exactly two top-level fields: '
-            '"verdict" and "issues". Any other field rejects the whole verdict.'
+            'Return AUTOPILOT_VERIFICATION with exactly three top-level fields: "verdict", '
+            '"issues" and "rubric" - the exact attestation from '
+            "department_acceptance.rubric.reference. Any other field rejects the whole verdict."
         )
         if len(prompt) + len(note) <= MAX_PROMPT_CHARS:
             prompt += note

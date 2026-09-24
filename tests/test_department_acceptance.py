@@ -1,770 +1,480 @@
+"""R30: the department is derived from the worker's profession, never written.
+
+What this replaces. R30 switched on only for a task that declared the
+department-binding and rubric-binding resources; nobody wrote them, the live
+beyondness plan (18 tasks) had none, and the verifier fell back to
+``verifier_role or task.role`` - the worker's own profession when the planner
+left the field out. The rubric pin came from the evidence of a VERIFIED
+dependency, so M01 (no dependencies) could not be bound at all. The tests of
+that design (the dependency rubric tuple, the static-department override,
+the bindings as the only door) are gone with it; these state the derived one.
+"""
+
 from __future__ import annotations
 
 from dataclasses import replace
 import json
 from pathlib import Path
-import sqlite3
 import tempfile
+import threading
+import time
+import types
 import unittest
 from unittest import mock
 
-from _appserver_fakes import activate_via_app_server
-from _gates import patch_hook_trust_gates
-from _handoff import bump_task_checkpoint
-from _plan_contract import canonicalize_plan, canonical_verification
-from _relay import reserve_ready_frontier
-from codex_autopilot.ai_studio import AIStudioRuntime, ContextBoundaryError
-from _plan_contract import initialize_verified_project as initialize_project
-from codex_autopilot.config import load_config
+from _departments import beyondness_plan
 from codex_autopilot.department_acceptance import (
+    RUNTIME_RUBRIC_TOOL,
     DepartmentAcceptanceError,
     RubricReference,
-    load_department_rubric,
-    load_task_department_acceptance,
-    require_rubric_attestation,
+    department_contract_from_raw,
+    rubric_digest,
+    rubric_scope,
     store_department_rubric,
-    task_department_binding,
+    stored_rubric_versions,
+    write_runtime_rubric,
 )
-from codex_autopilot.lifecycle import DesktopLifecycleError, complete_desktop_worker
-from codex_autopilot.lifecycle_base import WorkerProtocolError
-from codex_autopilot.memory import ProjectMemory
-from codex_autopilot.memory_mcp import MemoryMcpServer
-from codex_autopilot.plan import validate_plan
-from codex_autopilot.run_state import StateStore
-from codex_autopilot.task_state import TaskState
-from codex_autopilot.verification import VERIFICATION_PREFIX, verifier_route
-
-
-STALE_PLAN_REFERENCE = RubricReference(
-    record_id="FACT-004",
-    version=1,
-    sha256="0" * 64,
+from codex_autopilot.department_runtime import (
+    derive_department_rubric,
+    derive_task_department,
+    ensure_department_rubric,
+    load_task_department_acceptance,
+    validate_department_leads,
 )
+from codex_autopilot.memory import MemoryValidationError, ProjectMemory
+from codex_autopilot.plan import (
+    plan_to_dict,
+    validate_persisted_plan,
+    validate_plan,
+    validate_plan_change,
+)
+from codex_autopilot.plan_issues import PlanIssues
+from codex_autopilot.verification import verifier_route
+
+ROOT = Path(__file__).resolve().parents[1]
+SAVED = json.loads((ROOT / "tests/fixtures/r30_saved_plans.json").read_text(encoding="utf-8"))
 
 
-def _task(
-    task_id: str,
-    *,
-    depends_on: tuple[str, ...] = (),
-    department_bound: bool = True,
-) -> dict[str, object]:
-    resources: list[dict[str, object]] = []
-    dependency_outputs: list[str] = []
-    verifier_role = "builder"
-    if department_bound:
-        resources = [
-            {
-                "id": "department-binding",
-                "kind": "logical",
-                "target": "department-id:runtime-engineering",
-                "access": "read",
-            },
-            {
-                "id": "rubric-binding",
-                "kind": "logical",
-                "target": (
-                    "project-memory:department-acceptance-rubric:runtime-engineering"
-                ),
-                "access": "read",
-            },
+def _saved(name: str = "plain"):
+    return validate_persisted_plan(json.loads(json.dumps(SAVED[name]["saved_plan"])), "adaptive")
+
+
+class TheDepartmentIsTheWorkersProfessionTests(unittest.TestCase):
+    def test_every_task_is_judged_by_its_professions_lead(self) -> None:
+        """A task that names no lead itself is still judged by its profession's.
+
+        Mutation: verification.verifier_route back to ``verifier_role or
+        task.role`` - M03 goes to its own profession, character-artist.
+        """
+
+        raw = json.loads(json.dumps(SAVED["plain"]["saved_plan"]))
+        raw["tasks"][2]["verification"].pop("verifier_role")
+        plan = validate_persisted_plan(raw, "adaptive")
+        self.assertEqual({verifier_route(plan, task).role_id for task in plan.tasks}, {"art-reviewer"})
+        self.assertEqual(
+            derive_task_department(plan, plan.task_map["M03"]),
+            derive_task_department(plan, plan.task_map["M01"]),
+        )
+        department = derive_task_department(plan, plan.task_map["M01"])
+        self.assertEqual((department.id, department.lead_role_id), ("art-reviewer", "art-reviewer"))
+
+    def test_a_declared_department_names_it_and_keeps_its_rubric_verbatim(self) -> None:
+        """id and name from the entry; the 0.13 `rubric` tuple kept byte for byte.
+
+        Mutation: DepartmentContract.to_dict without `rubric` - the saved
+        plan's digest moves and a running run's PLAN_VERIFIED breaks.
+        """
+
+        plan = _saved("declared")
+        department = derive_task_department(plan, plan.task_map["M02"])
+        self.assertEqual((department.id, department.name), ("character-art", "Character Art"))
+        self.assertEqual(plan_to_dict(plan)["departments"], SAVED["declared"]["saved_plan"]["departments"])
+
+    def test_a_binding_that_disagrees_with_the_lead_is_refused(self) -> None:
+        raw = json.loads(json.dumps(SAVED["declared"]["saved_plan"]))
+        raw["tasks"][0]["resources"] += [
+            {"id": "department-binding", "kind": "logical", "target": "department-id:other", "access": "read"},
+            {"id": "rubric-binding", "kind": "logical",
+             "target": "project-memory:department-acceptance-rubric:other", "access": "read"},
         ]
-        dependency_outputs = ["M0R"]
-        verifier_role = "runtime-engineering-lead"
-    return {
-        "id": task_id,
-        "title": f"Build {task_id}",
-        "objective": f"Produce {task_id}.",
-        "definition_of_done": [f"{task_id} is accepted against the department rubric."],
-        "execution_mode": "code",
-        "execution_mode_reason": "Repository files and shell checks are sufficient.",
-        "reasoning": "medium",
-        "role": "builder",
-        "depends_on": list(depends_on),
-        "priority": 0,
-        "verification": canonical_verification(verifier_role=verifier_role),
-        "resources": resources,
-        "required_capabilities": [],
-        "context": {"dependency_outputs": dependency_outputs},
-        "outputs": (
-            [
-                {
-                    "id": "runtime-engineering-rubric-reference",
-                    "description": "Verified immutable Runtime Engineering rubric tuple.",
-                    "required": True,
-                }
-            ]
-            if task_id == "M0R"
-            else []
-        ),
-        "tags": [],
-    }
+        plan = validate_persisted_plan(raw, "adaptive")
+        with self.assertRaisesRegex(DepartmentAcceptanceError, "binds department 'other'"):
+            derive_task_department(plan, plan.task_map["M01"])
+
+    def test_a_department_entry_without_rubric_is_accepted_and_names_what_is(self) -> None:
+        contract = department_contract_from_raw(
+            {"id": "character-art", "name": "Character Art", "lead_role_id": "art-reviewer"}, "department 1"
+        )
+        self.assertIsNone(contract.rubric)
+        self.assertNotIn("rubric", contract.to_dict())
+        with self.assertRaises(DepartmentAcceptanceError) as caught:
+            department_contract_from_raw({"id": "x", "name": "X", "lead_role": "y"}, "department 1")
+        self.assertIn("accepted fields are", str(caught.exception))
+        self.assertIn("lead_role_id", str(caught.exception))
 
 
-def _plan() -> dict[str, object]:
-    return canonicalize_plan({
-        "schema_version": 3,
-        "graph_version": 1,
-        "goal": "Exercise department-owned acceptance.",
-        "user_request": "A department lead must accept each task against pinned rubric data.",
-        "model_strategy": "auto",
-        "execution_strategy": "serial",
-        "max_parallel_workers": 1,
-        "computer_use_slots": 1,
-        "roles": [
-            {
-                "id": "builder",
-                "name": "Runtime Engineer",
-                "responsibilities": ["Build runtime changes."],
-            },
-            {
-                "id": "runtime-engineering-lead",
-                "name": "Runtime Engineering Lead",
-                "responsibilities": ["Accept runtime changes."],
-            },
-        ],
-        "departments": [],
-        "tasks": [
-            _task("M0R", department_bound=False),
-            _task("A", depends_on=("M0R",)),
-            _task("B", depends_on=("M0R", "A")),
-        ],
-    })
+class AdmissionNamesEveryLeadViolationTests(unittest.TestCase):
+    def _raw(self):
+        raw = beyondness_plan()
+        first, second, third = (json.loads(json.dumps(item)) for item in raw["tasks"])
+        a = dict(first, id="A")
+        a["verification"].pop("verifier_role")                          # A: no lead
+        b = dict(second, id="B", depends_on=[])
+        b["verification"]["verifier_role"] = "reference-artist"          # B: itself
+        c = dict(third, id="C", depends_on=[])                            # C: art-reviewer
+        d = json.loads(json.dumps(first))
+        d.update(id="D")
+        d["verification"]["verifier_role"] = "reference-artist"          # D: a second lead
+        raw["tasks"] = [a, b, c, d]
+        return raw
+
+    def test_every_class_in_one_refusal(self) -> None:
+        """Missing, itself, and one profession with two leads - all at once.
+
+        Mutation: validate_department_leads returns after its first class -
+        the refusal names A only and the replanner spends a round per class.
+        """
+
+        with self.assertRaises(PlanIssues) as caught:
+            validate_plan(self._raw(), "adaptive")
+        leads = [item for item in caught.exception.issues if item.stage == "leads"]
+        text = " ".join(item.message for item in leads)
+        self.assertEqual(len(leads), 3, text)
+        self.assertIn("missing for: A", text)
+        self.assertIn("B (reference-artist)", text)
+        self.assertIn("role 'character-artist' name several", text)
+        self.assertIn("art-reviewer: C", text)
+        self.assertIn("reference-artist: D", text)
+
+    def test_a_plan_change_is_refused_the_same_way_and_untouched_tasks_keep_what_they_had(self) -> None:
+        """New and rewritten tasks need a lead; a task the change leaves alone does not.
+
+        A VERIFIED contract is immutable, so requiring a lead of an untouched
+        task would make every change of a pre-R30 plan impossible.
+        Mutation: drop the unchanged-task exemption - the change, which
+        leaves M03 (no lead of its own) untouched, is refused.
+        """
+
+        raw = json.loads(json.dumps(SAVED["plain"]["saved_plan"]))
+        raw["tasks"][2]["verification"].pop("verifier_role")
+        current = validate_persisted_plan(raw, "adaptive")
+        change = plan_to_dict(current)
+        change["graph_version"] = 2
+        added = json.loads(json.dumps(change["tasks"][0]))
+        added.update(id="M04", depends_on=["M03"])
+        added["verification"].pop("verifier_role")
+        change["tasks"].append(added)
+        with self.assertRaisesRegex(PlanIssues, "missing for: M04"):
+            validate_plan_change(current, change, "adaptive")
+        added["verification"]["verifier_role"] = "art-reviewer"
+        self.assertIn("M04", validate_plan_change(current, change, "adaptive").task_map)
+
+    def test_a_saved_plan_with_no_lead_at_all_still_loads(self) -> None:
+        """A running run is stopped per task when a lead is needed, never on load.
+
+        Mutation: require_leads on in validate_persisted_plan - this raises,
+        and status, reservation and completion all go down with it.
+        """
+
+        raw = json.loads(json.dumps(SAVED["plain"]["saved_plan"]))
+        for item in raw["tasks"]:
+            item["verification"].pop("verifier_role")
+        plan = validate_persisted_plan(raw, "adaptive")
+        with self.assertRaisesRegex(DepartmentAcceptanceError, "no Lead Role is defined for role"):
+            derive_task_department(plan, plan.task_map["M01"])
+
+    def test_the_skill_examples_name_one_lead_per_profession(self) -> None:
+        for path in (ROOT / "plugins").rglob("SKILL.md"):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(skill=path.parent.name):
+                self.assertIn("## Departments (R30)", text)
+                self.assertIn("codex-autopilot department-rubric-propose", text)
+                example = next(
+                    json.loads(line) for line in text.splitlines() if line.startswith('{"schema_version":3')
+                )
+                roles = [types.SimpleNamespace(id=item["id"], name=item["name"]) for item in example["roles"]]
+                tasks = [
+                    types.SimpleNamespace(
+                        id=item["id"], role=item["role"], resources=(),
+                        verification=types.SimpleNamespace(verifier_role=item["verification"].get("verifier_role")),
+                    )
+                    for item in example["tasks"]
+                ]
+                self.assertEqual(validate_department_leads(tasks, roles), [])
+                lead_id = example["tasks"][0]["verification"]["verifier_role"]
+                lead = next(item for item in example["roles"] if item["id"] == lead_id)
+                self.assertTrue(lead.get("verification_expectations"))
 
 
-def _with_stale_rubric_guidance(raw: dict[str, object]) -> dict[str, object]:
-    lead = raw["roles"][1]
-    lead.update(
-        domain_focus=[
-            'department={"id":"runtime-engineering","rubric":'
-            '{"record_id":"FACT-004","version":1,"sha256":"'
-            + "f" * 64
-            + '"}}',
-            "Runtime acceptance boundaries.",
-        ],
-        context_priorities=[
-            "Pinned Project Memory record FACT-004.",
-            "Original request and reproduced evidence.",
-        ],
-        verification_expectations=[
-            "Reject self-assessment and unverifiable claims.",
-            "Attest rubric record_id FACT-004, version 1, sha256 "
-            + "f" * 64
-            + ".",
-        ],
-    )
-    raw["tasks"][1]["definition_of_done"].append(
-        "The invalid rubric reference FACT-004 is not used."
-    )
-    return raw
+class TheSavedPlanDigestDoesNotMoveTests(unittest.TestCase):
+    def test_beyondness_shape_keeps_the_digest_its_receipt_was_bound_to(self) -> None:
+        """The pre-R30 runtime's digest of the same saved plan, recorded in the fixture.
+
+        Measured on the live run too (read-only): 7e85c9c5... before and
+        after. Mutation: plan_to_dict writes the derived departments - the
+        digest moves and PLAN_VERIFIED no longer holds.
+        """
+
+        from _plan_contract import canonical_plan_verification
+        from codex_autopilot.plan_verification import plan_sha256, require_plan_verified
+
+        for name in ("plain", "declared"):
+            with self.subTest(plan=name):
+                plan = _saved(name)
+                self.assertEqual(plan_sha256(plan), SAVED[name]["plan_sha256"])
+                receipt = canonical_plan_verification(plan)
+                self.assertEqual(receipt["plan_sha256"], SAVED[name]["plan_sha256"])
+                require_plan_verified(plan, receipt)
 
 
-class DepartmentAcceptanceTests(unittest.TestCase):
+class _Memory(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
         (self.root / ".git").mkdir()
-        self.skill = self.root / "SKILL.md"
-        self.skill.write_text("# test skill\n", encoding="utf-8")
         self.memory = ProjectMemory(self.root)
-        evidence_path = self.root / "rubric-evidence.txt"
-        evidence_path.write_text("department standard approved\n", encoding="utf-8")
-        evidence = self.memory.record_evidence(
-            kind="file",
-            summary="Reviewed source for the initial department rubric.",
-            path="rubric-evidence.txt",
-            created_by="department-acceptance-test",
+        self.plan = _saved()
+        self.department = derive_task_department(self.plan, self.plan.task_map["M01"])
+
+
+class TheRuntimeWritesVersionOneTests(_Memory):
+    def test_version_one_is_derived_from_the_leads_profile(self) -> None:
+        reference, drift = ensure_department_rubric(self.memory, self.plan, self.department)
+        self.assertFalse(drift)
+        history = stored_rubric_versions(self.memory, "art-reviewer")
+        self.assertEqual([item.reference for item in history], [reference])
+        rubric = history[0].rubric
+        self.assertEqual(reference.sha256, rubric_digest(rubric))
+        self.assertEqual(
+            [item.id for item in rubric.criteria],
+            ["request-fidelity", "dod-coverage", "independent-evidence", "lead-expectation-1", "lead-expectation-2"],
         )
-        self.reference = store_department_rubric(
-            self.memory,
-            department_id="runtime-engineering",
-            version=1,
-            criteria=[
-                {
-                    "id": "correctness",
-                    "requirement": "Every Definition of Done item has reproduced evidence.",
-                }
-            ],
-            standards=["Reject claims that are not backed by Project Memory evidence."],
-            evidence_ids=[str(evidence["id"])],
-            created_by="Runtime Engineering Lead",
-        )
-        self.reference_evidence = self.memory.record_evidence(
-            kind="tool",
-            summary="M0R produced the immutable Runtime Engineering rubric tuple.",
-            command="load verified rubric reference",
-            tool_name="ProjectMemory.get_record",
-            result=json.dumps(
-                {
-                    "department_id": "runtime-engineering",
-                    "record_id": self.reference.record_id,
-                    "version": self.reference.version,
-                    "sha256": self.reference.sha256,
-                    "scope": "department-acceptance-rubric:runtime-engineering",
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            ),
-            exit_code=0,
-            milestone_id="M0R",
-            created_by="Runtime Engineering Lead",
-        )
+        record = self.memory.get_record(reference.record_id)
+        self.assertEqual(record["scope"], rubric_scope("art-reviewer"))
+        self.assertEqual([item["tool_name"] for item in record["evidence"]], [RUNTIME_RUBRIC_TOOL])
+        # Project Memory outlives the run: no criterion carries this run's request.
+        self.assertNotIn("Сделай персонажа", json.dumps(rubric.to_dict(), ensure_ascii=False))
 
-    def tearDown(self) -> None:
-        self.temp.cleanup()
+    def test_a_second_write_returns_the_first(self) -> None:
+        """Mutation: write_runtime_rubric without its existing-history check - two v1."""
 
-    def test_contract_round_trip_and_lead_route_are_deterministic(self) -> None:
-        plan = validate_plan(_plan(), "adaptive")
-        task = plan.task_map["A"]
-        runtime = AIStudioRuntime(
-            plan,
-            self.root,
-            language="en",
-            skill_path=self.skill,
-            memory=self.memory,
-        )
-        context = runtime.select_context(
-            "A",
-            task_states={"M0R": "VERIFIED", "A": "VERIFYING", "B": "WAITING"},
-        )
-        acceptance = load_task_department_acceptance(
-            self.memory,
-            departments=plan.departments,
-            task=task,
-            role_names={item.id: item.name for item in plan.roles},
-            dependency_outputs=context.dependency_outputs,
-        )
+        rubric = derive_department_rubric(self.plan, self.department)
+        first = write_runtime_rubric(self.memory, rubric, evidence_result={"department_id": "art-reviewer"})
+        second = write_runtime_rubric(self.memory, rubric, evidence_result={"department_id": "art-reviewer"})
+        self.assertEqual(first, second)
+        again, _ = ensure_department_rubric(self.memory, self.plan, self.department)
+        self.assertEqual(again, first)
+        self.assertEqual(len(stored_rubric_versions(self.memory, "art-reviewer")), 1)
 
-        self.assertEqual(verifier_route(plan, task).role_id, "runtime-engineering-lead")
-        self.assertEqual(plan.departments, ())
-        self.assertEqual(acceptance.department.rubric, self.reference)
-        self.assertEqual(acceptance.source.evidence_id, self.reference_evidence["id"])
+    def test_writers_racing_for_version_one_write_it_once(self) -> None:
+        """Check and write are one step for every writer (the rubric lock).
 
-    def test_missing_ambiguous_and_inconsistent_mappings_fail_closed(self) -> None:
-        cases: list[tuple[str, callable]] = [
-            (
-                "missing task department",
-                lambda raw: raw["tasks"][1]["resources"].pop(0),
-            ),
-            (
-                "unknown task department",
-                lambda raw: raw["tasks"][1]["resources"][0].update(
-                    target="department-id:missing"
-                ),
-            ),
-            (
-                "ambiguous department",
-                lambda raw: raw["departments"].extend(
-                    [
-                        {
-                            "id": "runtime-engineering",
-                            "name": "Runtime Engineering",
-                            "lead_role_id": "runtime-engineering-lead",
-                            "rubric": STALE_PLAN_REFERENCE.to_dict(),
-                        },
-                        {
-                            "id": "runtime-engineering",
-                            "name": "Runtime Engineering",
-                            "lead_role_id": "runtime-engineering-lead",
-                            "rubric": STALE_PLAN_REFERENCE.to_dict(),
-                        },
-                    ]
-                ),
-            ),
-            (
-                "unknown Lead Role",
-                lambda raw: raw["departments"].append(
-                    {
-                        "id": "runtime-engineering",
-                        "name": "Runtime Engineering",
-                        "lead_role_id": "missing-lead",
-                        "rubric": STALE_PLAN_REFERENCE.to_dict(),
-                    }
-                ),
-            ),
-            (
-                "inconsistent verifier role",
-                lambda raw: raw["tasks"][1]["verification"].update(
-                    verifier_role="builder"
-                ),
-            ),
-        ]
-        for label, mutate in cases:
-            with self.subTest(label=label):
-                raw = _plan()
-                mutate(raw)
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "department|Lead Role|conflicts|rubric-binding",
-                ):
-                    validate_plan(raw, "adaptive")
+        The read is slowed so both writers would see an empty history.
+        Mutation: _rubric_write_lock a no-op - two v1, and the history is
+        ambiguous for good.
+        """
 
-    def test_tags_are_not_department_bindings(self) -> None:
-        raw = _plan()
-        task = raw["tasks"][1]
-        task["resources"] = []
-        task["context"] = {}
-        task["tags"] = ["department_id=runtime-engineering"]
-        task["verification"].update(verifier_role="builder")
+        import codex_autopilot.department_acceptance as module
 
-        plan = validate_plan(raw, "adaptive")
+        real = module.stored_rubric_versions
 
-        self.assertIsNone(task_department_binding(plan.task_map["A"]))
-        self.assertEqual(verifier_route(plan, plan.task_map["A"]).role_id, "builder")
+        def slow(memory, department_id):
+            found = real(memory, department_id)
+            time.sleep(0.2)
+            return found
 
-    def test_dependency_rubric_tuple_is_required_and_unambiguous(self) -> None:
-        plan = validate_plan(_plan(), "adaptive")
-        task = plan.task_map["A"]
-        non_tuple_evidence_id = str(
-            self.memory.get_record(self.reference.record_id)["evidence"][0]["id"]
-        )
-        missing = [
-            {
-                "dependency_task_id": "M0R",
-                "dependency_state": "VERIFIED",
-                "output_id": "runtime-engineering-rubric-reference",
-                "evidence_ids": [non_tuple_evidence_id],
-            }
-        ]
-        with self.assertRaisesRegex(DepartmentAcceptanceError, "no rubric reference"):
-            load_task_department_acceptance(
-                self.memory,
-                departments=plan.departments,
-                task=task,
-                role_names={item.id: item.name for item in plan.roles},
-                dependency_outputs=missing,
-            )
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+        rubric = derive_department_rubric(self.plan, self.department)
 
-        conflicting = self.memory.record_evidence(
-            kind="tool",
-            summary="A conflicting tuple must not be selected.",
-            command="emit stale tuple",
-            tool_name="test",
-            result=json.dumps(
-                {
-                    "department_id": "runtime-engineering",
-                    "record_id": "FACT-004",
-                    "version": 1,
-                    "sha256": "0" * 64,
-                    "scope": "department-acceptance-rubric:runtime-engineering",
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            ),
-            exit_code=0,
-            created_by="department-acceptance-test",
-        )
-        ambiguous = [
-            {
-                "dependency_task_id": "M0R",
-                "dependency_state": "VERIFIED",
-                "output_id": "runtime-engineering-rubric-reference",
-                "evidence_ids": [
-                    str(self.reference_evidence["id"]),
-                    str(conflicting["id"]),
-                ],
-            }
-        ]
-        with self.assertRaisesRegex(DepartmentAcceptanceError, "ambiguous"):
-            load_task_department_acceptance(
-                self.memory,
-                departments=plan.departments,
-                task=task,
-                role_names={item.id: item.name for item in plan.roles},
-                dependency_outputs=ambiguous,
-            )
+        def write() -> None:
+            try:
+                barrier.wait()
+                write_runtime_rubric(ProjectMemory(self.root), rubric, evidence_result={"department_id": "art-reviewer"})
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
 
-    def test_static_department_rubric_does_not_override_dependency_output(self) -> None:
-        raw = _plan()
-        raw["departments"] = [
-            {
-                "id": "runtime-engineering",
-                "name": "Runtime Engineering",
-                "lead_role_id": "runtime-engineering-lead",
-                "rubric": STALE_PLAN_REFERENCE.to_dict(),
-            }
-        ]
-        plan = validate_plan(raw, "adaptive")
-        task = plan.task_map["A"]
-        context = AIStudioRuntime(
-            plan,
-            self.root,
-            language="en",
-            skill_path=self.skill,
-            memory=self.memory,
-        ).select_context(
-            "A",
-            task_states={"M0R": "VERIFIED", "A": "VERIFYING", "B": "WAITING"},
+        with mock.patch.object(module, "stored_rubric_versions", slow):
+            workers = [threading.Thread(target=write) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+        self.assertEqual(errors, [])
+        records = self.memory.list_records(
+            categories=["truth"], statuses=["verified"], scope=rubric_scope("art-reviewer"), limit=20
+        ).records
+        self.assertEqual(len(records), 1)
+
+    def test_a_changed_lead_profile_does_not_rewrite_the_rubric(self) -> None:
+        """The defect is recorded once and shown to the lead; v1 stays current.
+
+        Mutation: ensure_department_rubric writes the next version from the
+        changed profile - the history grows to two without outcome evidence.
+        """
+
+        reference, _ = ensure_department_rubric(self.memory, self.plan, self.department)
+        lead = self.plan.role_map["art-reviewer"]
+        changed = replace(self.plan, roles=tuple(
+            replace(item, verification_expectations=("Everything is perfect.",)) if item.id == lead.id else item
+            for item in self.plan.roles
+        ))
+        for _ in range(2):
+            again, drift = ensure_department_rubric(self.memory, changed, self.department)
+            self.assertEqual(again, reference)
+            self.assertTrue(drift)
+        self.assertEqual(len(stored_rubric_versions(self.memory, "art-reviewer")), 1)
+        observations = self.memory.list_records(
+            categories=["observation"], scope="department-acceptance-drift:art-reviewer", limit=20
+        ).records
+        self.assertEqual(len(observations), 1)
+        loaded = load_task_department_acceptance(self.memory, changed, changed.task_map["M01"], ensure=False)
+        self.assertTrue(loaded.to_dict()["lead_profile_changed_since_v1"])
+
+
+class OnlyOutcomesChangeTheRubricTests(_Memory):
+    def setUp(self) -> None:
+        super().setUp()
+        self.v1, _ = ensure_department_rubric(self.memory, self.plan, self.department)
+        self.v2 = dict(
+            department_id="art-reviewer", version=2,
+            criteria=[{"id": "silhouette", "requirement": "The silhouette matches the sheet."}],
+            standards=[], created_by="Character Art Verifier",
         )
 
-        acceptance = load_task_department_acceptance(
-            self.memory,
-            departments=plan.departments,
-            task=task,
-            role_names={item.id: item.name for item in plan.roles},
-            dependency_outputs=context.dependency_outputs,
-        )
+    def _evidence(self, **fields):
+        base = dict(kind="test", summary="Outcome.", command="compare", result="PASS", exit_code=0,
+                    created_by="department-test")
+        base.update(fields)
+        return str(self.memory.record_evidence(**base)["id"])
 
-        self.assertEqual(plan.departments[0].rubric, STALE_PLAN_REFERENCE)
-        self.assertEqual(acceptance.department.rubric, self.reference)
-
-    def test_rubric_versions_are_immutable_and_changes_need_outcome_evidence(self) -> None:
-        identical = store_department_rubric(
-            self.memory,
-            department_id="runtime-engineering",
-            version=1,
-            criteria=[
-                {
-                    "id": "correctness",
-                    "requirement": "Every Definition of Done item has reproduced evidence.",
-                }
-            ],
-            standards=["Reject claims that are not backed by Project Memory evidence."],
-            evidence_ids=[str(self.memory.get_record(self.reference.record_id)["evidence"][0]["id"])],
-            created_by="Runtime Engineering Lead",
-        )
-        self.assertEqual(identical, self.reference)
-
-        weak = self.memory.record_evidence(
-            kind="user_instruction",
-            summary="A single proposal to relax the rubric.",
-            user_instruction="Relax the rubric.",
-            created_by="department-acceptance-test",
-        )
-        with self.assertRaisesRegex(DepartmentAcceptanceError, "outcome evidence"):
-            store_department_rubric(
-                self.memory,
-                department_id="runtime-engineering",
-                version=2,
-                criteria=[{"id": "correctness", "requirement": "Relaxed."}],
-                evidence_ids=[str(weak["id"])],
-                created_by="Runtime Engineering Lead",
-            )
-
-        outcome = self.memory.record_evidence(
-            kind="test",
-            summary="Comparative acceptance replay improved the outcome.",
-            command="replay department rubric",
-            result="rejection precision improved",
-            exit_code=0,
-            created_by="department-acceptance-test",
-        )
-        second = store_department_rubric(
-            self.memory,
-            department_id="runtime-engineering",
-            version=2,
-            criteria=[{"id": "correctness", "requirement": "Reproduce all acceptance evidence."}],
-            evidence_ids=[str(outcome["id"])],
-            created_by="Runtime Engineering Lead",
-        )
-        self.assertEqual(second.version, 2)
+    def test_version_one_is_never_a_models(self) -> None:
         with self.assertRaisesRegex(DepartmentAcceptanceError, "immutable"):
-            store_department_rubric(
-                self.memory,
-                department_id="runtime-engineering",
-                version=2,
-                criteria=[{"id": "correctness", "requirement": "Changed in place."}],
-                evidence_ids=[str(outcome["id"])],
-                created_by="Runtime Engineering Lead",
-            )
+            store_department_rubric(self.memory, **dict(self.v2, version=1), evidence_ids=[self._evidence()])
 
-    def test_each_fresh_prompt_loads_the_exact_pinned_memory_rubric(self) -> None:
-        plan = validate_plan(_plan(), "adaptive")
-        first = AIStudioRuntime(
-            plan,
-            self.root,
-            language="en",
-            skill_path=self.skill,
-            memory=self.memory,
-        ).build_prompt(
-            "A",
-            phase="verification",
-            task_states={"M0R": "VERIFIED", "A": "VERIFYING", "B": "WAITING"},
-            reservation_token="first",
-            verification_round=1,
+    def test_a_new_version_needs_an_acceptance_of_the_department(self) -> None:
+        """An observation, a stray record or the runtime's own is not an outcome.
+
+        Mutation: _require_outcome_evidence back to "any outcome kind" - the
+        plain test record is taken and v2 is written from nothing.
+        """
+
+        stray = self._evidence()
+        with self.assertRaisesRegex(DepartmentAcceptanceError, "recorded acceptance"):
+            store_department_rubric(self.memory, **self.v2, evidence_ids=[stray])
+        runtime = self.memory.get_record(self.v1.record_id)["evidence"][0]["id"]
+        with self.assertRaisesRegex(DepartmentAcceptanceError, "runtime's own record"):
+            store_department_rubric(self.memory, **self.v2, evidence_ids=[runtime])
+        mine = self._evidence(provider_thread_id="lead-thread")
+        with self.assertRaisesRegex(DepartmentAcceptanceError, "proposing thread itself"):
+            store_department_rubric(self.memory, **self.v2, evidence_ids=[mine], caller_thread_id="lead-thread")
+        judged = self._evidence()
+        self.memory._record_runtime_verification_result(
+            task_id="M01", check_id="independent-acceptance", policy="independent", verdict="REVISE",
+            summary="Lead asked for revision.", evidence_ids=[judged], created_by="Character Art Verifier",
+            provider="codex-desktop", provider_thread_id="lead-1", provider_turn_id="turn-1",
+            details={"department_acceptance": {"department": {"id": "art-reviewer"}}},
         )
-        second = AIStudioRuntime(
-            plan,
-            self.root,
-            language="en",
-            skill_path=self.skill,
-            memory=self.memory,
-        ).build_prompt(
-            "A",
-            phase="verification",
-            task_states={"M0R": "VERIFIED", "A": "VERIFYING", "B": "WAITING"},
-            reservation_token="second",
-            verification_round=2,
-        )
-        for prompt in (first, second):
-            self.assertIn(self.reference.record_id, prompt)
-            self.assertIn(self.reference.sha256, prompt)
-            self.assertNotIn(STALE_PLAN_REFERENCE.record_id, prompt)
-            self.assertIn("department_acceptance", prompt)
-            self.assertIn('"rubric":{', prompt)
-            self.assertIn('"dependency_task_id":"M0R"', prompt)
-
-        with sqlite3.connect(self.memory.path) as db:
-            db.execute(
-                "UPDATE records SET statement=? WHERE id=?",
-                ('{"changed":true}', self.reference.record_id),
-            )
-            db.commit()
-        with self.assertRaisesRegex(ContextBoundaryError, "rubric"):
-            AIStudioRuntime(
-                plan,
-                self.root,
-                language="en",
-                skill_path=self.skill,
-                memory=self.memory,
-            ).build_prompt(
-                "A",
-                phase="verification",
-                    task_states={
-                        "M0R": "VERIFIED",
-                        "A": "VERIFYING",
-                        "B": "WAITING",
-                    },
-                reservation_token="third",
-                verification_round=3,
-            )
-
-    def test_m1_prompt_omits_superseded_rubric_identity_from_role_and_dod(self) -> None:
-        plan = validate_plan(_with_stale_rubric_guidance(_plan()), "adaptive")
-
-        prompt = AIStudioRuntime(
-            plan,
-            self.root,
-            language="en",
-            skill_path=self.skill,
-            memory=self.memory,
-        ).build_prompt(
-            "A",
-            phase="verification",
-            task_states={"M0R": "VERIFIED", "A": "VERIFYING", "B": "WAITING"},
-            reservation_token="m1-regression",
-            verification_round=1,
+        reference = store_department_rubric(self.memory, **self.v2, evidence_ids=[judged])
+        self.assertEqual(reference.version, 2)
+        self.assertEqual(
+            [item.reference.version for item in stored_rubric_versions(self.memory, "art-reviewer")], [1, 2]
         )
 
-        self.assertNotIn("FACT-004", prompt)
-        self.assertNotIn("f" * 64, prompt)
-        self.assertIn(self.reference.record_id, prompt)
-        self.assertIn(self.reference.sha256, prompt)
-        self.assertIn("<superseded-department-rubric-record>", prompt)
-        self.assertIn("Runtime acceptance boundaries.", prompt)
-        self.assertIn("Original request and reproduced evidence.", prompt)
-        self.assertIn("Reject self-assessment and unverifiable claims.", prompt)
 
-    def test_attestation_rejects_missing_or_different_rubric(self) -> None:
-        with self.assertRaisesRegex(DepartmentAcceptanceError, "must attest"):
-            require_rubric_attestation(self.reference, None)
-        with self.assertRaisesRegex(DepartmentAcceptanceError, "different rubric"):
-            require_rubric_attestation(
-                self.reference,
-                RubricReference(
-                    record_id=self.reference.record_id,
-                    version=self.reference.version,
-                    sha256="f" * 64,
-                ),
-            )
+class TheScopeIsClosedToModelsTests(_Memory):
+    def test_no_model_door_writes_into_a_rubric_scope(self) -> None:
+        """Mutation: drop the reserved-scope check in memory._create_record."""
 
-    def test_mcp_is_a_production_storage_path_for_versioned_rubrics(self) -> None:
+        from codex_autopilot.memory_mcp import MemoryMcpServer
+
+        evidence = str(self.memory.record_evidence(
+            kind="test", summary="x", command="x", result="PASS", exit_code=0, created_by="t")["id"])
         server = MemoryMcpServer(self.root)
-        outcome = self.memory.record_evidence(
-            kind="test",
-            summary="Outcome evidence for rubric v2.",
-            command="compare rubric outcomes",
-            result="PASS",
-            exit_code=0,
-            created_by="department-acceptance-test",
-        )
-        stored = server.actions["store_department_rubric"](
-            {
-                "department_id": "runtime-engineering",
-                "version": 2,
-                "criteria": [{"id": "correctness", "requirement": "Reproduce evidence."}],
-                "standards": [],
-                "evidence_ids": [str(outcome["id"])],
-                "created_by": "Runtime Engineering Lead",
-            }
-        )
-        self.assertEqual(stored["version"], 2)
-        self.assertEqual(len(stored["sha256"]), 64)
+        with self.assertRaisesRegex(MemoryValidationError, "reserved for department rubrics"):
+            server.actions["record_verified_fact"]({
+                "statement": "{}", "evidence_ids": [evidence], "verification_method": "m",
+                "created_by": "worker", "scope": rubric_scope("art-reviewer"),
+            })
+        with self.assertRaisesRegex(MemoryValidationError, "reserved for department rubrics"):
+            server.actions["add_observation"]({
+                "statement": "the rubric is empty now", "created_by": "worker",
+                "scope": rubric_scope("art-reviewer"),
+            })
+        with self.assertRaisesRegex(MemoryValidationError, "reserved for the Codex Autopilot runtime"):
+            server.actions["record_evidence"]({
+                "kind": "tool", "summary": "fake runtime record", "tool_name": RUNTIME_RUBRIC_TOOL,
+                "created_by": "worker",
+            })
 
-    def test_live_lifecycle_uses_lead_title_and_rejects_missing_attestation(self) -> None:
-        plan_file = self.root / "plan-input.json"
-        plan_file.write_text(
-            json.dumps(_with_stale_rubric_guidance(_plan())),
-            encoding="utf-8",
-        )
-        initialize_project(
-            self.root,
-            plan_file,
-            profile="adaptive",
-            skill_path=self.skill,
-            desktop_project_id="desktop-project",
-        )
-        cfg = load_config(self.root)
-        state_store = StateStore(self.root / ".codex-autopilot")
-        state = state_store.load()
-        state.task_states["M0R"] = TaskState.VERIFIED.value
-        state_store.save(state)
-        with mock.patch(
-            "codex_autopilot.lifecycle_reservations.require_trusted_stop_hook_for_config"
-        ):
-            patch_hook_trust_gates(self)
-            implementation = reserve_ready_frontier(cfg)[0]
-            activate_via_app_server(cfg, self.root, implementation, "implementation-thread")
-            bump_task_checkpoint(self.root, "A", "implementation complete")
-            self.memory.record_evidence(
-                kind="test",
-                summary="Implementation evidence.",
-                command="run implementation check",
-                result="PASS",
-                exit_code=0,
-                milestone_id="A",
-                created_by="department-acceptance-test",
-            )
-            outcome = complete_desktop_worker(
-                cfg,
-                thread_id="implementation-thread",
-                turn_id="implementation-turn",
-                final_message="AUTOPILOT_RULES: R30\nAUTOPILOT_STATUS: ROTATE",
-            )
+    def test_the_mcp_rubric_door_needs_a_known_proposer(self) -> None:
+        """A server with no caller identity refuses; it never writes on trust.
 
-        verifier = outcome.descriptors[0]
-        self.assertEqual(
-            verifier.title,
-            "Runtime Engineering Lead | Verify A | Build A",
-        )
-        self.assertIn(self.reference.record_id, verifier.prompt)
-        self.assertNotIn("FACT-004", verifier.prompt)
-        activate_via_app_server(cfg, self.root, verifier, "verifier-thread")
-        bump_task_checkpoint(self.root, "A", "verifier reviewed")
-        self.memory.record_evidence(
-            kind="test",
-            summary="Independent department acceptance evidence.",
-            command="reproduce acceptance",
-            result="PASS",
-            exit_code=0,
-            milestone_id="A",
-            role="independent_verification",
-            created_by="Runtime Engineering Lead",
-        )
-        original_statement = str(
-            self.memory.get_record(self.reference.record_id)["statement"]
-        )
-        changed_statement = json.loads(original_statement)
-        changed_statement["criteria"][0]["requirement"] = "Changed after launch."
-        with sqlite3.connect(self.memory.path) as db:
-            db.execute(
-                "UPDATE records SET statement=? WHERE id=?",
-                (
-                    json.dumps(
-                        changed_statement,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
-                    self.reference.record_id,
-                ),
-            )
-            db.commit()
-        # A model behaviour error, not a machine breakdown: otherwise the
-        # refusal crashes the dispatcher and stops the whole run (A3).
-        with self.assertRaisesRegex(WorkerProtocolError, "digest changed"):
-            complete_desktop_worker(
-                cfg,
-                thread_id="verifier-thread",
-                turn_id="verifier-turn-changed",
-                final_message=(
-                    "AUTOPILOT_RULES: R30\n"
-                    + VERIFICATION_PREFIX
-                    + json.dumps(
-                        {
-                            "verdict": "PASS",
-                            "issues": [],
-                            "rubric": self.reference.to_dict(),
-                        },
-                        separators=(",", ":"),
-                    )
-                ),
-            )
-        with sqlite3.connect(self.memory.path) as db:
-            db.execute(
-                "UPDATE records SET statement=? WHERE id=?",
-                (original_statement, self.reference.record_id),
-            )
-            db.commit()
-        # A model behaviour error, not a machine breakdown: otherwise the
-        # refusal crashes the dispatcher and stops the whole run (A3).
-        with self.assertRaisesRegex(WorkerProtocolError, "must attest"):
-            complete_desktop_worker(
-                cfg,
-                thread_id="verifier-thread",
-                turn_id="verifier-turn-missing",
-                final_message=(
-                    "AUTOPILOT_RULES: R30\n"
-                    + VERIFICATION_PREFIX
-                    + '{"verdict":"PASS","issues":[]}'
-                ),
-            )
-        self.assertEqual(
-            StateStore(self.root / ".codex-autopilot").load().task_states["A"],
-            TaskState.VERIFYING.value,
-        )
+        Mutation: remove authorize_rubric_proposal from the MCP door.
+        """
 
-        accepted = complete_desktop_worker(
-            cfg,
-            thread_id="verifier-thread",
-            turn_id="verifier-turn-pass",
-            final_message=(
-                "AUTOPILOT_RULES: R30\n"
-                + VERIFICATION_PREFIX
-                + json.dumps(
-                    {
-                        "verdict": "PASS",
-                        "issues": [],
-                        "rubric": self.reference.to_dict(),
-                    },
-                    separators=(",", ":"),
-                )
-            ),
-        )
-        self.assertEqual([item.task_id for item in accepted.descriptors], ["B"])
-        verification = self.memory.list_verification_results(task_id="A", limit=8).records
-        record = next(item for item in verification if item["check_id"] == "independent-acceptance")
-        details = self.memory.get_verification_result(record["id"])["details"]
-        self.assertEqual(
-            details["department_rubric"]["reference"],
-            self.reference.to_dict(),
-        )
+        from codex_autopilot.memory_mcp import MemoryMcpServer
 
-    def test_loaded_rubric_rejects_wrong_scope(self) -> None:
-        department = replace(
-            validate_plan(
-                {
-                    **_plan(),
-                    "departments": [
-                        {
-                            "id": "runtime-engineering",
-                            "name": "Runtime Engineering",
-                            "lead_role_id": "runtime-engineering-lead",
-                            "rubric": self.reference.to_dict(),
-                        }
-                    ],
-                },
-                "adaptive",
-            ).departments[0],
-            rubric=self.reference,
+        ensure_department_rubric(self.memory, self.plan, self.department)
+        judged = str(self.memory.record_evidence(
+            kind="test", summary="x", command="x", result="PASS", exit_code=0, created_by="t")["id"])
+        self.memory._record_runtime_verification_result(
+            task_id="M01", check_id="independent-acceptance", policy="independent", verdict="PASS",
+            summary="accepted", evidence_ids=[judged], created_by="Character Art Verifier",
+            provider="codex-desktop", provider_thread_id="lead-1", provider_turn_id="turn-1",
+            details={"department_acceptance": {"department": {"id": "art-reviewer"}}},
         )
-        with sqlite3.connect(self.memory.path) as db:
-            db.execute(
-                "UPDATE records SET scope='project' WHERE id=?",
-                (self.reference.record_id,),
-            )
-            db.commit()
-        with self.assertRaisesRegex(DepartmentAcceptanceError, "not verified department memory"):
-            load_department_rubric(self.memory, department)
+        server = MemoryMcpServer(self.root)
+        with mock.patch.dict("os.environ", {"CODEX_THREAD_ID": ""}):
+            with self.assertRaisesRegex(DepartmentAcceptanceError, "own thread"):
+                server.actions["store_department_rubric"]({
+                    "department_id": "art-reviewer", "version": 2,
+                    "criteria": [{"id": "x", "requirement": "y"}], "standards": [],
+                    "evidence_ids": [judged], "created_by": "worker",
+                })
+        self.assertEqual(len(stored_rubric_versions(self.memory, "art-reviewer")), 1)
+
+
+class AnAmbiguousHistoryIsNamedTests(_Memory):
+    def test_a_stray_record_is_refused_with_its_id_until_superseded(self) -> None:
+        """Mutation: stored_rubric_versions without its 1..n continuity check."""
+
+        reference, _ = ensure_department_rubric(self.memory, self.plan, self.department)
+        rubric = derive_department_rubric(self.plan, self.department)
+        stray = self.memory.record_verified_fact(
+            statement=json.dumps(rubric.to_dict(), sort_keys=True, separators=(",", ":")),
+            evidence_ids=[self.memory.get_record(reference.record_id)["evidence"][0]["id"]],
+            verification_method="legacy write", created_by="old-model", scope=rubric_scope("art-reviewer"),
+            reserved_scope=True,  # what any model could do before the scope was reserved
+        )
+        with self.assertRaises(DepartmentAcceptanceError) as caught:
+            stored_rubric_versions(self.memory, "art-reviewer")
+        self.assertIn(str(stray["id"]), str(caught.exception))
+        self.assertIn("supersede", str(caught.exception))
+        self.memory._set_record_status(str(stray["id"]), "truth", "superseded", "on-call", "stray")
+        self.assertEqual([item.reference for item in stored_rubric_versions(self.memory, "art-reviewer")], [reference])
+
+
+class AttestationTests(unittest.TestCase):
+    def test_what_counts_toward_the_limit_is_the_leads_own_mistake(self) -> None:
+        """Mutation: attestation_refusal counts every refusal (True always)."""
+
+        from codex_autopilot.department_runtime import attestation_refusal
+
+        expected = RubricReference("FACT-002", 2, "b" * 64)
+        given = {"descriptor": {"prompt": '"department_acceptance":{"reference":{"record_id":"FACT-002","version":2,"sha256":"' + "b" * 64 + '"}}'}}
+        reason, counted = attestation_refusal(expected, None, given)
+        self.assertTrue(counted)
+        self.assertIn('"rubric":{"record_id":"FACT-002"', reason)
+        self.assertIsNone(attestation_refusal(expected, expected, given))
+        advanced = {"descriptor": {"prompt": '"department_acceptance" FACT-001 ' + "a" * 64}}
+        reason, counted = attestation_refusal(expected, RubricReference("FACT-001", 1, "a" * 64), advanced)
+        self.assertFalse(counted)
+        self.assertIn("advanced to version 2", reason)
+        reason, counted = attestation_refusal(expected, None, {"descriptor": {"prompt": "old runtime"}})
+        self.assertFalse(counted)
+        self.assertIn("launched without", reason)
 
 
 if __name__ == "__main__":

@@ -342,6 +342,15 @@ def commit_plan_change(
     transaction["status"] = "COMMITTED"
     transaction["updated_at"] = utc_now()
     atomic_json(path, transaction)
+    # R30: a new department gets its version-1 rubric now, before any of its
+    # work is reserved. After COMMITTED, never inside the transaction: a
+    # failure there left it PLAN_WRITTEN, and recovery - the first step of
+    # every reservation - would fail the same way each time. A failure is
+    # tolerated: the verifier's reservation writes it under the lock, or
+    # stops that task for the on-call. Recovery does not call it.
+    from .department_runtime import ensure_all_department_rubrics
+
+    ensure_all_department_rubrics(ProjectMemory(state_dir.resolve().parent), candidate)
 
 
 def recover_plan_change_transaction(state_dir: Path, profile: str) -> bool:

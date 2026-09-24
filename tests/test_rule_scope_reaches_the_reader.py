@@ -1,202 +1,144 @@
-"""A rule's runtime part that is missing must not read as one that is there.
+"""R30's scope says who judges and by what - to each reader its own part.
 
-R30 - acceptance by the department lead against a versioned rubric - is
-written unconditionally and carries mode ENFORCED. The runtime activates it
-only when the task declares both the department-binding and the
-rubric-binding logical resource; `task_department_binding` returns None
-otherwise and nothing downstream asks for a lead or a rubric.
+History. On a real run (23 Sep 2026) a verifier read R30, looked for a
+department and a rubric the plan never declared, and withheld acceptance of
+finished work: 23 minutes of model time and a blocked run. The first answer
+told the reader R30 was "NOT in force" - an exception from her rule written
+into the prompt, beside a check that refuses a verdict not given by the
+rubric. The second said the runtime had derived no department. Now the
+runtime derives the department of every task from the plan's leads
+(``department_runtime``), and the scope states it.
 
-The prompt block sent the statement and dropped that gate. On a real run
-(23 Sep 2026) a verifier read R30, looked for a department and a rubric that
-the plan never declared, and withheld acceptance of finished work. The worker
-asked for a prerequisite, the replanner tried to invent a department, and the
-run blocked after three rejected attempts - 23 minutes of model time on a
-rule whose runtime part was missing for the task.
-
-The first answer told the reader R30 was "NOT in force" for such a task.
-With the check now given verbatim, that line stood beside "a verdict not
-given by the department's versioned rubric is refused": the prompt
-contradicted itself and wrote an exception from R30 into it. R30 is in
-force for every task; the scope says the missing department is the
-runtime's gap, not the work's.
+One text for every phase told a worker, a reviser and a screener that the
+rubric was "loaded into department_acceptance" - a block only the lead's
+prompt has. They would look for it and not find it: the same class of
+failure as the 23 minutes. So the phases get different facts.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-import types
+import tempfile
 import unittest
 
-from codex_autopilot.department_acceptance import (
-    DEPARTMENT_FIELDS,
-    DepartmentAcceptanceError,
-    RUBRIC_REFERENCE_FIELDS,
-)
+from codex_autopilot.department_acceptance import DEPARTMENT_FIELDS, DepartmentAcceptanceError
+from codex_autopilot.plan import validate_persisted_plan
 from codex_autopilot.rules import RULES, rules_for_prompt
 
-
-def _resource(**fields):
-    return types.SimpleNamespace(**fields)
-
-
-def _task(*resources):
-    return types.SimpleNamespace(id="T1", resources=tuple(resources))
+ROOT = Path(__file__).resolve().parents[1]
+SAVED = json.loads((ROOT / "tests/fixtures/r30_saved_plans.json").read_text(encoding="utf-8"))
 
 
-BOUND = (
-    _resource(
-        id="department-binding",
-        kind="logical",
-        access="read",
-        target="department-id:character-art",
-    ),
-    _resource(
-        id="rubric-binding",
-        kind="logical",
-        access="read",
-        target="project-memory:department/character-art/rubric",
-    ),
-)
+def _plan(*, without_lead: bool = False):
+    raw = json.loads(json.dumps(SAVED["plain"]["saved_plan"]))
+    if without_lead:
+        for item in raw["tasks"]:
+            item["verification"].pop("verifier_role")
+    return validate_persisted_plan(raw, "adaptive")
 
 
-class WhatTheReaderIsToldTests(unittest.TestCase):
+def _r30(block):
+    return next(item for item in block if item["id"] == "R30")
+
+
+class EachReaderIsToldItsPartTests(unittest.TestCase):
     def test_without_a_task_no_scope_is_claimed(self) -> None:
         """The replanner rewrites a whole graph; there is no one task to scope to."""
 
-        entry = self._r30(rules_for_prompt())
-        self.assertNotIn("scope", entry)
+        self.assertNotIn("scope", _r30(rules_for_prompt()))
 
-    def test_a_task_with_no_binding_is_told_the_gap_is_the_runtimes(self) -> None:
-        entry = self._r30(rules_for_prompt(task=_task(
-            _resource(id="asset-files", kind="directory", access="write", target="Art"),
-            _resource(id="blender-ui", kind="logical", access="write", target="ui:blender"),
-        )))
-        self.assertTrue(entry["scope"].startswith("In force for every task."))
-        self.assertIn("the runtime's open part of R30 - not a defect", entry["scope"])
-        self.assertIn("refusals in the check are the runtime's to apply", entry["scope"])
+    def test_the_lead_is_told_it_is_the_lead_and_where_its_rubric_is(self) -> None:
+        plan = _plan()
+        scope = _r30(rules_for_prompt(task=plan.task_map["M01"], plan=plan, phase="verification"))["scope"]
+        self.assertIn("department 'Art Reviewer' (art-reviewer)", scope)
+        self.assertIn("Lead Role 'Character Art Verifier' - you", scope)
+        self.assertIn("department_acceptance", scope)
 
-    def test_the_rule_still_reads_as_enforced(self) -> None:
-        """Scope says what the runtime has in place, never that the rule is off."""
+    def test_the_worker_is_told_who_judges_by_which_version_and_what(self) -> None:
+        """No worker phase is sent to look for a block it does not have.
 
-        entry = self._r30(rules_for_prompt(task=_task()))
-        self.assertEqual(entry["mode"], "ENFORCED")
-        self.assertIn("In force", entry["scope"])
-
-    def test_no_scope_writes_an_exception_beside_the_verbatim_check(self) -> None:
-        """The check refuses a verdict not given by the rubric; no scope may excuse it.
-
-        The independent check found "NOT in force ... do not withhold
-        acceptance" beside that check once it went verbatim. A softer
-        "judge the work by its own definition of done" is the same exception:
-        an instruction to accept by something other than the rubric.
+        Mutation: _r30_scope gives every phase the lead's text - a worker is
+        told its rubric is in department_acceptance.
         """
 
-        for task in (_task(), _task(*BOUND), _task(BOUND[0])):
-            entry = self._r30(rules_for_prompt(task=task))
-            scope = entry["scope"].casefold()
-            with self.subTest(scope=entry["scope"][:40]):
-                self.assertIn("versioned rubric is refused", entry["check"])
-                for excuse in ("not in force", "withhold", "definition of done", "do not", "judge"):
-                    self.assertNotIn(excuse, scope)
+        plan = _plan()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".git").mkdir()
+            from codex_autopilot.memory import ProjectMemory
 
-    def test_a_bound_task_is_told_which_department(self) -> None:
-        entry = self._r30(rules_for_prompt(task=_task(*BOUND)))
-        self.assertIn("In force", entry["scope"])
-        self.assertIn("character-art", entry["scope"])
+            memory = ProjectMemory(root)
+            for phase in ("implementation", "revision", "screening"):
+                with self.subTest(phase=phase):
+                    scope = _r30(rules_for_prompt(
+                        task=plan.task_map["M02"], plan=plan, phase=phase, memory=memory
+                    ))["scope"]
+                    self.assertIn("accepted by Lead Role 'Character Art Verifier'", scope)
+                    self.assertIn("department 'Art Reviewer' (art-reviewer) v1", scope)
+                    self.assertIn("request-fidelity:", scope)
+                    self.assertIn("Независимо сопоставить результат", scope)
+                    self.assertNotIn("department_acceptance", scope)
 
-    def test_a_half_bound_task_is_not_quietly_excused(self) -> None:
-        """One claim of the pair is a malformed binding, not an absent one."""
+    def test_a_task_without_a_lead_is_told_so_fail_closed(self) -> None:
+        plan = _plan(without_lead=True)
+        scope = _r30(rules_for_prompt(task=plan.task_map["M01"], plan=plan, phase="verification"))["scope"]
+        self.assertTrue(scope.startswith("In force. No Lead Role is defined for this task"))
+        self.assertIn("the runtime stops the task for the on-call", scope)
 
-        entry = self._r30(rules_for_prompt(task=_task(BOUND[0])))
-        self.assertIn("In force", entry["scope"])
-        self.assertNotIn("NOT in force", entry["scope"])
+    def test_no_scope_ever_says_the_rule_is_off_or_excuses_the_rubric(self) -> None:
+        """Mutation: bring back the old "NOT in force" text for an unbound task.
 
-    def test_only_conditional_rules_carry_scope(self) -> None:
-        scoped = [i["id"] for i in rules_for_prompt(task=_task(*BOUND)) if "scope" in i]
-        self.assertEqual(scoped, ["R30"])
+        "judge by it" and "do not look for one" are about the rubric itself,
+        and the DoD is one of the rubric's criteria; what may never appear is
+        the rule being off or another standard in the rubric's place.
+        """
 
-    def test_the_block_is_never_shortened_by_scoping(self) -> None:
-        """R17: the rules block is never truncated."""
+        for plan in (_plan(), _plan(without_lead=True)):
+            for phase in ("implementation", "revision", "screening", "verification", None):
+                entry = _r30(rules_for_prompt(task=plan.task_map["M01"], plan=plan, phase=phase))
+                with self.subTest(phase=phase, scope=entry["scope"][:40]):
+                    self.assertEqual(entry["mode"], "ENFORCED")
+                    self.assertIn("versioned rubric is refused", entry["check"])
+                    scope = entry["scope"].casefold()
+                    for excuse in ("not in force", "withhold", "by its own definition of done", "derived no department"):
+                        self.assertNotIn(excuse, scope)
 
-        self.assertEqual(len(rules_for_prompt(task=_task())), len(RULES))
+    def test_only_r30_carries_a_scope_and_the_block_is_never_shortened(self) -> None:
+        plan = _plan()
+        block = rules_for_prompt(task=plan.task_map["M01"], plan=plan, phase="implementation")
+        self.assertEqual([item["id"] for item in block if "scope" in item], ["R30"])
+        self.assertEqual(len(block), len(RULES))
         self.assertEqual(len(rules_for_prompt()), len(RULES))
 
-    def _r30(self, block):
-        return next(item for item in block if item["id"] == "R30")
+
+class TheEnvelopesPassThePlanAndThePhaseTests(unittest.TestCase):
+    def test_both_task_bearing_envelopes_scope_the_rules_for_their_reader(self) -> None:
+        source = (ROOT / "src/codex_autopilot/ai_studio.py").read_text(encoding="utf-8")
+        self.assertEqual(source.count("rules_for_prompt(self.state_dir, task=task, plan=self.plan, phase="), 2)
 
 
-class TheRealBlockedTaskTests(unittest.TestCase):
-    """The shape that actually blocked: M01 of the beyondness run."""
+class TheReplannerIsToldDepartmentsAreTheRuntimesTests(unittest.TestCase):
+    def test_the_replanner_names_one_lead_per_profession_and_writes_no_department(self) -> None:
+        """It used to be handed the nested department and rubric field sets to fill.
 
-    def test_m01s_resources_are_told_no_department_was_derived(self) -> None:
-        m01 = _task(*[
-            _resource(id=name, kind="logical", access="write", target=name)
-            for name in (
-                "asset-files",
-                "handoff",
-                "source-reference",
-                "blend-owner",
-                "blender-ui",
-                "unreal-ui",
-            )
-        ])
-        entry = next(i for i in rules_for_prompt(task=m01) if i["id"] == "R30")
-        self.assertIn("runtime has derived no department", entry["scope"])
-        self.assertNotIn("NOT in force", entry["scope"])
+        A real replanner spent its whole budget writing `lead_role` for
+        `lead_role_id` in a field it never needed.
+        """
 
-
-class TheRefusalNamesWhatIsAcceptedTests(unittest.TestCase):
-    """R31: a refusal names what IS accepted."""
-
-    def test_an_unknown_department_field_is_answered_with_the_accepted_set(self) -> None:
-        from codex_autopilot.department_acceptance import department_contract_from_raw
-
-        with self.assertRaises(DepartmentAcceptanceError) as caught:
-            department_contract_from_raw(
-                {
-                    "id": "character-art",
-                    "name": "Character Art",
-                    "lead_role": "lead",
-                    "rubric": {"record_id": "R", "version": 1, "sha256": "x"},
-                },
-                "department 1",
-            )
-        message = str(caught.exception)
-        self.assertIn("lead_role", message)
-        self.assertIn("lead_role_id", message, "the accepted spelling must appear")
-        self.assertIn("accepted fields are", message)
-
-
-class TheNestedContractIsStatedTests(unittest.TestCase):
-    def test_the_replanner_is_given_the_nested_field_sets(self) -> None:
-        source = (
-            Path(__file__).resolve().parents[1]
-            / "src/codex_autopilot/lifecycle_prompts.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn('"allowed_department_fields": sorted(DEPARTMENT_FIELDS)', source)
-        self.assertIn(
-            '"allowed_rubric_reference_fields": sorted(RUBRIC_REFERENCE_FIELDS)', source
-        )
+        source = (ROOT / "src/codex_autopilot/lifecycle_prompts.py").read_text(encoding="utf-8")
+        self.assertIn("Derived by the runtime: do not write departments", source)
+        self.assertIn("one lead per profession", source)
+        self.assertNotIn("allowed_department_fields", source)
 
     def test_the_stated_set_is_the_enforced_set(self) -> None:
-        """One name for both, so the prompt cannot drift from the parser."""
+        from codex_autopilot.department_acceptance import department_contract_from_raw
+        from codex_autopilot.plan_fields import ALLOWED_FIELDS
 
-        source = (
-            Path(__file__).resolve().parents[1]
-            / "src/codex_autopilot/department_acceptance.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("_exact_keys(data, set(DEPARTMENT_FIELDS), label)", source)
-        self.assertIn("_exact_keys(data, set(RUBRIC_REFERENCE_FIELDS), label)", source)
-        self.assertEqual(set(DEPARTMENT_FIELDS), {"id", "name", "lead_role_id", "rubric"})
-        self.assertEqual(set(RUBRIC_REFERENCE_FIELDS), {"record_id", "version", "sha256"})
-
-
-class TheWorkerEnvelopeCarriesTheTaskTests(unittest.TestCase):
-    def test_both_task_bearing_envelopes_scope_the_rules(self) -> None:
-        source = (
-            Path(__file__).resolve().parents[1] / "src/codex_autopilot/ai_studio.py"
-        ).read_text(encoding="utf-8")
-        self.assertEqual(source.count("rules_for_prompt(self.state_dir, task=task)"), 2)
+        self.assertEqual(ALLOWED_FIELDS["plan.departments[]"], tuple(DEPARTMENT_FIELDS))
+        with self.assertRaises(DepartmentAcceptanceError) as caught:
+            department_contract_from_raw({"id": "a", "name": "A", "lead_role_id": "b", "extra": 1}, "department 1")
+        self.assertIn(str(sorted(DEPARTMENT_FIELDS)), str(caught.exception))
 
 
 if __name__ == "__main__":

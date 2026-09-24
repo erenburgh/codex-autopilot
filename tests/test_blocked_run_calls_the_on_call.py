@@ -477,7 +477,9 @@ class NoStopBypassesTheDoorTests(unittest.TestCase):
             "lifecycle_completion.py",
             "plan_verification_lifecycle.py",
             "revision_budget.py",
-            "lifecycle_reservations.py",
+            # The verifier's route/lead/rubric stops moved out of the
+            # reservation into its gate (R30); it goes through the same door.
+            "department_gate.py",
         ):
             with self.subTest(module=name):
                 self.assertIn("stop_run", (SRC / name).read_text(encoding="utf-8"))

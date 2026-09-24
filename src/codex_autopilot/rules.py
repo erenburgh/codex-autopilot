@@ -532,57 +532,38 @@ def record_violation(state_dir, rule_id: str, *, detail: str = "") -> None:
     )
 
 
-def _r30_scope(task: object) -> str:
-    """What R30 means for this task, in words the reader can act on.
+def _r30_scope(task: object, *, plan: object = None, phase: str | None = None, memory: object = None) -> str:
+    """What R30 means for this task and this reader, in words it can act on.
 
-    R30 reads as unconditional - acceptance is performed by the department
-    lead against a versioned rubric - but the runtime derives a department
-    only when the task declares both the department-binding and the
-    rubric-binding logical resource. ``task_department_binding`` returns
-    None otherwise and nothing downstream asks for a lead or a rubric.
+    R30 is in force for every task. It used not to be derivable for most of
+    them: the runtime derived a department only for a task that declared the
+    0.13 department-binding and rubric-binding resources, and no planner
+    wrote them. A verifier handed the statement without that fact looked for
+    a department and a rubric, found neither, and refused a task the runtime
+    never scoped - the worker asked for a prerequisite, the replanner tried
+    to invent a department, and the run blocked: 23 minutes of model time,
+    measured on a real run, 23 Sep 2026. The answer after that told the
+    reader R30 was "NOT in force" here - the very exception from her rule
+    the owner told us to remove - and the next one said that no department
+    was derived.
 
-    A verifier that was handed the statement without that fact did the only
-    thing it could: it looked for a department and a rubric, found neither,
-    and refused to accept a task the runtime never scoped to a department.
-    The worker then asked for a prerequisite, the replanner tried to invent a
-    department, and the run blocked - 23 minutes of model time. Measured on a
-    real run, 23 Sep 2026.
-
-    The first answer told the reader R30 was "NOT in force" here and not to
-    withhold acceptance. With the check now given verbatim (R17) that line
-    stood next to "a verdict not given by the department's versioned rubric
-    is refused" - the prompt contradicted itself, and it wrote into the
-    prompt the very exception from R30 the owner told us to remove. R30 is
-    in force for every task. This line states facts only - what the runtime
-    has not derived for this task, and whose part that is - and gives the
-    reader no instruction the check does not: not "do not withhold", not
-    "judge by the definition of done", which were the same exception in
-    softer words. The refusals in the check are the runtime's to apply.
-    Deriving the department for every task (the R30 line) closes the gap and
-    removes this scope.
+    Now the department is derived for every task from the plan's leads
+    (``department_runtime``), and this line says who judges and by what -
+    differently per phase: the lead is told it is the lead and where its
+    rubric is; a worker, a reviser and a screener are told who will judge
+    their work, by which version, and get its criteria as expectations. One
+    text for all phases told them a rubric was in a block only the
+    verifier's prompt has. A task with no lead is told so, fail-closed.
     """
 
-    from .department_acceptance import DepartmentAcceptanceError, task_department_binding
-
-    try:
-        binding = task_department_binding(task)
-    except DepartmentAcceptanceError as exc:
-        return f"In force, and the task's own binding is malformed: {exc}"
-    if binding is None:
+    if plan is None:
         return (
-            "In force for every task. For this one the runtime has derived no "
-            "department, lead or versioned rubric: it declares neither the "
-            "department-binding nor the rubric-binding logical resource. The "
-            "refusals in the check are the runtime's to apply, and deriving "
-            "what they need is the runtime's open part of R30 - not a defect "
-            "of the work and not a prerequisite the worker or this turn can "
-            "supply. There is no department lead or Project Memory rubric for "
-            "you to find here."
+            "In force: acceptance is performed by the lead of the task's department "
+            "against the department's versioned rubric, both derived by the runtime."
         )
-    return (
-        f"In force: the task binds department {binding.department_id!r} and its "
-        "rubric, and acceptance goes through that department's lead."
-    )
+    from .department_runtime import r30_scope
+
+    return r30_scope(plan, task, phase=phase, memory=memory)
 
 
 # A rule whose runtime part depends on the task, and the function that
@@ -591,7 +572,7 @@ def _r30_scope(task: object) -> str:
 _SCOPED_RULES = {"R30": _r30_scope}
 
 
-def rules_for_prompt(state_dir=None, *, task=None) -> list[dict[str, str]]:
+def rules_for_prompt(state_dir=None, *, task=None, plan=None, phase=None, memory=None) -> list[dict[str, str]]:
     """The rules block for a worker prompt.
 
     The order is fixed by rule R17: ENFORCED first; within a mode, the more
@@ -600,7 +581,8 @@ def rules_for_prompt(state_dir=None, *, task=None) -> list[dict[str, str]]:
     context budget cannot hold it, the task is not launched.
 
     When the task is known, a rule whose runtime part depends on the task
-    also carries `scope`, saying what of it the runtime has in place here.
+    also carries `scope`, saying what of it the runtime has in place here -
+    for this reader: the plan and the phase say who judges and by what.
     Without it a reader enforces a part the runtime has not supplied, which
     is neither the reader's fault nor a thing the reader can discover. A
     scope never declares a rule out of force: that would be an exception
@@ -625,6 +607,6 @@ def rules_for_prompt(state_dir=None, *, task=None) -> list[dict[str, str]]:
         entry = {"id": item.id, "mode": item.mode, "rule": item.statement, "check": item.check}
         scope = _SCOPED_RULES.get(item.id)
         if scope is not None and task is not None:
-            entry["scope"] = scope(task)
+            entry["scope"] = scope(task, plan=plan, phase=phase, memory=memory)
         block.append(entry)
     return block

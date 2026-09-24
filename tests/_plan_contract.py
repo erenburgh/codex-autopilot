@@ -54,7 +54,74 @@ def canonicalize_plan(payload: dict[str, Any]) -> dict[str, Any]:
             if isinstance(task, dict):
                 task.setdefault("produces_outcomes", [TEST_OUTCOME_ID])
                 task.setdefault("acceptance_class", "mixed")
+        _attach_test_lead(payload, tasks)
     return payload
+
+
+TEST_LEAD_ROLE = {
+    "id": "acceptance-lead",
+    "name": "Acceptance Lead",
+    "responsibilities": ["Accept the department's work against its versioned rubric."],
+}
+
+
+def _attach_test_lead(payload: dict[str, Any], tasks: list[Any]) -> None:
+    """R30: every task names its department's lead; one lead per profession.
+
+    Tests unrelated to departments get one shared lead for every profession
+    that names none - the shape of a real plan (beyondness: three roles, one
+    art-reviewer). ``canonical_verification`` names it by default; a
+    profession whose other tasks name a lead of their own takes that one.
+    """
+
+    shared = TEST_LEAD_ROLE["id"]
+    named: dict[str, str] = {}
+    for task in tasks:
+        if isinstance(task, dict) and isinstance(task.get("verification"), dict):
+            lead = task["verification"].get("verifier_role")
+            if lead and lead != shared:
+                named.setdefault(str(task.get("role")), lead)
+    attached = False
+    for task in tasks:
+        if not isinstance(task, dict) or not isinstance(task.get("verification"), dict):
+            continue
+        verification = task["verification"]
+        lead = verification.get("verifier_role")
+        if (not lead and verification.get("policy") == "independent") or lead == shared:
+            verification["verifier_role"] = named.get(str(task.get("role"))) or shared
+        attached = attached or verification.get("verifier_role") == shared
+    roles = payload.get("roles")
+    if attached and isinstance(roles, list) and not any(
+        isinstance(role, dict) and role.get("id") == shared for role in roles
+    ):
+        roles.append(dict(TEST_LEAD_ROLE))
+
+
+def attested_verdict(cfg: Any, task_id: str, verdict: str = "PASS", issues: Sequence[Any] = (), *, prefix: str = "") -> str:
+    """A verifier's final line carrying the exact rubric attestation (R30).
+
+    Every acceptance is a lead's by its department's current rubric, and a
+    verdict without the attestation is refused - the form the runtime asks
+    of a real lead, read from the same place the lead's prompt is built from.
+    """
+
+    from codex_autopilot.config import load_config
+    from codex_autopilot.department_runtime import load_task_department_acceptance
+    from codex_autopilot.memory import ProjectMemory
+    from codex_autopilot.plan import load_plan
+
+    if isinstance(cfg, (str, Path)):
+        cfg = load_config(Path(cfg))
+    plan = load_plan(cfg.state_dir, cfg.profile)
+    loaded = load_task_department_acceptance(
+        ProjectMemory(cfg.root), plan, plan.task_map[task_id], ensure=True
+    )
+    payload = {
+        "verdict": verdict,
+        "issues": [dict(item) for item in issues],
+        "rubric": loaded.department.rubric.to_dict(),
+    }
+    return prefix + "AUTOPILOT_VERIFICATION: " + json.dumps(payload, separators=(",", ":"))
 
 
 def canonical_plan_verification(plan: Any, *, recorded: bool = True) -> dict[str, Any]:
@@ -97,6 +164,12 @@ def initialize_verified_project(
     from codex_autopilot.plan import validate_migrating_plan
 
     raw = json.loads(Path(plan_file).read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and raw.get("schema_version") == 3 and isinstance(raw.get("tasks"), list):
+        # A test may append tasks after canonicalize_plan: they get the lead too.
+        before = json.dumps(raw, sort_keys=True)
+        _attach_test_lead(raw, raw["tasks"])
+        if json.dumps(raw, sort_keys=True) != before:
+            Path(plan_file).write_text(json.dumps(raw), encoding="utf-8")
     receipt = None
     if isinstance(raw, dict) and raw.get("goal_contract") is not None:
         state_dir = Path(root).resolve() / ".codex-autopilot"
@@ -173,6 +246,7 @@ def canonical_verification(
         "deterministic_checks": [clean_suite_check(), *checks],
         "max_revision_attempts": max_revision_attempts,
     }
-    if verifier_role:
-        verification["verifier_role"] = verifier_role
+    # R30: every task names its department's lead; canonicalize_plan and
+    # initialize_verified_project add the shared test lead role it names.
+    verification["verifier_role"] = verifier_role or TEST_LEAD_ROLE["id"]
     return verification

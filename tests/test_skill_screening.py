@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _appserver_fakes import activate_via_app_server
 from _gates import patch_hook_trust_gates
 from _handoff import bump_task_checkpoint
+from _plan_contract import attested_verdict
 from _plan_contract import initialize_verified_project
 from _relay import reserve_ready_frontier
 from codex_autopilot.ai_studio import AIStudioRuntime, ContextBoundaryError
@@ -632,7 +633,7 @@ class AttestedProjectCase(unittest.TestCase):
                 cfg,
                 thread_id=f"verifier-{task_id}",
                 turn_id=f"verifier-turn-{task_id}",
-                final_message='AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}',
+                final_message=attested_verdict(cfg, task_id),
             )
             self.last_descriptors = accepted.descriptors
             special = (

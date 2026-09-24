@@ -9,6 +9,7 @@ import unittest
 
 from _plan_contract import (
     canonical_plan_verification,
+    TEST_LEAD_ROLE,
     canonical_verification,
     initialize_verified_project,
 )
@@ -110,7 +111,8 @@ def graph(tasks: list[dict[str, object]], *, version: int = 1) -> dict[str, obje
                 "id": "builder",
                 "name": "Builder",
                 "responsibilities": [PRIVATE_PLANNER_MARKER],
-            }
+            },
+            dict(TEST_LEAD_ROLE),
         ],
         "tasks": tasks,
     }

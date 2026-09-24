@@ -119,11 +119,30 @@ of replacing it with another double.
 
 Classify each milestone as `code` or `computer_use` based only on whether its Definition of Done requires real GUI interaction that files, code, shell tools, or programmatic interfaces cannot replace. Include a concrete `execution_mode_reason`.
 
+## Departments (R30)
+
+Every acceptance is a department lead's. The department is the worker's
+profession: `verification.verifier_role` of a task names the Lead Role of that
+profession's department, and it is required on every task. One profession has
+exactly one lead - every task of one `role` names the same `verifier_role` -
+and the lead is never the task's own role. Declare the lead as its own
+`RoleProfile` with `verification_expectations`: the runtime turns them, with a
+fixed core (fidelity to the request, every DoD item closed by evidence,
+independent re-checking), into the department's rubric version 1 in Project
+Memory before the first task, and the lead's verdict must attest that rubric
+exactly. A plan that leaves a lead out, gives one profession two leads, or makes
+a profession its own lead is refused, every such task named at once. Do not
+write `departments`, department or rubric bindings, or rubrics: the runtime
+derives them and never writes them into the plan. A later rubric version is
+proposed only by the department's lead or the on-call, from its own thread,
+with outcome evidence of the department's recorded acceptances:
+`scripts/codex-autopilot department-rubric-propose --department <id> --version <n> --rubric-json '{"criteria":[...],"standards":[...]}' --evidence <EVID-...>`.
+
 Write `<target-root>/.codex-autopilot/bootstrap-plan.json`; preserve the initiating
 request verbatim and require a fresh independent verifier for every milestone:
 
 ```json
-{"schema_version":3,"graph_version":1,"goal":"...","user_request":"<verbatim initiating user request>","model_strategy":"host-settings","execution_strategy":"auto","max_parallel_workers":10,"computer_use_slots":1,"roles":[{"id":"implementer","name":"Implementation Specialist","responsibilities":["Implement the milestone contract."]},{"id":"acceptance-reviewer","name":"Independent Acceptance Reviewer","responsibilities":["Judge the result against the original request, specification, and every DoD item."]}],"tasks":[{"id":"M1","title":"...","objective":"...","definition_of_done":["..."],"execution_mode":"code","execution_mode_reason":"Repository files and tests are sufficient.","role":"implementer","depends_on":[],"priority":0,"verification":{"policy":"independent","required":true,"verifier_role":"acceptance-reviewer","max_revision_attempts":2},"resources":[],"required_capabilities":[],"context":{},"outputs":[],"tags":[]}]}
+{"schema_version":3,"graph_version":1,"goal":"...","user_request":"<verbatim initiating user request>","model_strategy":"host-settings","execution_strategy":"auto","max_parallel_workers":10,"computer_use_slots":1,"roles":[{"id":"implementer","name":"Implementation Specialist","responsibilities":["Implement the milestone contract."]},{"id":"implementation-lead","name":"Implementation Lead","responsibilities":["Accept implementation work against the department rubric."],"verification_expectations":["Every DoD item is reproduced against the original request, not read from the worker's report.","Tests written by the implementer are evidence to re-run, never the verdict."]}],"tasks":[{"id":"M1","title":"...","objective":"...","definition_of_done":["..."],"execution_mode":"code","execution_mode_reason":"Repository files and tests are sufficient.","role":"implementer","depends_on":[],"priority":0,"verification":{"policy":"independent","required":true,"verifier_role":"implementation-lead","max_revision_attempts":2},"resources":[],"required_capabilities":[],"context":{},"outputs":[],"tags":[]}]}
 ```
 
 `depends_on` is the real dependency, not the order in which the tasks were

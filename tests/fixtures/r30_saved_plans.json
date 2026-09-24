@@ -1,0 +1,527 @@
+{
+ "_about": "Plans as the pre-R30 runtime (commit 8d6055d) saved them, with the digest it bound PLAN_VERIFIED to. plain: the beyondness shape (3 roles, art-reviewer, no departments). declared: the same with a 0.13 departments entry carrying a pinned rubric tuple.",
+ "declared": {
+  "plan_sha256": "028c1ee08c29fc10e9ac5fc9d45e9fb9bf51502e4b88b9bd88f58021a2cdf27c",
+  "saved_plan": {
+   "computer_use_slots": 1,
+   "departments": [
+    {
+     "id": "character-art",
+     "lead_role_id": "art-reviewer",
+     "name": "Character Art",
+     "rubric": {
+      "record_id": "FACT-004",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "version": 1
+     }
+    }
+   ],
+   "execution_strategy": "serial",
+   "goal": "Build the character from the reference sheet.",
+   "goal_contract": {
+    "constraints": [],
+    "deliverables": [
+     {
+      "description": "The test plan's bounded deliverable exists.",
+      "id": "test-deliverable"
+     }
+    ],
+    "global_acceptance": [
+     {
+      "description": "The test plan is accepted under its declared checks.",
+      "id": "test-accepted"
+     }
+    ],
+    "required_outcomes": [
+     {
+      "description": "The test plan's declared result is produced.",
+      "id": "test-outcome"
+     }
+    ]
+   },
+   "graph_version": 1,
+   "max_parallel_workers": 1,
+   "model_strategy": "auto",
+   "roles": [
+    {
+     "id": "reference-artist",
+     "name": "Reference Artist",
+     "responsibilities": [
+      "Prepare the reference sheets."
+     ],
+     "version": "1.0.0"
+    },
+    {
+     "id": "character-artist",
+     "name": "Character Artist",
+     "responsibilities": [
+      "Model the character from the sheets."
+     ],
+     "version": "1.0.0"
+    },
+    {
+     "id": "art-reviewer",
+     "name": "Character Art Verifier",
+     "responsibilities": [
+      "Независимо сопоставить результат с исходным запросом, оригиналом, картами и доказательствами.",
+      "Не подменять художественное одобрение пользователя и не принимать непроверенные формы."
+     ],
+     "version": "1.0.0"
+    }
+   ],
+   "schema_version": 3,
+   "tasks": [
+    {
+     "acceptance_class": "mixed",
+     "context": {
+      "dependency_outputs": [],
+      "max_dependency_outputs": 8,
+      "max_memory_records": 8,
+      "memory_queries": [],
+      "memory_record_ids": []
+     },
+     "definition_of_done": [
+      "M01 matches the reference sheet."
+     ],
+     "depends_on": [],
+     "execution_mode": "code",
+     "execution_mode_reason": "Repository files are sufficient for this fixture.",
+     "id": "M01",
+     "objective": "Produce part M01 of the character.",
+     "outputs": [],
+     "priority": 0,
+     "produces_outcomes": [
+      "test-outcome"
+     ],
+     "reasoning": "medium",
+     "required_capabilities": [],
+     "resources": [
+      {
+       "access": "write",
+       "id": "asset-files",
+       "kind": "directory",
+       "target": "Art/M01"
+      }
+     ],
+     "role": "character-artist",
+     "tags": [],
+     "title": "Model part M01",
+     "verification": {
+      "deterministic_checks": [
+       {
+        "argv": [
+         "env",
+         "CODEX_THREAD_ID=",
+         "CODEX_TURN_ID=",
+         "CODEX_SESSION_ID=",
+         "/opt/homebrew/opt/python@3.14/bin/python3.14",
+         "-m",
+         "unittest",
+         "discover",
+         "-s",
+         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+        ],
+        "description": "Run the full suite in a clean identity environment.",
+        "expected_exit_code": 0,
+        "id": "suite",
+        "kind": "command",
+        "timeout_seconds": 600
+       }
+      ],
+      "max_revision_attempts": 2,
+      "policy": "independent",
+      "required": true,
+      "verifier_role": "art-reviewer"
+     }
+    },
+    {
+     "acceptance_class": "mixed",
+     "context": {
+      "dependency_outputs": [],
+      "max_dependency_outputs": 8,
+      "max_memory_records": 8,
+      "memory_queries": [],
+      "memory_record_ids": []
+     },
+     "definition_of_done": [
+      "M02 matches the reference sheet."
+     ],
+     "depends_on": [
+      "M01"
+     ],
+     "execution_mode": "code",
+     "execution_mode_reason": "Repository files are sufficient for this fixture.",
+     "id": "M02",
+     "objective": "Produce part M02 of the character.",
+     "outputs": [],
+     "priority": 0,
+     "produces_outcomes": [
+      "test-outcome"
+     ],
+     "reasoning": "medium",
+     "required_capabilities": [],
+     "resources": [
+      {
+       "access": "write",
+       "id": "asset-files",
+       "kind": "directory",
+       "target": "Art/M02"
+      }
+     ],
+     "role": "reference-artist",
+     "tags": [],
+     "title": "Model part M02",
+     "verification": {
+      "deterministic_checks": [
+       {
+        "argv": [
+         "env",
+         "CODEX_THREAD_ID=",
+         "CODEX_TURN_ID=",
+         "CODEX_SESSION_ID=",
+         "/opt/homebrew/opt/python@3.14/bin/python3.14",
+         "-m",
+         "unittest",
+         "discover",
+         "-s",
+         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+        ],
+        "description": "Run the full suite in a clean identity environment.",
+        "expected_exit_code": 0,
+        "id": "suite",
+        "kind": "command",
+        "timeout_seconds": 600
+       }
+      ],
+      "max_revision_attempts": 2,
+      "policy": "independent",
+      "required": true,
+      "verifier_role": "art-reviewer"
+     }
+    },
+    {
+     "acceptance_class": "mixed",
+     "context": {
+      "dependency_outputs": [],
+      "max_dependency_outputs": 8,
+      "max_memory_records": 8,
+      "memory_queries": [],
+      "memory_record_ids": []
+     },
+     "definition_of_done": [
+      "M03 matches the reference sheet."
+     ],
+     "depends_on": [
+      "M02"
+     ],
+     "execution_mode": "code",
+     "execution_mode_reason": "Repository files are sufficient for this fixture.",
+     "id": "M03",
+     "objective": "Produce part M03 of the character.",
+     "outputs": [],
+     "priority": 0,
+     "produces_outcomes": [
+      "test-outcome"
+     ],
+     "reasoning": "medium",
+     "required_capabilities": [],
+     "resources": [
+      {
+       "access": "write",
+       "id": "asset-files",
+       "kind": "directory",
+       "target": "Art/M03"
+      }
+     ],
+     "role": "character-artist",
+     "tags": [],
+     "title": "Model part M03",
+     "verification": {
+      "deterministic_checks": [
+       {
+        "argv": [
+         "env",
+         "CODEX_THREAD_ID=",
+         "CODEX_TURN_ID=",
+         "CODEX_SESSION_ID=",
+         "/opt/homebrew/opt/python@3.14/bin/python3.14",
+         "-m",
+         "unittest",
+         "discover",
+         "-s",
+         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+        ],
+        "description": "Run the full suite in a clean identity environment.",
+        "expected_exit_code": 0,
+        "id": "suite",
+        "kind": "command",
+        "timeout_seconds": 600
+       }
+      ],
+      "max_revision_attempts": 2,
+      "policy": "independent",
+      "required": true,
+      "verifier_role": "art-reviewer"
+     }
+    }
+   ],
+   "user_request": "Сделай персонажа по референсу."
+  }
+ },
+ "plain": {
+  "plan_sha256": "d2b4e69c9e1b349af7a01cea98efa80ff88c38d5b00a7d342544d49d67477417",
+  "saved_plan": {
+   "computer_use_slots": 1,
+   "execution_strategy": "serial",
+   "goal": "Build the character from the reference sheet.",
+   "goal_contract": {
+    "constraints": [],
+    "deliverables": [
+     {
+      "description": "The test plan's bounded deliverable exists.",
+      "id": "test-deliverable"
+     }
+    ],
+    "global_acceptance": [
+     {
+      "description": "The test plan is accepted under its declared checks.",
+      "id": "test-accepted"
+     }
+    ],
+    "required_outcomes": [
+     {
+      "description": "The test plan's declared result is produced.",
+      "id": "test-outcome"
+     }
+    ]
+   },
+   "graph_version": 1,
+   "max_parallel_workers": 1,
+   "model_strategy": "auto",
+   "roles": [
+    {
+     "id": "reference-artist",
+     "name": "Reference Artist",
+     "responsibilities": [
+      "Prepare the reference sheets."
+     ],
+     "version": "1.0.0"
+    },
+    {
+     "id": "character-artist",
+     "name": "Character Artist",
+     "responsibilities": [
+      "Model the character from the sheets."
+     ],
+     "version": "1.0.0"
+    },
+    {
+     "id": "art-reviewer",
+     "name": "Character Art Verifier",
+     "responsibilities": [
+      "Независимо сопоставить результат с исходным запросом, оригиналом, картами и доказательствами.",
+      "Не подменять художественное одобрение пользователя и не принимать непроверенные формы."
+     ],
+     "version": "1.0.0"
+    }
+   ],
+   "schema_version": 3,
+   "tasks": [
+    {
+     "acceptance_class": "mixed",
+     "context": {
+      "dependency_outputs": [],
+      "max_dependency_outputs": 8,
+      "max_memory_records": 8,
+      "memory_queries": [],
+      "memory_record_ids": []
+     },
+     "definition_of_done": [
+      "M01 matches the reference sheet."
+     ],
+     "depends_on": [],
+     "execution_mode": "code",
+     "execution_mode_reason": "Repository files are sufficient for this fixture.",
+     "id": "M01",
+     "objective": "Produce part M01 of the character.",
+     "outputs": [],
+     "priority": 0,
+     "produces_outcomes": [
+      "test-outcome"
+     ],
+     "reasoning": "medium",
+     "required_capabilities": [],
+     "resources": [
+      {
+       "access": "write",
+       "id": "asset-files",
+       "kind": "directory",
+       "target": "Art/M01"
+      }
+     ],
+     "role": "character-artist",
+     "tags": [],
+     "title": "Model part M01",
+     "verification": {
+      "deterministic_checks": [
+       {
+        "argv": [
+         "env",
+         "CODEX_THREAD_ID=",
+         "CODEX_TURN_ID=",
+         "CODEX_SESSION_ID=",
+         "/opt/homebrew/opt/python@3.14/bin/python3.14",
+         "-m",
+         "unittest",
+         "discover",
+         "-s",
+         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+        ],
+        "description": "Run the full suite in a clean identity environment.",
+        "expected_exit_code": 0,
+        "id": "suite",
+        "kind": "command",
+        "timeout_seconds": 600
+       }
+      ],
+      "max_revision_attempts": 2,
+      "policy": "independent",
+      "required": true,
+      "verifier_role": "art-reviewer"
+     }
+    },
+    {
+     "acceptance_class": "mixed",
+     "context": {
+      "dependency_outputs": [],
+      "max_dependency_outputs": 8,
+      "max_memory_records": 8,
+      "memory_queries": [],
+      "memory_record_ids": []
+     },
+     "definition_of_done": [
+      "M02 matches the reference sheet."
+     ],
+     "depends_on": [
+      "M01"
+     ],
+     "execution_mode": "code",
+     "execution_mode_reason": "Repository files are sufficient for this fixture.",
+     "id": "M02",
+     "objective": "Produce part M02 of the character.",
+     "outputs": [],
+     "priority": 0,
+     "produces_outcomes": [
+      "test-outcome"
+     ],
+     "reasoning": "medium",
+     "required_capabilities": [],
+     "resources": [
+      {
+       "access": "write",
+       "id": "asset-files",
+       "kind": "directory",
+       "target": "Art/M02"
+      }
+     ],
+     "role": "reference-artist",
+     "tags": [],
+     "title": "Model part M02",
+     "verification": {
+      "deterministic_checks": [
+       {
+        "argv": [
+         "env",
+         "CODEX_THREAD_ID=",
+         "CODEX_TURN_ID=",
+         "CODEX_SESSION_ID=",
+         "/opt/homebrew/opt/python@3.14/bin/python3.14",
+         "-m",
+         "unittest",
+         "discover",
+         "-s",
+         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+        ],
+        "description": "Run the full suite in a clean identity environment.",
+        "expected_exit_code": 0,
+        "id": "suite",
+        "kind": "command",
+        "timeout_seconds": 600
+       }
+      ],
+      "max_revision_attempts": 2,
+      "policy": "independent",
+      "required": true,
+      "verifier_role": "art-reviewer"
+     }
+    },
+    {
+     "acceptance_class": "mixed",
+     "context": {
+      "dependency_outputs": [],
+      "max_dependency_outputs": 8,
+      "max_memory_records": 8,
+      "memory_queries": [],
+      "memory_record_ids": []
+     },
+     "definition_of_done": [
+      "M03 matches the reference sheet."
+     ],
+     "depends_on": [
+      "M02"
+     ],
+     "execution_mode": "code",
+     "execution_mode_reason": "Repository files are sufficient for this fixture.",
+     "id": "M03",
+     "objective": "Produce part M03 of the character.",
+     "outputs": [],
+     "priority": 0,
+     "produces_outcomes": [
+      "test-outcome"
+     ],
+     "reasoning": "medium",
+     "required_capabilities": [],
+     "resources": [
+      {
+       "access": "write",
+       "id": "asset-files",
+       "kind": "directory",
+       "target": "Art/M03"
+      }
+     ],
+     "role": "character-artist",
+     "tags": [],
+     "title": "Model part M03",
+     "verification": {
+      "deterministic_checks": [
+       {
+        "argv": [
+         "env",
+         "CODEX_THREAD_ID=",
+         "CODEX_TURN_ID=",
+         "CODEX_SESSION_ID=",
+         "/opt/homebrew/opt/python@3.14/bin/python3.14",
+         "-m",
+         "unittest",
+         "discover",
+         "-s",
+         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+        ],
+        "description": "Run the full suite in a clean identity environment.",
+        "expected_exit_code": 0,
+        "id": "suite",
+        "kind": "command",
+        "timeout_seconds": 600
+       }
+      ],
+      "max_revision_attempts": 2,
+      "policy": "independent",
+      "required": true,
+      "verifier_role": "art-reviewer"
+     }
+    }
+   ],
+   "user_request": "Сделай персонажа по референсу."
+  }
+ }
+}

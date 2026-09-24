@@ -38,6 +38,9 @@ DEFAULT_SKILL_SCREENING = "always"
 # forgotten project cannot reach a gigabyte: the traces it deletes are
 # from dispatchers that finished over an hour ago.
 DEFAULT_LOG_RETENTION_MB = 512
+# R30's mitigation: every N-th acceptance of a department is judged again by a
+# second fresh lead with the same rubric, and a disagreement is recorded.
+DEFAULT_SECOND_LEAD_EVERY = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +116,12 @@ class RuntimeConfig:
     # never the newest few or anything written in the last hour. 0 keeps
     # everything, which is the opt-out.
     log_retention_mb: int = DEFAULT_LOG_RETENTION_MB
+    # R30 names the risk of one lead with an incomplete rubric: a systematic,
+    # not a random, error across the department. Every N-th acceptance of a
+    # department gets a second fresh lead on the same work and rubric; the
+    # disagreement rate measures the rubric (department_audit). Positive: the
+    # mitigation is part of R30, not an option of it.
+    second_lead_every: int = DEFAULT_SECOND_LEAD_EVERY
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +296,10 @@ def load_config(root_or_path: Path) -> Config:
             log_retention_mb=_non_negative_int(
                 runtime.get("log_retention_mb", DEFAULT_LOG_RETENTION_MB),
                 "runtime.log_retention_mb",
+            ),
+            second_lead_every=_positive_int(
+                runtime.get("second_lead_every", DEFAULT_SECOND_LEAD_EVERY),
+                "runtime.second_lead_every",
             ),
             full_plan_revalidation_patches=_positive_int(
                 runtime.get(

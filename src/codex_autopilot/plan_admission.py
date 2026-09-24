@@ -23,6 +23,10 @@ checks depend on another runs only when that one is clean, and no wider:
 - graph - references of each read task against the raw id sets; cycles only
   over a fully read graph with no unknown dependency (``visit`` would
   otherwise meet an id it has no entry for);
+- leads (R30, a submitted graph only - a saved plan is never refused on load
+  for it) - every task's lead, the one lead of each profession, all of them
+  at once (``department_runtime.validate_department_leads``); only the read
+  roles and tasks gate it;
 - immutables (a plan change) - each comparison gated only by its own field,
   so a changed goal is reported next to a broken task;
 - coverage and state (the replanner) - Goal Contract coverage, and the
@@ -40,12 +44,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from .department_acceptance import (
-    department_contract_from_raw,
-    department_contract_issues,
-    resolve_task_department,
-    task_department_binding,
-)
+from .department_acceptance import department_contract_from_raw, department_contract_issues
+from .department_runtime import validate_department_leads
 from .goal_contract import outcome_binding_issues, validate_goal_contract
 from .plan import (
     DEFAULT_COMPUTER_USE_SLOTS,
@@ -131,8 +131,14 @@ def graph_plan(
     require_goal_contract: bool,
     require_acceptance_class: bool,
     inherited: Plan | None = None,
+    require_leads: bool = True,
 ) -> ReadPlan:
-    """Read and check a schema-3 graph; every violation goes to ``c``."""
+    """Read and check a schema-3 graph; every violation goes to ``c``.
+
+    ``require_leads`` is off only for a plan the runtime saved itself: a
+    running run whose plan predates R30's leads is stopped task by task when
+    a lead is needed (``department_gate``), never refused wholesale on load.
+    """
 
     read = ReadPlan()
     c.check("fields", "plan", reject_unknown, data, PLAN_FIELDS, "plan", REQUIRED_PLAN_FIELDS)
@@ -212,9 +218,19 @@ def graph_plan(
 
     _outcomes(c, read.goal_contract, read.tasks)
     _acceptance(c, read.tasks, legacy_serial=legacy_serial, inherited=inherited)
-    unknown_dependency = _graph(
-        c, read.tasks, roles, departments, raw_roles, read.raw_task_ids, legacy_serial=legacy_serial
-    )
+    unknown_dependency = _graph(c, read.tasks, roles, raw_roles, read.raw_task_ids, legacy_serial=legacy_serial)
+    if require_leads and c.clean("roles", "departments") and c.clean("compatibility"):
+        exempt = legacy_exempt_task_ids(read.tasks, legacy_serial=legacy_serial, inherited=inherited)
+        if inherited is not None:
+            # A task the change leaves as it was keeps what it had: a VERIFIED
+            # contract is immutable, so asking it for a lead would make every
+            # change of a pre-R30 plan impossible. Its lead is required where
+            # it is needed - the requester (``state_issues``) and the gate.
+            exempt |= {task.id for task in read.tasks if inherited.task_map.get(task.id) == task}
+        for message in validate_department_leads(
+            read.tasks, roles, departments, exempt=exempt, report_unknown=False
+        ):
+            c.add("leads", "plan.tasks", message)
     if c.clean(*PLAN_STAGES):
         read.plan = Plan(
             goal=read.goal,
@@ -359,18 +375,7 @@ def acceptance_issues(
     """
 
     tasks = tuple(tasks)
-    if not legacy_serial:
-        exempt: frozenset[str] = frozenset()
-    elif inherited is None:
-        exempt = frozenset(task.id for task in tasks if _is_legacy_verification(task.verification))
-    else:
-        def contract(task: Task) -> tuple:
-            return (task.objective, tuple(task.definition_of_done), task.execution_mode, task.verification)
-
-        before = {task.id: contract(task) for task in inherited.tasks}
-        exempt = frozenset(
-            task.id for task in tasks if task.id in before and before[task.id] == contract(task)
-        )
+    exempt = legacy_exempt_task_ids(tasks, legacy_serial=legacy_serial, inherited=inherited)
     found: list[tuple[str, str]] = []
     for task in tasks:
         if task.id in exempt:
@@ -397,6 +402,29 @@ def acceptance_issues(
     return found
 
 
+def legacy_exempt_task_ids(
+    tasks: Iterable[Task], *, legacy_serial: bool, inherited: Plan | None = None
+) -> frozenset[str]:
+    """The migrated v0.8 tasks whose acceptance contract is untouched (R8/R29).
+
+    On a plan change only a task whose objective, DoD, execution mode and
+    verification are unchanged keeps the exception: new work under an old
+    number is the same self-acceptance. Its new tasks are canonical.
+    """
+
+    tasks = tuple(tasks)
+    if not legacy_serial:
+        return frozenset()
+    if inherited is None:
+        return frozenset(task.id for task in tasks if _is_legacy_verification(task.verification))
+
+    def contract(task: Task) -> tuple:
+        return (task.objective, tuple(task.definition_of_done), task.execution_mode, task.verification)
+
+    before = {task.id: contract(task) for task in inherited.tasks}
+    return frozenset(task.id for task in tasks if task.id in before and before[task.id] == contract(task))
+
+
 def _acceptance(c: Any, tasks: tuple[Task, ...], *, legacy_serial: bool, inherited: Plan | None) -> None:
     if not c.clean("compatibility"):
         return
@@ -412,7 +440,6 @@ def _graph(
     c: Any,
     tasks: tuple[Task, ...],
     roles: list[Any],
-    departments: tuple,
     raw_roles: Any,
     raw_task_ids: frozenset[str],
     *,
@@ -422,7 +449,6 @@ def _graph(
 
     role_ids = _raw_ids(raw_roles)
     role_map = {role.id: role for role in roles if role is not FAILED}
-    departments_ready = c.clean("roles", "departments")
     unknown_dependency = False
     for task in tasks:
         path = f"task {task.id}"
@@ -438,9 +464,6 @@ def _graph(
         elif verifier and not legacy_serial and verifier in role_map and _is_legacy_role(role_map[verifier]):
             c.add("graph", f"{path}.verification.verifier_role",
                   f"task {task.id} verifier requires a concrete RoleProfile, not generic legacy-worker")
-        binding = c.check("graph", f"{path}.resources", _binding, task)
-        if binding not in (None, FAILED) and departments_ready:
-            c.check("graph", f"{path}.resources", _department, task, departments, roles)
         for dependency in task.depends_on:
             if dependency == task.id:
                 c.add("graph", f"{path}.depends_on", f"task {task.id} cannot depend on itself")
@@ -454,29 +477,6 @@ def _graph(
             c.add("graph", f"{path}.context.dependency_outputs",
                   f"task {task.id} context.dependency_outputs must be direct dependencies; invalid={invalid}")
     return unknown_dependency
-
-
-def _binding(task: Task) -> Any:
-    try:
-        return task_department_binding(task)
-    except ValueError as exc:
-        raise ValueError(f"task {task.id}: {exc}") from exc
-
-
-def _department(task: Task, departments: tuple, roles: list[Any]) -> None:
-    try:
-        department = resolve_task_department(
-            departments, task, role_names={role.id: role.name for role in roles}
-        )
-    except ValueError as exc:
-        raise ValueError(f"task {task.id}: {exc}") from exc
-    if department is None:
-        raise ValueError(f"task {task.id}: department binding disappeared")
-    if not task.context.dependency_outputs:
-        raise ValueError(
-            f"task {task.id} department acceptance requires a selected "
-            "dependency output carrying the pinned rubric reference"
-        )
 
 
 def _validate_cycles(tasks: tuple[Task, ...]) -> None:
@@ -511,7 +511,7 @@ def validate_graph(plan: Plan) -> None:
     for message in department_contract_issues(plan.departments, role_ids=plan.role_map):
         c.add("departments", "plan.departments", message)
     unknown = _graph(
-        c, plan.tasks, list(plan.roles), plan.departments,
+        c, plan.tasks, list(plan.roles),
         [{"id": role.id} for role in plan.roles], frozenset(plan.task_map),
         legacy_serial=plan.legacy_serial,
     )
@@ -592,6 +592,19 @@ def state_issues(
                 f"plan changes cannot remove tasks with durable history: {removed}"))
         if requester_task_id and requester_task_id not in read.raw_task_ids:
             found.append(("plan.tasks", "plan change requester must remain in the graph"))
+    change = next((item for item in getattr(state, "plan_changes", None) or ()
+                   if item.get("id") == getattr(state, "active_plan_change_id", None)), {})
+    if change.get("requires_lead") and read.plan is not FAILED and requester_task_id in read.plan.task_map:
+        # R30: a change the on-call asked for because the requester had no
+        # lead (department_gate) leaves it with one. Only then: a migrated
+        # v0.8 task asking for a resource keeps its untouched contract.
+        from .department_runtime import derive_task_department
+
+        try:
+            derive_task_department(read.plan, read.plan.task_map[requester_task_id])
+        except ValueError as exc:
+            found.append((f"task {requester_task_id}",
+                f"R30: requester {requester_task_id} has no department lead in the new graph: {exc}"))
     final = {TaskState.VERIFIED.value: "verified", TaskState.CANCELLED.value: "cancelled"}
     states = getattr(state, "task_states", None) or {}
     for task in read.tasks:

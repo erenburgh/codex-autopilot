@@ -86,7 +86,7 @@ Every worker title is deterministic, human-readable, and capped at 96
 characters. The exact forms are:
 
 - `<role> · Implement T44 · <task title>`
-- `<verifier role> · Verify T44 · <task title>`
+- `<lead role> | Verify T44 | <task title>` (R30: the verifier is its department's lead)
 - `<role> · Revise T44-R1 · <task title>`
 - `Plan · <goal summary>`
 - `Replan PC7 · <change summary>`

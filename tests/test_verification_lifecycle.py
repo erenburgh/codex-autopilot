@@ -13,7 +13,7 @@ from codex_autopilot.appserver import TurnResult
 from _plan_contract import initialize_verified_project as initialize_project
 from codex_autopilot.config import DESKTOP_OWNED_SURFACE, load_config
 from _handoff import bump_task_checkpoint
-from _plan_contract import TEST_OUTCOME_ID, canonicalize_plan, canonical_verification
+from _plan_contract import TEST_OUTCOME_ID, attested_verdict, canonicalize_plan, canonical_verification
 from _appserver_fakes import activate_via_app_server
 from _relay import reserve_ready_frontier  # R21: no dependency on the environment
 from codex_autopilot.lifecycle import (
@@ -286,7 +286,7 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertEqual(verifier_one.kind, "verifier")
         self.assertEqual(
             verifier_one.title,
-            "Independent Reviewer Verifier | A | Verify Task A",
+            "Independent Reviewer | Verify A | Task A",
         )
         self.assertIn(implementation_evidence, verifier_one.prompt)
         self.assertNotIn("FALSE-SUCCESS-SELF-ASSESSMENT", verifier_one.prompt)
@@ -319,10 +319,9 @@ class VerificationLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id="verifier-thread-1",
             turn_id="verifier-turn-1",
-            final_message=(
-                "PRIVATE VERIFIER TRANSCRIPT MUST NOT PROPAGATE\n"
-                + VERIFICATION_PREFIX
-                + json.dumps(revise_payload, separators=(",", ":"))
+            final_message=attested_verdict(
+                self.cfg, "A", "REVISE", revise_payload["issues"],
+                prefix="PRIVATE VERIFIER TRANSCRIPT MUST NOT PROPAGATE\n",
             ),
         )
         revision = second.descriptors[0]
@@ -361,7 +360,7 @@ class VerificationLifecycleTests(unittest.TestCase):
         self.assertEqual(verifier_two.kind, "verifier")
         self.assertEqual(
             verifier_two.title,
-            "Independent Reviewer Verifier | A | Verify Task A",
+            "Independent Reviewer | Verify A | Task A",
         )
         self.assertIn(revision_evidence, verifier_two.prompt)
         self.assertNotEqual(verifier_one.reservation_token, verifier_two.reservation_token)
@@ -372,11 +371,7 @@ class VerificationLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id="verifier-thread-2",
             turn_id="verifier-turn-2",
-            final_message=(
-                "All criteria reproduced.\n"
-                + VERIFICATION_PREFIX
-                + '{"verdict":"PASS","issues":[]}'
-            ),
+            final_message=attested_verdict(self.cfg, "A", prefix="All criteria reproduced.\n"),
         )
         self.assertEqual([item.task_id for item in fourth.descriptors], ["B"])
         recorded_verdicts = self.memory.list_verification_results(
@@ -508,7 +503,7 @@ class VerificationLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id="verifier-thread",
             turn_id="verifier-turn",
-            final_message='AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}',
+            final_message=attested_verdict(self.cfg, "A"),
         )
         self.assertEqual(self.store.load().task_states["A"], TaskState.VERIFIED.value)
 
@@ -751,11 +746,9 @@ class VerificationLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id=f"verifier-thread-{round_index}",
             turn_id=f"verifier-turn-{round_index}",
-            final_message=(
-                VERIFICATION_PREFIX
-                + '{"verdict":"REVISE","issues":['
-                '{"code":"I-1","summary":"incorrect","details":"correct it","dod_refs":[1]}]}'
-            ),
+            final_message=attested_verdict(self.cfg, "A", "REVISE", [
+                {"code": "I-1", "summary": "incorrect", "details": "correct it", "dod_refs": [1]}
+            ]),
         )
 
     def test_exhausted_revision_budget_rehires_instead_of_stalling(self) -> None:

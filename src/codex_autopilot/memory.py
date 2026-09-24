@@ -49,6 +49,8 @@ PREFIXES = {
     "conflict": "CONFLICT",
     "verification": "VERIFY",
 }
+# The prefix of every department's rubric scope (department_acceptance.rubric_scope).
+RESERVED_RUBRIC_SCOPE = "department-acceptance-rubric:"
 MAX_STATEMENT_CHARS = 8_000
 MAX_FIELD_CHARS = 16_000
 MAX_PAGE_SIZE = 20
@@ -822,10 +824,20 @@ class ProjectMemory:
         supersedes_id: str | None = None,
         provider: str | None = None,
         provider_thread_id: str | None = None,
+        reserved_scope: bool = False,
     ) -> dict[str, Any]:
         self.initialize()
         if category not in CATEGORIES:
             raise MemoryValidationError(f"unsupported category: {category}")
+        # R30: a department's rubric scope has one writer (department_acceptance,
+        # under its lock). Any record of a model there - a verified fact, an
+        # observation - used to be accepted and became the standard its own
+        # work was judged by, or made the history ambiguous for good.
+        if not reserved_scope and str(scope or "").strip().startswith(RESERVED_RUBRIC_SCOPE):
+            raise MemoryValidationError(
+                f"scope {scope!r} is reserved for department rubrics; a new version is "
+                "proposed with memory_store_department_rubric"
+            )
         statement = self._required(statement, "statement", MAX_STATEMENT_CHARS)
         if origin not in ORIGINS:
             raise MemoryValidationError(f"unsupported origin: {origin}")
@@ -873,6 +885,7 @@ class ProjectMemory:
         contradicts: Sequence[str] = (),
         provider: str | None = None,
         provider_thread_id: str | None = None,
+        reserved_scope: bool = False,
     ) -> dict[str, Any]:
         if not evidence_ids:
             raise MemoryValidationError("NO EVIDENCE -> NO TRUTH: verified facts require evidence_ids")
@@ -897,6 +910,7 @@ class ProjectMemory:
             category="truth", statement=statement, origin="project", status="verified",
             created_by=created_by, scope=scope, verification_method=verification_method,
             evidence_ids=evidence_ids, provider=provider, provider_thread_id=provider_thread_id,
+            reserved_scope=reserved_scope,
         )
         conflict_ids = [self.open_conflict(existing_record_id=item, incoming_record_id=fact["id"], statement=f"New verified fact {fact['id']} conflicts with {item}.", created_by=created_by)["id"] for item in contradicts]
         fact["conflicts_created"] = conflict_ids

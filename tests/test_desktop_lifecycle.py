@@ -31,7 +31,7 @@ from codex_autopilot.control import (
 )
 from codex_autopilot.hook_trust import HookTrustApprovalRequired
 from _handoff import bump_task_checkpoint
-from _plan_contract import TEST_OUTCOME_ID, canonicalize_plan, canonical_verification
+from _plan_contract import TEST_LEAD_ROLE, TEST_OUTCOME_ID, attested_verdict, canonicalize_plan, canonical_verification
 from codex_autopilot.lifecycle import task_checkpoint_path
 from _appserver_fakes import activate_via_app_server
 from _relay import reserve_ready_frontier  # R21: no dependency on the environment
@@ -189,6 +189,38 @@ def seed_migrated_project(root: Path, milestone_ids: tuple[str, ...]) -> None:
             }
         ),
         encoding="utf-8",
+    )
+
+
+def name_the_leads_by_plan_change(root: Path) -> None:
+    """R30: a migrated v0.8 run names its department leads by a plan change.
+
+    The v0.8 format has no verification field, so a migrated task cannot
+    name a lead; its verifier used to be the worker's own profession
+    (``legacy-worker``). Now the verifier's reservation stops such a task for
+    the on-call, whose remedy is a canonical plan change naming the lead.
+    These tests are about what happens after that, so they take the change
+    through the runtime's own commit, as the replanner's PASS would.
+    """
+
+    from codex_autopilot.plan import load_plan, plan_to_dict, validate_plan_change
+    from codex_autopilot.resilience import commit_plan_change
+
+    cfg = load_config(root)
+    current = load_plan(cfg.state_dir, cfg.profile)
+    raw = plan_to_dict(current)
+    raw["graph_version"] = current.graph_version + 1
+    raw["roles"].append(dict(TEST_LEAD_ROLE))
+    for item in raw["tasks"]:
+        item["verification"] = canonical_verification()
+        item["acceptance_class"] = "mixed"
+    candidate = validate_plan_change(current, raw, cfg.profile)
+    store = StateStore(cfg.state_dir)
+    state = store.load()
+    state.graph_version = candidate.graph_version
+    commit_plan_change(
+        cfg.state_dir, profile=cfg.profile, current=current, candidate=candidate,
+        state=state, request_id="PC-LEADS",
     )
 
 
@@ -628,6 +660,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             skill_path=skill,
             desktop_project_id="desktop-project",
         )
+        name_the_leads_by_plan_change(root)
         cfg = load_config(root)
         store = StateStore(root / ".codex-autopilot")
         memory = ProjectMemory(root)
@@ -673,9 +706,7 @@ class DesktopLifecycleTests(unittest.TestCase):
                 cfg,
                 thread_id=verifier_thread,
                 turn_id=f"turn-{verifier_thread}",
-                final_message=(
-                    'AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}'
-                ),
+                final_message=attested_verdict(cfg, descriptor.task_id),
             )
 
         m6 = reserve_ready_frontier(
@@ -1544,7 +1575,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id="verifier-a",
             turn_id="verifier-turn-a",
-            final_message='AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}',
+            final_message=attested_verdict(self.cfg, "A"),
         )
         self.assertEqual(accepted_a.descriptors, ())
         self.assertEqual(self.store.load().task_states["C"], TaskState.WAITING.value)
@@ -1563,7 +1594,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id="verifier-b",
             turn_id="verifier-turn-b",
-            final_message='AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}',
+            final_message=attested_verdict(self.cfg, "B"),
         )
         self.assertEqual([item.task_id for item in accepted_b.descriptors], ["C"])
         state = self.store.load()
@@ -2104,7 +2135,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id="parallel-verifier",
             turn_id="parallel-verifier-turn",
-            final_message='AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}',
+            final_message=attested_verdict(self.cfg, "B"),
         )
         self.evidence_and_handoff("A")
         implementation_outcome = complete_desktop_worker(
@@ -2120,7 +2151,7 @@ class DesktopLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id="M7-verifier-thread",
             turn_id="M7-verifier-turn",
-            final_message='AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}',
+            final_message=attested_verdict(self.cfg, "A"),
         )
         self.assertEqual([item.task_id for item in outcome.descriptors], ["C"])
         state = self.store.load()

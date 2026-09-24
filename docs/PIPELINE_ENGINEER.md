@@ -197,7 +197,8 @@ returns only after a runtime patch on the ticket that changed the acceptance
 path, or through a plan change (R23: the cause must change). The acceptance
 path is an explicit list in `engineer_authority`: the modules
 `verification.py`, `acceptance.py`, `acceptance_floor.py`,
-`department_acceptance.py`, and the verifier's own parts of the prompt
+`department_acceptance.py`, `department_runtime.py`, `department_gate.py`,
+and the verifier's own parts of the prompt
 builders (`LADDER_RESET_DEFINITIONS`: whole verifier-only definitions, and in
 the shared builders only the body of an `if phase == "verification"` branch).
 What a patch changed is read from the staged pair of texts, compared as syntax
@@ -404,3 +405,21 @@ The deterministic regression coverage is in
 `tests/test_pipeline_engineer.py`, with transport CLI enforcement and Stop-hook
 behavior in `tests/test_desktop_lifecycle.py` and Studio boundaries in
 `tests/test_ai_studio.py`.
+
+## Department lead stops (R30)
+
+A verifier is reserved only with its department's lead and rubric
+(`department_gate.admit_verifier`, under the coordinator lock). When the
+task's profession names no lead, or its department's rubric history is
+ambiguous, that task alone stops (`department_lead`): it stays `IMPLEMENTED`,
+held by the ticket, and its neighbours go on. The ticket's diagnosis names the
+cause and its recommendation the remedy. No lead: `devops-request-plan-change`
+- the change is marked `requires_lead`, and the replanner's graph is refused
+until the requester's profession names one. A stray record in the rubric
+scope: `devops-supersede-rubric --record <id>` retires it (never the runtime's
+own version 1), audited in Project Memory, and the task returns. A follow-up
+whose prompt cannot be built stops the same way (`launch_refused`), with what
+its reservation took given back. A turn not started by the runtime still
+running in a finished lead's thread is a `lead_outlived` ticket that holds no
+task; a finished extra turn is only recorded (an R30 violation and a
+verification result), never a stop.

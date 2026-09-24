@@ -9,12 +9,11 @@ from typing import Any, Mapping, Sequence
 from .department_acceptance import (
     DepartmentAcceptanceError,
     RubricReference,
-    load_task_department_acceptance,
     omit_conflicting_rubric_guidance,
     redact_conflicting_rubric_identity,
     rubric_reference_from_raw,
-    task_department_binding,
 )
+from .department_runtime import load_task_department_acceptance
 from .language import is_russian
 from .memory import MemoryValidationError, ProjectMemory
 from .models import MODEL_IDS, MODEL_LABELS, logical_model
@@ -213,7 +212,7 @@ class AIStudioRuntime:
         installed_omitted = len(machine_skills) - len(shown)
         envelope = {
             # R17: the rules stand before the specification they judge.
-            "rules": rules_for_prompt(self.state_dir, task=task),
+            "rules": rules_for_prompt(self.state_dir, task=task, plan=self.plan, phase="screening", memory=self.memory),
             **(
                 {"goal_contract": self.plan.goal_contract.to_dict()}
                 if self.plan.goal_contract is not None
@@ -583,18 +582,8 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
         route = self.route(task_id, phase=phase)
         role = self.plan.role_map[route.role_id]
         context = self.select_context(task_id, task_states=task_states)
-        try:
-            department_binding = task_department_binding(task)
-        except DepartmentAcceptanceError as exc:
-            raise ContextBoundaryError(
-                f"department verifier cannot launch for task {task.id}: {exc}"
-            ) from exc
-        department_acceptance = None
-        if phase == "verification" and department_binding is not None:
-            department_acceptance = self._department_acceptance(
-                task,
-                context.dependency_outputs,
-            )
+        # R30: every acceptance is a lead's, by its department's rubric.
+        department_acceptance = self._department_acceptance(task) if phase == "verification" else None
         department_reference = self._department_reference(department_acceptance)
         definition_of_done = self._verifier_definition_of_done(
             task,
@@ -677,7 +666,7 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             # and is never truncated. If the context budget cannot hold the
             # rules plus a minimal specification, the task is not launched -
             # a context-planning defect, not a reason to drop the rules.
-            "rules": rules_for_prompt(self.state_dir, task=task),
+            "rules": rules_for_prompt(self.state_dir, task=task, plan=self.plan, phase=phase, memory=self.memory),
             **(
                 {"goal_contract": self.plan.goal_contract.to_dict()}
                 if self.plan.goal_contract is not None
@@ -865,19 +854,12 @@ PIPELINE_ENGINEER_STATUS: ESCALATE_TO_USER <CODE>"""
             )
         return prompt
 
-    def _department_acceptance(
-        self,
-        task: Task,
-        dependency_outputs: Sequence[Mapping[str, object]],
-    ) -> dict[str, Any]:
+    def _department_acceptance(self, task: Task) -> dict[str, Any]:
+        # Version 1 is written here when the department has none: this runs
+        # inside the reservation's coordinator transaction, and rubric writes
+        # are serialized by their own lock besides (department_acceptance).
         try:
-            loaded = load_task_department_acceptance(
-                self.memory,
-                departments=self.plan.departments,
-                task=task,
-                role_names={item.id: item.name for item in self.plan.roles},
-                dependency_outputs=dependency_outputs,
-            )
+            loaded = load_task_department_acceptance(self.memory, self.plan, task, ensure=True)
         except DepartmentAcceptanceError as exc:
             raise ContextBoundaryError(
                 f"department verifier cannot launch for task {task.id}: {exc}"

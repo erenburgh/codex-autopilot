@@ -33,6 +33,7 @@ from _appserver_fakes import FakeAppServerCreateClient, activate_via_app_server
 from _gates import patch_hook_trust_gates
 from _handoff import bump_task_checkpoint
 from _plan_contract import (
+    attested_verdict,
     TEST_OUTCOME_ID,
     canonical_verification,
     canonicalize_plan,
@@ -197,7 +198,7 @@ class RearmRelayOwnerCommandTests(unittest.TestCase):
             self.cfg,
             thread_id="verifier-thread",
             turn_id="verifier-turn",
-            final_message='AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}',
+            final_message=attested_verdict(self.cfg, "A"),
         )
         self.reservation = accepted.descriptors[0]
         self.assertEqual(self.reservation.task_id, DESTINATION)

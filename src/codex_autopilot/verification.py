@@ -9,10 +9,9 @@ from typing import Any, Mapping, Sequence
 from .department_acceptance import (
     DepartmentAcceptanceError,
     RubricReference,
-    resolve_task_department,
     rubric_reference_from_raw,
-    task_department_binding,
 )
+from .department_runtime import derive_task_department
 from .models import MODEL_IDS, MODEL_LABELS, logical_model
 from .plan import Plan, Task, VerificationCheck
 
@@ -209,27 +208,21 @@ def deterministic_issues(
 
 
 def verifier_route(plan: Plan, task: Task) -> VerifierRoute:
-    """Route capability separately while deriving the judge from department."""
+    """Route capability separately while deriving the judge from department.
+
+    The judge is the lead of the department of the task's profession (R30).
+    It was ``verifier_role or task.role`` for a task without the 0.13
+    department resources - every task of every real plan - so a planner that
+    left verifier_role out had the worker's own profession accept its work.
+    There is no fallback now: no lead, no verifier (``department_gate``
+    stops that one task for the on-call).
+    """
 
     policy = task.verification
     try:
-        department_binding = task_department_binding(task)
+        role_id = derive_task_department(plan, task).lead_role_id
     except DepartmentAcceptanceError as exc:
         raise VerificationProtocolError(str(exc)) from exc
-    if department_binding is not None:
-        try:
-            department = resolve_task_department(
-                plan.departments,
-                task,
-                role_names={item.id: item.name for item in plan.roles},
-            )
-        except DepartmentAcceptanceError as exc:
-            raise VerificationProtocolError(str(exc)) from exc
-        if department is None:
-            raise VerificationProtocolError("department binding disappeared")
-        role_id = department.lead_role_id
-    else:
-        role_id = policy.verifier_role or task.role
     execution_mode = policy.execution_mode or task.execution_mode
     execution_reason = (
         policy.execution_mode_reason

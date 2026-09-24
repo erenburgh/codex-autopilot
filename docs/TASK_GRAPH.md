@@ -118,8 +118,11 @@ result without a second LLM; `independent` always uses a fresh verifier; and
 coverage. `required` defaults to `true`; when explicitly false, an implemented
 result may satisfy the dependency gate.
 `max_revision_attempts` defaults to two.
-Optional verifier routing fields are `verifier_role`, `execution_mode` plus its
-required `execution_mode_reason`, and Adaptive-only `reasoning`.
+`verifier_role` is required (R30): it names the Lead Role of the department of
+the task's profession - every task of one `role` names the same lead, never its
+own role - and that lead is the task's verifier (see `VERIFICATION_LIFECYCLE.md`).
+Optional verifier routing fields are `execution_mode` plus its required
+`execution_mode_reason`, and Adaptive-only `reasoning`.
 
 `deterministic_checks` is an array of unique check IDs. For a deterministic
 policy, an exhaustive all-pass result may produce `VERIFIED`; a failure creates

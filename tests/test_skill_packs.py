@@ -13,6 +13,7 @@ from _appserver_fakes import activate_via_app_server
 from _gates import patch_hook_trust_gates
 from _handoff import bump_task_checkpoint
 from _plan_contract import (
+    attested_verdict,
     TEST_OUTCOME_ID,
     canonicalize_plan,
     canonical_verification,
@@ -282,7 +283,7 @@ def run_canonical_attestations(
             cfg,
             thread_id=f"verifier-{task_id}",
             turn_id=f"verifier-turn-{task_id}",
-            final_message='AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}',
+            final_message=attested_verdict(cfg, task_id),
         )
         special_task_id = (
             f"SKILL-{kind.upper()}:{parsed.id}@{parsed.version}:"
@@ -1216,7 +1217,7 @@ class SkillPackCanonicalLifecycleTests(unittest.TestCase):
                 self.cfg,
                 thread_id=f"verifier-{task_id}",
                 turn_id=f"verifier-turn-{task_id}",
-                final_message='AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}',
+                final_message=attested_verdict(self.cfg, task_id),
             )
             special_task_id = (
                 f"SKILL-{kind.upper()}:{parsed.id}@{parsed.version}:"
@@ -1351,12 +1352,10 @@ class SkillPackCanonicalLifecycleTests(unittest.TestCase):
             self.cfg,
             thread_id="verifier-rejected",
             turn_id="verifier-rejected-turn",
-            final_message=(
-                'AUTOPILOT_VERIFICATION: {"verdict":"REVISE","issues":['
-                '{"code":"BAD-SOURCE","summary":"Source is unproven",'
-                '"details":"The supplied source evidence does not establish origin.",'
-                '"dod_refs":[1]}]}'
-            ),
+            final_message=attested_verdict(self.cfg, "A1", "REVISE", [
+                {"code": "BAD-SOURCE", "summary": "Source is unproven",
+                 "details": "The supplied source evidence does not establish origin.",
+                 "dod_refs": [1]}]),
         )
         task_id = (
             f"SKILL-SOURCE:{parsed.id}@{parsed.version}:{parsed.revision_sha256}"

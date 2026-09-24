@@ -35,6 +35,10 @@ SANCTIONED_HELPERS = {"_relay.py"}
 DECLARED_PRODUCTION_READS = {
     ("cli.py", 'os.environ.get("CODEX_THREAD_ID")'),
     ("lifecycle_reservations.py", 'os.environ.get("CODEX_THREAD_ID")'),
+    # R30: a rubric version is proposed only by the department's lead or the
+    # on-call, known by its thread; the MCP door reads it as the CLI does
+    # (and refuses when the server was started without it).
+    ("memory_mcp.py", 'os.environ.get("CODEX_THREAD_ID")'),
 }
 
 # Only the live session's identity. The product's own variables

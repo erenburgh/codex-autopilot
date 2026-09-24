@@ -43,13 +43,60 @@ Command and artifact results are recorded as task-linked Project Memory
 evidence. A failed check becomes a structured issue with code
 `CHECK-<check-id>`, expected state, actual state, and bounded output.
 
+## Department lead (R30)
+
+Every acceptance is a department lead's. The department is the worker's
+profession: every task of one `role` names the same lead in
+`verification.verifier_role`, never its own role, and that lead is the
+verifier of every task of the profession (`department_runtime`). A submitted
+plan or plan change that leaves a lead out, gives one profession two leads or
+makes a profession its own lead is refused, every such task in one list; a
+task a change leaves untouched keeps what it had. A saved plan is never
+refused on load: a task with no lead is stopped when its verifier is reserved,
+alone, through the one stop door (`department_gate`, stop kind
+`department_lead`), and the on-call has the plan changed to name the lead.
+Nothing of the department is written into `plan.json`: the plan digest bound
+to PLAN_VERIFIED does not move (checked on the live beyondness plan). A
+declared `departments` entry only names a department; its `rubric` field, if a
+0.13 plan carried one, is kept verbatim and is never the pin.
+
+The rubric belongs to the department and lives in Project Memory, in a scope
+no model may write (`department-acceptance-rubric:<id>`). Version 1 is the
+runtime's, derived from the lead's `verification_expectations` (or
+responsibilities) and a fixed core - fidelity to the request, every DoD item
+closed by evidence, independent re-checking - with no text of any one run's
+request. It is written before the first task (bootstrap), after a committed
+plan change, and under the coordinator lock when a verifier is reserved - the
+last lands it on a run already under way. A changed lead profile does not
+rewrite it: the change is recorded once and shown to the lead. A later
+version is proposed only by the department's lead or the on-call, from its own
+thread (`codex-autopilot department-rubric-propose`), with outcome evidence -
+evidence a recorded acceptance of the department rested on. A stray record in
+the scope makes the history ambiguous; the on-call supersedes it
+(`devops-supersede-rubric`) and returns the task.
+
+The lead's thread is titled `<Lead Role> | Verify <Task ID> | <Short Task
+Title>`; its prompt carries `department_acceptance` - the department, the
+rubric's exact reference and content - and its verdict attests the reference
+exactly (a third field, `rubric`). A verdict without it, or attesting another
+rubric, is a recorded refusal and a fresh lead, never an incident. A refusal
+that is not the lead's mistake - the rubric advanced while it judged, or it was
+launched by a runtime from before R30 - is recorded and does not count toward
+the three that stop a task. Every `runtime.second_lead_every`-th acceptance of
+a department (default 5) is judged again by a second fresh lead on the same
+work and rubric; the first verdict is applied, the second is recorded beside it
+with the department's disagreement rate (`department_audit`). A lead thread
+that received a turn after its acceptance is found by thread/read in the
+wake-up and the periodic sweep and recorded as an R30 defect; only a foreign
+turn still running there is a ticket, and it holds no task.
+
 ## Independent verifier boundary
 
 The verifier is a newly reserved Desktop task with a new reservation token,
 operation ID, worker sequence, and thread. Its selective prompt contains only:
 
-- the task ID, title, objective, numbered Definition of Done, and selected
-  verifier role;
+- the task ID, title, objective, numbered Definition of Done, and the lead
+  of its department with the department's rubric (`department_acceptance`);
 - the immutable original user request and run goal in a dedicated acceptance
   gate;
 - the verifier execution capability and its declared reason;
@@ -68,13 +115,13 @@ cannot define, weaken, or waive acceptance criteria.
 The final non-empty verifier line is one strict JSON protocol record:
 
 ```text
-AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[]}
+AUTOPILOT_VERIFICATION: {"verdict":"PASS","issues":[],"rubric":{"record_id":"FACT-001","version":1,"sha256":"<64 hex>"}}
 ```
 
 or:
 
 ```text
-AUTOPILOT_VERIFICATION: {"verdict":"REVISE","issues":[{"code":"ISSUE-1","summary":"short issue","details":"specific evidence and correction","dod_refs":[1]}]}
+AUTOPILOT_VERIFICATION: {"verdict":"REVISE","issues":[{"code":"ISSUE-1","summary":"short issue","details":"specific evidence and correction","dod_refs":[1]}],"rubric":{"record_id":"FACT-001","version":1,"sha256":"<64 hex>"}}
 ```
 
 The parser rejects duplicate or non-final markers, unknown keys, malformed

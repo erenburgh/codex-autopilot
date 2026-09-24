@@ -98,6 +98,9 @@ REPAIR_ACTIONS = (
     # unblock could return it, and nothing could ask the replanner.
     "request_plan_change",
     "return_stopped_task",
+    # R30: a stray record in a department's rubric scope, retired with an
+    # audit trail (department_gate.supersede_rubric_record).
+    "supersede_department_rubric",
 )
 
 # The whole vocabulary: what the engineer may report a repair with.
@@ -153,6 +156,16 @@ STOP_MEANS: dict[str, tuple[str, ...]] = {
     "worker_blocked:ARCHITECTURE_DECISION": _HERS,
     "verification_protocol": _RETURN,
     "verifier_routing": _RETURN,
+    # R30: no lead for the task's profession - the replanner names one; a
+    # stray record in the rubric scope - the on-call supersedes it; a runtime
+    # defect - repaired. Then the task returns.
+    "department_lead": _RETURN + ("request_plan_change", "supersede_department_rubric"),
+    # R30: a turn not started by the runtime runs in a finished lead's thread.
+    # The runtime never ends a turn; a runtime defect that started it is
+    # repaired, anything else is diagnosed and handed up.
+    "lead_outlived": ("repair_runtime_code",),
+    # A follow-up whose prompt could not be built (R17 budget, skill stack).
+    "launch_refused": DEFAULT_STOP_MEANS,
     # No successor is a defect of the reservation itself, not of a task.
     "no_successor": ("repair_runtime_code",),
     "plan_change_rejected": _REPLAN,
@@ -197,6 +210,11 @@ LADDER_RESET_MODULES = frozenset(
         "acceptance.py",
         "acceptance_floor.py",
         "department_acceptance.py",
+        # R30: the lead and its rubric are derived here, and the verifier's
+        # reservation asks for both here (they left department_acceptance
+        # and ai_studio._department_acceptance with the derivation).
+        "department_runtime.py",
+        "department_gate.py",
     }
 )
 # The verifier's prompt shares its modules with the worker's and the
@@ -238,7 +256,12 @@ LADDER_RESET_DEFINITIONS: tuple[tuple[str, str, str | None], ...] = (
 # RECOVERY_EXHAUSTED, with the wrong class. Arming a run does not authorize
 # an answer on her behalf, a mutation of her saved projects, her start or
 # stop of a run, a skill revocation or an uninstall.
-RUN_AUTHORIZATION_VERSION = 2
+#
+# Version 3 adds the R30 doors: the on-call's supersession of a stray rubric
+# record (guarded by its ticket and thread, like the rest of its actions) and
+# a rubric proposal, guarded by the proposer's thread (the department's lead
+# or the on-call, never a worker of its tasks).
+RUN_AUTHORIZATION_VERSION = 3
 RUN_AUTHORIZED_CLI_SUBCOMMANDS: tuple[str, ...] = (
     # Read-only views of the run and the machine.
     "status",
@@ -260,6 +283,8 @@ RUN_AUTHORIZED_CLI_SUBCOMMANDS: tuple[str, ...] = (
     "devops-resolve-incident",
     "devops-return-task",
     "devops-request-plan-change",
+    "devops-supersede-rubric",
+    "department-rubric-propose",
 )
 RUN_AUTHORIZED_OPERATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (

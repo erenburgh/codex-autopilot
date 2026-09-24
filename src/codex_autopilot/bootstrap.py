@@ -15,6 +15,7 @@ from .config import (
     durable_skill_path,
 )
 from .language import DEFAULT_LANGUAGE, is_russian, normalize_language
+from .department_runtime import ensure_all_department_rubrics
 from .memory import ProjectMemory
 from .migration import detect_v07, migrate_v07
 from .plan import Plan, save_plan, validate_migrating_plan
@@ -129,6 +130,10 @@ def initialize_project(
     )
     memory = ProjectMemory(root)
     memory.initialize()
+    # R30: every department's version-1 rubric before the first task, while
+    # the bootstrap is the only writer. A failure is not fatal here: the
+    # verifier's reservation writes it, or stops that one task for the on-call.
+    ensure_all_department_rubrics(memory, plan)
     finalized_plan_verification = None
     if verification_receipt is not None:
         finalized, _evidence_id, _verification_id = record_plan_verification(

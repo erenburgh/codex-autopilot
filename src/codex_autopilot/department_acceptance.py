@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import fcntl
 import hashlib
 import json
+import os
 import re
-from typing import Any, Iterable, Mapping, Sequence
+import threading
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .memory import MemoryValidationError, ProjectMemory
 
@@ -32,12 +36,27 @@ class DepartmentAcceptanceError(ValueError):
     """A department, lead, rubric, or verifier attestation failed closed."""
 
 
-# The two nested field sets a replanner has to produce exactly, named once so
-# the prompt that states them and the parser that enforces them cannot drift.
-# They were only enforced, never stated, and a real run lost its whole replan
-# budget writing `lead_role` for `lead_role_id`.
+# The nested field sets a plan may carry, named once so the prompt that
+# states them and the parser that enforces them cannot drift. They were only
+# enforced, never stated, and a real run lost its whole replan budget writing
+# `lead_role` for `lead_role_id`.
+#
+# A department is derived by the runtime from the plan's leads
+# (``department_runtime``); a planner declares one only to name it. `rubric`
+# is accepted on an entry and kept verbatim - a 0.13 plan carried a pinned
+# tuple there, and dropping it on load would change plan_to_dict, the plan
+# digest, and with it the PLAN_VERIFIED receipt of a running run - but it is
+# never the source of the pin: the department's current version in Project
+# Memory is.
 RUBRIC_REFERENCE_FIELDS = ("record_id", "version", "sha256")
-DEPARTMENT_FIELDS = ("id", "name", "lead_role_id", "rubric")
+DEPARTMENT_REQUIRED_FIELDS = ("id", "name", "lead_role_id")
+DEPARTMENT_FIELDS = (*DEPARTMENT_REQUIRED_FIELDS, "rubric")
+# The runtime's own writer of version 1. Project Memory refuses this tool
+# name from a model (``memory_mcp``), so evidence carrying it is the
+# runtime's, and it is never outcome evidence for a later version.
+RUNTIME_RUBRIC_TOOL = "codex-autopilot/department-rubric"
+RUNTIME_RUBRIC_AUTHOR = "codex-autopilot-runtime"
+RESERVED_TOOL_PREFIX = "codex-autopilot/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,14 +104,14 @@ class DepartmentContract:
     id: str
     name: str
     lead_role_id: str
-    rubric: RubricReference
+    rubric: RubricReference | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
             "lead_role_id": self.lead_role_id,
-            "rubric": self.rubric.to_dict(),
+            **({"rubric": self.rubric.to_dict()} if self.rubric is not None else {}),
         }
 
 
@@ -130,38 +149,35 @@ class TaskDepartmentBinding:
 
 
 @dataclass(frozen=True, slots=True)
-class DependencyRubricReference:
-    dependency_task_id: str
-    output_id: str
-    evidence_id: str
-    department_id: str
-    scope: str
-    reference: RubricReference
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "dependency_task_id": self.dependency_task_id,
-            "output_id": self.output_id,
-            "evidence_id": self.evidence_id,
-            "department_id": self.department_id,
-            "scope": self.scope,
-            "reference": self.reference.to_dict(),
-        }
-
-
-@dataclass(frozen=True, slots=True)
 class LoadedDepartmentAcceptance:
-    binding: TaskDepartmentBinding
+    """The department a task belongs to and the rubric its lead judges by.
+
+    It used to carry a ``source``: the rubric tuple read from the evidence of
+    a VERIFIED dependency. That made the first task of a department (M01, no
+    dependencies) impossible to bind at all; the pin is now the department's
+    current version in Project Memory (``department_runtime``).
+    """
+
     department: DepartmentContract
     rubric: LoadedDepartmentRubric
-    source: DependencyRubricReference
+    lead_profile_changed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "binding": self.binding.to_dict(),
             "department": self.department.to_dict(),
             "rubric": self.rubric.to_dict(),
-            "source": self.source.to_dict(),
+            **(
+                {
+                    "lead_profile_changed_since_v1": True,
+                    "note": (
+                        "The Lead Role's profile changed after version 1 was written. "
+                        "The rubric is not rewritten from the new profile: a new version "
+                        "goes through outcome evidence (R30)."
+                    ),
+                }
+                if self.lead_profile_changed
+                else {}
+            ),
         }
 
 
@@ -180,12 +196,22 @@ def rubric_reference_from_raw(raw: object, label: str = "rubric") -> RubricRefer
 
 def department_contract_from_raw(raw: object, label: str) -> DepartmentContract:
     data = _mapping(raw, label)
-    _exact_keys(data, set(DEPARTMENT_FIELDS), label)
+    # `rubric` is optional and kept verbatim: see DEPARTMENT_FIELDS.
+    _exact_keys(
+        data,
+        set(DEPARTMENT_FIELDS),
+        label,
+        required=set(DEPARTMENT_REQUIRED_FIELDS),
+    )
     return DepartmentContract(
         id=_identifier(data.get("id"), f"{label}.id"),
         name=_required_text(data.get("name"), f"{label}.name", 256),
         lead_role_id=_identifier(data.get("lead_role_id"), f"{label}.lead_role_id"),
-        rubric=rubric_reference_from_raw(data.get("rubric"), f"{label}.rubric"),
+        rubric=(
+            rubric_reference_from_raw(data.get("rubric"), f"{label}.rubric")
+            if "rubric" in data
+            else None
+        ),
     )
 
 
@@ -201,6 +227,12 @@ def department_contract_issues(
     duplicate_ids = sorted({item for item in ids if ids.count(item) > 1})
     if duplicate_ids:
         found.append(f"department mapping is ambiguous; duplicate department ids: {duplicate_ids}")
+    leads = [item.lead_role_id for item in departments]
+    shared = sorted({item for item in leads if leads.count(item) > 1})
+    if shared:
+        # One lead, one department, one rubric (R30): two entries naming the
+        # same lead would give its tasks two rubrics.
+        found.append(f"department mapping is ambiguous; one Lead Role heads several departments: {shared}")
     known_roles = set(role_ids)
     for department in departments:
         if department.lead_role_id not in known_roles:
@@ -211,91 +243,16 @@ def department_contract_issues(
     return found
 
 
-def resolve_department(
-    departments: Sequence[DepartmentContract],
-    department_id: str | None,
-) -> DepartmentContract:
-    if not department_id:
-        raise DepartmentAcceptanceError(
-            "department acceptance requires an explicit department binding; "
-            "missing mappings are rejected"
-        )
-    matches = [item for item in departments if item.id == department_id]
-    if not matches:
-        raise DepartmentAcceptanceError(
-            f"task references unknown department {department_id!r}"
-        )
-    if len(matches) != 1:
-        raise DepartmentAcceptanceError(
-            f"department mapping for {department_id!r} is ambiguous"
-        )
-    return matches[0]
-
-
-def resolve_task_department(
-    departments: Sequence[DepartmentContract],
-    task: object,
-    *,
-    role_names: Mapping[str, str],
-) -> DepartmentDefinition | None:
-    """Resolve a task's Lead Role from its department, never from tags.
-
-    A plan with an explicit department registry must contain exactly one
-    matching entry.  Bootstrap plans created before the registry field existed
-    use the stable ``<department-id>-lead`` RoleProfile convention; that
-    convention is accepted only when the registry is empty and the resulting
-    role exists.  A task-level verifier_role may attest the same mapping but
-    cannot override it.
-    """
-
-    binding = task_department_binding(task)
-    if binding is None:
-        return None
-    declared_verifier = getattr(
-        getattr(task, "verification", None),
-        "verifier_role",
-        None,
-    )
-    if departments:
-        contract = resolve_department(departments, binding.department_id)
-        definition = DepartmentDefinition(
-            id=contract.id,
-            name=contract.name,
-            lead_role_id=contract.lead_role_id,
-        )
-    else:
-        lead_role_id = f"{binding.department_id}-lead"
-        role_name = role_names.get(lead_role_id)
-        if role_name is None:
-            raise DepartmentAcceptanceError(
-                f"department {binding.department_id!r} derives missing Lead Role "
-                f"{lead_role_id!r}"
-            )
-        definition = DepartmentDefinition(
-            id=binding.department_id,
-            name=_department_name(binding.department_id, role_name),
-            lead_role_id=lead_role_id,
-        )
-    if declared_verifier is not None and declared_verifier != definition.lead_role_id:
-        raise DepartmentAcceptanceError(
-            f"task verifier role {declared_verifier!r} conflicts with department "
-            f"{definition.id!r} Lead Role {definition.lead_role_id!r}"
-        )
-    if definition.lead_role_id not in role_names:
-        raise DepartmentAcceptanceError(
-            f"department {definition.id!r} references unknown Lead Role "
-            f"{definition.lead_role_id!r}"
-        )
-    return definition
-
-
 def task_department_binding(task: object) -> TaskDepartmentBinding | None:
-    """Resolve the task's R30 binding only from its logical resources.
+    """The 0.13 department claim a task may still carry in its resources.
 
-    Tags are deliberately not consulted: they are descriptive labels, not a
-    task-level authority contract.  The two resource claims form one binding
-    and therefore fail closed when only one is present or either claim has the
-    wrong kind, access mode, or target.
+    It was the only way into R30, and no planner ever wrote it: the rule was
+    in force for nobody. The department is now derived from the plan's leads
+    (``department_runtime.derive_task_department``); a binding that is
+    present is a consistency claim checked against that derivation, never a
+    second source. Tags are not consulted. The two resource claims form one
+    binding and fail closed when only one is present or either has the wrong
+    kind, access mode, or target.
     """
 
     resources = tuple(getattr(task, "resources", ()) or ())
@@ -351,157 +308,6 @@ def task_department_binding(task: object) -> TaskDepartmentBinding | None:
     )
 
 
-def load_task_department_acceptance(
-    memory: ProjectMemory,
-    *,
-    departments: Sequence[DepartmentContract],
-    task: object,
-    role_names: Mapping[str, str],
-    dependency_outputs: Sequence[Mapping[str, object]],
-) -> LoadedDepartmentAcceptance:
-    """Materialize the exact department contract from a VERIFIED dependency.
-
-    The plan-level department entry owns the stable department and Lead Role
-    mapping.  Its rubric field is not trusted for a task binding: the pinned
-    reference comes from the selected VERIFIED dependency output evidence so a
-    stale bootstrap tuple cannot silently become the acceptance standard.
-    """
-
-    binding = task_department_binding(task)
-    if binding is None:
-        raise DepartmentAcceptanceError(
-            "department acceptance requires task logical resources"
-        )
-    base = resolve_task_department(
-        departments,
-        task,
-        role_names=role_names,
-    )
-    if base is None:  # guarded by the binding check above
-        raise DepartmentAcceptanceError("department acceptance binding disappeared")
-    source = rubric_reference_from_dependency_outputs(
-        memory,
-        binding=binding,
-        dependency_outputs=dependency_outputs,
-    )
-    department = DepartmentContract(
-        id=base.id,
-        name=base.name,
-        lead_role_id=base.lead_role_id,
-        rubric=source.reference,
-    )
-    loaded = load_department_rubric(memory, department)
-    return LoadedDepartmentAcceptance(
-        binding=binding,
-        department=department,
-        rubric=loaded,
-        source=source,
-    )
-
-
-def rubric_reference_from_dependency_outputs(
-    memory: ProjectMemory,
-    *,
-    binding: TaskDepartmentBinding,
-    dependency_outputs: Sequence[Mapping[str, object]],
-) -> DependencyRubricReference:
-    candidates: list[DependencyRubricReference] = []
-    expected_output_id = f"{binding.department_id}-rubric-reference"
-    for output in dependency_outputs:
-        if str(output.get("output_id") or "") != expected_output_id:
-            continue
-        if str(output.get("dependency_state") or "") != "VERIFIED":
-            raise DepartmentAcceptanceError(
-                "department rubric reference requires a VERIFIED dependency output"
-            )
-        dependency_task_id = _required_text(
-            output.get("dependency_task_id"),
-            "dependency output task id",
-            128,
-        )
-        output_id = _required_text(
-            output.get("output_id"),
-            "dependency output id",
-            128,
-        )
-        evidence_ids = output.get("evidence_ids")
-        if not isinstance(evidence_ids, list):
-            raise DepartmentAcceptanceError(
-                f"dependency output {output_id!r} evidence_ids must be an array"
-            )
-        for raw_evidence_id in evidence_ids:
-            evidence_id = _required_text(
-                raw_evidence_id,
-                f"dependency output {output_id!r} evidence id",
-                128,
-            )
-            try:
-                evidence = memory.get_evidence(evidence_id)
-            except MemoryValidationError as exc:
-                raise DepartmentAcceptanceError(str(exc)) from exc
-            raw_tuple = _dependency_rubric_tuple(evidence)
-            if raw_tuple is None:
-                continue
-            if evidence.get("exit_code") != 0:
-                raise DepartmentAcceptanceError(
-                    f"rubric reference evidence {evidence_id!r} did not pass"
-                )
-            department_id = _identifier(
-                raw_tuple.get("department_id"),
-                f"rubric reference evidence {evidence_id}.department_id",
-            )
-            scope = _required_text(
-                raw_tuple.get("scope"),
-                f"rubric reference evidence {evidence_id}.scope",
-                256,
-            )
-            reference = rubric_reference_from_raw(
-                {
-                    "record_id": raw_tuple.get("record_id"),
-                    "version": raw_tuple.get("version"),
-                    "sha256": raw_tuple.get("sha256"),
-                },
-                f"rubric reference evidence {evidence_id}",
-            )
-            if department_id != binding.department_id or scope != binding.rubric_scope:
-                raise DepartmentAcceptanceError(
-                    f"rubric reference evidence {evidence_id!r} conflicts with task binding"
-                )
-            candidates.append(
-                DependencyRubricReference(
-                    dependency_task_id=dependency_task_id,
-                    output_id=output_id,
-                    evidence_id=evidence_id,
-                    department_id=department_id,
-                    scope=scope,
-                    reference=reference,
-                )
-            )
-    identities = {
-        (
-            item.department_id,
-            item.scope,
-            item.reference.record_id,
-            item.reference.version,
-            item.reference.sha256,
-        )
-        for item in candidates
-    }
-    sources = {
-        (item.dependency_task_id, item.output_id)
-        for item in candidates
-    }
-    if not candidates:
-        raise DepartmentAcceptanceError(
-            "no rubric reference tuple was found in VERIFIED dependency output evidence"
-        )
-    if len(identities) != 1 or len(sources) != 1:
-        raise DepartmentAcceptanceError(
-            "rubric reference is ambiguous across VERIFIED dependency output evidence"
-        )
-    return candidates[0]
-
-
 def rubric_scope(department_id: str) -> str:
     return f"{RUBRIC_SCOPE_PREFIX}:{_identifier(department_id, 'department_id')}"
 
@@ -519,12 +325,27 @@ def store_department_rubric(
     standards: Sequence[str] = (),
     evidence_ids: Sequence[str],
     created_by: str,
+    caller_thread_id: str = "",
 ) -> RubricReference:
-    """Persist one immutable rubric version as a verified Project Memory record.
+    """Persist a later version of a department's rubric - never its first.
 
-    A repeated identical write is idempotent. A changed version must advance by
-    exactly one and cite outcome evidence; an observation is not evidence and
-    therefore cannot mutate a department standard by itself.
+    Version 1 is the runtime's (``write_runtime_rubric``), derived from the
+    Lead Role's profile before the department's first acceptance. A model
+    used to write it, with any evidence, into a scope nobody reserved: the
+    worker being judged could have written the rubric it is judged by, and a
+    stray second v1 made the department "ambiguous" for good.
+
+    A repeated identical write is idempotent. A new version advances by
+    exactly one and cites outcome evidence: evidence a recorded acceptance of
+    this department rests on (``_require_outcome_evidence``) - an observation
+    is not evidence and cannot change a department standard by itself (R30).
+    Who may propose it (the department's lead or the on-call, never a worker
+    of its tasks) is decided before this call, from the caller's thread
+    (``department_runtime.authorize_rubric_proposal``).
+
+    The check and the write run under one lock (``_rubric_write_lock``):
+    they were two connections apart, and two writers could both see "no
+    version 2" and both write it.
     """
 
     rubric = DepartmentRubric(
@@ -533,48 +354,129 @@ def store_department_rubric(
         criteria=_criteria(criteria),
         standards=_strings(standards, "standards"),
     )
-    statement = _rubric_json(rubric)
     digest = rubric_digest(rubric)
-    existing = _stored_rubrics(memory, rubric.department_id)
-    same_version = [item for item in existing if item.rubric.version == rubric.version]
-    if len(same_version) > 1:
-        raise DepartmentAcceptanceError(
-            f"rubric version {rubric.version} for department {rubric.department_id!r} "
-            "is ambiguous in Project Memory"
-        )
-    if same_version:
-        current = same_version[0]
-        if current.reference.sha256 != digest:
+    with _rubric_write_lock(memory):
+        existing = stored_rubric_versions(memory, rubric.department_id)
+        same_version = [item for item in existing if item.rubric.version == rubric.version]
+        if same_version:
+            if same_version[0].reference.sha256 != digest:
+                raise DepartmentAcceptanceError(
+                    f"rubric version {rubric.version} is immutable and already has a different digest"
+                )
+            return same_version[0].reference
+        if not existing:
             raise DepartmentAcceptanceError(
-                f"rubric version {rubric.version} is immutable and already has a different digest"
+                f"version 1 of department {rubric.department_id!r} is written by the runtime "
+                "from its Lead Role's profile before the first acceptance; a model proposes "
+                "only a later version, with outcome evidence"
             )
-        return current.reference
-    if existing:
-        latest = max(item.rubric.version for item in existing)
+        latest = existing[-1].rubric.version
         if rubric.version != latest + 1:
             raise DepartmentAcceptanceError(
                 f"rubric version must advance exactly once ({latest} -> {latest + 1})"
             )
-        _require_outcome_evidence(memory, evidence_ids)
+        _require_outcome_evidence(
+            memory, evidence_ids, rubric.department_id, caller_thread_id=caller_thread_id
+        )
+        return _insert_rubric(memory, rubric, evidence_ids, created_by)
+
+
+def write_runtime_rubric(
+    memory: ProjectMemory,
+    rubric: DepartmentRubric,
+    *,
+    evidence_result: Mapping[str, object],
+) -> RubricReference:
+    """Version 1, written by the runtime; an existing history is returned as is.
+
+    Evidence is the runtime's own tool record (``RUNTIME_RUBRIC_TOOL``, a
+    name Project Memory refuses from a model): what the rubric was derived
+    from - the department, its lead and the lead's profile digest - so a
+    later change of that profile is detectable without rewriting the rubric.
+    """
+
+    if rubric.version != 1:
+        raise DepartmentAcceptanceError("the runtime writes only version 1 of a rubric")
+    with _rubric_write_lock(memory):
+        existing = stored_rubric_versions(memory, rubric.department_id)
+        if existing:
+            return existing[-1].reference
+        try:
+            evidence = memory.record_evidence(
+                kind="tool",
+                summary=(
+                    f"Runtime derived version 1 of the {rubric.department_id} department "
+                    "rubric from its Lead Role profile (R30)."
+                ),
+                tool_name=RUNTIME_RUBRIC_TOOL,
+                result=json.dumps(dict(evidence_result), ensure_ascii=False, sort_keys=True),
+                exit_code=0,
+                created_by=RUNTIME_RUBRIC_AUTHOR,
+            )
+        except MemoryValidationError as exc:
+            raise DepartmentAcceptanceError(str(exc)) from exc
+        return _insert_rubric(memory, rubric, [str(evidence["id"])], RUNTIME_RUBRIC_AUTHOR)
+
+
+def _insert_rubric(
+    memory: ProjectMemory,
+    rubric: DepartmentRubric,
+    evidence_ids: Sequence[str],
+    created_by: str,
+) -> RubricReference:
     if not evidence_ids:
         raise DepartmentAcceptanceError(
             "NO EVIDENCE -> NO TRUTH: a department rubric requires evidence_ids"
         )
     try:
         record = memory.record_verified_fact(
-            statement=statement,
+            statement=_rubric_json(rubric),
             evidence_ids=evidence_ids,
             verification_method="department rubric outcome review",
             created_by=created_by,
             scope=rubric_scope(rubric.department_id),
+            reserved_scope=True,
         )
     except MemoryValidationError as exc:
         raise DepartmentAcceptanceError(str(exc)) from exc
     return RubricReference(
         record_id=str(record["id"]),
         version=rubric.version,
-        sha256=digest,
+        sha256=rubric_digest(rubric),
     )
+
+
+_RUBRIC_LOCKS_GUARD = threading.Lock()
+_RUBRIC_LOCKS: dict[str, threading.RLock] = {}
+
+
+@contextmanager
+def _rubric_write_lock(memory: ProjectMemory) -> Iterator[None]:
+    """One writer of a department's rubric history at a time, across processes.
+
+    A file of its own beside Project Memory's lock, not that lock: the check
+    reads records and the write inserts them through Project Memory, whose
+    own connections take its lock - held around them, a second flock on
+    the same file from this process would wait on itself. Only rubric
+    writers take this one, and the scope is reserved for them (``memory``
+    refuses it from any other door), so check-then-write is atomic for
+    everyone who can write there.
+    """
+
+    path = memory.state_dir / "department-rubric.lock"
+    with _RUBRIC_LOCKS_GUARD:
+        local = _RUBRIC_LOCKS.setdefault(str(path), threading.RLock())
+    with local:
+        memory.state_dir.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
 
 def load_department_rubric(
@@ -637,8 +539,9 @@ def rubric_guidance_conflicts(text: str, expected: RubricReference) -> bool:
     """Return whether role/DoD prose names a superseded rubric identity.
 
     Department acceptance receives its authoritative identity from the
-    VERIFIED dependency output.  Older plans may still carry a bootstrap
-    record or digest in prose-oriented RoleProfile and DoD fields.  Those
+    department's current version in Project Memory.  Older plans may still
+    carry a bootstrap record or digest in prose-oriented RoleProfile and DoD
+    fields.  Those
     fields must not compete with the loaded structured contract in a verifier
     prompt.
     """
@@ -714,10 +617,19 @@ def department_rubric_from_raw(raw: object, label: str = "rubric") -> Department
     )
 
 
-def _stored_rubrics(
+def stored_rubric_versions(
     memory: ProjectMemory,
     department_id: str,
 ) -> tuple[LoadedDepartmentRubric, ...]:
+    """A department's verified rubric history, oldest first: exactly 1..n.
+
+    A gap, a repeated version or a record that is not a rubric of this
+    department is refused with the record ids, never guessed around: one of
+    them would silently become the standard. The repair is the on-call's -
+    it supersedes the stray record (``department_gate.supersede_rubric_record``,
+    audited in Project Memory) and the history reads clean again.
+    """
+
     records: list[dict[str, Any]] = []
     cursor: str | None = None
     while True:
@@ -735,35 +647,87 @@ def _stored_rubrics(
     loaded: list[LoadedDepartmentRubric] = []
     for selector in records:
         record = memory.get_record(str(selector["id"]))
-        rubric = department_rubric_from_raw(_parse_statement(record), "Project Memory rubric")
+        try:
+            rubric = department_rubric_from_raw(_parse_statement(record), "Project Memory rubric")
+        except DepartmentAcceptanceError as exc:
+            raise DepartmentAcceptanceError(
+                f"record {record['id']} in the rubric scope of {department_id!r} is not a "
+                f"rubric ({exc}); the on-call supersedes it"
+            ) from exc
+        if rubric.department_id != department_id:
+            raise DepartmentAcceptanceError(
+                f"record {record['id']} in the rubric scope of {department_id!r} belongs to "
+                f"department {rubric.department_id!r}; the on-call supersedes it"
+            )
         reference = RubricReference(
             record_id=str(record["id"]),
             version=rubric.version,
             sha256=rubric_digest(rubric),
         )
         loaded.append(LoadedDepartmentRubric(reference=reference, rubric=rubric))
+    loaded.sort(key=lambda item: (item.rubric.version, item.reference.record_id))
+    versions = [item.rubric.version for item in loaded]
+    if versions != list(range(1, len(versions) + 1)):
+        raise DepartmentAcceptanceError(
+            f"the rubric history of department {department_id!r} is ambiguous: versions "
+            f"{versions} in records {[item.reference.record_id for item in loaded]}; "
+            "it must be exactly 1..n - the on-call supersedes the stray record"
+        )
     return tuple(loaded)
 
 
 def _require_outcome_evidence(
     memory: ProjectMemory,
     evidence_ids: Sequence[str],
+    department_id: str,
+    *,
+    caller_thread_id: str = "",
 ) -> None:
+    """Evidence of an outcome of this department's judging, not a claim.
+
+    The kind alone used to decide: any `tool` record passed, including one
+    a model wrote a minute before about nothing, and the runtime's own
+    version-1 record. Now at least one item must be what a recorded
+    acceptance of this department rested on - an independent verification
+    result whose department is this one - and none may be the runtime's
+    rubric record or one written from the proposing thread itself.
+    """
+
     if not evidence_ids:
         raise DepartmentAcceptanceError(
             "a rubric change requires outcome evidence; one observation cannot change it"
         )
-    kinds: list[str] = []
+    outcome = False
     for evidence_id in evidence_ids:
         try:
             evidence = memory.get_evidence(evidence_id)
         except MemoryValidationError as exc:
             raise DepartmentAcceptanceError(str(exc)) from exc
-        kinds.append(str(evidence.get("kind") or ""))
-    if not any(kind in OUTCOME_EVIDENCE_KINDS for kind in kinds):
+        if str(evidence.get("tool_name") or "").startswith(RESERVED_TOOL_PREFIX):
+            raise DepartmentAcceptanceError(
+                f"{evidence_id} is the runtime's own record, not an outcome"
+            )
+        if caller_thread_id and str(evidence.get("provider_thread_id") or "") == caller_thread_id:
+            raise DepartmentAcceptanceError(
+                f"{evidence_id} was written by the proposing thread itself; outcome "
+                "evidence comes from the department's recorded acceptances"
+            )
+        if str(evidence.get("kind") or "") not in OUTCOME_EVIDENCE_KINDS:
+            continue
+        for verification_id in evidence.get("verification_results") or ():
+            try:
+                details = memory.get_verification_result(str(verification_id)).get("details") or {}
+            except MemoryValidationError:
+                continue
+            accepted = ((details.get("department_acceptance") or {}).get("department") or {})
+            if accepted.get("id") == department_id:
+                outcome = True
+    if not outcome:
         raise DepartmentAcceptanceError(
-            "a rubric change requires outcome evidence; allowed kinds: "
+            "a rubric change requires outcome evidence: at least one item a recorded "
+            f"acceptance of department {department_id!r} rested on (kinds: "
             + ", ".join(sorted(OUTCOME_EVIDENCE_KINDS))
+            + ")"
         )
 
 
@@ -783,27 +747,6 @@ def _parse_statement(record: Mapping[str, object]) -> object:
         raise DepartmentAcceptanceError(
             f"rubric record {record.get('id')!r} does not contain canonical JSON"
         ) from exc
-
-
-def _dependency_rubric_tuple(
-    evidence: Mapping[str, object],
-) -> Mapping[str, object] | None:
-    raw_result = evidence.get("result")
-    if isinstance(raw_result, Mapping):
-        parsed: object = raw_result
-    elif isinstance(raw_result, str):
-        try:
-            parsed = json.loads(raw_result)
-        except json.JSONDecodeError:
-            return None
-    else:
-        return None
-    if not isinstance(parsed, Mapping):
-        return None
-    required = {"department_id", "record_id", "version", "sha256", "scope"}
-    if set(parsed) != required:
-        return None
-    return parsed
 
 
 def _require_logical_read_claim(resource: object, label: str) -> None:
@@ -857,9 +800,15 @@ def _mapping(value: object, label: str) -> Mapping[str, object]:
     return value
 
 
-def _exact_keys(data: Mapping[str, object], allowed: set[str], label: str) -> None:
+def _exact_keys(
+    data: Mapping[str, object],
+    allowed: set[str],
+    label: str,
+    *,
+    required: set[str] | None = None,
+) -> None:
     unknown = sorted(set(data) - allowed)
-    missing = sorted(allowed - set(data))
+    missing = sorted((allowed if required is None else required) - set(data))
     if unknown:
         # R31: a refusal names what IS accepted. Naming only the rejected key
         # cost a real run its whole replan budget - the replanner wrote

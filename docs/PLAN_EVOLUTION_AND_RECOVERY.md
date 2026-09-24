@@ -52,7 +52,9 @@ only at the commit, after the plan verifier's PASS. One pass now collects, in a
 fixed order: the protocol line itself, unknown fields (each refusal names the
 accepted set, `plan_fields.ALLOWED_FIELDS`), every field of every role,
 department and task, outcome bindings and the R29 acceptance floor per task, the
-graph references, the fields a change may not replace, coverage, and the
+graph references, the department leads (R30: each touched task names its
+profession's one lead - departments themselves are derived, never written), the
+fields a change may not replace, coverage, and the
 run-state conditions that can only get worse while the change drains (removed
 task, requester gone, `VERIFIED` or `CANCELLED` task rewritten). A check that
 depends on another runs only when that one is clean, and no wider. One violation
