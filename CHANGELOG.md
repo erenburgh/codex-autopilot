@@ -1,5 +1,102 @@
 # Changelog
 
+## 0.14.0-beta
+
+A run goes on without its owner. A stop is a fault of the runtime, the
+on-call is called for every one of them, and the owner is asked only for what
+is hers to decide.
+
+Everything here comes out of one real run: eighteen tasks to build a 3D
+model, stopped on the first one for an hour with an empty incident journal.
+The work on that task was done and good. What stopped it was the runtime:
+a rule it did not apply reached the verifier as if it did, the replanner
+could not see the schema it was refused against, five of six stop paths filed
+nothing, a dead dispatcher had nobody to raise it, lifting a stop redid
+finished work, and the worker's threads appeared outside the project while
+the placement check said INSIDE. Each of those is fixed below, and each fix
+went through an independent review until the reviewer had nothing left.
+
+**Every stop goes to the on-call.** There is one door (`blocked_runs`), and
+every stop - a task at the top of its hiring ladder, a worker that stops
+itself, an unreadable verifier, an exhausted replanner, a refused plan, a
+verifier that cannot be routed, an engineer that leaves no successor, a
+reservation that raises - goes through it. The door opens a RUNTIME ticket and
+routes it to the on-call at once. The run's status is derived (`run_status`)
+and reads BLOCKED only when everything left waits for the owner.
+
+**The on-call works next to the run, not instead of it.** An engineer is
+reserved alongside ready work and outside the worker slots, one per run, so a
+task that stops does not freeze its neighbours. An infrastructure stop holds
+its task on the ticket instead of blocking it (R3), and an engineer's
+escalation holds only the tasks of its ticket.
+
+**The on-call repairs, and asks well when it cannot.** It can return a
+stopped task to work, request a plan change, and install a runtime patch that
+is verified and switched in atomically when no dispatcher is live. When the
+decision is the owner's it hands over a diagnosis, what it repaired, the
+decision needed, a recommendation and the options; the status card shows them
+with the exact command to answer. The same stop repeating goes to the owner
+with a report instead of to a third engineer (R23). Advisory incidents -
+product, policy, a create in doubt - also pass through the on-call, which may
+only diagnose them. Approvals are never answered for anyone: a permission
+request is checked against the run's durable authorization (R4), a runtime
+defect is repaired, and anything else is escalated as DANGEROUS_PERMISSION.
+
+**Her answer continues the run.** `unblock` answers under the run's lock,
+closes the task's tickets, gives a fresh hire where the hiring ladder was the
+cause, returns a task with a verdict to acceptance rather than to the start,
+and arms the wake-up through the same hook-trust gate. "Resume" is no longer
+needed to carry on.
+
+**A run nobody is left to raise rises by itself.** The wake-up treats as
+stranded a ticket nobody holds, work nobody reserved, and a session whose
+dispatcher died, and settles dead sessions against the server. Her pause is
+still a stop and a finished run is still finished; BLOCKED no longer is,
+because the door wrote it before anyone had looked.
+
+**The plan check reports every violation in one round.** Plan admission
+collects violations stage by stage, with gates where a stage depends on the
+last, and the replanner is told all of them with the accepted fields and
+values. Rules reach every prompt with their check, whole (R17), and a refusal
+names what is accepted (R31). A prompt that cannot be built is a stop for the
+on-call, not a crash.
+
+**R30 is implemented whole.** A department is the worker's profession and its
+lead is the verifier of that profession; the runtime derives both from the
+plan and the model writes neither. Each department's rubric v1 is written by
+the runtime into Project Memory before the first task, its scope is closed to
+models, and a lead is a fresh session checked for outliving its acceptance.
+No rule tells a verifier it is out of scope any more.
+
+**Threads are filed in the project, and the placement check tells the
+truth.** Threads start at the project root with the staged workspace as their
+only writable root, and INSIDE requires both the App Server project and the
+Desktop sidebar rule. The new scheme switches on only after an isolation probe
+proves the root is not writable from a task; until then the old scheme runs
+and says so. Threads filed outside the project before this release are listed
+for the owner to move.
+
+**Project roots are audited.** A stale copy among a project's roots, an
+active root that is not the run's, a duplicate App Server project and a
+mismatched id pair are reported and never stop a run. Changing a saved
+project is hers: `authorize-project-root --remove-root / --set-primary-root /
+--retire-duplicate` asks for the id to be typed in her own terminal, and no
+flag or record can skip that.
+
+**The run is staffed before it starts, and every branch is visible.** Before
+the first task the runtime builds the roster - department, lead, rubric with
+version, hiring ladder, on-call, thread names, dependencies, isolation and
+roots - and checks it whole; a department that does not assemble does not
+start, and the on-call gets the full list. `status` and
+`.codex-autopilot/BOARD.md` show one line per task: working, waiting for which
+task, at acceptance, in revision, stopped with its ticket, waiting for the
+owner with the command to answer, accepted.
+
+**Not measured live yet.** The isolation probe, the atomic runtime-patch
+install and the field names of real approval requests are built against fakes;
+they fail safe - the old placement scheme, no patch, the owner asked - until
+measured on a live App Server.
+
 ## 0.13.1-beta
 
 A run nobody is left to raise raises itself.
