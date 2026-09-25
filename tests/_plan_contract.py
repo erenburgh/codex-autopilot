@@ -69,7 +69,7 @@ def _attach_test_lead(payload: dict[str, Any], tasks: list[Any]) -> None:
     """R30: every task names its department's lead; one lead per profession.
 
     Tests unrelated to departments get one shared lead for every profession
-    that names none - the shape of a real plan (beyondness: three roles, one
+    that names none - the shape of a real plan (the art run: three roles, one
     art-reviewer). ``canonical_verification`` names it by default; a
     profession whose other tasks name a lead of their own takes that one.
     """

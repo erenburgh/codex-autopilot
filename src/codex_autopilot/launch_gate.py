@@ -637,7 +637,7 @@ def desktop_placement(
     thread-project-assignments entirely - that check called them OUTSIDE.
     The check after it asked only App Server for projectId and called a
     thread INSIDE when it matched - and every staged worker of the
-    beyondness run, projectId set and cwd a subfolder of the root, was
+    art run, projectId set and cwd a subfolder of the root, was
     INSIDE by it and invisible in the project. Both halves are asked now
     (``measure_placement``).
 

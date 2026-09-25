@@ -3,7 +3,7 @@
 The check this replaces asked App Server for projectId and called a thread
 INSIDE when it matched. Desktop files threads by its own rule (assignment,
 then projectless, then a cwd EQUAL to a project root); every staged worker
-of the beyondness run had the right projectId, a cwd below the root, and was
+of the art run had the right projectId, a cwd below the root, and was
 in no project. The independent check then corrected the first copy of the
 rule: Desktop folds case and does not strip a trailing '/', keys a project
 by its aliases too, and lets an assignment to an unknown project fall
@@ -26,7 +26,7 @@ from codex_autopilot.desktop_sidebar import (
     observe,
 )
 
-ROOT = "/Users/p.erenburg/Developer/beyondness"
+ROOT = "/Users/owner/Developer/game"
 STAGED = ROOT + "/.codex-autopilot/staged-artifacts/M01/workspace"
 
 
@@ -34,19 +34,19 @@ class DesktopRuleTests(unittest.TestCase):
     def test_a_root_is_in_the_project_and_its_staged_subfolder_is_not(self) -> None:
         """Mutation: compare by prefix (``startswith``) - the staged cwd reads INSIDE."""
 
-        home = desktop_home(roots=["/Users/p.erenburg/Documents/Beyondness", ROOT])
+        home = desktop_home(roots=["/Users/owner/Documents/Game", ROOT])
         self.assertEqual(observe("t1", ROOT, "desktop-project", home).placement, INSIDE)
         staged = observe("t1", STAGED, "desktop-project", home)
         self.assertEqual((staged.placement, staged.rule), (OUTSIDE, "none"))
 
     def test_case_is_folded_as_desktop_folds_it(self) -> None:
-        """A real pair on her machine: cwd .../beyondness, root .../Beyondness.
+        """A real pair on her machine: cwd .../game, root .../Game.
 
         Mutation: ``normalize`` without ``.lower()`` - a false OUTSIDE.
         """
 
-        home = desktop_home(roots=["/Users/p.erenburg/Documents/Beyondness"])
-        placed = observe("t1", "/Users/p.erenburg/Documents/beyondness", "desktop-project", home)
+        home = desktop_home(roots=["/Users/owner/Documents/Game"])
+        placed = observe("t1", "/Users/owner/Documents/game", "desktop-project", home)
         self.assertEqual((placed.placement, placed.rule), (INSIDE, "exact_root"))
 
     def test_a_trailing_slash_is_not_stripped(self) -> None:

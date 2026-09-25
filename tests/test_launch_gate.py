@@ -447,7 +447,7 @@ class PlacementGateTests(unittest.TestCase):
     OUTSIDE threads a human saw in the sidebar. The second asked App Server
     for projectId only, and these tests pinned it: "a thread in the expected
     project is inside" with no cwd at all - the very claim R5 forbids, since
-    every staged worker of the beyondness run had that projectId and was in
+    every staged worker of the art run had that projectId and was in
     no project. Now the thread must also be filed in the Desktop project by
     Desktop's rule (desktop_sidebar); both facts are asked here.
     """

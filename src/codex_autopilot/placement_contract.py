@@ -4,7 +4,7 @@ Until this contract they were one: a staged task's thread got
 ``cwd = <root>/.codex-autopilot/staged-artifacts/<task>/workspace`` for both.
 Desktop files a thread by its cwd, and only a cwd EQUAL to a project root
 lands in the project (desktop_sidebar) - so every worker and verifier of a
-staged task was invisible in her project, 65 threads of the beyondness run,
+staged task was invisible in her project, 65 threads of the art run,
 while the screener, the replanner and the on-call (cwd = root) were visible.
 
 Contract 2 separates them: ``cwd = cfg.root`` - the thread is in the project
@@ -23,8 +23,8 @@ baselines, staging and the descriptor's state dir are untouched.
 Sessions created before this contract carry no ``placement_contract`` and a
 cwd equal to their workspace; they are checked the old way to the end of
 their life (a paused run's PREPARED session, a resume of its thread, the
-on-call's relay repair). An ACTIVE one - the paused beyondness run's M01
-verifier 01a0cf05, its dispatcher gone - never reaches these checks: resume
+on-call's relay repair). An ACTIVE one - the paused art run's M01
+verifier, its dispatcher gone - never reaches these checks: resume
 reconciliation (control._reconcile_before_resume) reads its finished thread
 and retires the attempt to RETRY_WAIT, and the task's next attempt is a new
 thread under this contract. Both roads are exercised in

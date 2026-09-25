@@ -1,6 +1,6 @@
 """The saved Codex project's roots: audited, recorded, and changed only on her word (R6).
 
-Measured on the beyondness run: the Codex project had two roots - an old
+Measured on the art run: the Codex project had two roots - an old
 iCloud copy of the game at position 0 and the run's root at position 1 -
 and the initiating agent had created a second App Server project on the
 run's root. Preflight printed "rootPaths OK" and said nothing; every later
@@ -65,8 +65,8 @@ from test_desktop_lifecycle import graph
 import test_wake
 
 DESKTOP = "local-desktop-project"
-RUN_PROJECT = "01a049a3-run-project"
-DUPLICATE = "01a0ce52-agent-duplicate"
+RUN_PROJECT = "0100a000-run-project"
+DUPLICATE = "0100b000-agent-duplicate"
 MAPPING = "app-server-project-id-by-legacy-project-id-by-host"
 
 

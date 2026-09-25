@@ -29,7 +29,7 @@ opening in the copy. Hence:
   restorable snapshot of it is written (R28).
 
 Whose word it is. ``authorize-project-root --yes`` records a user decision
-for whoever runs it, and on beyondness the initiating agent already went
+for whoever runs it, and on the art run the initiating agent already went
 around the skill by escalating its sandbox. These decisions are therefore
 confirmed by typing the project id at an interactive terminal, and refused
 from inside a Codex task (CODEX_THREAD_ID set) - the confirmation must come

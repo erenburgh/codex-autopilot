@@ -523,7 +523,7 @@ def _require_thread_placement(
     Placement is asked twice in one read: App Server's projectId and
     Desktop's own filing rule (``launch_gate.measure_placement``). The check
     before it trusted projectId alone and called INSIDE every staged worker
-    of the beyondness run that Desktop showed in no project.
+    of the art run that Desktop showed in no project.
 
     It no longer stops work. It raised on anything but INSIDE, for a thread
     of any kind: with the honest rule, a Desktop build whose rule changed, a

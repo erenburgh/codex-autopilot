@@ -2,7 +2,7 @@
 
 What this replaces. R30 switched on only for a task that declared the
 department-binding and rubric-binding resources; nobody wrote them, the live
-beyondness plan (18 tasks) had none, and the verifier fell back to
+art-run plan (18 tasks) had none, and the verifier fell back to
 ``verifier_role or task.role`` - the worker's own profession when the planner
 left the field out. The rubric pin came from the evidence of a VERIFIED
 dependency, so M01 (no dependencies) could not be bound at all. The tests of
@@ -22,7 +22,7 @@ import types
 import unittest
 from unittest import mock
 
-from _departments import beyondness_plan
+from _departments import art_run_plan
 from codex_autopilot.department_acceptance import (
     RUNTIME_RUBRIC_TOOL,
     DepartmentAcceptanceError,
@@ -115,7 +115,7 @@ class TheDepartmentIsTheWorkersProfessionTests(unittest.TestCase):
 
 class AdmissionNamesEveryLeadViolationTests(unittest.TestCase):
     def _raw(self):
-        raw = beyondness_plan()
+        raw = art_run_plan()
         first, second, third = (json.loads(json.dumps(item)) for item in raw["tasks"])
         a = dict(first, id="A")
         a["verification"].pop("verifier_role")                          # A: no lead
@@ -207,11 +207,11 @@ class AdmissionNamesEveryLeadViolationTests(unittest.TestCase):
 
 
 class TheSavedPlanDigestDoesNotMoveTests(unittest.TestCase):
-    def test_beyondness_shape_keeps_the_digest_its_receipt_was_bound_to(self) -> None:
+    def test_art_run_shape_keeps_the_digest_its_receipt_was_bound_to(self) -> None:
         """The pre-R30 runtime's digest of the same saved plan, recorded in the fixture.
 
-        Measured on the live run too (read-only): 7e85c9c5... before and
-        after. Mutation: plan_to_dict writes the derived departments - the
+        Measured on the live run too (read-only): the digest did not move
+        before and after. Mutation: plan_to_dict writes the derived departments - the
         digest moves and PLAN_VERIFIED no longer holds.
         """
 

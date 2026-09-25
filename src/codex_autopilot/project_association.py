@@ -80,8 +80,8 @@ def match_saved_project(
     """Return the target project: the one Desktop links, else explicit, else longest root.
 
     Two App Server projects on one root used to be a stop: "multiple saved
-    Codex Projects match this path". Measured on beyondness: the initiating
-    agent created "<game> - Developer" (01a0ce52) on the run's root, and
+    Codex Projects match this path". Measured on the art run: the initiating
+    agent created "<game> - Developer" on the run's root, and
     every later start without --app-server-project-id failed. Desktop's map
     (``app-server-project-id-by-legacy-project-id-by-host``) is a dictionary:
     one Desktop project links exactly one App Server project, the one she
@@ -177,8 +177,8 @@ def match_saved_project(
     # No usable link (Desktop's map missing, no Desktop project, or a link
     # to a project without the root): still not a stop. The choice is
     # deterministic - a project Desktop shows first, then the lowest id (App
-    # Server ids are UUIDv7, so the oldest: 01a049a3 before the agent's
-    # 01a0ce52) - and every other candidate is written down.
+    # Server ids are UUIDv7, so the oldest: the run's project before the
+    # agent's duplicate) - and every other candidate is written down.
     shown = desktop_visible_project_ids or set()
     chosen = min(best, key=lambda project_id: (project_id not in shown, project_id))
     if findings is not None:

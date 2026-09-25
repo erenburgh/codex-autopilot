@@ -3,7 +3,7 @@
 R30 was in the code whole and in force for nobody. It switched on only for a
 task that declared two logical resources, department-binding and
 rubric-binding; no planner wrote them, the skill's example named a faceless
-"acceptance-reviewer", and the live plan of a real run (beyondness, 18
+"acceptance-reviewer", and the live plan of a real run (the art run, 18
 tasks) carried neither. Without them the verifier was ``verifier_role or
 task.role`` - the worker's own profession when the planner left the field
 out - the rules block told it R30 was "NOT in force", and the first task of
@@ -34,7 +34,7 @@ Now nothing of it is the model's to write or to forget:
   plan change names one of the leads that accepted it, or keeps the one the
   current plan names. The exemption above first let any change move the
   rest of a profession to a lead of the replanner's choosing the moment one
-  task was VERIFIED - reproduced on the beyondness shape: M01 VERIFIED by
+  task was VERIFIED - reproduced on the art-run shape: M01 VERIFIED by
   art-reviewer, M03 moved to a new "lax-lead" whose only expectation was
   "Anything goes.", admitted with no issue - and the new department started
   from a fresh version 1 built from a profile the replanner wrote: a new
@@ -367,7 +367,7 @@ def _moved_leads(
     work had several leads is there a choice, and it is among them.
 
     Only a lead that could lead today counts, on either side. The
-    independent check reproduced on the beyondness shape, M01 VERIFIED:
+    independent check reproduced on the art-run shape, M01 VERIFIED:
     before R30 a character-artist task could name no verifier_role (the
     verifier was ``verifier_role or task.role``) or its own role, and both
     were admitted. Such a profession's "accepted lead" was 'None' or

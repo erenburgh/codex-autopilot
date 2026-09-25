@@ -1,6 +1,6 @@
-"""R30 fixtures: a plan in the shape of the live beyondness run, and a run of it.
+"""R30 fixtures: a plan in the shape of the live art run, and a run of it.
 
-beyondness (read-only, 24 Sep 2026): three roles - reference-artist,
+the art run (read-only, 24 Sep 2026): three roles - reference-artist,
 character-artist, and art-reviewer "Character Art Verifier" with two
 responsibilities and no verification_expectations - no `departments`, no
 department or rubric bindings, and every task naming art-reviewer in
@@ -53,7 +53,7 @@ def art_task(task_id: str, role: str, *, depends_on: tuple[str, ...] = ()) -> di
     }
 
 
-def beyondness_plan(*, lead_on_every_task: bool = True) -> dict[str, Any]:
+def art_run_plan(*, lead_on_every_task: bool = True) -> dict[str, Any]:
     tasks = [
         art_task("M01", "character-artist"),
         art_task("M02", "reference-artist", depends_on=("M01",)),
@@ -85,7 +85,7 @@ def beyondness_plan(*, lead_on_every_task: bool = True) -> dict[str, Any]:
 class DepartmentRun(unittest.TestCase):
     """A real run of a plan, driven through the production lifecycle."""
 
-    plan_payload: Any = staticmethod(beyondness_plan)
+    plan_payload: Any = staticmethod(art_run_plan)
 
     def setUp(self) -> None:
         from _gates import patch_hook_trust_gates

@@ -85,7 +85,7 @@ the backstop for a rubric history that turns ambiguous later. The on-call has
 the plan changed to name the lead - naming the lead of a task already under way is not
 a rewrite of its work, and resets nothing (`resilience.names_only_its_lead`).
 Nothing of the department is written into `plan.json`: the plan digest bound
-to PLAN_VERIFIED does not move (checked on the live beyondness plan). A
+to PLAN_VERIFIED does not move (checked on the live art-run plan). A
 declared `departments` entry only names a department; its `rubric` field, if a
 0.13 plan carried one, is kept verbatim and is never the pin.
 

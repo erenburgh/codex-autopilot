@@ -106,7 +106,7 @@ workspace. They keep their old cwd and profile to the end of their life:
   launched without a staged profile (`server_overrides` gives a created thread
   one only if it was created under it), and the widened-roots check - a
   contract 2 check - does not apply;
-- an ACTIVE one - the paused beyondness run's M01 verifier `01a0cf05`, whose
+- an ACTIVE one - the paused art run's M01 verifier, whose
   dispatcher is gone - is never resumed. When she resumes the run, resume asks
   the server about every pending session; a finished thread (`notLoaded`)
   retires the attempt to RETRY_WAIT and releases its locks. The task's next
@@ -162,7 +162,7 @@ in `.codex-global-state.json` - a dictionary, so one Desktop project links
 exactly one App Server project.
 
 Two App Server projects on the run's root used to stop every start ("multiple
-saved Codex Projects match this path"): on the beyondness run the initiating
+saved Codex Projects match this path"): on the art run the initiating
 agent had created one of its own with `project/create`. Now the project Desktop
 links wins the tie; without a link, the one Desktop shows, then the lowest id
 (App Server ids are UUIDv7, so the oldest). An explicit

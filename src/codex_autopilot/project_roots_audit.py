@@ -1,13 +1,13 @@
 """The saved Codex project's roots, audited against the run - read-only (R6).
 
-What happened. On the beyondness run its Codex project gained a second root:
-the owner added ~/Developer/beyondness (the run's root) through Desktop
+What happened. On the art run its Codex project gained a second root:
+the owner added ~/Developer/game (the run's root) through Desktop
 ("Edit project -> Add folder"), prompted by the initiating agent, while
 position 0 stayed ~/Documents/<game> - an old iCloud copy of the same game
 (the same .uproject, a github remote against gitlab, git objects evicted:
 ``git log`` failed with ``bad object HEAD`` and a pack read timeout, no
 .codex-autopilot). The same agent had also created an App Server project of
-its own ("<game> - Developer", 01a0ce52-...) on the run's root: invisible in
+its own ("<game> - Developer") on the run's root: invisible in
 Desktop, and it made every later project match ambiguous ("multiple saved
 Codex Projects match this path"). Preflight printed "Desktop project
 rootPaths OK: <both roots>" and said nothing of any of it, while her own

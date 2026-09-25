@@ -1,6 +1,6 @@
 """R30 through the production lifecycle: bootstrap, reservation, completion.
 
-The run is the beyondness shape (``_departments``): three professions, one
+The run is the art-run shape (``_departments``): three professions, one
 lead (art-reviewer, "Character Art Verifier"), no departments written
 anywhere. What used to happen to it: the verifier was the task's own
 verifier_role only because the planner happened to write one, the rules told
@@ -14,7 +14,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
-from _departments import DepartmentRun, beyondness_plan
+from _departments import DepartmentRun, art_run_plan
 from codex_autopilot.department_acceptance import RubricReference, rubric_scope, store_department_rubric
 from codex_autopilot.pipeline_engineer import PipelineIncidentStore
 
@@ -185,7 +185,7 @@ class ALeadFromBeforeR30Tests(DepartmentRun):
 
 
 def _two_professions() -> dict:
-    raw = beyondness_plan()
+    raw = art_run_plan()
     raw["execution_strategy"] = "parallel"
     raw["max_parallel_workers"] = 2
     raw["tasks"][1]["depends_on"] = []
@@ -295,7 +295,7 @@ class ALaunchThatCannotBeBuiltTests(DepartmentRun):
 
 
 def _two_professions_with_leads() -> dict:
-    raw = beyondness_plan()
+    raw = art_run_plan()
     raw["execution_strategy"] = "parallel"
     raw["max_parallel_workers"] = 2
     raw["tasks"][1]["depends_on"] = []

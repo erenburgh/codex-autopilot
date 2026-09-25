@@ -394,8 +394,8 @@ class ContractTwoTests(StagedRun):
 class SessionsFromBeforeTheContractTests(StagedRun):
     """What a paused run brings with it, point by point (the verdict's amendment 7).
 
-    The beyondness run paused on 2026-09-23 with the M01 verifier
-    01a0cf05 ACTIVE: ``actual_cwd`` its staged workspace, no
+    The art run paused on 2026-09-23 with the M01 verifier
+    Its verifier ACTIVE: ``actual_cwd`` its staged workspace, no
     ``placement_contract``, its dispatcher gone. The two ways an old
     session meets the new code are exercised here with production's own
     call shapes: a PREPARED one is resumed and run by the dispatcher, an
@@ -463,7 +463,7 @@ class SessionsFromBeforeTheContractTests(StagedRun):
         self.assertNotIn("runtime_roots_widened", session)
 
     def test_the_paused_runs_active_session_is_retired_on_resume_and_its_successor_is_filed_at_the_root(self) -> None:
-        """01a0cf05's road when she resumes: reconciled, never resumed; the next attempt is contract 2.
+        """The paused verifier's road when she resumes: reconciled, never resumed; the next attempt is contract 2.
 
         Resume (``control._reconcile_before_resume``) asks the server about
         every pending session; a finished thread (``notLoaded``) retires the
@@ -833,7 +833,7 @@ class PlacementDefectTests(StagedRun):
         state = store.load()
         old = json.loads(json.dumps(self.session(descriptor.reservation_token, state)))
         old.update(
-            reservation_token="old-token", operation_id="old-operation", thread_id="01a0ce87",
+            reservation_token="old-token", operation_id="old-operation", thread_id="thread-old-a",
             actual_thread_name="A · Implementation (old)", actual_cwd=descriptor.cwd,
             desktop_placement="INSIDE", status="COMPLETED",
         )
@@ -845,7 +845,7 @@ class PlacementDefectTests(StagedRun):
         (ticket,) = self.tickets()
         self.assertEqual(ticket["system_state"]["cause"], "created_before_the_honest_check")
         listed = ticket["system_state"]["outside_threads"]
-        self.assertEqual([(item["thread_id"], item["title"]) for item in listed], [("01a0ce87", "A · Implementation (old)")])
+        self.assertEqual([(item["thread_id"], item["title"]) for item in listed], [("thread-old-a", "A · Implementation (old)")])
         # A finished fact, not a cause that comes back: closed, it is not
         # filed again for the same threads on every later launch.
         self.close(ticket)
@@ -878,7 +878,7 @@ class PlacementDefectTests(StagedRun):
         template.pop("placement_contract")
         for token, thread_id, title, cwd in (
             ("old-root", "01a0root", "Screening (old)", str(self.root)),
-            ("old-workspace", "01a0ce87", "A · Implementation (old)", descriptor.cwd),
+            ("old-workspace", "thread-old-a", "A · Implementation (old)", descriptor.cwd),
         ):
             old = dict(template, reservation_token=token, operation_id=f"{token}-op", thread_id=thread_id,
                        actual_thread_name=title, actual_cwd=cwd, desktop_placement="INSIDE", status="COMPLETED")
@@ -893,12 +893,12 @@ class PlacementDefectTests(StagedRun):
         self.assertEqual(system["cause"], "unobservable:none")
         self.assertEqual(system["outside_threads"], [])
         self.assertEqual({item["thread_id"] for item in system["unobserved_threads"]},
-                         {"01a0root", "01a0ce87", "worker-thread"})
+                         {"01a0root", "thread-old-a", "worker-thread"})
         self.assertIn("not known and not claimed", system["diagnosis"])
         readable = SandboxedDispatcher(self.root, [], home=self.home)
         _require_thread_placement(self.cfg, descriptor.reservation_token, connected_client=readable, at=None)
         (earlier,) = [item for item in self.tickets() if item["system_state"]["cause"] == "created_before_the_honest_check"]
-        self.assertEqual([item["thread_id"] for item in earlier["system_state"]["outside_threads"]], ["01a0ce87"])
+        self.assertEqual([item["thread_id"] for item in earlier["system_state"]["outside_threads"]], ["thread-old-a"])
         self.assertEqual(earlier["system_state"]["unobserved_threads"], [])
 
     def test_two_causes_of_one_run_are_two_tickets(self) -> None:
@@ -928,7 +928,7 @@ class PlacementDefectTests(StagedRun):
         state = store.load()
         old = json.loads(json.dumps(self.session(descriptor.reservation_token, state)))
         old.update(
-            reservation_token="old-token", operation_id="old-operation", thread_id="01a0ce87",
+            reservation_token="old-token", operation_id="old-operation", thread_id="thread-old-a",
             actual_thread_name="A · Implementation (old)", desktop_placement="INSIDE", status="COMPLETED",
         )
         old.pop("placement_contract")
@@ -939,7 +939,7 @@ class PlacementDefectTests(StagedRun):
         causes = sorted(item["system_state"]["cause"] for item in self.tickets())
         self.assertEqual(causes, ["created_before_the_honest_check", "isolation_not_proven"])
         (earlier,) = [item for item in self.tickets() if item["system_state"]["cause"] == "created_before_the_honest_check"]
-        self.assertIn("01a0ce87", json.dumps(earlier["system_state"]["defect"]))
+        self.assertIn("thread-old-a", json.dumps(earlier["system_state"]["defect"]))
 
 
     def close(self, ticket) -> None:

@@ -20,7 +20,7 @@ the lead of a task already under way is not a rewrite of its work
 profession one lead.
 
 What the second check found in that exemption, and what closes it. It was
-not limited to history: on a plan that already met R30 - the beyondness
+not limited to history: on a plan that already met R30 - the art-run
 shape, M01 VERIFIED by art-reviewer - a change moving M03 to a new
 "lax-lead" whose only expectation was "Anything goes." was admitted with no
 issue, and the new department would have started from a fresh rubric
@@ -37,7 +37,7 @@ from dataclasses import replace
 import json
 import unittest
 
-from _departments import DepartmentRun, art_task, beyondness_plan
+from _departments import DepartmentRun, art_task, art_run_plan
 from _handoff import bump_task_checkpoint
 from _plan_contract import TEST_OUTCOME_ID
 from codex_autopilot.department_acceptance import DepartmentAcceptanceError
@@ -67,7 +67,7 @@ ANATOMY_LEAD = {
 def _profession_plan() -> dict:
     """Three tasks of one profession, one of another; every task named art-reviewer."""
 
-    raw = beyondness_plan()
+    raw = art_run_plan()
     template = raw["tasks"][0]
     tasks = []
     for task_id, role, depends_on in (
@@ -210,7 +210,7 @@ class AProfessionKeepsItsLeadTests(unittest.TestCase):
         plan_change_candidate(collector, current, raw, "adaptive", settled=settled)
         return [issue.message for issue in collector.issues]
 
-    def test_the_second_checks_reproduction_on_the_beyondness_shape_is_refused(self) -> None:
+    def test_the_second_checks_reproduction_on_the_art_run_shape_is_refused(self) -> None:
         """M01 VERIFIED by art-reviewer; M03 moved to lax-lead ("Anything goes.").
 
         Admitted with 0 issues before this fix, the new department starting
@@ -219,7 +219,7 @@ class AProfessionKeepsItsLeadTests(unittest.TestCase):
         the list is empty.
         """
 
-        current = validate_persisted_plan(beyondness_plan(), "adaptive")
+        current = validate_persisted_plan(art_run_plan(), "adaptive")
         (split,) = self._admit(current, "lax-lead", set())
         self.assertIn("name several - art-reviewer: M01; lax-lead: M03", split)
         (moved,) = self._admit(current, "lax-lead", {"M01"})
@@ -243,7 +243,7 @@ class AProfessionKeepsItsLeadTests(unittest.TestCase):
         can never be changed without moving work already under way.
         """
 
-        raw = beyondness_plan()
+        raw = art_run_plan()
         raw["roles"].append(dict(SCULPT_REVIEWER))
         next(task for task in raw["tasks"] if task["id"] == "M03")["verification"]["verifier_role"] = "sculpt-reviewer"
         current = validate_persisted_plan(raw, "adaptive")
@@ -260,7 +260,7 @@ class APreR30LeadThatCannotLeadLocksNothingTests(unittest.TestCase):
     ``verifier_role or task.role`` - or its own role, and both were
     admitted; so was work verified by the generic legacy-worker. Reproduced
     by calling plan_change_candidate as the replanner's admission does, on
-    the beyondness shape with M01 VERIFIED: the gate stopped M03 for want of
+    the art-run shape with M01 VERIFIED: the gate stopped M03 for want of
     a lead, the on-call's change naming art-reviewer was refused with
     "judged by ['None']" (or ['character-artist']), naming the profession
     itself was refused as its own lead - no change could pass and the stop
@@ -269,7 +269,7 @@ class APreR30LeadThatCannotLeadLocksNothingTests(unittest.TestCase):
     """
 
     def _current(self, m01_lead: str | None, *, m03_lead: str | None = None):
-        raw = beyondness_plan()
+        raw = art_run_plan()
         for task in raw["tasks"]:
             if task["role"] != "character-artist":
                 continue
@@ -340,7 +340,7 @@ class APreR30LeadThatCannotLeadLocksNothingTests(unittest.TestCase):
         with "judged by ['legacy-worker']".
         """
 
-        base = validate_persisted_plan(beyondness_plan(), "adaptive")
+        base = validate_persisted_plan(art_run_plan(), "adaptive")
         legacy = replace(base.role_map["art-reviewer"], id="legacy-worker", name="Legacy Serial Worker")
 
         def with_leads(m01: str, m03: str):
@@ -368,7 +368,7 @@ class APreR30LeadThatCannotLeadLocksNothingTests(unittest.TestCase):
         "judged by ['art-reviewer']".
         """
 
-        current = validate_persisted_plan(beyondness_plan(), "adaptive")
+        current = validate_persisted_plan(art_run_plan(), "adaptive")
         lax = AProfessionKeepsItsLeadTests.LAX_LEAD
 
         def admit(state: str) -> list[str]:
@@ -402,7 +402,7 @@ class TheStatusNamesTheLeadTests(DepartmentRun):
 
         from codex_autopilot.status import project_status_snapshot
 
-        raw = beyondness_plan(lead_on_every_task=False)
+        raw = art_run_plan(lead_on_every_task=False)
         plan = validate_persisted_plan(raw, "adaptive")
         self.assertIsNone(plan.task_map["M03"].verification.verifier_role)
         state = self.store.load()

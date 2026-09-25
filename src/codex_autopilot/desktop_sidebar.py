@@ -11,7 +11,7 @@ project's roots - a subfolder of a root lands in no project. App Server's
 projectId reaches the assignments only through Desktop's own observe ->
 adopt migration, which on the owner's machine is stuck
 (``threadAssignmentsMigrated=false``, 62 ids pending). Every worker and
-verifier thread of the beyondness run - 65 of them, cwd
+verifier thread of the art run - 65 of them, cwd
 ``<root>/.codex-autopilot/staged-artifacts/<task>/workspace`` - had the
 right projectId and was invisible in the project, while the check said
 INSIDE. R5 says the status never passes "projectId set" off as "visible in

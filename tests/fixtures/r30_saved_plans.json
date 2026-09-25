@@ -1,7 +1,7 @@
 {
- "_about": "Plans as the pre-R30 runtime (commit 8d6055d) saved them, with the digest it bound PLAN_VERIFIED to. plain: the beyondness shape (3 roles, art-reviewer, no departments). declared: the same with a 0.13 departments entry carrying a pinned rubric tuple.",
+ "_about": "Plans as the pre-R30 runtime (commit 8d6055d) saved them, with the digest it bound PLAN_VERIFIED to. plain: the art-run shape (3 roles, art-reviewer, no departments). declared: the same with a 0.13 departments entry carrying a pinned rubric tuple.",
  "declared": {
-  "plan_sha256": "028c1ee08c29fc10e9ac5fc9d45e9fb9bf51502e4b88b9bd88f58021a2cdf27c",
+  "plan_sha256": "d34ed1ab86a9a237d76dac0a23ce7c19fedc5ea4b4f817cc2b4a9c236560f15e",
   "saved_plan": {
    "computer_use_slots": 1,
    "departments": [
@@ -119,7 +119,7 @@
          "unittest",
          "discover",
          "-s",
-         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+         "/opt/autopilot/tests/_synthetic_suite/tests"
         ],
         "description": "Run the full suite in a clean identity environment.",
         "expected_exit_code": 0,
@@ -184,7 +184,7 @@
          "unittest",
          "discover",
          "-s",
-         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+         "/opt/autopilot/tests/_synthetic_suite/tests"
         ],
         "description": "Run the full suite in a clean identity environment.",
         "expected_exit_code": 0,
@@ -249,7 +249,7 @@
          "unittest",
          "discover",
          "-s",
-         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+         "/opt/autopilot/tests/_synthetic_suite/tests"
         ],
         "description": "Run the full suite in a clean identity environment.",
         "expected_exit_code": 0,
@@ -269,7 +269,7 @@
   }
  },
  "plain": {
-  "plan_sha256": "d2b4e69c9e1b349af7a01cea98efa80ff88c38d5b00a7d342544d49d67477417",
+  "plan_sha256": "b2c6d8b1be6c01d059bc29b0d5b7b062e33d9c802dc82304fed5c674feb7efbc",
   "saved_plan": {
    "computer_use_slots": 1,
    "execution_strategy": "serial",
@@ -375,7 +375,7 @@
          "unittest",
          "discover",
          "-s",
-         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+         "/opt/autopilot/tests/_synthetic_suite/tests"
         ],
         "description": "Run the full suite in a clean identity environment.",
         "expected_exit_code": 0,
@@ -440,7 +440,7 @@
          "unittest",
          "discover",
          "-s",
-         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+         "/opt/autopilot/tests/_synthetic_suite/tests"
         ],
         "description": "Run the full suite in a clean identity environment.",
         "expected_exit_code": 0,
@@ -505,7 +505,7 @@
          "unittest",
          "discover",
          "-s",
-         "/Users/p.erenburg/Documents/Codex/autopilot-hiring/tests/_synthetic_suite/tests"
+         "/opt/autopilot/tests/_synthetic_suite/tests"
         ],
         "description": "Run the full suite in a clean identity environment.",
         "expected_exit_code": 0,

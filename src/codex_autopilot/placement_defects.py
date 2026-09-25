@@ -139,7 +139,7 @@ def run_thread_placements(cfg: Any, state: Any, codex_home: Any) -> dict[str, li
     Measured again from each session's recorded cwd, not read from its
     recorded placement: every thread created before the honest check was
     recorded INSIDE by the projectId alone - the five M01 threads of the
-    beyondness run among them.
+    art run among them.
 
     Two lists, never one. The first version listed everything that was not
     INSIDE as outside (the third independent check): with Desktop's state

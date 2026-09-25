@@ -15,7 +15,7 @@ import json
 import re
 from unittest import mock
 
-from _departments import DepartmentRun, art_task, beyondness_plan
+from _departments import DepartmentRun, art_task, art_run_plan
 from _plan_contract import canonicalize_plan
 from codex_autopilot.pipeline_engineer import PipelineIncidentStore
 
@@ -28,9 +28,9 @@ def _tickets(cfg, kind: str) -> list[dict]:
 
 
 def _eighteen_tasks() -> dict:
-    """The live beyondness shape: 18 tasks, 3 roles, lead art-reviewer, no departments."""
+    """The live art-run shape: 18 tasks, 3 roles, lead art-reviewer, no departments."""
 
-    raw = beyondness_plan()
+    raw = art_run_plan()
     raw["tasks"] = [
         art_task(
             f"M{index:02d}",
@@ -46,7 +46,7 @@ def _eighteen_tasks() -> dict:
 def _two_broken_siblings() -> dict:
     """A saved plan from before R30: M01 names no lead, M02 names its own profession."""
 
-    raw = beyondness_plan()
+    raw = art_run_plan()
     raw["execution_strategy"] = "parallel"
     raw["max_parallel_workers"] = 3
     for task in raw["tasks"]:
@@ -66,7 +66,7 @@ class _Preadmitted(DepartmentRun):
             super().initialize(plan_file, skill)
 
 
-class TheBeyondnessShapeIsStaffedTests(DepartmentRun):
+class TheArtRunShapeIsStaffedTests(DepartmentRun):
     plan_payload = staticmethod(_eighteen_tasks)
 
     def test_every_task_is_staffed_before_the_first_and_the_plan_digest_stands(self) -> None:

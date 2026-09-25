@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import replace
 from unittest import mock
 
-from _departments import DepartmentRun, beyondness_plan
+from _departments import DepartmentRun, art_run_plan
 from codex_autopilot.pipeline_engineer import PipelineIncidentStore
 
 
@@ -38,9 +38,9 @@ def _tickets(cfg, kind: str) -> list[dict]:
 
 
 def _full_shape() -> dict:
-    """beyondness, with M02 taking M01's output and delivering a file of its own."""
+    """the art run, with M02 taking M01's output and delivering a file of its own."""
 
-    raw = beyondness_plan()
+    raw = art_run_plan()
     m02 = raw["tasks"][1]
     m02["context"]["dependency_outputs"] = ["M01"]
     m02["outputs"] = [{"id": "sheet", "description": "The reference sheet.",
@@ -51,7 +51,7 @@ def _full_shape() -> dict:
 def _two_departments() -> dict:
     """Two departments at once: character work led by art-reviewer, reference work by character-artist."""
 
-    raw = beyondness_plan()
+    raw = art_run_plan()
     raw["execution_strategy"] = "parallel"
     raw["max_parallel_workers"] = 3
     for task in raw["tasks"]:

@@ -92,7 +92,10 @@ def validate(tree: Path) -> None:
             raise RuntimeError(f"release contamination: {relative}")
         if path.is_file() and path.suffix in {".py", ".md", ".json", ".toml", ".sh", ""}:
             text = path.read_text(encoding="utf-8", errors="replace")
-            for token in ("p." + "erenburg", "Beyond" + "ness", "ASTRA ROTATION " + "TEST", "NEXT_" + "REASONING", "dispatcher-" + "test"):
+            # The game's name also travels in lower case - as a run name, a
+            # fixture helper, a path - and the capitalised token alone let a
+            # whole release series carry it into comments, tests and docs.
+            for token in ("p." + "erenburg", "Beyond" + "ness", "beyond" + "ness", "ASTRA ROTATION " + "TEST", "NEXT_" + "REASONING", "dispatcher-" + "test"):
                 if token in text:
                     raise RuntimeError(f"release contains {token!r}: {relative}")
 
