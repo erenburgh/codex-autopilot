@@ -40,6 +40,11 @@ class InstallerTests(unittest.TestCase):
         fake_codex.chmod(0o755)
         env = os.environ.copy()
         env.update({"HOME": str(home), "CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root), "CODEX_AUTOPILOT_CODEX_BIN": str(fake_codex), "CODEX_AUTOPILOT_PYTHON": os.environ.get("PYTHON", "python3"), "CODEX_AUTOPILOT_SKIP_LAUNCHD": "1"})
+        # CODEX_HOME wins over HOME in install.sh. Inherited, it pointed the
+        # installer at whatever Codex home the developer's shell named - its
+        # plugin cache (which install.sh empties) and its execpolicy rules -
+        # and the stray seeded under this test's home was never looked at.
+        env["CODEX_HOME"] = str(home / ".codex")
         hook_commands = []
         installed_versions = []
         for _ in range(2):
@@ -169,6 +174,11 @@ class RepairedInstallationSurvivesReinstallTests(unittest.TestCase):
     """
 
     def _install(self, env, *, check=True):
+        # Seeded under this test's home: install.sh removes strays from the
+        # plugin cache of the Codex home it works on, so the seed being gone
+        # proves that home was this one and not one named by the shell.
+        seeded = Path(env["HOME"]) / ".codex/plugins/cache/codex-autopilot-local/.seeded-by-test"
+        seeded.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
             [str(ROOT / "install.sh"), "--profile", "adaptive"],
             cwd=ROOT,
@@ -178,6 +188,7 @@ class RepairedInstallationSurvivesReinstallTests(unittest.TestCase):
         )
         if check:
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(seeded.exists(), "install.sh worked on another Codex home")
         return result
 
     def test_a_reinstall_moves_an_accepted_repair_aside_instead_of_deleting_it(self) -> None:
@@ -194,6 +205,9 @@ class RepairedInstallationSurvivesReinstallTests(unittest.TestCase):
             "CODEX_AUTOPILOT_CODEX_BIN": str(fake_codex),
             "CODEX_AUTOPILOT_PYTHON": os.environ.get("PYTHON", "python3"),
             "CODEX_AUTOPILOT_SKIP_LAUNCHD": "1",
+            # Never the developer's own: install.sh empties the plugin cache
+            # and edits the execpolicy rules of whatever CODEX_HOME names.
+            "CODEX_HOME": str(home / ".codex"),
         })
         self._install(env)
         target = install_root / __version__
@@ -248,6 +262,9 @@ class RepairedInstallationSurvivesReinstallTests(unittest.TestCase):
             "CODEX_AUTOPILOT_CODEX_BIN": str(fake_codex),
             "CODEX_AUTOPILOT_PYTHON": os.environ.get("PYTHON", "python3"),
             "CODEX_AUTOPILOT_SKIP_LAUNCHD": "1",
+            # Never the developer's own: install.sh empties the plugin cache
+            # and edits the execpolicy rules of whatever CODEX_HOME names.
+            "CODEX_HOME": str(home / ".codex"),
         })
         self._install(env)
         self._install(env)

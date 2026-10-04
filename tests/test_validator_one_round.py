@@ -584,8 +584,14 @@ class TheExhaustedBudgetIsTheOnCallsTests(_Replanning):
 
     def test_the_on_call_raises_a_fresh_round_that_knows_the_refusals(self) -> None:
         from _appserver_fakes import activate_via_app_server
+        from _gates import patch_hook_trust_gates
         from codex_autopilot.engineer_stop_actions import request_plan_change
 
+        # activate_via_app_server passes the production hook-trust gate. Left
+        # in place, it asked the machine's real Codex about its real hooks,
+        # and the test passed only where those happened to be trusted - under
+        # a temporary CODEX_HOME it failed on "CODEX_HOME ... does not exist".
+        patch_hook_trust_gates(self)
         cfg, store, outcome = self.exhaust()
         engineer = outcome.descriptors[0]
         self.assertEqual(engineer.kind, "pipeline_engineer")
