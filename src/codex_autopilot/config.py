@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import tomllib
 
+from .codex_binaries import relocated_desktop_codex
 from .language import DEFAULT_LANGUAGE, normalize_language
 from .skill_fetch import (
     DEFAULT_SKILL_FETCH_HOSTS,
@@ -45,6 +46,11 @@ DEFAULT_SECOND_LEAD_EVERY = 5
 
 @dataclass(frozen=True, slots=True)
 class DesktopConfig:
+    # The Codex the run talks to. Normally exactly the config's line; when
+    # that line names an address where ChatGPT.app used to keep its Codex
+    # and the file is gone, it is the same app's current Codex instead, and
+    # binary_moved_from keeps the configured line so doctor and the status
+    # card can say so (codex_binaries.relocated_desktop_codex).
     binary: str = "codex"
     permission_profile: str = ":workspace"
     # App Server project ids and Desktop sidebar project ids are different
@@ -54,6 +60,7 @@ class DesktopConfig:
     title_prefix: str = "Codex Autopilot"
     turn_timeout_seconds: int = 14_400
     reconcile_timeout_seconds: int = 300
+    binary_moved_from: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +239,8 @@ def load_config(root_or_path: Path) -> Config:
     if not skill_path_raw:
         raise ValueError("desktop.skill_path is required")
     auto_commit = bool((data.get("git") or {}).get("auto_commit", False))
+    configured_binary = str(desktop.get("binary", "codex"))
+    relocated = relocated_desktop_codex(configured_binary)
     return Config(
         root=root,
         state_dir=state_dir,
@@ -241,7 +250,8 @@ def load_config(root_or_path: Path) -> Config:
         skill_name=skill_name,
         skill_path=resolve_skill_path(str(skill_path_raw)),
         desktop=DesktopConfig(
-            binary=str(desktop.get("binary", "codex")),
+            binary=str(relocated) if relocated is not None else configured_binary,
+            binary_moved_from=configured_binary if relocated is not None else None,
             permission_profile=permission,
             project_id=_optional_string(desktop.get("project_id")),
             desktop_project_id=_optional_string(desktop.get("desktop_project_id")),

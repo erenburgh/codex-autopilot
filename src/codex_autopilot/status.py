@@ -328,6 +328,9 @@ def render_short_status(
     hook_signal = _hook_trust_signal(state)
     if hook_signal:
         lines.append(f"{words['hook']}: {_clip(hook_signal, 240)}")
+    channel = _channel_line(cfg)
+    if channel:
+        lines.append(channel)
     # R6: one line while a finding on the project's roots waits for her.
     roots = _roots_line(cfg, state)
     if roots:
@@ -430,6 +433,25 @@ def _hook_trust_signal(state: RunState) -> str:
     return ""
 
 
+def _channel_line(cfg: Config, *, russian: bool | None = None) -> str:
+    """One line while the run follows the app's Codex to its new address.
+
+    The run talks to a different path than the one in its config; that is
+    worth her knowing, and pinning it is one edited line
+    (codex_binaries.relocated_desktop_codex).
+    """
+
+    moved = cfg.desktop.binary_moved_from
+    if not moved:
+        return ""
+    from .codex_binaries import relocation_note
+    from .language import is_russian
+
+    if russian is None:
+        russian = is_russian(cfg.language)
+    return "Codex: " + relocation_note(moved, cfg.desktop.binary, russian=russian)
+
+
 def _board(cfg: Config, state: RunState, plan: Plan, *, detailed: bool) -> list[str]:
     from .board import render_board
 
@@ -510,6 +532,7 @@ def render_project_status(
             f"Canonical cwd: {placement['canonical_cwd']}",
             f"Project association: {placement['association']}",
             f"Project roots: {_roots_line(cfg, state, russian=False) or 'nothing waits for a decision'}",
+            *([_channel_line(cfg, russian=False)] if cfg.desktop.binary_moved_from else []),
             (
                 # The model and reasoning level are removed from here: no
                 # production path writes them, and the substituted "Host

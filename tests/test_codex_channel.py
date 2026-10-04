@@ -53,7 +53,7 @@ class ChoosingAChannelTests(unittest.TestCase):
     def test_discovery_survives_a_binary_that_cannot_be_run(self) -> None:
         with mock.patch.object(codex_binaries.shutil, "which", return_value=None):
             with mock.patch.object(
-                codex_binaries, "DESKTOP_BUNDLED", Path("/nope/codex")
+                codex_binaries, "DESKTOP_APP", Path("/nope/ChatGPT.app")
             ):
                 self.assertEqual(codex_binaries.discover_codex_binaries(), ())
 

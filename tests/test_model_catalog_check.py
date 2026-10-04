@@ -197,9 +197,9 @@ class DoctorAsksTheProjectsOwnChannelTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         body = source[source.index("def doctor(project: Path) -> int:") :]
         body = body[: body.index("\n    for name, ok, details in checks:")]
-        self.assertIn("load_config(project).desktop.binary", body)
+        self.assertIn("load_config(project).desktop", body)
         fallback = body.index('shutil.which("codex")')
-        configured = body.index("load_config(project).desktop.binary")
+        configured = body.index("load_config(project).desktop")
         self.assertLess(fallback, configured, "the configured binary must win")
 
     def test_a_projectless_directory_still_works(self) -> None:

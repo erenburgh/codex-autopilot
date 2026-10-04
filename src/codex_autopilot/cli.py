@@ -13,6 +13,7 @@ import time
 from . import __version__
 from .appserver import AppServerClient
 from .bootstrap import initialize_project, purge_project_state
+from .codex_binaries import relocation_note
 from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, load_config
 from .control import arm, find_project_root, handle_interrupt_hook, handle_post_tool_hook, handle_prompt_hook, handle_stop_hook, pid_alive, reactivate_desktop_relay_owner, recreate_archived_desktop_retry, spawn_automatic_app_server_relay, status_text
 from .hook_trust import HookPreflightError, HookTrustApprovalRequired
@@ -1120,7 +1121,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def doctor(project: Path) -> int:
-    checks: list[tuple[str, bool, str]] = []
+    # ok is None for a note: printed, never a failure.
+    checks: list[tuple[str, bool | None, str]] = []
     checks.append(("macOS", sys.platform == "darwin", sys.platform))
     checks.append(("Python >=3.11", sys.version_info >= (3, 11), sys.version.split()[0]))
     # The project's own channel, when it has one. A project may point
@@ -1132,16 +1134,32 @@ def doctor(project: Path) -> int:
     # while the run's own channel served it perfectly.
     codex = shutil.which("codex")
     try:
-        configured = load_config(project).desktop.binary
+        desktop = load_config(project).desktop
     except Exception:
-        configured = ""
+        desktop = None
+    configured = desktop.binary if desktop is not None else ""
     if configured:
         resolved = shutil.which(configured) or (
             configured if Path(configured).is_file() else ""
         )
-        if resolved:
-            codex = resolved
-    checks.append(("Codex CLI", bool(codex), codex or "not found"))
+        # A configured binary that is not there is reported, not replaced
+        # with whatever PATH has. Measured 4 Oct 2026: a config naming the
+        # app's old Codex address fell through to an older Homebrew CLI
+        # here, and doctor called the pinned GPT-6 Sol "no longer served"
+        # while the project's own channel serves it. The app moving its own
+        # Codex is followed by load_config, and said on the next line.
+        codex = resolved or None
+    checks.append((
+        "Codex CLI",
+        bool(codex),
+        codex or (f"{configured} (desktop.binary) not found" if configured else "not found"),
+    ))
+    if desktop is not None and desktop.binary_moved_from:
+        checks.append((
+            "desktop.binary",
+            None,
+            relocation_note(desktop.binary_moved_from, desktop.binary),
+        ))
     if codex:
         auth = subprocess.run([codex, "login", "status"], capture_output=True, text=True)
         checks.append(("Codex authentication", auth.returncode == 0, (auth.stdout or auth.stderr).strip()))
@@ -1170,8 +1188,8 @@ def doctor(project: Path) -> int:
         except Exception as exc:
             checks.append(("App Server", False, str(exc)))
     for name, ok, details in checks:
-        print(f"{'PASS' if ok else 'FAIL'}  {name}: {details}")
-    return 0 if all(ok for _, ok, _ in checks) else 1
+        print(f"{'NOTE' if ok is None else 'PASS' if ok else 'FAIL'}  {name}: {details}")
+    return 0 if all(ok is not False for _, ok, _ in checks) else 1
 
 
 
