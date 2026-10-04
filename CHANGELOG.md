@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.14.1-beta
+
+Runs start again after the ChatGPT update of 3 October.
+
+That update moved the Codex that ships inside ChatGPT.app. It used to be one
+file, `Contents/Resources/codex`. Now it is a package directory,
+`Contents/Resources/codex-cli/`, whose `codex-package.json` names the
+entrypoint (`bin/codex`), and the old file is gone. Autopilot named the old
+path outright, and three things broke on the next day:
+
+- A machine without a separate CLI found no Codex at all. A machine with an
+  older Homebrew CLI picked that one, which did not serve the pinned model.
+- A project created earlier carries the old path in its config. App Server
+  could not be started (ENOENT), the hook-trust gate refused with
+  `hooks/list: [Errno 2] No such file or directory`, and no run could start.
+- `doctor` fell through to the CLI on PATH and reported the pinned model "no
+  longer served", sending the reader after a model pin that was correct.
+
+Now the app's Codex is found through the package manifest, and the old file
+is still a candidate in case an older app is installed. A manifest that is
+missing, broken, has no entrypoint or names something outside its own
+directory is skipped without an error. New projects write the new path.
+
+A project whose `binary` is one of the app's former addresses, with nothing
+there any more, runs on the same app's current Codex. `doctor` and the status
+card say so in one line: what the config names, what is used instead, and the
+`binary = "..."` line that pins it. The config itself is not rewritten.
+
+Only that move is followed. Any other missing `binary` is the same error as
+before, and nothing is put in its place: another Codex is another model
+catalog, and choosing it is the owner's decision. `doctor` now reports such a
+binary as not found instead of quietly asking whatever is on PATH.
+
+The uninstall tests no longer reach the real home directory. Two of them ran
+the real `uninstall` with only the install root replaced, and one run of the
+suite removed the installed runtime's wake-up agent and its execpolicy block.
+All four paths they touch are temporary now, and seeded, so the tests also
+prove `uninstall` got to them. The installer tests had the same hole: they
+inherited `CODEX_HOME`, which `install.sh` prefers over `HOME`, so a shell
+that named a Codex home pointed them at its plugin cache and execpolicy rules.
+They now set it to their own temporary home.
+
 ## 0.14.0-beta
 
 A run goes on without its owner. A stop is a fault of the runtime, the
