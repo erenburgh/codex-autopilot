@@ -427,7 +427,7 @@ class PurgeAndReplaceSnapshotTests(unittest.TestCase):
         install_root = Path(tempfile.mkdtemp(prefix="codex-autopilot-uninstall-"))
         args = SimpleNamespace(yes=True, project=root, purge_project_state=True)
         out = io.StringIO()
-        with mock.patch.dict(os.environ, {"CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root)}), mock.patch("codex_autopilot.cli.pid_alive", return_value=False), mock.patch("codex_autopilot.cli.shutil.which", return_value=None), contextlib.redirect_stdout(out):
+        with _uninstall_outside_the_real_home(self, install_root), mock.patch("codex_autopilot.cli.pid_alive", return_value=False), mock.patch("codex_autopilot.cli.shutil.which", return_value=None), contextlib.redirect_stdout(out):
             self.assertEqual(uninstall(args), 0)
         (snapshot,) = self._snapshots(root, "purged")
         self.assertIn(str(snapshot), out.getvalue(), "the snapshot path was not named to the human")
@@ -754,7 +754,7 @@ class CoreTests(unittest.TestCase):
 
         install_root = Path(tempfile.mkdtemp(prefix="codex-autopilot-uninstall-"))
         args = SimpleNamespace(yes=True, project=root, purge_project_state=False)
-        with mock.patch.dict(os.environ, {"CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root)}), mock.patch("codex_autopilot.cli.pid_alive", side_effect=[True, False, False]), mock.patch("codex_autopilot.cli.shutil.which", return_value=None):
+        with _uninstall_outside_the_real_home(self, install_root), mock.patch("codex_autopilot.cli.pid_alive", side_effect=[True, False, False]), mock.patch("codex_autopilot.cli.shutil.which", return_value=None):
             self.assertEqual(uninstall(args), 0)
         self.assertTrue((root / ".codex-autopilot/pause-requested").exists())
         self.assertFalse(install_root.exists())
@@ -770,6 +770,53 @@ class CoreTests(unittest.TestCase):
         root = Path("/tmp/product/module")
         projects = [{"id": "broad", "roots": [{"path": "/tmp"}]}, {"id": "exact", "roots": [{"path": "/tmp/product"}]}]
         self.assertEqual(match_saved_project(root, projects)["id"], "exact")
+
+
+@contextlib.contextmanager
+def _uninstall_outside_the_real_home(case, install_root):
+    """Run ``uninstall`` against throwaway copies of everything it removes.
+
+    ``uninstall`` takes out four things that live outside the install root:
+    the launchd plist under ``~/Library/LaunchAgents``, the managed block in
+    ``$CODEX_HOME/rules/default.rules``, the launch-request directory under
+    the system temp dir, and (through ``which``) the Codex plugins. These
+    tests substituted only the install root and ``which``. Measured on
+    03.10.2026: one suite run on the owner's machine deleted her real wake
+    agent plist and the execpolicy block of her installed runtime, and the
+    rmtree of the launch-request directory is the one her live runtime
+    uses. Every path is now a temporary one, and each is seeded so the test
+    also proves uninstall removed it - a substitution that silently stopped
+    applying would fail here instead of reaching the real home again.
+    """
+
+    from codex_autopilot.execpolicy import MARKER
+
+    scratch = Path(tempfile.mkdtemp(prefix="codex-autopilot-uninstall-home-"))
+    codex_home = scratch / "codex-home"
+    rules = codex_home / "rules" / "default.rules"
+    rules.parent.mkdir(parents=True)
+    rules.write_text('prefix_rule(pattern=["git", "status"], decision="allow")\n'
+                     f"{MARKER}\n"
+                     'prefix_rule(pattern=["/opt/autopilot/codex-autopilot", "start-skill"], decision="allow")\n',
+                     encoding="utf-8")
+    plist = scratch / "LaunchAgents" / "com.codex-autopilot.wake.plist"
+    plist.parent.mkdir(parents=True)
+    plist.write_text("<plist/>", encoding="utf-8")
+    launch_dir = scratch / "launch" / "launch-requests"
+    launch_dir.mkdir(parents=True)
+    with mock.patch.dict(
+        os.environ,
+        {
+            "CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root),
+            "CODEX_HOME": str(codex_home),
+            "CODEX_AUTOPILOT_LAUNCH_DIR": str(launch_dir),
+        },
+    ), mock.patch("codex_autopilot.cli._wake_agent_plist", return_value=plist):
+        yield
+    case.assertFalse(plist.exists(), "uninstall did not reach the substituted wake agent")
+    case.assertNotIn(MARKER, rules.read_text(encoding="utf-8"), "uninstall did not reach the substituted execpolicy")
+    case.assertIn('"git", "status"', rules.read_text(encoding="utf-8"), "a foreign rule was removed")
+    case.assertFalse(launch_dir.parent.exists(), "uninstall did not reach the substituted launch directory")
 
 
 if __name__ == "__main__":
