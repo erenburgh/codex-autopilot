@@ -554,10 +554,10 @@ class TheStatusCardSaysWhatItUsesTests(unittest.TestCase):
         plan_file = m.base / "plan.json"
         plan_file.write_text(json.dumps(graph()), encoding="utf-8")
         # What 0.12.2-0.14.0 wrote for the app's Codex.
-        with mock.patch.object(bootstrap, "newest_codex_binary", return_value=str(m.legacy)):
-            initialize_verified_project(
-                root, plan_file, profile="adaptive", skill_path=skill, language=language
-            )
+        initialize_verified_project(
+            root, plan_file, profile="adaptive", skill_path=skill, language=language,
+            codex_binary=str(m.legacy),
+        )
         return m, root, entry
 
     def test_the_card_and_the_report_carry_one_line(self) -> None:

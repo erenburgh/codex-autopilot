@@ -27,7 +27,8 @@ import io
 import json
 import os
 from pathlib import Path
-import sys
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 
@@ -238,7 +239,6 @@ class DoctorOnAnAppOnlyMachineTests(unittest.TestCase):
 
 class UninstallOnAnAppOnlyMachineTests(unittest.TestCase):
     def test_the_plugin_and_the_marketplace_are_removed_through_the_apps_codex(self) -> None:
-        import tempfile
         from types import SimpleNamespace
 
         from test_core import _uninstall_outside_the_real_home
@@ -278,6 +278,42 @@ class ThePlacementProbeAsksTheAppsCodexTests(unittest.TestCase):
                 log_path=m.state / "placement.jsonl",
             )
         self.assertIn([str(entry), "app-server", "--listen", "stdio://"], m.calls())
+
+
+class TheSuiteStartsNoRealCodexTests(unittest.TestCase):
+    """The suite's one door to bootstrap looks at no machine.
+
+    Every test project is created through _plan_contract's
+    initialize_verified_project. Unnamed, bootstrap would look for the
+    newest Codex on the machine - the real ChatGPT.app and Homebrew - and
+    run each; the config would then name a real Codex for anything that
+    starts App Server from it.
+    """
+
+    def test_a_test_project_is_created_without_looking_at_the_machine(self) -> None:
+        import tomllib
+
+        from _gates import patch_hook_trust_gates
+        from _plan_contract import initialize_verified_project, no_codex_here
+
+        patch_hook_trust_gates(self)
+        root = Path(tempfile.mkdtemp(prefix="codex-autopilot-no-codex-")).resolve()
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / ".git").mkdir()
+        skill = root / "SKILL.md"
+        skill.write_text("# test skill\n", encoding="utf-8")
+        from test_desktop_lifecycle import graph
+
+        plan = root / "plan.json"
+        plan.write_text(json.dumps(graph()), encoding="utf-8")
+        looked = AssertionError("a test project looked for the machine's Codex")
+        with mock.patch.object(codex_binaries, "discover_codex_binaries", side_effect=looked), mock.patch.object(
+            codex_binaries, "_version", side_effect=looked
+        ):
+            initialize_verified_project(root, plan, profile="adaptive", skill_path=skill)
+        written = tomllib.loads((root / ".codex-autopilot/config.toml").read_text(encoding="utf-8"))
+        self.assertEqual(written["desktop"]["binary"], str(no_codex_here(root)))
+        self.assertFalse(no_codex_here(root).exists(), "a stray start must fail, not run something")
 
 
 class AnotherProcessIsToldWhereTheAppIsTests(unittest.TestCase):

@@ -195,12 +195,27 @@ def initialize_verified_project(
     # are not testing. Tests that are about hiring pass the mode they mean;
     # the shipped default is asserted directly in test_skill_screening.
     kwargs.setdefault("skill_screening", "never")
+    # Never the machine's own Codex. Unnamed, bootstrap looks for the newest
+    # on the machine and runs `--version` on each it finds: measured 9 Oct
+    # 2026 under the isolated run, 880 starts of the real ChatGPT.app and
+    # Homebrew binaries from 39 test modules, and two tests that went on to
+    # start the app's real App Server from the written config
+    # (test_resume_end_to_end, through observe_worker_states). A test that
+    # needs a Codex names its fake; anything else gets a path where nothing
+    # is, so a stray start fails instead of reaching a real one.
+    kwargs.setdefault("codex_binary", str(no_codex_here(root)))
     return initialize_project(
         root,
         plan_file,
         plan_verification=receipt,
         **kwargs,
     )
+
+
+def no_codex_here(root: Path) -> Path:
+    """The binary a test project names when its test brings no Codex."""
+
+    return Path(root).expanduser().resolve() / "no-codex-in-tests" / "codex"
 
 
 def clean_suite_check() -> dict[str, Any]:
