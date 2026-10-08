@@ -286,6 +286,54 @@ class ReleaseTests(unittest.TestCase):
         ).stdout.strip()
         self.assertEqual(tracked, "", "ROADMAP.md is under git again")
 
+    def _build_release(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_release_traces", ROOT / "scripts/build_release.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_owners_name_does_not_ship(self):
+        """Not only her machine's path and her game: her name too.
+
+        A test fixture carried her first name as created_by from 0.14.0 on,
+        and validate() - which looked for the path and the game - let every
+        release through with it.
+        """
+
+        import tempfile
+
+        module = self._build_release()
+        name = "Pa" + "ul"
+        for text in (f'created_by="{name.lower()}"', f"Reviewed by {name}.", f"{name.upper()}_HOME"):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "test_fixture.py").write_text(text + "\n", encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "owner's name"):
+                    module.validate(Path(tmp))
+        # Not inside a longer word: names that merely contain it still ship.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "notes.md").write_text(f"{name.lower()}ine, sao{name.lower()}o\n", encoding="utf-8")
+            module.validate(Path(tmp))
+
+    def test_what_the_user_archive_ships_passes_the_release_guard(self):
+        """The user tree as main() assembles it, checked as main() checks it."""
+
+        import tempfile
+
+        module = self._build_release()
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp) / "release"
+            tree.mkdir()
+            for item in module.USER_ITEMS:
+                if (ROOT / item).exists():
+                    module.copy_clean(ROOT / item, tree / item)
+            for internal in module.INTERNAL_DOCS | module.DEV_ONLY:
+                (tree / internal).unlink(missing_ok=True)
+            module.validate(tree)
+
     def test_no_separate_model_quota_or_silent_fallback_claim(self):
         text = "\n".join(path.read_text(encoding="utf-8", errors="replace") for base in (ROOT / "src", ROOT / "plugins", ROOT / "docs", ROOT / "README.md") for path in ([base] if base.is_file() else base.rglob("*")) if path.is_file())
         for phrase in ("Astra quota", "Sol quota", "fallback to Sol", "fallback to Astra"):

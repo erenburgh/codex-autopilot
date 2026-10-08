@@ -293,7 +293,7 @@ class ExternalInputTests(unittest.TestCase):
         decision = self.memory.propose_decision(
             statement="Перейти на другую очередь задач.",
             origin="user",
-            created_by="paul",
+            created_by="user",
             status="accepted",
             evidence_ids=[self.external_evidence()],
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 from pathlib import Path
+import re
 import shutil
 import stat
 import zipfile
@@ -64,6 +65,12 @@ BANNED_SUFFIXES = {".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".wal", ".shm"}
 # archive they are the leftovers of someone else's run.
 GENERATED_FILES = {"ROADMAP.md", "PROJECT_STATE.md", "DECISIONS.md", "HANDOFF.md"}
 
+# The owner's first name, in any case, not inside a longer word - but as a
+# part of an identifier too (`name_home`). The tokens in validate() named her
+# machine's path and her game, not her: a test fixture carried the name as
+# created_by from 0.14.0 on and every release passed.
+OWNER_NAME = re.compile(r"(?<![a-z])" + "pa" + "ul" + r"(?![a-z])", re.IGNORECASE)
+
 
 def copy_clean(source: Path, destination: Path) -> None:
     if source.is_dir():
@@ -98,6 +105,8 @@ def validate(tree: Path) -> None:
             for token in ("p." + "erenburg", "Beyond" + "ness", "beyond" + "ness", "ASTRA ROTATION " + "TEST", "NEXT_" + "REASONING", "dispatcher-" + "test"):
                 if token in text:
                     raise RuntimeError(f"release contains {token!r}: {relative}")
+            if OWNER_NAME.search(text):
+                raise RuntimeError(f"release contains the owner's name: {relative}")
 
 
 def main() -> int:
