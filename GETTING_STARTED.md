@@ -4,7 +4,7 @@
 
 - macOS.
 - Codex Desktop.
-- The official Codex CLI, signed in, with `codex app-server` available.
+- Codex, signed in: the one Codex Desktop carries, or the official Codex CLI. Autopilot uses the newer of the two.
 - An eligible ChatGPT/Codex account.
 - Python 3.11 or newer.
 - An existing Git repository for the project Autopilot will change. A bare `git init` is enough; no commit is needed.
@@ -27,8 +27,8 @@ Use `--profile host-settings` if every fresh worker should use App Server host d
 
 The installer:
 
-1. checks macOS, Python 3.11+, `codex app-server`, and Codex login;
-2. optionally installs missing Python through an existing Homebrew and missing Codex CLI through npm;
+1. checks macOS, Python 3.11+, Codex App Server and Codex login, through the newest Codex on the machine - Codex Desktop's own or the `codex` on PATH - the same one a new project is created with;
+2. optionally installs missing Python through an existing Homebrew and, when the machine has no Codex at all, the Codex CLI through npm;
 3. creates `~/Library/Application Support/CodexAutopilot/<version>/` with a pip-free venv, the runtime tree (sources, the test suite, docs, the installer), and both profile bundles;
 4. replaces the memory MCP and lifecycle-hook launcher placeholders with the absolute, stable `current/bin/codex-autopilot` runtime path;
 5. updates the `current` symlink;

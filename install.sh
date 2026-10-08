@@ -17,7 +17,7 @@ case "$profile" in adaptive|host-settings) ;; *) echo "Profile must be adaptive 
 
 source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 install_root=${CODEX_AUTOPILOT_INSTALL_ROOT:-"$HOME/Library/Application Support/CodexAutopilot"}
-codex_bin=${CODEX_AUTOPILOT_CODEX_BIN:-"$(command -v codex || true)"}
+codex_bin=${CODEX_AUTOPILOT_CODEX_BIN:-}
 
 find_python() {
   for candidate in "${CODEX_AUTOPILOT_PYTHON:-}" python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
@@ -38,6 +38,19 @@ if [ -z "$python_bin" ] && [ "$install_deps" -eq 1 ]; then
 fi
 [ -n "$python_bin" ] || { echo "Python 3.11+ is required internally. Rerun with --install-deps or install Python 3.11+." >&2; exit 1; }
 
+# Which Codex: the runtime's own rule (codex_binaries.newest_codex_binary),
+# the one bootstrap writes into a new project and preflight checks - the
+# newest of ChatGPT.app's Codex and the `codex` on PATH. This asked PATH
+# alone: on a machine with only ChatGPT.app it stopped with "Codex
+# CLI/App Server is required", and --install-deps installed a separate npm
+# CLI - another channel with another model catalog - instead of using the
+# app's. The app keeps its Codex in Contents/Resources/codex-cli since its
+# update of 3 Oct 2026, and nothing here knew that path.
+if [ -z "$codex_bin" ]; then
+  codex_bin=$(PYTHONPATH="$source_dir/src" "$python_bin" -c 'from codex_autopilot.codex_binaries import newest_codex_binary; print(newest_codex_binary(""))' 2>/dev/null || true)
+  # A Codex on PATH that will not say its version is still a Codex.
+  [ -n "$codex_bin" ] || codex_bin=$(command -v codex || true)
+fi
 if [ -z "$codex_bin" ] && [ "$install_deps" -eq 1 ]; then
   if ! command -v npm >/dev/null 2>&1; then
     command -v brew >/dev/null 2>&1 || { echo "Codex CLI is missing. Install it, then rerun this installer." >&2; exit 1; }
@@ -46,9 +59,10 @@ if [ -z "$codex_bin" ] && [ "$install_deps" -eq 1 ]; then
   npm install -g @openai/codex
   codex_bin=$(command -v codex || true)
 fi
-[ -n "$codex_bin" ] || { echo "Codex CLI/App Server is required. Rerun with --install-deps or install the official Codex CLI." >&2; exit 1; }
-"$codex_bin" app-server --help >/dev/null 2>&1 || { echo "The installed Codex CLI does not provide App Server." >&2; exit 1; }
-"$codex_bin" login status >/dev/null 2>&1 || { echo "Codex is not signed in. Run: codex login" >&2; exit 1; }
+[ -n "$codex_bin" ] || { echo "Codex is required: install ChatGPT (it carries Codex) or the official Codex CLI, or rerun with --install-deps." >&2; exit 1; }
+"$codex_bin" app-server --help >/dev/null 2>&1 || { echo "$codex_bin does not provide App Server." >&2; exit 1; }
+"$codex_bin" login status >/dev/null 2>&1 || { echo "Codex is not signed in. Sign in to Codex, or run: \"$codex_bin\" login" >&2; exit 1; }
+echo "Codex: $codex_bin"
 
 target="$install_root/$version"
 mkdir -p "$install_root"

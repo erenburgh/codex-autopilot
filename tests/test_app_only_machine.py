@@ -181,5 +181,29 @@ class BootstrapWritesTheCodexPreflightCheckedTests(unittest.TestCase):
         self.assertEqual(self.looked, 1)
 
 
+class AnotherProcessIsToldWhereTheAppIsTests(unittest.TestCase):
+    """install.sh and the installed CLI run as processes of their own.
+
+    A test cannot patch DESKTOP_APP inside them, so the bundle can be named
+    through the environment as well - and only a test does that.
+    """
+
+    def setUp(self) -> None:
+        self.m = FakeMachine(self)
+        self.entry = self.m.packaged()
+
+    def test_the_environment_names_the_bundle(self) -> None:
+        absent = self.m.base / "absent/ChatGPT.app"
+        with mock.patch.object(codex_binaries, "DESKTOP_APP", absent), mock.patch.dict(
+            os.environ, {codex_binaries.DESKTOP_APP_ENV: str(self.m.app)}
+        ):
+            self.assertEqual(codex_binaries.desktop_codex(), self.entry)
+
+    def test_unset_the_bundle_is_the_attribute(self) -> None:
+        with mock.patch.object(codex_binaries, "DESKTOP_APP", self.m.app), mock.patch.dict(os.environ):
+            os.environ.pop(codex_binaries.DESKTOP_APP_ENV, None)
+            self.assertEqual(codex_binaries.desktop_codex(), self.entry)
+
+
 if __name__ == "__main__":
     unittest.main()

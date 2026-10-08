@@ -33,7 +33,7 @@ The initiating request also establishes one durable BCP-47 response language for
 
 ## Install
 
-Requirements: macOS, Codex Desktop, an eligible account, and a target project that is a Git repository - a bare `git init` is enough, no commit needed. Python 3.11+ and the Codex CLI are installed for you by `install.sh --install-deps` if they are missing.
+Requirements: macOS, Codex Desktop, an eligible account, and a target project that is a Git repository - a bare `git init` is enough, no commit needed. Codex Desktop carries its own Codex, so a separate Codex CLI is not needed. Python 3.11+ - and, on a machine with no Codex at all, the Codex CLI - are installed for you by `install.sh --install-deps` if they are missing.
 
 Git here is local and has nothing to do with GitHub: no remote is needed, nothing is pushed, and Autopilot creates no commits (`git.auto_commit` is off). It is how the runtime sees what a task changed — `git diff` plus `git ls-files --others` — which is what the declared write-scope rule is checked against.
 
@@ -60,7 +60,7 @@ cd codex-autopilot
 ./install.sh --profile adaptive --install-deps
 ```
 
-The macOS release ZIP can be extracted instead. `--install-deps` uses an existing Homebrew installation when Python is missing and npm when Codex CLI is missing. The installer never installs Homebrew itself.
+The macOS release ZIP can be extracted instead. `--install-deps` uses an existing Homebrew installation when Python is missing and npm when the machine has no Codex at all - neither Codex Desktop's own nor a CLI. The installer never installs Homebrew itself.
 
 The installer also leaves one background agent on the Mac: `~/Library/LaunchAgents/com.codex-autopilot.wake.plist`, loaded with `launchctl`. It runs `codex-autopilot _wake-sweep` at login and every 300 seconds for as long as it stays installed. A sweep arms the wake-up for a task whose rate-limit retry has come due, or for a started run that nobody is left to move (a ticket waiting for the on-call, ready work with no session, a reservation whose dispatcher died), and does nothing else - never for a run you paused; without it, a run asleep on a rate limit would wait for a human after a reboot, because the sleeping wake-up process does not survive one. `CODEX_AUTOPILOT_SKIP_LAUNCHD=1` at install time writes the agent without loading it, and `"$HOME/Library/Application Support/CodexAutopilot/current/bin/codex-autopilot" uninstall --yes` boots it out and deletes it. The full footprint is in [Install and uninstall footprint](docs/INSTALL_FOOTPRINT.md).
 

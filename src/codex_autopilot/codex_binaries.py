@@ -32,6 +32,11 @@ import subprocess
 # Codex Desktop on macOS, shipped as ChatGPT.app. Read at call time, never
 # captured, so a test points it at a fake bundle.
 DESKTOP_APP = Path("/Applications/ChatGPT.app")
+# The same seam for a test that runs a separate process - install.sh, the
+# installed CLI - where the attribute above cannot be patched, the way
+# CODEX_AUTOPILOT_INSTALL_ROOT names the install root. Unset, the bundle is
+# DESKTOP_APP.
+DESKTOP_APP_ENV = "CODEX_AUTOPILOT_DESKTOP_APP"
 
 # Where the app keeps its Codex, relative to the bundle.
 #
@@ -58,7 +63,10 @@ KNOWN_ADDRESSES = (LEGACY_EXECUTABLE, PACKAGE_DIR / "bin" / "codex")
 
 
 def _bundle(app: Path | None) -> Path:
-    return DESKTOP_APP if app is None else Path(app)
+    if app is not None:
+        return Path(app)
+    named = os.environ.get(DESKTOP_APP_ENV)
+    return Path(named).expanduser() if named else DESKTOP_APP
 
 
 def _packaged_entrypoint(app: Path) -> Path | None:

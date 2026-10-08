@@ -156,9 +156,9 @@ class FakeMachine:
 
     @contextlib.contextmanager
     def installed(self):
-        with mock.patch.object(codex_binaries, "DESKTOP_APP", self.app), mock.patch.object(
-            codex_binaries.shutil, "which", side_effect=self.which
-        ):
+        with mock.patch.object(codex_binaries, "DESKTOP_APP", self.app), mock.patch.dict(
+            os.environ, {codex_binaries.DESKTOP_APP_ENV: str(self.app)}
+        ), mock.patch.object(codex_binaries.shutil, "which", side_effect=self.which):
             yield
 
     def calls(self) -> list[list[str]]:

@@ -271,4 +271,98 @@ class RepairedInstallationSurvivesReinstallTests(unittest.TestCase):
         self.assertEqual(list(install_root.glob(f"{__version__}.repaired-*")), [])
 
 
+class AnAppOnlyMachineInstallsTests(unittest.TestCase):
+    """install.sh on a Mac that has ChatGPT.app and no separate Codex CLI.
+
+    The installer asked PATH alone. Checked 9 Oct 2026 with a temporary
+    HOME and PATH=/usr/bin:/bin: it stopped with "Codex CLI/App Server is
+    required", and --install-deps would have installed a separate npm CLI -
+    another channel - while the app carries its own Codex. Every later step
+    (marketplace add, plugin add) runs through the Codex chosen here.
+
+    The app is a fake bundle named through CODEX_AUTOPILOT_DESKTOP_APP;
+    its Codex and the "Homebrew" one are shell scripts that log each call
+    and answer --version. PATH holds nothing else that is called codex.
+    """
+
+    FAKE = '#!/bin/sh\necho "$0 $*" >> "{calls}"\ncase "$1" in --version) echo "codex-cli {version}" ;; esac\nexit 0\n'
+
+    def _fake(self, path: Path, version: str) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.FAKE.format(calls=self.calls, version=version), encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def _machine(self, *, app_codex: bool = True, homebrew: str | None = None) -> dict[str, str]:
+        import shutil
+        import sys
+
+        self.base = Path(tempfile.mkdtemp(prefix="codex-autopilot-install-app-")).resolve()
+        self.addCleanup(shutil.rmtree, self.base, True)
+        self.calls = self.base / "codex-calls"
+        app = self.base / "ChatGPT.app"
+        (app / "Contents/Resources").mkdir(parents=True)
+        self.entry = None
+        if app_codex:
+            package = app / "Contents/Resources/codex-cli"
+            package.mkdir()
+            # The manifest as ChatGPT's update of 3 Oct 2026 shipped it.
+            (package / "codex-package.json").write_text(json.dumps({
+                "layoutVersion": 1, "version": "0.160.0", "target": "aarch64-apple-darwin",
+                "variant": "codex", "entrypoint": "bin/codex",
+                "resourcesDir": "codex-resources", "pathDir": "codex-path",
+            }), encoding="utf-8")
+            self.entry = self._fake(package / "bin/codex", "0.160.0")
+        path = ["/usr/bin", "/bin"]
+        self.homebrew = None
+        if homebrew:
+            self.homebrew = self._fake(self.base / "homebrew/bin/codex", homebrew)
+            path.insert(0, str(self.homebrew.parent))
+        home = self.base / "home"
+        env = {key: value for key, value in os.environ.items() if key != "CODEX_AUTOPILOT_CODEX_BIN"}
+        env.update({
+            "HOME": str(home),
+            "CODEX_HOME": str(home / ".codex"),
+            "CODEX_AUTOPILOT_INSTALL_ROOT": str(self.base / "runtime"),
+            "CODEX_AUTOPILOT_PYTHON": sys.executable,
+            "CODEX_AUTOPILOT_SKIP_LAUNCHD": "1",
+            "CODEX_AUTOPILOT_DESKTOP_APP": str(app),
+            "PATH": os.pathsep.join(path),
+        })
+        return env
+
+    def _install(self, env: dict[str, str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(ROOT / "install.sh"), "--profile", "adaptive"],
+            cwd=ROOT, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        )
+
+    def _calls_by(self, binary: Path) -> list[str]:
+        if not self.calls.is_file():
+            return []
+        prefix = f"{binary} "
+        return [line[len(prefix):] for line in self.calls.read_text(encoding="utf-8").splitlines() if line.startswith(prefix)]
+
+    def test_it_installs_through_the_apps_codex(self) -> None:
+        result = self._install(self._machine())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Codex: {self.entry}", result.stdout)
+        done = self._calls_by(self.entry)
+        for step in ("app-server --help", "login status", "plugin marketplace add", "plugin add codex-autopilot-adaptive@codex-autopilot-local"):
+            with self.subTest(step=step):
+                self.assertTrue(any(call.startswith(step) for call in done), done)
+
+    def test_beside_an_older_homebrew_it_uses_the_codex_bootstrap_will(self) -> None:
+        result = self._install(self._machine(homebrew="0.154.0"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Codex: {self.entry}", result.stdout)
+        self.assertEqual(self._calls_by(self.homebrew), ["--version"], "Homebrew did more than say its version")
+
+    def test_with_no_codex_anywhere_it_says_both_ways_to_get_one(self) -> None:
+        result = self._install(self._machine(app_codex=False))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("install ChatGPT (it carries Codex) or the official Codex CLI", result.stderr)
+        self.assertFalse((self.base / "runtime").exists())
+
+
 if __name__ == "__main__": unittest.main()
