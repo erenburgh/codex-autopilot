@@ -23,6 +23,16 @@ is still a candidate in case an older app is installed. A manifest that is
 missing, broken, has no entrypoint or names something outside its own
 directory is skipped without an error. New projects write the new path.
 
+Every door now finds the same Codex: the newest on the machine, ChatGPT.app's
+own or the `codex` on PATH. `preflight` checks the one `bootstrap` then writes
+into the config. It used to ask PATH: with only ChatGPT installed it stopped at
+"official Codex CLI not found" and no new project could start, and next to an
+older Homebrew CLI it checked the model catalog and the hook trust on Homebrew.
+`install.sh` picks its Codex the same way, so it installs on a Mac that has
+only ChatGPT, and `--install-deps` installs the npm CLI only when there is no
+Codex at all. `doctor` outside a project, `uninstall` and the placement probe
+find the app's Codex too.
+
 A project whose `binary` is one of the app's former addresses, with nothing
 there any more, runs on the same app's current Codex. `doctor` and the status
 card say so in one line: what the config names, what is used instead, and the
@@ -41,6 +51,12 @@ prove `uninstall` got to them. The installer tests had the same hole: they
 inherited `CODEX_HOME`, which `install.sh` prefers over `HOME`, so a shell
 that named a Codex home pointed them at its plugin cache and execpolicy rules.
 They now set it to their own temporary home.
+
+The suite no longer starts any real Codex. Test projects looked for the
+machine's Codex when they were created, which ran the real ChatGPT.app and
+Homebrew binaries some 880 times per suite, and two tests went on to start
+the app's real App Server. They now name a binary that does not exist. The
+release check also looks for the owner's name, which one test fixture carried.
 
 ## 0.14.0-beta
 
