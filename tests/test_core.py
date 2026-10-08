@@ -779,7 +779,8 @@ def _uninstall_outside_the_real_home(case, install_root):
     ``uninstall`` takes out four things that live outside the install root:
     the launchd plist under ``~/Library/LaunchAgents``, the managed block in
     ``$CODEX_HOME/rules/default.rules``, the launch-request directory under
-    the system temp dir, and (through ``which``) the Codex plugins. These
+    the system temp dir, and the Codex plugins - through the Codex that
+    ``which`` or ChatGPT.app names, so the app is an absent bundle here. These
     tests substituted only the install root and ``which``. Measured on
     03.10.2026: one suite run on the owner's machine deleted her real wake
     agent plist and the execpolicy block of her installed runtime, and the
@@ -804,14 +805,21 @@ def _uninstall_outside_the_real_home(case, install_root):
     plist.write_text("<plist/>", encoding="utf-8")
     launch_dir = scratch / "launch" / "launch-requests"
     launch_dir.mkdir(parents=True)
+    no_app = scratch / "no-ChatGPT.app"
     with mock.patch.dict(
         os.environ,
         {
             "CODEX_AUTOPILOT_INSTALL_ROOT": str(install_root),
             "CODEX_HOME": str(codex_home),
             "CODEX_AUTOPILOT_LAUNCH_DIR": str(launch_dir),
+            "CODEX_AUTOPILOT_DESKTOP_APP": str(no_app),
         },
-    ), mock.patch("codex_autopilot.cli._wake_agent_plist", return_value=plist):
+    ), mock.patch("codex_autopilot.codex_binaries.DESKTOP_APP", no_app), mock.patch(
+        "codex_autopilot.cli._wake_agent_plist", return_value=plist
+    ):
+        from codex_autopilot.codex_binaries import desktop_codex
+
+        case.assertIsNone(desktop_codex(), "uninstall would reach the machine's own ChatGPT.app")
         yield
     case.assertFalse(plist.exists(), "uninstall did not reach the substituted wake agent")
     case.assertNotIn(MARKER, rules.read_text(encoding="utf-8"), "uninstall did not reach the substituted execpolicy")

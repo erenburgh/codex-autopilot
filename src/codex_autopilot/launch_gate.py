@@ -626,7 +626,7 @@ def desktop_placement(
     project_id: str | None = None,
     desktop_project_id: str | None = None,
     client: Any = None,
-    binary: str = "codex",
+    binary: str | None = None,
     log_path: Path | None = None,
 ) -> str:
     """Ask where the thread is: App Server's projectId and Desktop's own rule.
@@ -652,10 +652,14 @@ def desktop_placement(
         return measure_placement(client, thread_id, project_id, desktop_project_id)[0]
 
     from .appserver import AppServerClient
+    from .codex_binaries import newest_codex_binary
 
+    # Not "codex" from PATH: on a machine with only ChatGPT.app there is
+    # none, and the probe answered ABSENT about a thread it never asked
+    # about. Unnamed, it is the Codex a project is created with.
     destination = log_path or Path(tempfile.gettempdir()) / "codex-autopilot-placement.jsonl"
     try:
-        with AppServerClient(binary, destination) as fresh:
+        with AppServerClient(binary or newest_codex_binary(), destination) as fresh:
             return measure_placement(fresh, thread_id, project_id, desktop_project_id)[0]
     except Exception:
         return ABSENT

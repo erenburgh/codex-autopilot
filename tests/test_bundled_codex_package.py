@@ -523,13 +523,19 @@ class DoctorSaysWhatItUsesTests(unittest.TestCase):
         self.assertNotIn("NOTE  ", output)
         self.assertEqual(self._app_servers(), [], "PATH's Codex was not asked in its place")
 
-    def test_a_directory_without_a_project_still_asks_path(self) -> None:
-        self.m.packaged()
+    def test_a_directory_without_a_project_asks_for_the_codex_a_project_would_get(self) -> None:
+        """Not PATH alone: the newest, the one bootstrap would write.
+
+        This test used to pin PATH here; the review of 9 Oct 2026 showed
+        that with only ChatGPT.app the answer was "not found".
+        """
+
+        entry = self.m.packaged()
         bare = self.m.base / "bare"
         bare.mkdir()
         _code, output = self._doctor(bare)
-        self.assertIn(f"PASS  Codex CLI: {self.m.cli}", output)
-        self.assertEqual(self._app_servers(), [str(self.m.cli)])
+        self.assertIn(f"PASS  Codex CLI: {entry}", output)
+        self.assertEqual(self._app_servers(), [str(entry)])
 
 
 class TheStatusCardSaysWhatItUsesTests(unittest.TestCase):

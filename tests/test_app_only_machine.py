@@ -181,6 +181,105 @@ class BootstrapWritesTheCodexPreflightCheckedTests(unittest.TestCase):
         self.assertEqual(self.looked, 1)
 
 
+class DoctorOnAnAppOnlyMachineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.m = FakeMachine(self)
+
+    def _doctor(self, root: Path) -> tuple[int, str]:
+        from codex_autopilot.appserver import AppServerClient
+
+        log = self.m.state / "doctor.jsonl"
+
+        class Client(AppServerClient):
+            """The real client; only its wire log stays in the temp dir."""
+
+            def __init__(self, binary, _log_path, **kwargs):
+                super().__init__(binary, log, **kwargs)
+
+        out = io.StringIO()
+        with self.m.installed(), mock.patch.object(cli, "AppServerClient", Client), contextlib.redirect_stdout(out):
+            code = cli.doctor(root)
+        return code, out.getvalue()
+
+    def _app_servers(self) -> list[str]:
+        return [call[0] for call in self.m.calls() if call[1:2] == ["app-server"]]
+
+    def _bare(self) -> Path:
+        bare = self.m.base / "bare"
+        bare.mkdir()
+        return bare
+
+    def test_outside_a_project_it_finds_the_apps_codex(self) -> None:
+        entry = self.m.packaged()
+        _code, output = self._doctor(self._bare())
+        self.assertIn(f"PASS  Codex CLI: {entry}", output)
+        self.assertEqual(self._app_servers(), [str(entry)])
+
+    def test_outside_a_project_with_no_codex_it_says_where_it_looked(self) -> None:
+        code, output = self._doctor(self._bare())
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  Codex CLI: no Codex found: neither ChatGPT.app's own nor `codex` on PATH", output)
+
+    def test_a_project_on_plain_codex_is_told_of_the_app_and_not_moved(self) -> None:
+        """binary = "codex" is a PATH lookup the run makes too; it fails the
+        same way here, and the line names the app's Codex to pin."""
+
+        from test_bundled_codex_package import write_project
+
+        entry = self.m.packaged()
+        root = write_project(self.m, "codex")
+        code, output = self._doctor(root)
+        self.assertEqual(code, 1)
+        (line,) = [item for item in output.splitlines() if item.startswith("FAIL  Codex CLI: ")]
+        self.assertIn("codex (desktop.binary) not found", line)
+        self.assertIn(f'set binary = "{entry}"', line)
+        self.assertEqual(self._app_servers(), [], "the app's Codex was used in its place")
+
+
+class UninstallOnAnAppOnlyMachineTests(unittest.TestCase):
+    def test_the_plugin_and_the_marketplace_are_removed_through_the_apps_codex(self) -> None:
+        import tempfile
+        from types import SimpleNamespace
+
+        from test_core import _uninstall_outside_the_real_home
+
+        m = FakeMachine(self)
+        entry = m.packaged()
+        project = m.base / "not-a-project"
+        project.mkdir()
+        install_root = Path(tempfile.mkdtemp(prefix="codex-autopilot-uninstall-"))
+        args = SimpleNamespace(yes=True, project=project, purge_project_state=False)
+        out = io.StringIO()
+        with _uninstall_outside_the_real_home(self, install_root), m.installed(), contextlib.redirect_stdout(out):
+            self.assertEqual(cli.uninstall(args), 0)
+        removed = [call[1:] for call in m.calls() if call[0] == str(entry) and call[1:2] == ["plugin"]]
+        self.assertEqual(removed, [
+            ["plugin", "remove", "codex-autopilot-adaptive@codex-autopilot-local"],
+            ["plugin", "remove", "codex-autopilot-host-settings@codex-autopilot-local"],
+            ["plugin", "marketplace", "remove", "codex-autopilot-local"],
+        ])
+
+
+class ThePlacementProbeAsksTheAppsCodexTests(unittest.TestCase):
+    def test_unnamed_it_starts_the_codex_a_project_gets(self) -> None:
+        from codex_autopilot.launch_gate import desktop_placement
+
+        m = FakeMachine(self)
+        entry = m.packaged()
+        empty = m.base / "empty-path"
+        empty.mkdir()
+        # PATH holds no codex at all, as on the machine this is about: a
+        # plain "codex" would fail to start rather than reach a real one.
+        with m.installed(), mock.patch.dict(os.environ, {"PATH": str(empty)}):
+            desktop_placement(
+                "thread-a",
+                project_id="project",
+                desktop_project_id="desktop-project",
+                log_path=m.state / "placement.jsonl",
+            )
+        self.assertIn([str(entry), "app-server", "--listen", "stdio://"], m.calls())
+
+
 class AnotherProcessIsToldWhereTheAppIsTests(unittest.TestCase):
     """install.sh and the installed CLI run as processes of their own.
 

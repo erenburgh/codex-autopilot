@@ -128,6 +128,10 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn("config set", command_text)
         self.assertNotIn("danger", command_text)
         env["PATH"] = str(base) + os.pathsep + env.get("PATH", "")
+        # uninstall picks its Codex as the installer does, ChatGPT.app's
+        # among the candidates: here that is an absent bundle, never the
+        # machine's own.
+        env["CODEX_AUTOPILOT_DESKTOP_APP"] = str(base / "no-ChatGPT.app")
         result = subprocess.run([str(install_root / "current/bin/codex-autopilot"), "uninstall", "--yes"], env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((install_root / __version__).exists())

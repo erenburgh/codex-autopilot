@@ -13,7 +13,7 @@ import time
 from . import __version__
 from .appserver import AppServerClient
 from .bootstrap import initialize_project, purge_project_state
-from .codex_binaries import newest_codex_binary, relocation_note
+from .codex_binaries import desktop_codex, newest_codex_binary, relocation_note
 from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, load_config
 from .control import arm, find_project_root, handle_interrupt_hook, handle_post_tool_hook, handle_prompt_hook, handle_stop_hook, pid_alive, reactivate_desktop_relay_owner, recreate_archived_desktop_retry, spawn_automatic_app_server_relay, status_text
 from .hook_trust import HookPreflightError, HookTrustApprovalRequired
@@ -1159,11 +1159,27 @@ def doctor(project: Path) -> int:
         # while the project's own channel serves it. The app moving its own
         # Codex is followed by load_config, and said on the next line.
         codex = resolved or None
-    checks.append((
-        "Codex CLI",
-        bool(codex),
-        codex or (f"{configured} (desktop.binary) not found" if configured else "not found"),
-    ))
+    else:
+        # No project here, so no channel of its own: the answer is for the
+        # Codex a new project would be created with - the newest on the
+        # machine, the one preflight checks and bootstrap writes. This asked
+        # PATH alone, and with only ChatGPT.app installed said "FAIL Codex
+        # CLI: not found" about a machine that can run Autopilot.
+        codex = newest_codex_binary(default="") or codex
+    missing = "not found"
+    if configured and not codex:
+        # Named, not substituted: another Codex is another channel, and
+        # moving the project to it is the owner's edit of one line.
+        app = desktop_codex()
+        missing = f"{configured} (desktop.binary) not found" + (
+            f"; ChatGPT.app carries Codex at {app} - to use it, set "
+            f"binary = {json.dumps(str(app), ensure_ascii=False)} in .codex-autopilot/config.toml"
+            if app is not None
+            else ""
+        )
+    elif not codex:
+        missing = "no Codex found: neither ChatGPT.app's own nor `codex` on PATH"
+    checks.append(("Codex CLI", bool(codex), codex or missing))
     if desktop is not None and desktop.binary_moved_from:
         checks.append((
             "desktop.binary",
@@ -1241,7 +1257,10 @@ def uninstall(args) -> int:
             if pid_alive(state.dispatcher_pid):
                 print("Codex Autopilot dispatcher did not stop; uninstall was cancelled to keep the active run intact.", file=sys.stderr)
                 return 1
-    codex = shutil.which("codex")
+    # The Codex install.sh registered the plugin through, by the same rule.
+    # PATH alone found nothing on a machine with only ChatGPT.app, and the
+    # plugin and the marketplace silently stayed registered in Codex.
+    codex = newest_codex_binary(default="") or shutil.which("codex")
     if codex:
         for profile in ("codex-autopilot-adaptive", "codex-autopilot-host-settings"):
             subprocess.run([codex, "plugin", "remove", f"{profile}@codex-autopilot-local"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
