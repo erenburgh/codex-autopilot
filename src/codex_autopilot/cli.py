@@ -13,7 +13,7 @@ import time
 from . import __version__
 from .appserver import AppServerClient
 from .bootstrap import initialize_project, purge_project_state
-from .codex_binaries import relocation_note
+from .codex_binaries import newest_codex_binary, relocation_note
 from .config import DESKTOP_OWNED_SURFACE, STATE_DIR_NAME, load_config
 from .control import arm, find_project_root, handle_interrupt_hook, handle_post_tool_hook, handle_prompt_hook, handle_stop_hook, pid_alive, reactivate_desktop_relay_owner, recreate_archived_desktop_retry, spawn_automatic_app_server_relay, status_text
 from .hook_trust import HookPreflightError, HookTrustApprovalRequired
@@ -631,11 +631,20 @@ def main(argv: list[str] | None = None) -> int:
                 profile,
                 state_dir=args.project.resolve() / STATE_DIR_NAME,
             )
+            # One Codex, chosen once, for both halves: preflight checks the
+            # model catalog and the hook trust on it, and bootstrap writes
+            # it into the config. Preflight used to ask PATH for "codex"
+            # while bootstrap wrote the newest on the machine - with only
+            # ChatGPT.app installed preflight found nothing and no project
+            # could start; with an older Homebrew CLI beside it, preflight
+            # checked Homebrew and the run then talked to the app.
+            codex_binary = newest_codex_binary()
             preflight_result = run_preflight(
                 args.project,
                 plan=checked_plan,
                 profile=profile,
                 skill_path=skill,
+                binary=codex_binary,
                 replace=getattr(args, "replace", False),
                 approve_project_memory_always=getattr(args, "approve_project_memory_always", False),
                 app_server_project_id=getattr(args, "app_server_project_id", None),
@@ -655,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
                 desktop_project_id=getattr(args, "desktop_project_id", None),
                 plan_verification=preflight_result.plan_verification,
                 roots_audit=preflight_result.roots_audit,
+                codex_binary=codex_binary,
             )
             if preflight_result.isolation:
                 from .isolation_probe import write_record

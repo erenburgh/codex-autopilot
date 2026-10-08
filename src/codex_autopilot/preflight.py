@@ -380,8 +380,11 @@ def run_preflight(
     )
     _reject_unprobed_capabilities(plan, report)
     if not codex_binary:
-        report("Runtime", "FAIL", "official Codex CLI not found")
-        raise PreflightError("official Codex CLI/App Server is not installed")
+        report("Runtime", "FAIL", "no Codex found: neither ChatGPT.app's own nor `codex` on PATH")
+        raise PreflightError(
+            "no Codex App Server on this machine: install ChatGPT (it carries Codex) "
+            "or the official Codex CLI"
+        )
     if not skill_path.is_file():
         report("Runtime", "FAIL", f"installed worker skill missing: {skill_path}")
         raise PreflightError(f"installed worker skill is missing: {skill_path}")

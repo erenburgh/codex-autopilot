@@ -44,6 +44,7 @@ def initialize_project(
     plan_verification: PlanVerificationReceipt | dict[str, object] | None = None,
     skill_screening: str = DEFAULT_SKILL_SCREENING,
     roots_audit: dict[str, object] | None = None,
+    codex_binary: str | None = None,
 ) -> Plan:
     root = root.expanduser().resolve()
     if not root.is_dir():
@@ -115,6 +116,7 @@ def initialize_project(
         skill_screening=skill_screening,
         project_id=project_id,
         desktop_project_id=desktop_project_id,
+        codex_binary=codex_binary,
     )
     completed = min(completed, len(plan.milestones))
     current_index = min(completed, len(plan.milestones) - 1)
@@ -261,7 +263,16 @@ def _write_config(
     skill_screening: str,
     project_id: str | None = None,
     desktop_project_id: str | None = None,
+    codex_binary: str | None = None,
 ) -> None:
+    # The command that starts a project names the Codex it has just
+    # preflighted (cli.main), so the two cannot differ; looking again here
+    # is only for a caller that names none. They did differ: preflight asked
+    # PATH while this asked newest_codex_binary(). Reproduced 9 Oct 2026 on
+    # a fake machine with Homebrew 0.154 on PATH and the app at 0.160 - the
+    # model catalog and the hook trust were checked on Homebrew, and the
+    # app's path was written; with the app alone, preflight found nothing.
+    chosen = newest_codex_binary() if codex_binary is None else codex_binary
     lines = [
         f"profile = {_toml_string(profile)}",
         f"language = {_toml_string(language)}",
@@ -279,7 +290,7 @@ def _write_config(
         "# on the machine. Desktop carries its own inside the app bundle and a",
         "# separately installed CLI is a different file - they do not serve the",
         "# same models. Change this line to move the project to another one.",
-        f"binary = {_toml_string(newest_codex_binary())}",
+        f"binary = {_toml_string(chosen)}",
         'permission_profile = ":workspace"',
         f"skill_path = {_toml_string(str(durable_skill_path(skill_path)))}",
     ]
