@@ -571,6 +571,13 @@ def _r30_scope(task: object, *, plan: object = None, phase: str | None = None, m
 # wherever they are read, which is why they need no gate.
 _SCOPED_RULES = {"R30": _r30_scope}
 
+# The fresh plan verifier judges a whole graph, not one task, from a view
+# that leaves out roles, leads, resources and the acceptance floor (R25).
+# In this phase every rule that asks for one of those fields carries a scope
+# for the graph (``plan_verifier_scope``); R30's per-task scope gives way to
+# it, since there is no one task to scope to.
+PLAN_VERIFICATION_PHASE = "plan_verification"
+
 
 def rules_for_prompt(state_dir=None, *, task=None, plan=None, phase=None, memory=None, settled=()) -> list[dict[str, str]]:
     """The rules block for a worker prompt.
@@ -589,8 +596,18 @@ def rules_for_prompt(state_dir=None, *, task=None, plan=None, phase=None, memory
     is neither the reader's fault nor a thing the reader can discover. A
     scope never declares a rule out of force: that would be an exception
     from her rule written into the prompt.
+
+    The plan verifier (``PLAN_VERIFICATION_PHASE``, with the graph as
+    ``plan``) is a reader of the same kind: its view leaves out the fields
+    several rules ask for, and their scopes say which, what admission
+    already accepted of them, and who judges the rest.
     """
     counts = violation_counts(state_dir) if state_dir is not None else {}
+    graph_scopes: dict[str, str] = {}
+    if phase == PLAN_VERIFICATION_PHASE and plan is not None:
+        from .plan_verifier_scope import plan_verifier_scopes
+
+        graph_scopes = plan_verifier_scopes(plan)
 
     def key(item: Rule) -> tuple[int, int, int]:
         return (
@@ -608,7 +625,9 @@ def rules_for_prompt(state_dir=None, *, task=None, plan=None, phase=None, memory
         # forbids; an over-budget prompt is refused instead.
         entry = {"id": item.id, "mode": item.mode, "rule": item.statement, "check": item.check}
         scope = _SCOPED_RULES.get(item.id)
-        if scope is not None and task is not None:
+        if item.id in graph_scopes:
+            entry["scope"] = graph_scopes[item.id]
+        elif scope is not None and task is not None:
             entry["scope"] = scope(task, plan=plan, phase=phase, memory=memory, settled=settled)
         block.append(entry)
     return block

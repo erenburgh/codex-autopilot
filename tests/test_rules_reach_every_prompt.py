@@ -137,7 +137,17 @@ class ThePlanVerifierReadsTheRulesTests(_Replanning):
         self.assertGreater(len(prompt), 70_000)
         self.assertLess(prompt.index("AUTOPILOT_RULES: "), prompt.index("PLAN_VERIFICATION_CONTEXT: "))
         rules = json.loads(prompt.split("AUTOPILOT_RULES: ", 1)[1].split("\n", 1)[0])
-        self.assertEqual(rules, rules_for_prompt(cfg.state_dir))
+        # Whole, in the project's order - and scoped for this reader: the
+        # rules whose fields its view leaves out say what admission already
+        # accepted (test_plan_verifier_reads_its_part).
+        self.assertEqual(
+            [{key: value for key, value in entry.items() if key != "scope"} for entry in rules],
+            rules_for_prompt(cfg.state_dir),
+        )
+        self.assertEqual(
+            {entry["id"] for entry in rules if "scope" in entry},
+            {"R7", "R8", "R9", "R17", "R21", "R24", "R27", "R29", "R30"},
+        )
 
     def test_a_prompt_over_the_budget_is_a_stop_for_the_on_call_not_a_raise(self) -> None:
         cfg, store, replanner = self.at_the_replanner(graph([task("A"), task("B")], max_workers=1))

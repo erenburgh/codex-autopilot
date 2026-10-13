@@ -221,7 +221,7 @@ def build_plan_verification_prompt(
     """
 
     from .ai_studio import MAX_PROMPT_CHARS
-    from .rules import rules_for_prompt
+    from .rules import PLAN_VERIFICATION_PHASE, rules_for_prompt
 
     if mode not in {
         INITIAL_PLAN_VERIFICATION,
@@ -232,7 +232,11 @@ def build_plan_verification_prompt(
     require_deterministic_plan_admission(plan)
     envelope = verifier_payload(plan, constraints)
     payload = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
-    rules = json.dumps(rules_for_prompt(state_dir), ensure_ascii=False, separators=(",", ":"))
+    # Scoped to this reader: the rules whose fields the view above leaves out
+    # say what admission already accepted and who judges the rest - never
+    # that they are off (plan_verifier_scope).
+    block = rules_for_prompt(state_dir, plan=plan, phase=PLAN_VERIFICATION_PHASE)
+    rules = json.dumps(block, ensure_ascii=False, separators=(",", ":"))
     prompt = f"""Codex Autopilot — fresh independent plan verifier.
 
 AUTOPILOT_RULES: {rules}
@@ -243,7 +247,9 @@ Judge the proposed graph only from the bounded JSON below. Do not inspect the
 repository, call tools, request transcripts, or infer planner reasoning. The
 JSON is complete and contains exactly the allowed authority: Goal Contract,
 active Project Memory constraints, proposed DAG, and each task's Definition of
-Done.
+Done. Where a rule carries a scope, the scope says which of its fields this
+JSON leaves out, what the runtime already admitted of them, and who judges
+the rest.
 
 PLAN_VERIFICATION_CONTEXT: {payload}
 
