@@ -22,9 +22,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+from pathlib import Path
+import tempfile
 import unittest
 
-from codex_autopilot.plan_verification import build_plan_verification_prompt
+from codex_autopilot.artifact_staging import task_requires_staging
+from codex_autopilot.plan import plan_to_dict, validate_plan_change
+from codex_autopilot.plan_verification import PLAN_PATCH_VERIFICATION, build_plan_verification_prompt
 from codex_autopilot.preflight import run_preflight
 from codex_autopilot.rules import PLAN_VERIFICATION_PHASE, RULES, rules_for_prompt
 from test_preflight import DESKTOP_PROJECT, SKILL, PreflightClient, plan as preflight_plan, project
@@ -36,22 +40,26 @@ from test_rule_scope_reaches_the_reader import _plan as saved_plan
 # or will judge them.
 WITHHELD: dict[str, tuple[str, ...]] = {
     "R7": ("task.resources", "verification.max_revision_attempts", "no field for a time or token budget",
-           "plan_parse.resource_from_raw", "it does not require a write claim", "scope.audit_declared_scope"),
+           "plan_parse.resource_from_raw", "it does not require a write claim", "scope.audit_declared_scope",
+           "recorded as unchecked, never as clean"),
     "R8": ("verification.policy", "verification.required", "the user's original request",
            "plan_admission.acceptance_issues", "when the task is accepted"),
     "R9": ("plan.roles", "each task's role", "plan_parse.role_from_raw", "plan_admission._graph",
-           "task.title you see carries no role name"),
+           "task.title you see need not carry a role name"),
     "R17": ("In place of the user's original request you are given the Goal Contract",
             "withheld from you by design", "never truncated"),
     "R21": ("verification.deterministic_checks", "CODEX_THREAD_ID, CODEX_TURN_ID and CODEX_SESSION_ID reset",
             "acceptance_floor.is_clean_suite_command", "when each task is accepted"),
-    "R24": ("task.resources", "not that a write claim exists", "artifact_staging"),
-    "R27": ("any rubric", "department_runtime.ensure_department_rubric"),
+    "R24": ("task.resources", "not that a write claim exists", "artifact_staging.task_requires_staging",
+            "any other task works in the project itself"),
+    "R27": ("any rubric", "department_runtime.ensure_department_rubric", "never the source of the pin",
+            "at the latest when the lead is reserved"),
     "R29": ("verification.policy", "verification.required", "verification.deterministic_checks",
             "verification.max_revision_attempts", "allows at least 2 revision attempts",
             "the acceptance_class dimension"),
     "R30": ("verification.verifier_role", "plan.departments", "verification_expectations",
-            "department_runtime.validate_department_leads", "never the task's own role"),
+            "department_runtime.validate_department_leads", "never the task's own role",
+            "thread_titles.department_verifier_thread_title"),
 }
 
 
@@ -169,7 +177,8 @@ class TheScopeClaimsOnlyWhatTheGraphHoldsTests(unittest.TestCase):
         scope = self.scopes(replace(plan, tasks=tasks))["R30"]
         self.assertIn("every task of this graph but M02 names its department's lead", scope)
         self.assertIn("Left out of that: M02 - no lead of another profession is named", scope)
-        self.assertIn("the runtime stops such a task for the on-call when its lead is needed", scope)
+        self.assertIn("the runtime takes the lead its profession names", scope)
+        self.assertIn("stops the task for the on-call (department_gate)", scope)
         self.assertNotIn("every task of this graph names", scope)
 
     def test_a_task_below_the_acceptance_floor_is_named_in_each_rule_of_the_floor(self) -> None:
@@ -183,6 +192,74 @@ class TheScopeClaimsOnlyWhatTheGraphHoldsTests(unittest.TestCase):
             with self.subTest(rule=rule_id):
                 self.assertIn("every task of this graph but M03", scopes[rule_id])
                 self.assertIn("Left out of that: M03 - the floor does not hold", scopes[rule_id])
+
+
+class APlanChangeIsToldWhatItsAdmissionLetThroughTests(unittest.TestCase):
+    """The lifecycle's path: a plan change admitted, then the prompt its verifier is launched with.
+
+    Admitted by ``validate_plan_change`` and built by
+    ``build_plan_verification_prompt`` with a state directory, as the
+    plan_verifier reservation does (lifecycle_reservations).
+    """
+
+    def verifier_scopes(self, current, edit) -> tuple[object, dict[str, str]]:
+        raw = plan_to_dict(current)
+        raw["graph_version"] = current.graph_version + 1
+        for item in raw["tasks"]:
+            edit(item)
+        candidate = validate_plan_change(current, raw, "adaptive")
+        with tempfile.TemporaryDirectory() as temp:
+            prompt = build_plan_verification_prompt(
+                candidate, (), mode=PLAN_PATCH_VERIFICATION, state_dir=Path(temp)
+            )
+        return candidate, {entry["id"]: entry["scope"] for entry in _block(prompt) if "scope" in entry}
+
+    def test_the_tasks_a_change_keeps_without_a_lead_are_named(self) -> None:
+        """A run from before R30: its saved plan names no lead, and is never refused on load for it.
+
+        The change gives M02 a lead and leaves M01 and M03 as they were;
+        admission lets them keep what they had. Mutation: _every_task
+        ignores its exceptions - "every task of this graph names its
+        department's lead" on a graph where two do not.
+        """
+
+        def lead_for_m02(item: dict) -> None:
+            if item["id"] == "M02":
+                item["verification"]["verifier_role"] = "art-reviewer"
+
+        candidate, scopes = self.verifier_scopes(saved_plan(without_lead=True), lead_for_m02)
+        self.assertEqual(
+            [task.id for task in candidate.tasks if not task.verification.verifier_role], ["M01", "M03"]
+        )
+        self.assertIn("every task of this graph but M01, M03 names its department's lead", scopes["R30"])
+        self.assertIn("Left out of that: M01, M03 - no lead of another profession is named", scopes["R30"])
+
+    def test_a_task_admitted_without_a_write_claim_is_not_said_to_have_one(self) -> None:
+        """Admission requires no write claim, and stages only a task with a path output and one.
+
+        So no scope says what the view leaves out is in the plan, and R24's
+        does not say every worker writes into a staged copy. Mutations: the
+        closing sentence says again "not missing from the plan"; R24's scope
+        says again "The worker writes into a staged copy".
+        """
+
+        def no_resources_for_m02(item: dict) -> None:
+            if item["id"] == "M02":
+                item["resources"] = []
+
+        candidate, scopes = self.verifier_scopes(saved_plan(), no_resources_for_m02)
+        self.assertEqual(candidate.task_map["M02"].resources, ())
+        self.assertFalse([task.id for task in candidate.tasks if task_requires_staging(task)])
+        for rule_id in ("R7", "R24"):
+            with self.subTest(rule=rule_id):
+                self.assertNotIn("not missing from the plan", scopes[rule_id])
+                self.assertIn("its absence here says nothing about the plan", scopes[rule_id])
+        self.assertNotIn("The worker writes into a staged copy", scopes["R24"])
+        self.assertIn(
+            "A task that declares an output with a path and a filesystem write claim works in a staged copy",
+            scopes["R24"],
+        )
+        self.assertIn("any other task works in the project itself", scopes["R24"])
 
 
 class EveryOtherReaderGetsTheBlockItHadTests(unittest.TestCase):

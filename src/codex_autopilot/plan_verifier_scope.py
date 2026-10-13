@@ -35,10 +35,12 @@ from .plan_admission import _is_legacy_role, acceptance_issues
 
 
 # The last sentence of every scope that withholds a field: it is withheld on
-# purpose, and what is still the reader's.
+# purpose, and what is still the reader's. It never says the field is in the
+# plan: admission does not require a write claim (R7, R24), so for some tasks
+# it is not.
 _NOT_YOURS = (
-    "What your view leaves out is left out by R25's design, not missing from the plan: it "
-    "is not yours to judge; the six dimensions this prompt lists are."
+    "What your view leaves out is left out by R25's design, so its absence here says nothing "
+    "about the plan: it is not yours to judge; the six dimensions this prompt lists are."
 )
 
 
@@ -79,8 +81,9 @@ def plan_verifier_scopes(plan) -> dict[str, str]:
             "resource claim (plan_parse.resource_from_raw); it does not require a write claim. "
             "Staying inside the scope is checked by the runtime when a task completes: a changed "
             "path that no write claim of the task covers is a defect citing R7 "
-            "(artifact_staging_lifecycle, scope.audit_declared_scope); the runtime counts revision "
-            "attempts against the budget (revision_budget). " + _NOT_YOURS
+            "(artifact_staging_lifecycle, scope.audit_declared_scope); where git cannot list the "
+            "changed paths, the scope is recorded as unchecked, never as clean. The runtime counts "
+            "revision attempts against the budget (revision_budget). " + _NOT_YOURS
         ),
         "R8": (
             "In force. Not in your view: verification.policy and verification.required of each "
@@ -101,7 +104,7 @@ def plan_verifier_scopes(plan) -> dict[str, str]:
                 "the role is the generic legacy-worker. Admission lets only a plan migrated from a "
                 "v0.8 serial run keep it",
             )
-            + " The task.title you see carries no role name by design: the runtime builds each "
+            + " The task.title you see need not carry a role name: the runtime builds each "
             "thread's title from the task's RoleProfile when it creates the thread and reads it "
             "back from the App Server (thread_titles, lifecycle_dispatch). " + _NOT_YOURS
         ),
@@ -123,17 +126,21 @@ def plan_verifier_scopes(plan) -> dict[str, str]:
         "R24": (
             "In force. Not in your view: each task's write scope (task.resources). Admission "
             "checked the shape of each claim (plan_parse.resource_from_raw), not that a write claim "
-            "exists. The worker writes into a staged copy of the project; the canonical project is "
-            "changed only when the runtime promotes that copy after a verifier's attestation "
-            "(artifact_staging), and the paths a task changed are compared with its declared write "
-            "claims when it completes (artifact_staging_lifecycle). " + _NOT_YOURS
+            "exists. A task that declares an output with a path and a filesystem write claim works "
+            "in a staged copy of the project, and the canonical project is changed only when the "
+            "runtime promotes that copy after a verifier's attestation "
+            "(artifact_staging.task_requires_staging); any other task works in the project itself. "
+            "The paths every task changed are compared with its declared write claims when it "
+            "completes, as R7's scope says (artifact_staging_lifecycle). " + _NOT_YOURS
         ),
         "R27": (
-            "In force. Not in your view: any rubric - a rubric is not a part of the plan. The "
-            "runtime derives each department's rubric from its lead's RoleProfile and stores it, "
-            "versioned, in Project Memory (department_runtime.ensure_department_rubric): version 1 "
-            "before the first task and after a committed plan change. Each lead judges by the "
-            "stored version and attests it. " + _NOT_YOURS
+            "In force. Not in your view: any rubric. The plan holds no rubric - a department entry "
+            "may keep a reference pinned by 0.13, never the source of the pin "
+            "(department_acceptance.DEPARTMENT_FIELDS). The runtime derives each department's "
+            "rubric from its lead's RoleProfile and stores it, versioned, in Project Memory "
+            "(department_runtime.ensure_department_rubric): version 1 when the run starts and after "
+            "a committed plan change, and at the latest when the lead is reserved "
+            "(department_gate). Each lead judges by the stored version and attests it. " + _NOT_YOURS
         ),
         "R29": (
             "In force. Not in your view: verification.policy, verification.required, "
@@ -157,12 +164,15 @@ def plan_verifier_scopes(plan) -> dict[str, str]:
             + _gap(
                 unled,
                 "no lead of another profession is named. Admission lets a task a plan change leaves as "
-                "it was, or one migrated from a v0.8 run, keep what it had; the runtime stops such "
-                "a task for the on-call when its lead is needed (department_gate)",
+                "it was, or one migrated from a v0.8 run, keep what it had; when such a task is to be "
+                "accepted, the runtime takes the lead its profession names "
+                "(department_runtime.role_lead) and, if that is no lead of another profession, "
+                "stops the task for the on-call (department_gate)",
             )
             + " The runtime derives the department from the lead "
-            "(department_runtime.derive_task_department) and writes its rubric, by which the lead "
-            "judges each task when it is accepted. " + _NOT_YOURS
+            "(department_runtime.derive_task_department), writes its rubric, by which the lead "
+            "judges each task when it is accepted, and titles each acceptance session from the "
+            "lead's RoleProfile (thread_titles.department_verifier_thread_title). " + _NOT_YOURS
         ),
     }
 
