@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.14.2-beta
+
+The plan verifier is no longer held to fields it is not shown.
+
+On a fresh 0.14 install a run stopped at preflight with "Plan verification:
+FAIL". The tester's agent named the cause: the verifier demands structured
+fields that Autopilot itself leaves out of the plan it hands over. The prompt
+bore that out. The fresh plan verifier gets a deliberately narrow view of the
+plan: the Goal Contract, the constraints, the task graph and each task's
+Definition of Done, without roles, leads, departments, resources or the
+verification policy (R25). Above that view it got the whole rules block, and
+several rules ask for exactly those fields: R9 a structured RoleProfile, R30
+a department lead and its rubric, R8, R21 and R29 the acceptance floor, R7
+and R24 the declared scope, R27 the stored rubric, R17 the user's request. A
+verifier that reads the rules as a contract looks for the fields, does not
+find them, and can only answer REVISE, on any plan. Six stand-in verifiers
+on the same prompt read past it; the tester's did not. Every plan change is
+verified with the same prompt and carried the same contradiction.
+
+Now each of those rules carries a scope for the plan verifier, as R30
+already did for the worker and the lead of each task. The rule itself is
+unchanged and whole: its statement and check are not cut, and no scope says
+a rule does not apply. The scope says which of the rule's fields the
+verifier is not shown, what the runtime already admitted of them before the
+verification, and who judges the rest, and when. For example: every task
+names its department's lead, never its own role, and declares a full-suite
+check in a clean environment, all checked at admission; the paths a task
+changes are compared with its declared scope when it completes. These facts
+are computed on the graph being verified, with admission's own checks. A
+task that admission let through without one of them (one a plan change kept
+as it was, or one migrated from a v0.8 run) is named, not covered by "every
+task". No scope names a role, a lead or a resource target, so the view stays
+as narrow as before. The verifier still judges the same six dimensions, and
+every other prompt gets the rules exactly as before.
+
 ## 0.14.1-beta
 
 Runs start again after the ChatGPT update of 3 October.
