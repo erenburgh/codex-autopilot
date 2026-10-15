@@ -41,7 +41,7 @@ from codex_autopilot.preflight import (
     PreflightError,
     run_preflight,
 )
-from test_preflight import DESKTOP_PROJECT, SKILL, PreflightClient, plan as preflight_plan, project
+from test_preflight import DESKTOP_PROJECT, HOST_SKILL, SKILL, PreflightClient, plan as preflight_plan, project
 
 
 PASS = {"verdict": "PASS", "issues": []}
@@ -346,6 +346,29 @@ class TheCounterIsNeverAVerdictTests(PlanReviseTestCase):
         self.assertNotIsInstance(caught.exception, PlanRevisionRequired)
         self.assertIn("the round could not be recorded", str(caught.exception))
         self.assertEqual(ScriptedVerifier.verifier_turns, 1)
+
+
+class TheSkillsReadTheMarkerTests(unittest.TestCase):
+    """Both skills: REVISE is the planner's to fix, every other exit stays final.
+
+    Mutation: the REVISE paragraph removed from either SKILL.md.
+    """
+
+    def test_both_skills_send_revise_back_to_the_planner(self) -> None:
+        for skill in (SKILL, HOST_SKILL):
+            with self.subTest(skill=skill.parent.name):
+                text = skill.read_text(encoding="utf-8")
+                self.assertIn("Every other non-zero exit is a finished answer", text)
+                self.assertNotIn("A non-zero exit is a finished answer", text)
+                self.assertIn(f"Exit code {PLAN_REVISION_EXIT_CODE}", text)
+                self.assertIn("`Plan verification: REVISE (round <k> of 3)`", text)
+                for duty in (
+                    "run the same `start-skill` command again",
+                    "do not argue with the verifier",
+                    "never drop, weaken or narrow a requirement",
+                    "an unchanged plan returns the same answer",
+                ):
+                    self.assertIn(duty, text)
 
 
 if __name__ == "__main__":
