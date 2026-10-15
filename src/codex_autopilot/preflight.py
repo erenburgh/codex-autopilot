@@ -36,7 +36,19 @@ from .plan_verification import (
     load_active_memory_constraints,
     make_plan_verification_receipt,
     parse_plan_verification_result,
+    plan_sha256,
     validate_verdict_references,
+)
+from .plan_revision_rounds import (
+    MAX_INITIAL_PLAN_ROUNDS,
+    PLAN_REVISION_EXIT_CODE,
+    InitialPlanRevise,
+    RevisionRound,
+    clear_plan_revision_rounds,
+    exhausted_answer,
+    load_plan_revision_rounds,
+    record_plan_revise,
+    revise_answer,
 )
 from .usage import capacity_notice
 from .project_association import (
@@ -101,6 +113,18 @@ class PreflightApprovalRequired(PreflightError):
             "Autopilot does not read those databases directly. Approve this exact directory through Codex's normal permission request, then rerun the start command.\n"
             f"App Server detail: {detail}"
         )
+
+
+class PlanRevisionRequired(PreflightError):
+    """The fresh plan verifier answered REVISE: the planner fixes the plan.
+
+    Not a failure and not a question for the owner - before run-state exists
+    the initiating agent is the planner (plan_revision_rounds). Its own exit
+    code tells the skill this apart from every other refusal (2) and from an
+    approval only a human gives (77).
+    """
+
+    exit_code = PLAN_REVISION_EXIT_CODE
 
 
 def runtime_command_path() -> Path:
@@ -333,6 +357,7 @@ def run_preflight(
     approve_project_memory_always: bool = False,
     app_server_project_id: str | None = None,
     desktop_project_id: str | None = None,
+    plan_file: Path | None = None,
 ) -> PreflightResult:
     project = root.expanduser().resolve()
     codex_binary = shutil.which(binary) if not Path(binary).is_absolute() else binary
@@ -379,6 +404,16 @@ def run_preflight(
         "deterministic coverage admits independent judgment",
     )
     _reject_unprobed_capabilities(plan, report)
+    plan_rounds = None
+    if plan.goal_contract is not None:
+        plan_rounds = load_plan_revision_rounds(project)
+        if plan_rounds.ignored:
+            report("Plan verification rounds", "WARN", plan_rounds.ignored)
+        # A plan unchanged since its last verdict gets that verdict again,
+        # before App Server: a rerun without an edit spends no model turn.
+        recorded = plan_rounds.recorded_for(plan_sha256(plan))
+        if recorded is not None:
+            _refuse_revised_plan(recorded, report, plan_file=plan_file, replayed=True)
     if not codex_binary:
         report("Runtime", "FAIL", "no Codex found: neither ChatGPT.app's own nor `codex` on PATH")
         raise PreflightError(
@@ -852,9 +887,25 @@ def run_preflight(
                     selection=plan_selection,
                     thread_ids=probe_thread_ids,
                 )
+            except InitialPlanRevise as revise:
+                try:
+                    rounds = record_plan_revise(
+                        project,
+                        plan_rounds.continued() if plan_rounds else (),
+                        plan=plan,
+                        revise=revise,
+                    )
+                except OSError as exc:
+                    # Without the count the cap cannot hold: refuse rather
+                    # than hand out rounds nobody counts.
+                    detail = f"{revise}; the round could not be recorded: {exc}"
+                    report("Plan verification", "FAIL", detail)
+                    raise PreflightError(detail) from exc
+                _refuse_revised_plan(rounds, report, plan_file=plan_file, replayed=False)
             except PlanVerificationError as exc:
                 report("Plan verification", "FAIL", str(exc))
                 raise PreflightError(str(exc)) from exc
+            clear_plan_revision_rounds(project)
             report(
                 "Plan verification",
                 "PASS",
@@ -917,6 +968,22 @@ def run_preflight(
                 pass
         client.close()
         log_path.unlink(missing_ok=True)
+
+
+def _refuse_revised_plan(
+    rounds: tuple[RevisionRound, ...],
+    report: Callable[..., None],
+    *,
+    plan_file: Path | None,
+    replayed: bool,
+) -> None:
+    """REVISE goes back to the planner; the last round's REVISE is the FAIL."""
+
+    if rounds[-1].round >= MAX_INITIAL_PLAN_ROUNDS:
+        detail = exhausted_answer(rounds, replayed=replayed)
+        report("Plan verification", "FAIL", detail)
+        raise PreflightError("proposed plan was rejected by the fresh verifier: " + detail)
+    raise PlanRevisionRequired(revise_answer(rounds, plan_file=plan_file, replayed=replayed))
 
 
 def _run_initial_plan_verification(
@@ -1009,9 +1076,8 @@ def _run_initial_plan_verification(
     verdict = parse_plan_verification_result(final_agent_message(turn))
     validate_verdict_references(plan, verdict)
     if verdict.verdict != "PASS":
-        raise PlanVerificationError(
-            "proposed plan was rejected by the fresh verifier: "
-            + format_plan_verification_issues(verdict.issues)
+        raise InitialPlanRevise(
+            verdict, verifier_thread_id=thread_id, verifier_turn_id=turn_id
         )
     return make_plan_verification_receipt(
         plan,

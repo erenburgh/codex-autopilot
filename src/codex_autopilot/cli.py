@@ -31,7 +31,7 @@ from .lifecycle import (
 from .language import DEFAULT_LANGUAGE, normalize_language
 from .models import MODEL_IDS, PUBLIC_REASONING
 from .plan import validate_migrating_plan
-from .preflight import PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, run_preflight
+from .preflight import PlanRevisionRequired, PreflightApprovalRequired, PreflightError, ProjectMemoryApprovalRequired, run_preflight
 from .run_state import StateStore
 # The gateway's refusal is raised right here, so it is imported here: a
 # NameError instead of a refusal once cost a run an hour.
@@ -649,6 +649,7 @@ def main(argv: list[str] | None = None) -> int:
                 approve_project_memory_always=getattr(args, "approve_project_memory_always", False),
                 app_server_project_id=getattr(args, "app_server_project_id", None),
                 desktop_project_id=getattr(args, "desktop_project_id", None),
+                plan_file=args.plan_file,
             )
             if args.command == "preflight":
                 return 0
@@ -1121,6 +1122,11 @@ def main(argv: list[str] | None = None) -> int:
             return memory_mcp_main([])
         if args.command == "uninstall":
             return uninstall(args)
+    except PlanRevisionRequired as exc:
+        # The planner's next step, not a failure: on stdout right after the
+        # preflight report, the marker on a line of its own, no prefix.
+        print(exc)
+        return exc.exit_code
     except (PreflightApprovalRequired, ProjectMemoryApprovalRequired, HookTrustApprovalRequired) as exc:
         print(f"codex-autopilot: {exc}", file=sys.stderr)
         return exc.exit_code
