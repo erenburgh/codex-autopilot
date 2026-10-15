@@ -285,15 +285,17 @@ class TheCounterIsNeverAVerdictTests(PlanReviseTestCase):
 
     def counters(self) -> dict[str, str]:
         valid = json.loads(self.foreign_record())
-        forged_pass = copy.deepcopy(valid)
-        forged_pass["project"] = str(self.root.resolve())
-        # Everything right but the verdict: only the REVISE-only check stops it.
+        # Each record below is right for this project and this plan but in
+        # one thing, so only the one check meant for it can stop it.
+        here = {**valid, "project": str(self.root.resolve())}
+        forged_pass = copy.deepcopy(here)
         forged_pass["rounds"][0]["verdict"] = "PASS"
         return {
             "not json": "{rounds: [",
             "not utf-8": "\udcff",
             "a list": "[1, 2, 3]",
-            "another kind": json.dumps({**valid, "kind": "something-else"}),
+            "another kind": json.dumps({**here, "kind": "something-else"}),
+            "another schema": json.dumps({**here, "schema_version": 2}),
             "another project": json.dumps(valid),
             "a forged PASS for this plan": json.dumps(forged_pass),
         }
@@ -305,8 +307,9 @@ class TheCounterIsNeverAVerdictTests(PlanReviseTestCase):
 
     def test_a_broken_or_foreign_counter_is_ignored_and_a_verifier_still_judges(self) -> None:
         """Mutations: the project check dropped (the other project's REVISE
-        is replayed, no verifier); the REVISE-only check dropped (the forged
-        entry is replayed); the JSON error not caught (a crash)."""
+        is replayed, no verifier); the kind or the schema check dropped (a
+        record of another kind is replayed); the REVISE-only check dropped
+        (the forged entry is replayed); the JSON error not caught (a crash)."""
 
         for name, content in self.counters().items():
             with self.subTest(counter=name):
